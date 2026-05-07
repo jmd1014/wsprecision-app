@@ -419,10 +419,31 @@ LEFT JOIN (
 ) b ON b.matched_pn = p.pn;
 
 -- 10.2 product_full: 마스터 + 자동집계 join (앱 화면용)
+-- p.*에 product_id/pn이 이미 있으므로 ps에서는 stats 컬럼만 명시
 CREATE OR REPLACE VIEW product_full AS
-SELECT p.*, ps.*
+SELECT
+  p.*,
+  ps.sales_count,
+  ps.total_qty,
+  ps.total_sales,
+  ps.avg_unit_price,
+  ps.last_trade_date,
+  ps.first_trade_date,
+  ps.sales_count_12m,
+  ps.total_qty_12m,
+  ps.total_sales_12m,
+  ps.sales_count_thism,
+  ps.total_sales_thism,
+  ps.sales_count_lastm,
+  ps.total_sales_lastm,
+  ps.purchase_count_12m,
+  ps.purchase_amount_12m,
+  ps.dormant_days,
+  ps.abc_grade,
+  ps.activity_trend,
+  ps.margin_pct
 FROM products p
-LEFT JOIN product_stats ps USING (product_id);
+LEFT JOIN product_stats ps ON ps.product_id = p.product_id;
 
 -- 10.3 활성 제품 (일상 화면 기본 view)
 CREATE OR REPLACE VIEW active_products AS
