@@ -1,6 +1,6 @@
 """
 우성정밀 업무관리 시스템 — Streamlit 메인
-v0.2 (Stage 1) — DB 연결 + 마스터 import 화면 활성화
+v0.3 (Stage 1 완료) — Supabase 활성, 활성/휴면 분리 표시
 """
 import streamlit as st
 
@@ -11,9 +11,9 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# DB 연결 시도
+# DB 연결 시도 (requests 기반)
 try:
-    from db import get_client, health_check
+    from db import health_check, fetch
     DB_AVAILABLE = True
 except Exception as e:
     DB_AVAILABLE = False
@@ -60,18 +60,31 @@ with st.sidebar:
 # ─── 페이지 라우팅 ───
 
 if page == "🏠 홈":
-    st.subheader("📊 마스터 데이터 현황")
-
     if DB_AVAILABLE:
         try:
             hc = health_check()
             counts = hc.get("counts", {})
+
+            st.subheader("📊 마스터 데이터 현황")
             m1, m2, m3, m4, m5 = st.columns(5)
-            with m1: st.metric("제품", counts.get("products", "-"))
+            with m1: st.metric("제품 (전체)", counts.get("products", "-"))
             with m2: st.metric("자재", counts.get("materials", "-"))
             with m3: st.metric("BOM", counts.get("bom", "-"))
             with m4: st.metric("거래처", counts.get("vendors", "-"))
             with m5: st.metric("도면", counts.get("drawings", "-"))
+
+            st.divider()
+            st.subheader("🟢 활성 vs 🟡 휴면")
+            a1, a2, a3 = st.columns(3)
+            with a1: st.metric("활성 제품 (12M)", counts.get("active_products", "-"))
+            with a2: st.metric("휴면 제품 (3년+)", counts.get("archived_products", "-"))
+            with a3:
+                # 매출 1억+ A등급 카운트
+                try:
+                    a_grade = fetch("product_stats", "product_id",
+                                    "abc_grade=eq.A", limit=200)
+                    st.metric("A등급 (매출 1억+)", len(a_grade))
+                except: st.metric("A등급", "-")
 
             st.divider()
             st.subheader("📈 거래 데이터")
@@ -79,11 +92,34 @@ if page == "🏠 홈":
             with l1: st.metric("매출 ledger", counts.get("sales_ledger", "-"))
             with l2: st.metric("매입 ledger", counts.get("purchase_ledger", "-"))
 
-            if all(isinstance(v, int) and v == 0 for v in [counts.get("products", 0), counts.get("vendors", 0)]):
-                st.warning("⚠️ 마스터 테이블이 비어있습니다. **'⚙️ 마스터 관리'** 메뉴에서 import 실행해주세요.")
+            # 매출 TOP 10
+            st.divider()
+            st.subheader("🏆 활성 매출 TOP 10 (12개월)")
+            try:
+                top = fetch("product_stats",
+                            "product_id,pn,sales_count_12m,total_sales_12m,abc_grade,activity_trend,margin_pct",
+                            "total_sales_12m=gt.0&order=total_sales_12m.desc",
+                            limit=10)
+                if top:
+                    import pandas as pd
+                    df = pd.DataFrame(top)
+                    df = df.rename(columns={
+                        'pn': '품번', 'sales_count_12m': '매출건수',
+                        'total_sales_12m': '매출액', 'abc_grade': 'ABC',
+                        'activity_trend': '추세', 'margin_pct': '마진율%',
+                    })
+                    df['매출액'] = df['매출액'].apply(lambda x: f'{int(x):,}')
+                    st.dataframe(df.drop(columns=['product_id']), use_container_width=True, hide_index=True)
+            except Exception as e:
+                st.caption(f"TOP10 로드 실패: {e}")
+
+            # ERR 표시
+            err_keys = [k for k, v in counts.items() if isinstance(v, str) and "ERR" in v]
+            if err_keys:
+                st.warning(f"⚠️ 일부 테이블 조회 실패: {', '.join(err_keys)}")
+
         except Exception as e:
             st.error(f"DB 연결 오류: {e}")
-            st.info("좌측 사이드바 '🔍 DB 상태 확인' 버튼을 눌러 자세한 상태를 확인하세요.")
     else:
         st.warning("⚠️ Streamlit Cloud Secrets 등록이 완료되지 않았습니다.")
         st.info("**share.streamlit.io → Settings → Secrets**에 Supabase 키를 등록하면 활성화됩니다.")
@@ -91,11 +127,12 @@ if page == "🏠 홈":
     st.divider()
 
     # 로드맵
+    st.divider()
     st.subheader("🛣 개발 로드맵")
     roadmap = [
         ("Stage 0", "환경 구축", "🟢 완료", "GitHub + Streamlit Cloud + Supabase 세팅"),
-        ("Stage 1", "마스터 import + DB 활성", "🟡 진행 중", "5개 마스터 + 거래 ledger를 Supabase로 이전"),
-        ("Stage 2", "Phase 1 발주 모듈 MVP", "⚪ 대기", "거래처 선택 → 품목 선택 → PDF 생성 → 슬랙 알림"),
+        ("Stage 1", "마스터 import + DB 활성", "🟢 완료", "5개 마스터 + 11,307 매출 + 5,332 매입 ledger 적재, 99.9% 매칭"),
+        ("Stage 2", "Phase 1 발주 모듈 MVP", "🟡 진행 중", "거래처 선택 → 품목 선택 → PDF 생성 → 슬랙 알림"),
         ("Stage 3", "시범 운영", "⚪ 대기", "김민수·염정원 2주 사용 + 피드백"),
         ("Stage 4", "Phase 2 생산·재고 통합", "⚪ 대기", "BOM 차감, 일일 보고, 사급/도급 분기"),
         ("Stage 5", "Phase 3 매출 대조", "⚪ 대기", "고객사 ERP 자동 파싱"),
