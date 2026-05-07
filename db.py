@@ -32,7 +32,7 @@ def count_rows(table: str) -> int | str:
             headers={**_headers(), "Prefer": "count=exact"},
             timeout=10,
         )
-        if r.status_code != 200:
+        if r.status_code not in (200, 206):
             return f"ERR{r.status_code}"
         cr = r.headers.get("content-range", "")
         if "/" in cr:
@@ -113,7 +113,7 @@ def fetch(table: str, select: str = "*", filter_query: str = "", limit: int = 10
     if filter_query:
         url += f"&{filter_query}"
     r = requests.get(url, headers=_headers(), timeout=30)
-    if r.status_code != 200:
+    if r.status_code not in (200, 206):
         raise RuntimeError(f"{table} fetch {r.status_code}: {r.text[:200]}")
     return r.json()
 
