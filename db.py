@@ -62,6 +62,51 @@ def health_check() -> dict:
     return {"status": "OK", "counts": counts}
 
 
+def debug_check() -> dict:
+    """secrets 등록 상태 + 실제 API 호출 결과를 진단 (값은 마스킹)"""
+    info = {}
+    try:
+        url = st.secrets["supabase"].get("url", "")
+        info["url_set"] = bool(url)
+        info["url_preview"] = url[:50] + "..." if len(url) > 50 else url
+    except Exception as e:
+        info["secrets_section_error"] = str(e)
+        return info
+
+    try:
+        sr_key = st.secrets["supabase"].get("service_role_key", "")
+        an_key = st.secrets["supabase"].get("anon_key", "")
+        info["service_role_set"] = bool(sr_key)
+        info["service_role_length"] = len(sr_key) if sr_key else 0
+        info["service_role_preview"] = (sr_key[:25] + "..." + sr_key[-10:]) if sr_key else "(없음)"
+        info["service_role_is_jwt"] = sr_key.startswith("eyJ") if sr_key else False
+        info["service_role_role_field"] = (
+            "service_role" if sr_key and "service_role" in sr_key else
+            ("anon" if sr_key and "anon" in sr_key else "(unknown)")
+        )
+        info["anon_key_set"] = bool(an_key)
+    except Exception as e:
+        info["key_error"] = str(e)
+        return info
+
+    # 실제 API 호출
+    try:
+        full_url = f"{url}/rest/v1/products?select=*&limit=1"
+        info["test_url"] = full_url[:80] + "..." if len(full_url) > 80 else full_url
+        r = requests.get(
+            full_url,
+            headers={"apikey": sr_key, "Authorization": f"Bearer {sr_key}",
+                     "Prefer": "count=exact"},
+            timeout=10,
+        )
+        info["test_status"] = r.status_code
+        info["test_content_range"] = r.headers.get("content-range", "(없음)")
+        info["test_response_first_300"] = r.text[:300]
+    except Exception as e:
+        info["test_error"] = str(e)
+    return info
+
+
 def fetch(table: str, select: str = "*", filter_query: str = "", limit: int = 1000) -> list:
     """SELECT — 페이지네이션은 호출자가 처리"""
     url = f"{_url()}/rest/v1/{table}?select={select}&limit={limit}"

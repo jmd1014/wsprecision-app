@@ -13,7 +13,7 @@ st.set_page_config(
 
 # DB 연결 시도 (requests 기반)
 try:
-    from db import health_check, fetch
+    from db import health_check, fetch, debug_check
     DB_AVAILABLE = True
 except Exception as e:
     DB_AVAILABLE = False
@@ -55,6 +55,11 @@ with st.sidebar:
                 st.error(f"DB 오류: {hc.get('error', 'unknown')}")
         else:
             st.warning("Secrets 등록을 먼저 완료해주세요")
+
+    if st.button("🩺 진단 (secrets 점검)", use_container_width=True):
+        with st.spinner("..."):
+            info = debug_check()
+        st.json(info)
 
 
 # ─── 페이지 라우팅 ───
