@@ -39,7 +39,7 @@ with st.sidebar:
     st.header("📋 메뉴")
     page = st.radio(
         "이동",
-        ["🏠 홈", "⚙️ 마스터 관리", "📋 발주서 작성", "📦 입출고", "🏭 생산 보고", "📊 매출/재고"],
+        ["🏠 홈", "⚙️ 마스터 관리", "📥 수주", "📋 발주서 작성", "📦 입출고", "🏭 생산 보고", "📊 매출/재고"],
         label_visibility="collapsed",
     )
     st.divider()
@@ -361,6 +361,334 @@ elif page == "⚙️ 마스터 관리":
                     st.write(f"- **{table}**: {cnt}건")
             else:
                 st.error(hc.get("error"))
+
+
+elif page == "📥 수주":
+    st.subheader("📥 수주 관리")
+    if not DB_AVAILABLE: st.error("DB 연결 필요"); st.stop()
+
+    from datetime import date as _date, timedelta as _td
+    from utils.so_parser import (parse_hdx_excel, parse_mijin_excel, parse_mjt_pdf,
+                                  group_by_so_number, match_canonical_pn)
+    import db as _db
+    import pandas as pd
+    import re as _re
+
+    tab_input, tab_list = st.tabs(["📤 새 수주 입력", "📋 수주 목록"])
+
+    # ════════ TAB 1: 새 수주 입력 ════════
+    with tab_input:
+        mode = st.radio("입력 방식", ["📁 파일 업로드 자동 파싱", "✏️ 수기 입력"],
+                        horizontal=True)
+
+        if mode == "📁 파일 업로드 자동 파싱":
+            ftype = st.selectbox("거래처 양식 선택", [
+                "HDX (엑셀, 53열 ERP 양식)",
+                "미진정밀 (엑셀, 외주발주품목조회)",
+                "㈜엠제이티 (PDF 발주서)",
+            ])
+            uploaded = st.file_uploader("파일 선택",
+                type=['xlsx','xls','pdf'],
+                help="HDX/미진은 엑셀(.xlsx), 엠제이티는 PDF")
+
+            if uploaded:
+                file_bytes = uploaded.read()
+                filename = uploaded.name
+                with st.spinner("파싱 중..."):
+                    try:
+                        if ftype.startswith("HDX"):
+                            items = parse_hdx_excel(file_bytes, filename)
+                        elif ftype.startswith("미진"):
+                            items = parse_mijin_excel(file_bytes, filename)
+                        elif ftype.startswith("㈜엠제이티"):
+                            items = parse_mjt_pdf(file_bytes, filename)
+                        else:
+                            items = []
+                    except Exception as e:
+                        st.error(f"파싱 실패: {e}"); items = []
+
+                if items:
+                    st.success(f"✅ {len(items)}개 품목 파싱 완료")
+
+                    # 우성정밀 품번 매칭
+                    products = fetch("products", "product_id,pn,alias_list", limit=1500)
+                    cm = {}
+                    def _mk(s):
+                        if not s: return ""
+                        s = str(s).upper()
+                        s = _re.sub(r'\([^)]*\)', '', s)
+                        s = _re.sub(r'[\s\-_·,\.]+', '', s)
+                        return s
+                    for p in products:
+                        cm[_mk(p['pn'])] = (p['pn'], p['product_id'])
+                        if p.get('alias_list'):
+                            for a in str(p['alias_list']).split(','):
+                                a = a.strip()
+                                if a: cm.setdefault(_mk(a), (p['pn'], p['product_id']))
+
+                    matched_count = 0
+                    for it in items:
+                        pn_hint = it.get("canonical_pn_hint") or it.get("customer_part_no") or ""
+                        # 정확 매칭
+                        m = cm.get(_mk(pn_hint))
+                        if not m:
+                            # ;OP, ;PM 제거 후 매칭
+                            norm = pn_hint.split(';')[0].strip() if pn_hint else ""
+                            m = cm.get(_mk(norm))
+                        if m:
+                            it["matched_pn"] = m[0]
+                            it["matched_pid"] = m[1]
+                            matched_count += 1
+                        else:
+                            it["matched_pn"] = None
+                            it["matched_pid"] = None
+
+                    st.info(f"🎯 우성정밀 품번 매칭: **{matched_count}/{len(items)}** "
+                            f"({100*matched_count/len(items):.1f}%)")
+
+                    # 미리보기
+                    df = pd.DataFrame([{
+                        "수주번호": it.get("so_number"),
+                        "라인": it.get("line_no"),
+                        "거래처 자재": it.get("customer_part_no"),
+                        "거래처 품명": (it.get("customer_item_name") or "")[:30],
+                        "✅ 우성정밀 품번": it.get("matched_pn") or "❌ 미매칭",
+                        "수량": int(it.get("qty") or 0),
+                        "단가": int(it.get("unit_price") or 0),
+                        "금액": int(it.get("amount") or 0),
+                        "납기": it.get("due_date"),
+                    } for it in items])
+                    st.dataframe(df, use_container_width=True, hide_index=True,
+                        column_config={
+                            "수량": st.column_config.NumberColumn(format="%d"),
+                            "단가": st.column_config.NumberColumn(format="₩%d"),
+                            "금액": st.column_config.NumberColumn(format="₩%d"),
+                        })
+
+                    if matched_count < len(items):
+                        st.warning(f"⚠️ 매칭 안 된 {len(items) - matched_count}개 품목은 customer_part_no만 저장됩니다. 추후 마스터 관리에서 매핑 가능.")
+
+                    # DB 저장
+                    if st.button("💾 수주 DB 저장", type="primary", use_container_width=True):
+                        groups = group_by_so_number(items)
+
+                        # 거래처 vendor_id 조회
+                        cust_name = items[0]["customer"]
+                        v = fetch("vendors", "vendor_id",
+                                  f"name=ilike.*{cust_name}*&limit=1", limit=1)
+                        vendor_id = v[0]["vendor_id"] if v else None
+
+                        saved_so = 0; saved_items = 0
+                        for g in groups:
+                            try:
+                                # 헤더 INSERT
+                                header = g["header"]
+                                header_payload = {
+                                    "so_number": header["so_number"],
+                                    "customer": header["customer"],
+                                    "vendor_id": vendor_id,
+                                    "so_date": header["so_date"].isoformat() if header["so_date"] else None,
+                                    "due_date": header["due_date"].isoformat() if header["due_date"] else None,
+                                    "total_amount": header["total_amount"] or 0,
+                                    "vat": header["vat"] or 0,
+                                    "source": header["source"],
+                                    "source_file": header["source_file"],
+                                    "delivery_address": header.get("delivery_address"),
+                                    "status": "DRAFT",
+                                    "created_by": "김민수",
+                                }
+                                _db.insert("sales_orders", [header_payload])
+                                so_row = _db.fetch_one("sales_orders",
+                                    f"so_number=eq.{header['so_number']}&customer=eq.{header['customer']}",
+                                    "so_id")
+                                if not so_row: continue
+
+                                # 품목 INSERT
+                                for it in g["items"]:
+                                    qty = float(it.get("qty") or 0)
+                                    item_payload = {
+                                        "so_id": so_row["so_id"],
+                                        "line_no": it.get("line_no") or 1,
+                                        "customer_part_no": it.get("customer_part_no"),
+                                        "customer_item_name": it.get("customer_item_name"),
+                                        "product_id": it.get("matched_pid"),
+                                        "canonical_pn": it.get("matched_pn"),
+                                        "qty": qty,
+                                        "received_qty": float(it.get("received_qty") or 0),
+                                        "pending_qty": qty - float(it.get("received_qty") or 0),
+                                        "unit": it.get("unit") or "EA",
+                                        "unit_price": it.get("unit_price"),
+                                        "amount": it.get("amount"),
+                                        "vat": it.get("vat"),
+                                        "total": it.get("total"),
+                                        "due_date": it.get("due_date").isoformat() if it.get("due_date") else None,
+                                        "mes_work_order": it.get("mes_work_order"),
+                                        "remark": it.get("remark"),
+                                        "status": "PENDING",
+                                    }
+                                    _db.insert("sales_order_items", [item_payload])
+                                    saved_items += 1
+                                saved_so += 1
+                            except Exception as e:
+                                st.warning(f"⚠️ 수주 {header['so_number']} 저장 실패: {e}")
+
+                        st.success(f"✅ 수주 {saved_so}건 / 품목 {saved_items}개 저장 완료")
+                        st.balloons()
+
+        else:  # 수기 입력
+            st.markdown("##### 수기 입력 — 단일 수주 1건")
+            mc1, mc2 = st.columns(2)
+            with mc1:
+                m_so_no = st.text_input("거래처 발주번호 *", placeholder="예: PO-2026-001")
+                m_cust = st.text_input("거래처명 *", placeholder="예: 신규 고객사")
+                m_so_date = st.date_input("수주일", value=_date.today())
+            with mc2:
+                m_due = st.date_input("납기일", value=_date.today() + _td(days=14))
+                m_addr = st.text_input("납품 주소")
+
+            if "m_so_items" not in st.session_state:
+                st.session_state.m_so_items = []
+
+            with st.expander("➕ 품목 추가"):
+                ic1, ic2, ic3, ic4 = st.columns(4)
+                m_pn = ic1.text_input("품번", key="m_pn")
+                m_qty = ic2.number_input("수량", 0, step=10, key="m_qty")
+                m_up = ic3.number_input("단가", 0, step=100, key="m_up")
+                m_due_item = ic4.date_input("품목 납기", value=_date.today() + _td(days=14), key="m_due_item")
+                if st.button("➕ 추가", key="m_add_item") and m_pn and m_qty:
+                    st.session_state.m_so_items.append({
+                        "line_no": len(st.session_state.m_so_items) + 1,
+                        "customer_part_no": m_pn, "qty": m_qty,
+                        "unit_price": m_up, "amount": m_qty * m_up,
+                        "due_date": m_due_item,
+                    })
+                    st.rerun()
+
+            if st.session_state.m_so_items:
+                df = pd.DataFrame(st.session_state.m_so_items)
+                st.dataframe(df, use_container_width=True, hide_index=True)
+                total = sum(it["amount"] for it in st.session_state.m_so_items)
+                st.markdown(f"**총액**: ₩{total:,}")
+
+            if st.button("💾 수주 저장", type="primary",
+                         disabled=not (m_so_no and m_cust and st.session_state.m_so_items)):
+                try:
+                    v = fetch("vendors", "vendor_id", f"name=ilike.*{m_cust}*&limit=1", limit=1)
+                    vendor_id = v[0]["vendor_id"] if v else None
+                    _db.insert("sales_orders", [{
+                        "so_number": m_so_no, "customer": m_cust, "vendor_id": vendor_id,
+                        "so_date": m_so_date.isoformat(), "due_date": m_due.isoformat(),
+                        "total_amount": total, "vat": int(total * 0.1),
+                        "source": "MANUAL", "delivery_address": m_addr,
+                        "status": "DRAFT", "created_by": "김민수",
+                    }])
+                    so_row = _db.fetch_one("sales_orders",
+                        f"so_number=eq.{m_so_no}&customer=eq.{m_cust}", "so_id")
+                    if so_row:
+                        for it in st.session_state.m_so_items:
+                            _db.insert("sales_order_items", [{
+                                "so_id": so_row["so_id"], "line_no": it["line_no"],
+                                "customer_part_no": it["customer_part_no"],
+                                "qty": it["qty"], "unit": "EA",
+                                "unit_price": it["unit_price"], "amount": it["amount"],
+                                "due_date": it["due_date"].isoformat() if it.get("due_date") else None,
+                                "status": "PENDING",
+                            }])
+                    st.success(f"✅ 수주 '{m_so_no}' 저장 완료")
+                    st.session_state.m_so_items = []
+                    st.balloons()
+                except Exception as e:
+                    st.error(f"저장 실패: {e}")
+
+    # ════════ TAB 2: 수주 목록 ════════
+    with tab_list:
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            sl_period = st.selectbox("기간", ["이번달", "최근 3개월", "올해", "전체"], index=2)
+        with c2:
+            sl_cust = st.text_input("거래처", placeholder="예: HDX, 미진")
+        with c3:
+            sl_status = st.selectbox("상태", ["전체", "DRAFT", "CONFIRMED", "IN_PROD", "PARTIAL", "DELIVERED", "CANCELLED"])
+
+        today = _date.today()
+        fq = ["order=so_date.desc"]
+        if sl_period == "이번달":
+            fq.append(f"so_date=gte.{today.replace(day=1).isoformat()}")
+        elif sl_period == "최근 3개월":
+            fq.append(f"so_date=gte.{(today - _td(days=90)).isoformat()}")
+        elif sl_period == "올해":
+            fq.append(f"so_date=gte.{today.year}-01-01")
+        if sl_cust: fq.append(f"customer=ilike.*{sl_cust}*")
+        if sl_status != "전체": fq.append(f"status=eq.{sl_status}")
+
+        try:
+            sos = fetch("sales_order_stats", "*", "&".join(fq), limit=300)
+        except Exception as e:
+            st.error(f"수주 조회 실패: {e}"); sos = []
+
+        if not sos:
+            st.info("이 조건의 수주가 없습니다.")
+        else:
+            sc1, sc2, sc3, sc4 = st.columns(4)
+            sc1.metric("수주 건수", len(sos))
+            sc2.metric("총 수주액", f"₩{sum(int(s.get('total_amount') or 0) for s in sos):,}")
+            sc3.metric("거래처 수", len({s["customer"] for s in sos}))
+            avg_match = sum(s.get("match_rate_pct") or 0 for s in sos) / len(sos) if sos else 0
+            sc4.metric("평균 매칭률", f"{avg_match:.1f}%")
+
+            st.divider()
+            df = pd.DataFrame([{
+                "수주번호": s["so_number"], "거래처": s["customer"],
+                "수주일": s.get("so_date"), "납기": s.get("due_date"),
+                "품목수": s.get("item_count"),
+                "총수량": int(s.get("total_qty") or 0),
+                "납품": int(s.get("total_received_qty") or 0),
+                "미납": int(s.get("total_pending_qty") or 0),
+                "납품상태": s.get("delivery_status"),
+                "총액": int(s.get("total_amount") or 0),
+                "매칭률": f"{s.get('match_rate_pct') or 0:.0f}%",
+                "상태": s["status"],
+            } for s in sos])
+            st.dataframe(df, use_container_width=True, hide_index=True,
+                column_config={"총액": st.column_config.NumberColumn(format="₩%d")})
+
+            st.divider()
+            st.markdown("##### 🔍 수주 상세")
+            opts = {f"{s['so_number']} | {s['customer']} | ₩{int(s.get('total_amount') or 0):,}": s
+                    for s in sos}
+            sel_so = st.selectbox("선택", list(opts.keys()))
+            if sel_so:
+                so = opts[sel_so]
+                items = fetch("sales_order_items", "*",
+                              f"so_id=eq.{so['so_id']}&order=line_no", limit=200)
+                idf = pd.DataFrame([{
+                    "라인": i["line_no"],
+                    "거래처 자재": i.get("customer_part_no"),
+                    "우성 품번": i.get("canonical_pn") or "❌",
+                    "수량": int(i.get("qty") or 0),
+                    "납품": int(i.get("received_qty") or 0),
+                    "미납": int(i.get("pending_qty") or 0),
+                    "단가": int(i.get("unit_price") or 0),
+                    "금액": int(i.get("amount") or 0),
+                    "상태": i.get("status"),
+                } for i in items])
+                if not idf.empty:
+                    st.dataframe(idf, use_container_width=True, hide_index=True,
+                        column_config={
+                            "단가": st.column_config.NumberColumn(format="₩%d"),
+                            "금액": st.column_config.NumberColumn(format="₩%d"),
+                        })
+
+                # 상태 변경
+                rc1, rc2 = st.columns(2)
+                new_st = rc1.selectbox("상태 변경",
+                    ["DRAFT", "CONFIRMED", "IN_PROD", "PARTIAL", "DELIVERED", "CANCELLED"],
+                    index=["DRAFT", "CONFIRMED", "IN_PROD", "PARTIAL", "DELIVERED", "CANCELLED"]
+                          .index(so["status"]) if so["status"] in
+                          ["DRAFT", "CONFIRMED", "IN_PROD", "PARTIAL", "DELIVERED", "CANCELLED"] else 0)
+                if rc2.button("💾 상태 저장"):
+                    if _db.update("sales_orders", f"so_id=eq.{so['so_id']}", {"status": new_st}):
+                        st.success(f"상태 변경: {new_st}"); st.rerun()
 
 
 elif page == "📋 발주서 작성":
