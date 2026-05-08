@@ -152,41 +152,99 @@ elif page == "⚙️ 마스터 관리":
     st.subheader("⚙️ 마스터 데이터 관리")
 
     if not DB_AVAILABLE:
-        st.error("DB 연결이 활성화되지 않았습니다. Secrets 등록을 먼저 확인해주세요.")
-        st.stop()
+        st.error("DB 연결이 활성화되지 않았습니다."); st.stop()
 
-    st.markdown("""
-    ### 마스터 import 안내
+    import db as _db
+    import pandas as pd
 
-    이 화면에서는 로컬 엑셀 파일을 Supabase로 일괄 import 합니다.
+    tab1, tab2 = st.tabs(["🏢 거래처 편집", "📊 DB 현황"])
 
-    **import 대상:**
-    1. `product_master_v11.xlsx` → products (834건, 정적 컬럼만)
-    2. `거래처관리_v2.xlsx` → vendors (201건)
-    3. `material_master_v3.xlsx` → materials (308건)
-    4. `BOM_v8.xlsx` → bom
-    5. `도면관리.xlsx` → drawings (2,777건)
-    6. `매출내역_우성정밀.xlsx` → sales_ledger (11,308건)
-    7. `2024/2025/2026 매입내역` → purchase_ledger (5,332건)
+    # ─── Tab 1: 거래처 편집 ───
+    with tab1:
+        VENDOR_GROUPS = [
+            "SALES_MIJIN", "SALES_HDX", "SALES_DIC", "SALES_DUSAN", "SALES_MSP", "SALES_OTHER",
+            "MAT_STS", "MAT_CARBON", "MAT_FORGING", "MAT_CASTING", "MAT_OTHER",
+            "OUTSOURCE_MACHINE", "OUTSOURCE_GRIND", "OUTSOURCE_TRANSFORM",
+            "HEAT_TREAT", "SURFACE", "TOOL",
+            "INDIRECT_PROFESSIONAL", "INDIRECT_TELECOM", "INDIRECT_LEGAL",
+            "INDIRECT_UTILITY", "INDIRECT_FINANCE", "INDIRECT_LOGISTICS",
+            "INDIRECT_FACILITY", "INDIRECT_CONSUMABLES", "INDIRECT_OTHER",
+        ]
 
-    ⚠️ **이 import는 클라우드 환경에서 직접 실행 불가** (로컬 엑셀 파일 접근 필요).
-    클로드가 Stage 1 작업으로 별도 환경에서 실행 후, DB에 자료가 채워진 상태로 활성화됩니다.
-    """)
+        c1, c2, c3 = st.columns([2, 2, 1])
+        with c1:
+            search_q = st.text_input("거래처 검색 (이름)", placeholder="예: 명진, 미진, 두리")
+        with c2:
+            group_filter = st.selectbox("그룹 필터", ["전체"] + VENDOR_GROUPS)
+        with c3:
+            limit = st.number_input("표시 행수", min_value=20, max_value=500, value=100, step=20)
 
-    st.info("📌 **현재 상태**: import 스크립트 작성 완료, DB 연결 검증 후 클로드가 실행 예정.")
+        # 조회
+        fq_parts = ["order=vendor_group.asc,name.asc"]
+        if search_q:
+            fq_parts.append(f"name=ilike.*{search_q}*")
+        if group_filter != "전체":
+            fq_parts.append(f"vendor_group=eq.{group_filter}")
+        fq = "&".join(fq_parts)
+        try:
+            rows = fetch("vendors",
+                         "vendor_id,name,vendor_group,category,trade_type,business_no,business_type,business_item,payment_terms",
+                         fq, limit=limit)
+        except Exception as e:
+            st.error(f"조회 실패: {e}"); rows = []
 
-    # DB 상태 표시
-    st.divider()
-    st.subheader("현재 DB 상태")
-    if st.button("🔍 새로고침", type="primary"):
-        with st.spinner("..."):
-            hc = health_check()
-        if hc["status"] == "OK":
-            st.success("DB 연결 OK")
-            for table, cnt in hc["counts"].items():
-                st.write(f"- **{table}**: {cnt}건")
+        if not rows:
+            st.info("결과 없음")
         else:
-            st.error(hc.get("error"))
+            df = pd.DataFrame(rows)
+            # 인라인 편집 가능
+            edited = st.data_editor(
+                df,
+                column_config={
+                    "vendor_id": st.column_config.NumberColumn("ID", width="small", disabled=True),
+                    "name": st.column_config.TextColumn("거래처명", width="medium", disabled=True),
+                    "vendor_group": st.column_config.SelectboxColumn(
+                        "그룹 (편집)", options=[None] + VENDOR_GROUPS, width="medium"
+                    ),
+                    "category": st.column_config.TextColumn("카테고리(자동)", disabled=True),
+                    "trade_type": st.column_config.TextColumn("구분", width="small", disabled=True),
+                    "business_no": st.column_config.TextColumn("사업자번호", disabled=True),
+                    "business_type": st.column_config.TextColumn("업태", disabled=True),
+                    "business_item": st.column_config.TextColumn("종목", disabled=True),
+                    "payment_terms": st.column_config.TextColumn("결제조건"),
+                },
+                hide_index=True,
+                use_container_width=True,
+                key="vendor_editor",
+            )
+
+            if st.button("💾 변경 저장", type="primary"):
+                changed = 0
+                for orig, new in zip(rows, edited.to_dict("records")):
+                    updates = {}
+                    if orig.get("vendor_group") != new.get("vendor_group"):
+                        updates["vendor_group"] = new.get("vendor_group")
+                    if orig.get("payment_terms") != new.get("payment_terms"):
+                        updates["payment_terms"] = new.get("payment_terms")
+                    if updates:
+                        if _db.update("vendors", f"vendor_id=eq.{orig['vendor_id']}", updates):
+                            changed += 1
+                if changed:
+                    st.success(f"✅ {changed}건 업데이트 완료")
+                else:
+                    st.info("변경 사항 없음")
+
+    # ─── Tab 2: DB 현황 ───
+    with tab2:
+        if st.button("🔍 새로고침", type="primary"):
+            with st.spinner("..."):
+                hc = health_check()
+            if hc["status"] == "OK":
+                st.success("DB 연결 OK")
+                for table, cnt in hc["counts"].items():
+                    st.write(f"- **{table}**: {cnt}건")
+            else:
+                st.error(hc.get("error"))
 
 
 elif page == "📋 발주서 작성":
@@ -198,20 +256,31 @@ elif page == "📋 발주서 작성":
     from utils.po_generator import generate_po_number, fill_po_template
     import db as _db
 
+    # 매입 그룹 (발주 대상만 — 매출/간접비는 자동 제외)
+    PURCHASE_GROUPS = {
+        "MAT_STS": "🟦 소재 STS (명진/유성)",
+        "MAT_CARBON": "🟦 소재 탄소강 (혜성)",
+        "MAT_FORGING": "🟦 단조품",
+        "MAT_CASTING": "🟦 주조품",
+        "MAT_OTHER": "🟦 기타 소재",
+        "OUTSOURCE_MACHINE": "🟩 외주 가공",
+        "OUTSOURCE_GRIND": "🟩 외주 연마",
+        "OUTSOURCE_TRANSFORM": "🟩 외주 변형가공",
+        "HEAT_TREAT": "🟩 열처리",
+        "SURFACE": "🟩 표면처리",
+        "TOOL": "🟨 공구·소모품",
+    }
+
     # ──── 1. 거래처 선택 ────
     st.markdown("##### ① 거래처 선택")
-    cat_filter = st.selectbox(
-        "카테고리",
-        ["전체", "MATERIAL_STS", "MATERIAL_CARBON", "FORGING", "CASTING",
-         "OUTSOURCE_MACHINE", "OUTSOURCE_GRIND", "HEAT_TREAT", "SURFACE",
-         "TRANSFORM", "TOOL", "SERVICE", "OTHER"],
-        index=0,
-    )
-    fq = "in_use=eq.true&order=name"
-    if cat_filter != "전체":
-        fq = f"category=eq.{cat_filter}&" + fq
+    group_options = ["전체 (매입)"] + list(PURCHASE_GROUPS.values())
+    sel_group_label = st.selectbox("발주 그룹", group_options, index=0)
+    selected_groups = list(PURCHASE_GROUPS.keys()) if sel_group_label == "전체 (매입)" else \
+        [k for k, v in PURCHASE_GROUPS.items() if v == sel_group_label]
+    groups_str = ",".join(selected_groups)
+    fq = f"vendor_group=in.({groups_str})&in_use=eq.true&order=name"
     try:
-        vendors = fetch("vendors", "vendor_id,name,category,business_no,payment_terms,address,contact_person",
+        vendors = fetch("vendors", "vendor_id,name,vendor_group,category,business_no,payment_terms,address,contact_person",
                         filter_query=fq, limit=300)
     except Exception as e:
         st.error(f"거래처 로드 실패: {e}"); st.stop()

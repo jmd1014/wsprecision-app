@@ -94,6 +94,8 @@ CREATE TABLE vendors (
   in_use BOOLEAN DEFAULT TRUE,
   memo TEXT,
   verification_status TEXT,
+  -- 발주 화면 필터용 대분류 (SALES_*/MAT_*/OUTSOURCE_*/HEAT_TREAT/SURFACE/TOOL/INDIRECT_*)
+  vendor_group TEXT,
   -- 휴면 관리
   archived_at TIMESTAMPTZ,
   archive_reason TEXT,
@@ -102,6 +104,7 @@ CREATE TABLE vendors (
 );
 CREATE INDEX idx_vendors_norm ON vendors(normalized_name);
 CREATE INDEX idx_vendors_category ON vendors(category);
+CREATE INDEX idx_vendors_group ON vendors(vendor_group);
 CREATE INDEX idx_vendors_archived ON vendors(archived_at);
 
 -- ════════════════════════════════════════════════
