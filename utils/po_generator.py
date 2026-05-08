@@ -87,15 +87,17 @@ def fill_po_template(po_data: dict, items: list[dict], vendor_info: dict = None)
     ws.page_setup.fitToHeight = 1
 
     # 컬럼 너비 (A~G 7개 컬럼: NO/품명/재질/규격/수량/단가/금액)
-    # A4 가로 (210mm) 인쇄 영역 약 175mm = 75 char 폭에 맞춤
-    widths = [4, 22, 8, 12, 8, 10, 11]  # 합 75
+    # 화면 가독성과 A4 인쇄 균형 — 합 90 + scale 95%
+    widths = [5, 26, 10, 14, 10, 12, 13]  # 합 90
     for i, w in enumerate(widths, 1):
         ws.column_dimensions[get_column_letter(i)].width = w
 
-    # 인쇄 시 페이지 가로 강제 fit
+    # 인쇄 설정
     ws.sheet_properties.pageSetUpPr.fitToPage = True
     ws.page_setup.fitToWidth = 1
-    ws.page_setup.fitToHeight = 0  # 세로는 자유롭게
+    ws.page_setup.fitToHeight = 0
+    ws.page_setup.scale = None  # fitToPage 우선
+    ws.sheet_view.zoomScale = 100
 
     row = 1
 
@@ -174,7 +176,7 @@ def fill_po_template(po_data: dict, items: list[dict], vendor_info: dict = None)
         ws.merge_cells(start_row=row, start_column=6, end_row=row, end_column=7)
         cell = ws.cell(row, 6, vright)
         cell.font = FONT_BODY; cell.alignment = LEFT; cell.border = BORDER_ALL
-        ws.row_dimensions[row].height = 17
+        ws.row_dimensions[row].height = 19
         row += 1
 
     row += 1  # 빈 행
@@ -237,7 +239,7 @@ def fill_po_template(po_data: dict, items: list[dict], vendor_info: dict = None)
             for ci in range(1, 8):
                 ws.cell(row, ci).fill = PatternFill("solid", start_color="FAFAFA")
 
-        ws.row_dimensions[row].height = 18
+        ws.row_dimensions[row].height = 19
         row += 1
 
     # ─── 6. 합계 영역 ───
