@@ -288,8 +288,70 @@ elif page == "📋 발주서 작성":
             st.error(f"거래처 로드 실패: {e}"); vendors = []
 
         if not vendors:
-            st.warning("해당 그룹에 거래처가 없습니다.")
-        else:
+            st.warning("해당 그룹에 거래처가 없습니다. 아래에서 신규 등록하세요.")
+
+        # 신규 거래처 등록 (검색 결과 부족 시 사용)
+        with st.expander("➕ 신규 거래처 등록 (수기 입력)"):
+            ec1, ec2 = st.columns(2)
+            with ec1:
+                nv_name = st.text_input("거래처명 *", key="nv_name", placeholder="(주)○○산업")
+                nv_biz = st.text_input("사업자번호", key="nv_biz", placeholder="000-00-00000")
+                nv_ceo = st.text_input("대표자명", key="nv_ceo")
+                nv_phone = st.text_input("전화", key="nv_phone")
+            with ec2:
+                nv_group = st.selectbox("그룹 *", options=["선택"] + list(PURCHASE_GROUPS.keys()),
+                                        key="nv_group")
+                nv_pay = st.text_input("결제조건", key="nv_pay",
+                                       value="말일 마감 60일 현금")
+                nv_address = st.text_input("주소", key="nv_addr")
+                nv_email = st.text_input("이메일", key="nv_mail")
+            nv_contact = st.text_input("담당자", key="nv_contact")
+            nv_btype = st.text_input("업태", key="nv_btype")
+            nv_bitem = st.text_input("종목", key="nv_bitem")
+            nv_memo = st.text_input("메모", key="nv_memo")
+
+            if st.button("💾 신규 거래처 저장", type="primary"):
+                if not nv_name or nv_group == "선택":
+                    st.error("거래처명과 그룹은 필수입니다.")
+                else:
+                    # 정규화명 자동 생성
+                    import re as _re
+                    norm = _re.sub(r'\s+', '', nv_name)
+                    norm = norm.replace('㈜', '(주)').replace('（주）', '(주)')
+                    # 중복 체크
+                    dup_q = f"normalized_name=eq.{norm}"
+                    try:
+                        dup = fetch("vendors", "vendor_id,name", dup_q, limit=1)
+                    except Exception: dup = []
+                    if dup:
+                        st.error(f"⚠️ 이미 등록됨: {dup[0]['name']} (vendor_id={dup[0]['vendor_id']})")
+                    else:
+                        try:
+                            payload = {
+                                "name": nv_name,
+                                "normalized_name": norm,
+                                "business_no": nv_biz or None,
+                                "vendor_group": nv_group,
+                                "trade_type": "매입",
+                                "ceo_name": nv_ceo or None,
+                                "phone": nv_phone or None,
+                                "address": nv_address or None,
+                                "email": nv_mail or None,
+                                "contact_person": nv_contact or None,
+                                "business_type": nv_btype or None,
+                                "business_item": nv_bitem or None,
+                                "payment_terms": nv_pay,
+                                "memo": nv_memo or None,
+                                "verification_status": "수기등록",
+                                "in_use": True,
+                            }
+                            _db.insert("vendors", [payload])
+                            st.success(f"✅ '{nv_name}' 등록 완료. 위 거래처 목록에서 선택하세요.")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"등록 실패: {e}")
+
+        if vendors:
             vendor_options = {f"{v['name']} ({v.get('vendor_group') or '-'})": v for v in vendors}
             sel = st.selectbox(f"거래처 선택 ({len(vendors)}개)", list(vendor_options.keys()))
             vendor = vendor_options[sel]
