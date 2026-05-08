@@ -248,13 +248,23 @@ elif page == "⚙️ 마스터 관리":
             new_bitem = st.text_input("종목", key="m_new_bitem")
             new_memo = st.text_input("메모", key="m_new_memo")
 
+            # 마지막 등록 결과 표시 (rerun 후에도 보존)
+            if "m_last_registered" in st.session_state:
+                lr = st.session_state.m_last_registered
+                st.success(f"✅ **{lr['name']}** 등록 완료 (ID: {lr['id']}, 그룹: {lr['group']})")
+                st.caption("💡 위 표 새로고침하려면 필터를 한 번 변경하거나 페이지를 다시 여세요.")
+
             if st.button("💾 신규 등록", type="primary", key="m_new_btn"):
                 if not new_name or new_group == "선택":
                     st.error("거래처명과 그룹은 필수입니다.")
                 else:
                     import re as _re
-                    norm = _re.sub(r'\s+', '', new_name)
-                    norm = norm.replace('㈜', '(주)').replace('（주）', '(주)')
+                    # 거래처명 자동 정리
+                    cleaned = (new_name.replace('（','(').replace('）',')').replace('㈜','(주)'))
+                    cleaned = _re.sub(r'\)\s+', ')', cleaned)
+                    cleaned = _re.sub(r'\s+\(', '(', cleaned)
+                    cleaned = _re.sub(r'\s+', ' ', cleaned).strip()
+                    norm = _re.sub(r'\s+', '', cleaned)
                     try:
                         dup = fetch("vendors", "vendor_id,name", f"normalized_name=eq.{norm}", limit=1)
                     except: dup = []
@@ -263,7 +273,7 @@ elif page == "⚙️ 마스터 관리":
                     else:
                         try:
                             _db.insert("vendors", [{
-                                "name": new_name, "normalized_name": norm,
+                                "name": cleaned, "normalized_name": norm,
                                 "business_no": new_biz or None,
                                 "vendor_group": new_group,
                                 "trade_type": new_type,
@@ -280,7 +290,15 @@ elif page == "⚙️ 마스터 관리":
                                 "verification_status": "수기등록",
                                 "in_use": True,
                             }])
-                            st.success(f"✅ '{new_name}' 등록 완료")
+                            # 새로 등록된 vendor_id 조회
+                            new_v = fetch("vendors", "vendor_id", f"normalized_name=eq.{norm}", limit=1)
+                            new_id = new_v[0]["vendor_id"] if new_v else "?"
+                            # 메시지 보존
+                            st.session_state.m_last_registered = {
+                                "name": cleaned, "id": new_id, "group": new_group
+                            }
+                            st.toast(f"✅ '{cleaned}' 등록 완료!", icon="🎉")
+                            st.balloons()
                             st.rerun()
                         except Exception as e:
                             st.error(f"등록 실패: {e}")
@@ -409,14 +427,22 @@ elif page == "📋 발주서 작성":
             nv_bitem = st.text_input("종목", key="nv_bitem")
             nv_memo = st.text_input("메모", key="nv_memo")
 
+            # 마지막 등록 결과 표시
+            if "po_last_registered" in st.session_state:
+                lr = st.session_state.po_last_registered
+                st.success(f"✅ **{lr['name']}** 등록 완료 (ID: {lr['id']}, 그룹: {lr['group']})")
+
             if st.button("💾 신규 거래처 저장", type="primary"):
                 if not nv_name or nv_group == "선택":
                     st.error("거래처명과 그룹은 필수입니다.")
                 else:
-                    # 정규화명 자동 생성
                     import re as _re
-                    norm = _re.sub(r'\s+', '', nv_name)
-                    norm = norm.replace('㈜', '(주)').replace('（주）', '(주)')
+                    cleaned = (nv_name.replace('（','(').replace('）',')').replace('㈜','(주)'))
+                    cleaned = _re.sub(r'\)\s+', ')', cleaned)
+                    cleaned = _re.sub(r'\s+\(', '(', cleaned)
+                    cleaned = _re.sub(r'\s+', ' ', cleaned).strip()
+                    norm = _re.sub(r'\s+', '', cleaned)
+                    nv_name = cleaned
                     # 중복 체크
                     dup_q = f"normalized_name=eq.{norm}"
                     try:
@@ -445,7 +471,13 @@ elif page == "📋 발주서 작성":
                                 "in_use": True,
                             }
                             _db.insert("vendors", [payload])
-                            st.success(f"✅ '{nv_name}' 등록 완료. 위 거래처 목록에서 선택하세요.")
+                            new_v = fetch("vendors", "vendor_id", f"normalized_name=eq.{norm}", limit=1)
+                            new_id = new_v[0]["vendor_id"] if new_v else "?"
+                            st.session_state.po_last_registered = {
+                                "name": cleaned, "id": new_id, "group": nv_group
+                            }
+                            st.toast(f"✅ '{cleaned}' 등록 완료!", icon="🎉")
+                            st.balloons()
                             st.rerun()
                         except Exception as e:
                             st.error(f"등록 실패: {e}")

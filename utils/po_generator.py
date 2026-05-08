@@ -87,9 +87,15 @@ def fill_po_template(po_data: dict, items: list[dict], vendor_info: dict = None)
     ws.page_setup.fitToHeight = 1
 
     # 컬럼 너비 (A~G 7개 컬럼: NO/품명/재질/규격/수량/단가/금액)
-    widths = [6, 28, 12, 16, 10, 12, 14]
+    # A4 가로 (210mm) 인쇄 영역 약 175mm = 75 char 폭에 맞춤
+    widths = [4, 22, 8, 12, 8, 10, 11]  # 합 75
     for i, w in enumerate(widths, 1):
         ws.column_dimensions[get_column_letter(i)].width = w
+
+    # 인쇄 시 페이지 가로 강제 fit
+    ws.sheet_properties.pageSetUpPr.fitToPage = True
+    ws.page_setup.fitToWidth = 1
+    ws.page_setup.fitToHeight = 0  # 세로는 자유롭게
 
     row = 1
 
@@ -98,7 +104,7 @@ def fill_po_template(po_data: dict, items: list[dict], vendor_info: dict = None)
     cell = ws.cell(row, 1, "발  주  서")
     cell.font = FONT_TITLE
     cell.alignment = CENTER
-    ws.row_dimensions[row].height = 36
+    ws.row_dimensions[row].height = 32
     row += 1
 
     ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=7)
@@ -168,7 +174,7 @@ def fill_po_template(po_data: dict, items: list[dict], vendor_info: dict = None)
         ws.merge_cells(start_row=row, start_column=6, end_row=row, end_column=7)
         cell = ws.cell(row, 6, vright)
         cell.font = FONT_BODY; cell.alignment = LEFT; cell.border = BORDER_ALL
-        ws.row_dimensions[row].height = 20
+        ws.row_dimensions[row].height = 17
         row += 1
 
     row += 1  # 빈 행
@@ -189,7 +195,7 @@ def fill_po_template(po_data: dict, items: list[dict], vendor_info: dict = None)
         cell.fill = FILL_DARK
         cell.alignment = CENTER
         cell.border = BORDER_ALL
-    ws.row_dimensions[row].height = 22
+    ws.row_dimensions[row].height = 20
     row += 1
 
     # ─── 5. 품목 데이터 (최대 20행, 빈 행은 공백 표시) ───
@@ -231,7 +237,7 @@ def fill_po_template(po_data: dict, items: list[dict], vendor_info: dict = None)
             for ci in range(1, 8):
                 ws.cell(row, ci).fill = PatternFill("solid", start_color="FAFAFA")
 
-        ws.row_dimensions[row].height = 20
+        ws.row_dimensions[row].height = 18
         row += 1
 
     # ─── 6. 합계 영역 ───
@@ -253,7 +259,7 @@ def fill_po_template(po_data: dict, items: list[dict], vendor_info: dict = None)
         cell.font = FONT_TOTAL; cell.alignment = RIGHT; cell.fill = fill
         cell.border = BORDER_ALL
         cell.number_format = '"₩"#,##0'
-        ws.row_dimensions[row].height = 22
+        ws.row_dimensions[row].height = 20
         row += 1
 
     row += 1
@@ -282,7 +288,7 @@ def fill_po_template(po_data: dict, items: list[dict], vendor_info: dict = None)
         cell = ws.cell(row, 3, value)
         cell.font = FONT_BODY; cell.alignment = LEFT
         cell.border = BORDER_ALL
-        ws.row_dimensions[row].height = 22
+        ws.row_dimensions[row].height = 20
         row += 1
 
     row += 1
