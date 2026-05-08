@@ -171,66 +171,164 @@ elif page == "⚙️ 마스터 관리":
             "INDIRECT_FACILITY", "INDIRECT_CONSUMABLES", "INDIRECT_OTHER",
         ]
 
-        c1, c2, c3 = st.columns([2, 2, 1])
-        with c1:
-            search_q = st.text_input("거래처 검색 (이름)", placeholder="예: 명진, 미진, 두리")
-        with c2:
-            group_filter = st.selectbox("그룹 필터", ["전체"] + VENDOR_GROUPS)
-        with c3:
-            limit = st.number_input("표시 행수", min_value=20, max_value=500, value=100, step=20)
+        # ── 필터 영역 (다중 컬럼) ──
+        with st.expander("🔍 상세 필터 / 정렬", expanded=True):
+            r1c1, r1c2, r1c3, r1c4 = st.columns(4)
+            with r1c1:
+                f_name = st.text_input("거래처명", placeholder="예: 명진, 미진, 두리")
+            with r1c2:
+                f_biz = st.text_input("사업자번호", placeholder="예: 606-02")
+            with r1c3:
+                f_group = st.selectbox("그룹", ["전체"] + VENDOR_GROUPS)
+            with r1c4:
+                f_type = st.selectbox("거래 구분", ["전체", "매입", "매출", "혼합"])
 
-        # 조회
-        fq_parts = ["order=vendor_group.asc,name.asc"]
-        if search_q:
-            fq_parts.append(f"name=ilike.*{search_q}*")
-        if group_filter != "전체":
-            fq_parts.append(f"vendor_group=eq.{group_filter}")
+            r2c1, r2c2, r2c3, r2c4 = st.columns(4)
+            with r2c1:
+                f_btype = st.text_input("업태", placeholder="예: 제조")
+            with r2c2:
+                f_bitem = st.text_input("종목", placeholder="예: 환봉")
+            with r2c3:
+                f_inuse = st.selectbox("사용여부", ["전체", "사용", "미사용"])
+            with r2c4:
+                f_sort = st.selectbox("정렬", [
+                    "그룹 → 이름", "이름 (가나다)", "최근 등록순", "ID 순"
+                ])
+
+            r3c1, r3c2 = st.columns([3, 1])
+            with r3c2:
+                f_limit = st.number_input("표시 행수", 20, 500, 100, 20)
+
+        # 정렬 매핑
+        sort_map = {
+            "그룹 → 이름": "vendor_group.asc,name.asc",
+            "이름 (가나다)": "name.asc",
+            "최근 등록순": "vendor_id.desc",
+            "ID 순": "vendor_id.asc",
+        }
+
+        # ── 쿼리 빌드 ──
+        fq_parts = [f"order={sort_map[f_sort]}"]
+        if f_name: fq_parts.append(f"name=ilike.*{f_name}*")
+        if f_biz: fq_parts.append(f"business_no=ilike.*{f_biz}*")
+        if f_group != "전체": fq_parts.append(f"vendor_group=eq.{f_group}")
+        if f_type != "전체": fq_parts.append(f"trade_type=eq.{f_type}")
+        if f_btype: fq_parts.append(f"business_type=ilike.*{f_btype}*")
+        if f_bitem: fq_parts.append(f"business_item=ilike.*{f_bitem}*")
+        if f_inuse == "사용": fq_parts.append("in_use=eq.true")
+        elif f_inuse == "미사용": fq_parts.append("in_use=eq.false")
         fq = "&".join(fq_parts)
+
         try:
             rows = fetch("vendors",
-                         "vendor_id,name,vendor_group,category,trade_type,business_no,business_type,business_item,payment_terms",
-                         fq, limit=limit)
+                         "vendor_id,name,vendor_group,category,trade_type,business_no,ceo_name,phone,address,business_type,business_item,payment_terms,in_use",
+                         fq, limit=f_limit)
         except Exception as e:
             st.error(f"조회 실패: {e}"); rows = []
 
+        st.caption(f"검색 결과: **{len(rows)}건** (필터 적용)")
+
+        # ── 신규 거래처 등록 ──
+        with st.expander("➕ 신규 거래처 등록"):
+            ec1, ec2 = st.columns(2)
+            with ec1:
+                new_name = st.text_input("거래처명 *", key="m_new_name", placeholder="(주)○○산업")
+                new_biz = st.text_input("사업자번호", key="m_new_biz", placeholder="000-00-00000")
+                new_ceo = st.text_input("대표자명", key="m_new_ceo")
+                new_phone = st.text_input("전화", key="m_new_phone")
+                new_fax = st.text_input("팩스", key="m_new_fax")
+            with ec2:
+                new_group = st.selectbox("그룹 *", ["선택"] + VENDOR_GROUPS, key="m_new_group")
+                new_type = st.selectbox("거래 구분", ["매입", "매출", "혼합"], key="m_new_type")
+                new_pay = st.text_input("결제조건", key="m_new_pay", value="말일 마감 60일 현금")
+                new_address = st.text_input("주소", key="m_new_addr")
+                new_email = st.text_input("이메일", key="m_new_email")
+            new_contact = st.text_input("담당자", key="m_new_contact")
+            new_btype = st.text_input("업태", key="m_new_btype")
+            new_bitem = st.text_input("종목", key="m_new_bitem")
+            new_memo = st.text_input("메모", key="m_new_memo")
+
+            if st.button("💾 신규 등록", type="primary", key="m_new_btn"):
+                if not new_name or new_group == "선택":
+                    st.error("거래처명과 그룹은 필수입니다.")
+                else:
+                    import re as _re
+                    norm = _re.sub(r'\s+', '', new_name)
+                    norm = norm.replace('㈜', '(주)').replace('（주）', '(주)')
+                    try:
+                        dup = fetch("vendors", "vendor_id,name", f"normalized_name=eq.{norm}", limit=1)
+                    except: dup = []
+                    if dup:
+                        st.error(f"⚠️ 이미 등록됨: {dup[0]['name']} (ID={dup[0]['vendor_id']})")
+                    else:
+                        try:
+                            _db.insert("vendors", [{
+                                "name": new_name, "normalized_name": norm,
+                                "business_no": new_biz or None,
+                                "vendor_group": new_group,
+                                "trade_type": new_type,
+                                "ceo_name": new_ceo or None,
+                                "phone": new_phone or None,
+                                "fax": new_fax or None,
+                                "address": new_address or None,
+                                "email": new_email or None,
+                                "contact_person": new_contact or None,
+                                "business_type": new_btype or None,
+                                "business_item": new_bitem or None,
+                                "payment_terms": new_pay,
+                                "memo": new_memo or None,
+                                "verification_status": "수기등록",
+                                "in_use": True,
+                            }])
+                            st.success(f"✅ '{new_name}' 등록 완료")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"등록 실패: {e}")
+
+        # ── 표 표시 + 인라인 편집 ──
         if not rows:
-            st.info("결과 없음")
+            st.info("필터 조건에 맞는 거래처 없음. 위에서 신규 등록하세요.")
         else:
             df = pd.DataFrame(rows)
-            # 인라인 편집 가능
             edited = st.data_editor(
                 df,
                 column_config={
                     "vendor_id": st.column_config.NumberColumn("ID", width="small", disabled=True),
                     "name": st.column_config.TextColumn("거래처명", width="medium", disabled=True),
                     "vendor_group": st.column_config.SelectboxColumn(
-                        "그룹 (편집)", options=[None] + VENDOR_GROUPS, width="medium"
+                        "그룹", options=[None] + VENDOR_GROUPS, width="medium"
                     ),
-                    "category": st.column_config.TextColumn("카테고리(자동)", disabled=True),
+                    "category": st.column_config.TextColumn("카테고리(자동)", disabled=True, width="small"),
                     "trade_type": st.column_config.TextColumn("구분", width="small", disabled=True),
-                    "business_no": st.column_config.TextColumn("사업자번호", disabled=True),
+                    "business_no": st.column_config.TextColumn("사업자번호", disabled=True, width="small"),
+                    "ceo_name": st.column_config.TextColumn("대표자"),
+                    "phone": st.column_config.TextColumn("전화"),
+                    "address": st.column_config.TextColumn("주소", width="medium"),
                     "business_type": st.column_config.TextColumn("업태", disabled=True),
                     "business_item": st.column_config.TextColumn("종목", disabled=True),
                     "payment_terms": st.column_config.TextColumn("결제조건"),
+                    "in_use": st.column_config.CheckboxColumn("사용", width="small"),
                 },
                 hide_index=True,
                 use_container_width=True,
                 key="vendor_editor",
+                num_rows="fixed",
             )
 
             if st.button("💾 변경 저장", type="primary"):
                 changed = 0
+                editable_fields = ["vendor_group", "ceo_name", "phone", "address", "payment_terms", "in_use"]
                 for orig, new in zip(rows, edited.to_dict("records")):
                     updates = {}
-                    if orig.get("vendor_group") != new.get("vendor_group"):
-                        updates["vendor_group"] = new.get("vendor_group")
-                    if orig.get("payment_terms") != new.get("payment_terms"):
-                        updates["payment_terms"] = new.get("payment_terms")
+                    for f in editable_fields:
+                        if orig.get(f) != new.get(f):
+                            updates[f] = new.get(f)
                     if updates:
                         if _db.update("vendors", f"vendor_id=eq.{orig['vendor_id']}", updates):
                             changed += 1
                 if changed:
-                    st.success(f"✅ {changed}건 업데이트 완료")
+                    st.success(f"✅ {changed}건 업데이트")
+                    st.rerun()
                 else:
                     st.info("변경 사항 없음")
 
@@ -282,7 +380,8 @@ elif page == "📋 발주서 작성":
         groups_str = ",".join(selected_groups)
         fq = f"vendor_group=in.({groups_str})&in_use=eq.true&order=name"
         try:
-            vendors = fetch("vendors", "vendor_id,name,vendor_group,category,business_no,payment_terms,address,contact_person",
+            vendors = fetch("vendors",
+                            "vendor_id,name,vendor_group,category,business_no,ceo_name,phone,fax,address,email,payment_terms,contact_person,contact_phone",
                             filter_query=fq, limit=300)
         except Exception as e:
             st.error(f"거래처 로드 실패: {e}"); vendors = []
@@ -336,7 +435,7 @@ elif page == "📋 발주서 작성":
                                 "ceo_name": nv_ceo or None,
                                 "phone": nv_phone or None,
                                 "address": nv_address or None,
-                                "email": nv_mail or None,
+                                "email": nv_email or None,
                                 "contact_person": nv_contact or None,
                                 "business_type": nv_btype or None,
                                 "business_item": nv_bitem or None,
@@ -458,8 +557,14 @@ elif page == "📋 발주서 작성":
                            "payment_terms": payment_terms,
                            "delivery_address": delivery_address,
                            "contact_person": contact_person}
+                vendor_info = {
+                    "biz_no": vendor.get("business_no"),
+                    "ceo": vendor.get("ceo_name"),
+                    "address": vendor.get("address"),
+                    "phone": vendor.get("phone"),
+                }
                 try:
-                    xlsx_bytes = fill_po_template(po_data, st.session_state.po_items)
+                    xlsx_bytes = fill_po_template(po_data, st.session_state.po_items, vendor_info)
                     st.success(f"✅ 발주서 생성 완료: **{po_no}**")
                     st.download_button("⬇ 다운로드", data=xlsx_bytes,
                         file_name=f"{po_no}_{vendor['name']}.xlsx",
@@ -598,7 +703,12 @@ elif page == "📋 발주서 작성":
 
                 rc1, rc2 = st.columns(2)
                 if rc1.button("📄 xlsx 재발급", use_container_width=True):
-                    vinfo = v_map.get(po["vendor_id"], {})
+                    # 재발급 시 거래처 상세 다시 조회
+                    full_vendor = _db.fetch_one(
+                        "vendors",
+                        f"vendor_id=eq.{po['vendor_id']}",
+                        "business_no,ceo_name,address,phone"
+                    ) or {}
                     re_po_data = {
                         "po_number": po["po_number"],
                         "po_date": po["po_date"],
@@ -608,6 +718,12 @@ elif page == "📋 발주서 작성":
                         "delivery_address": "부산광역시 기장군 산단4로 71",
                         "contact_person": po.get("contact_person") or "김민수 과장",
                     }
+                    re_vendor_info = {
+                        "biz_no": full_vendor.get("business_no"),
+                        "ceo": full_vendor.get("ceo_name"),
+                        "address": full_vendor.get("address"),
+                        "phone": full_vendor.get("phone"),
+                    }
                     try:
                         xb = fill_po_template(re_po_data, [{
                             "item_name": i.get("item_name"),
@@ -615,7 +731,7 @@ elif page == "📋 발주서 작성":
                             "spec": i.get("spec") or "",
                             "qty": int(i.get("qty") or 0),
                             "unit_price": int(i.get("unit_price") or 0),
-                        } for i in items])
+                        } for i in items], re_vendor_info)
                         st.download_button("⬇ 다운로드", data=xb,
                             file_name=f"{po['po_number']}_{po['_vname']}.xlsx",
                             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
