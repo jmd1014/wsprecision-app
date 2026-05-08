@@ -162,10 +162,10 @@ elif page == "⚙️ 마스터 관리":
     # ─── Tab 1: 거래처 편집 ───
     with tab1:
         VENDOR_GROUPS = [
-            "SALES_MIJIN", "SALES_HDX", "SALES_DIC", "SALES_DUSAN", "SALES_MSP", "SALES_OTHER",
+            "SALES_MIJIN", "SALES_HDX", "SALES_DIC", "SALES_OTHER",
             "MAT_STS", "MAT_CARBON", "MAT_FORGING", "MAT_CASTING", "MAT_OTHER",
-            "OUTSOURCE_MACHINE", "OUTSOURCE_GRIND", "OUTSOURCE_TRANSFORM",
-            "HEAT_TREAT", "SURFACE", "TOOL",
+            "MAT_CONSUMABLES",
+            "OUTSOURCE", "HEAT_TREAT", "SURFACE", "TOOL",
             "INDIRECT_PROFESSIONAL", "INDIRECT_TELECOM", "INDIRECT_LEGAL",
             "INDIRECT_UTILITY", "INDIRECT_FINANCE", "INDIRECT_LOGISTICS",
             "INDIRECT_FACILITY", "INDIRECT_CONSUMABLES", "INDIRECT_OTHER",
@@ -248,231 +248,329 @@ elif page == "⚙️ 마스터 관리":
 
 
 elif page == "📋 발주서 작성":
-    st.subheader("📋 발주서 작성")
+    st.subheader("📋 발주 관리")
     if not DB_AVAILABLE:
         st.error("DB 연결 필요"); st.stop()
 
-    from datetime import date as _date
+    from datetime import date as _date, timedelta as _td
     from utils.po_generator import generate_po_number, fill_po_template
     import db as _db
+    import pandas as pd
 
-    # 매입 그룹 (발주 대상만 — 매출/간접비는 자동 제외)
     PURCHASE_GROUPS = {
         "MAT_STS": "🟦 소재 STS (명진/유성)",
         "MAT_CARBON": "🟦 소재 탄소강 (혜성)",
         "MAT_FORGING": "🟦 단조품",
         "MAT_CASTING": "🟦 주조품",
         "MAT_OTHER": "🟦 기타 소재",
-        "OUTSOURCE_MACHINE": "🟩 외주 가공",
-        "OUTSOURCE_GRIND": "🟩 외주 연마",
-        "OUTSOURCE_TRANSFORM": "🟩 외주 변형가공",
+        "MAT_CONSUMABLES": "🟨 유류·소모성 자재",
+        "OUTSOURCE": "🟩 외주 (가공·연마·전조)",
         "HEAT_TREAT": "🟩 열처리",
         "SURFACE": "🟩 표면처리",
         "TOOL": "🟨 공구·소모품",
     }
 
-    # ──── 1. 거래처 선택 ────
-    st.markdown("##### ① 거래처 선택")
-    group_options = ["전체 (매입)"] + list(PURCHASE_GROUPS.values())
-    sel_group_label = st.selectbox("발주 그룹", group_options, index=0)
-    selected_groups = list(PURCHASE_GROUPS.keys()) if sel_group_label == "전체 (매입)" else \
-        [k for k, v in PURCHASE_GROUPS.items() if v == sel_group_label]
-    groups_str = ",".join(selected_groups)
-    fq = f"vendor_group=in.({groups_str})&in_use=eq.true&order=name"
-    try:
-        vendors = fetch("vendors", "vendor_id,name,vendor_group,category,business_no,payment_terms,address,contact_person",
-                        filter_query=fq, limit=300)
-    except Exception as e:
-        st.error(f"거래처 로드 실패: {e}"); st.stop()
+    tab_new, tab_hist = st.tabs(["✏️ 새 발주서 작성", "📜 발주 이력"])
 
-    if not vendors:
-        st.warning("해당 카테고리에 거래처가 없습니다.")
-        st.stop()
-
-    vendor_options = {f"{v['name']} ({v.get('category') or '-'})": v for v in vendors}
-    sel = st.selectbox(f"거래처 선택 ({len(vendors)}개)", list(vendor_options.keys()))
-    vendor = vendor_options[sel]
-
-    with st.expander("선택한 거래처 정보", expanded=False):
-        c1, c2 = st.columns(2)
-        with c1:
-            st.write(f"**사업자번호**: {vendor.get('business_no') or '-'}")
-            st.write(f"**결제조건**: {vendor.get('payment_terms') or '-'}")
-        with c2:
-            st.write(f"**주소**: {vendor.get('address') or '-'}")
-            st.write(f"**담당자**: {vendor.get('contact_person') or '-'}")
-
-    st.divider()
-
-    # ──── 2. 품목 추가 ────
-    st.markdown("##### ② 품목 추가")
-    if "po_items" not in st.session_state:
-        st.session_state.po_items = []
-
-    search_q = st.text_input("품번 검색 (품번/제품명)", placeholder="예: 8HFDV, 4PDVN, 명진 등")
-    if search_q and len(search_q) >= 2:
+    # ════════════ TAB 1: 새 발주서 작성 ════════════
+    with tab_new:
+        st.markdown("##### ① 거래처 선택")
+        group_options = ["전체 (매입)"] + list(PURCHASE_GROUPS.values())
+        sel_group_label = st.selectbox("발주 그룹", group_options, index=0)
+        selected_groups = list(PURCHASE_GROUPS.keys()) if sel_group_label == "전체 (매입)" else \
+            [k for k, v in PURCHASE_GROUPS.items() if v == sel_group_label]
+        groups_str = ",".join(selected_groups)
+        fq = f"vendor_group=in.({groups_str})&in_use=eq.true&order=name"
         try:
-            # 품번 또는 alias_list 또는 raw_material_name 매칭
-            res = fetch("active_products",
-                        "product_id,pn,raw_material_name,raw_material_spec,material,bom_material_name,material_unit_price",
-                        f"or=(pn.ilike.*{search_q}*,alias_list.ilike.*{search_q}*,bom_material_name.ilike.*{search_q}*)&limit=20")
+            vendors = fetch("vendors", "vendor_id,name,vendor_group,category,business_no,payment_terms,address,contact_person",
+                            filter_query=fq, limit=300)
         except Exception as e:
-            st.error(f"검색 실패: {e}")
-            res = []
-        if res:
-            for p in res[:10]:
-                with st.container(border=True):
-                    cols = st.columns([3, 2, 2, 2, 1])
-                    cols[0].write(f"**{p['pn']}**")
-                    cols[1].write(p.get("material") or "-")
-                    cols[2].write(p.get("raw_material_spec") or p.get("bom_material_name") or "-")
-                    unit_price_default = int(p.get("material_unit_price") or 0)
-                    cols[3].write(f"₩{unit_price_default:,}" if unit_price_default else "-")
-                    if cols[4].button("➕", key=f"add_{p['product_id']}"):
-                        st.session_state.po_items.append({
-                            "product_id": p["product_id"],
-                            "item_name": p["pn"],
-                            "material": p.get("material") or "",
-                            "spec": p.get("raw_material_spec") or "",
-                            "qty": 0,
-                            "unit_price": unit_price_default,
-                        })
-                        st.rerun()
+            st.error(f"거래처 로드 실패: {e}"); vendors = []
+
+        if not vendors:
+            st.warning("해당 그룹에 거래처가 없습니다.")
         else:
-            st.caption("검색 결과 없음")
+            vendor_options = {f"{v['name']} ({v.get('vendor_group') or '-'})": v for v in vendors}
+            sel = st.selectbox(f"거래처 선택 ({len(vendors)}개)", list(vendor_options.keys()))
+            vendor = vendor_options[sel]
 
-    # 신규 품목 등록 (마스터에 없는 케이스)
-    with st.expander("✏️ 마스터에 없는 품목 즉석 추가 (등록 X, 발주서에만)"):
-        c1, c2, c3, c4 = st.columns([3, 2, 2, 2])
-        with c1: nx = st.text_input("품번/품명", key="nx_name")
-        with c2: nm = st.text_input("재질", key="nx_mat")
-        with c3: ns = st.text_input("규격", key="nx_spec")
-        with c4: np_ = st.number_input("단가", min_value=0, step=100, key="nx_price")
-        if st.button("➕ 추가 (즉석)"):
-            if nx:
-                st.session_state.po_items.append({
-                    "product_id": None, "item_name": nx, "material": nm,
-                    "spec": ns, "qty": 0, "unit_price": int(np_),
-                })
-                st.rerun()
+            with st.expander("선택한 거래처 정보"):
+                c1, c2 = st.columns(2)
+                with c1:
+                    st.write(f"**사업자번호**: {vendor.get('business_no') or '-'}")
+                    st.write(f"**결제조건**: {vendor.get('payment_terms') or '-'}")
+                with c2:
+                    st.write(f"**주소**: {vendor.get('address') or '-'}")
+                    st.write(f"**담당자**: {vendor.get('contact_person') or '-'}")
 
-    st.divider()
+            st.divider()
+            st.markdown("##### ② 품목 추가")
+            if "po_items" not in st.session_state:
+                st.session_state.po_items = []
 
-    # ──── 3. 품목 표 (수량/단가 편집) ────
-    st.markdown("##### ③ 품목 표 (수량·단가 편집)")
-    if not st.session_state.po_items:
-        st.info("아직 추가된 품목이 없습니다. 위에서 검색해서 ➕ 버튼으로 추가하세요.")
-    else:
-        for i, it in enumerate(st.session_state.po_items):
-            with st.container(border=True):
-                cols = st.columns([3, 1.5, 2, 1.5, 1.5, 1.5, 0.5])
-                cols[0].write(f"**{it['item_name']}**")
-                cols[1].write(it.get("material") or "")
-                cols[2].write(it.get("spec") or "")
-                it["qty"] = cols[3].number_input(
-                    "수량", min_value=0, value=int(it.get("qty") or 0),
-                    step=10, key=f"qty_{i}", label_visibility="collapsed"
-                )
-                it["unit_price"] = cols[4].number_input(
-                    "단가", min_value=0, value=int(it.get("unit_price") or 0),
-                    step=100, key=f"up_{i}", label_visibility="collapsed"
-                )
-                amount = it["qty"] * it["unit_price"]
-                cols[5].markdown(f"<div style='text-align:right;padding-top:8px'>₩{amount:,}</div>",
-                                 unsafe_allow_html=True)
-                if cols[6].button("🗑", key=f"del_{i}"):
-                    st.session_state.po_items.pop(i)
+            search_q = st.text_input("품번 검색", placeholder="예: 8HFDV, 4PDVN")
+            if search_q and len(search_q) >= 2:
+                try:
+                    res = fetch("active_products",
+                                "product_id,pn,raw_material_name,raw_material_spec,material,bom_material_name,material_unit_price",
+                                f"or=(pn.ilike.*{search_q}*,alias_list.ilike.*{search_q}*,bom_material_name.ilike.*{search_q}*)&limit=20")
+                except Exception as e:
+                    st.error(f"검색 실패: {e}"); res = []
+                for p in res[:10]:
+                    with st.container(border=True):
+                        cols = st.columns([3, 2, 2, 2, 1])
+                        cols[0].write(f"**{p['pn']}**")
+                        cols[1].write(p.get("material") or "-")
+                        cols[2].write(p.get("raw_material_spec") or p.get("bom_material_name") or "-")
+                        upd = int(p.get("material_unit_price") or 0)
+                        cols[3].write(f"₩{upd:,}" if upd else "-")
+                        if cols[4].button("➕", key=f"add_{p['product_id']}"):
+                            st.session_state.po_items.append({
+                                "product_id": p["product_id"], "item_name": p["pn"],
+                                "material": p.get("material") or "",
+                                "spec": p.get("raw_material_spec") or "",
+                                "qty": 0, "unit_price": upd,
+                            })
+                            st.rerun()
+
+            with st.expander("✏️ 마스터에 없는 품목 즉석 추가"):
+                c1, c2, c3, c4 = st.columns([3, 2, 2, 2])
+                nx = c1.text_input("품번/품명", key="nx_name")
+                nm = c2.text_input("재질", key="nx_mat")
+                ns = c3.text_input("규격", key="nx_spec")
+                np_ = c4.number_input("단가", min_value=0, step=100, key="nx_price")
+                if st.button("➕ 추가 (즉석)") and nx:
+                    st.session_state.po_items.append({
+                        "product_id": None, "item_name": nx, "material": nm,
+                        "spec": ns, "qty": 0, "unit_price": int(np_),
+                    })
                     st.rerun()
 
-        total = sum(it["qty"] * it["unit_price"] for it in st.session_state.po_items)
-        st.markdown(f"### 합계: ₩{total:,}  (VAT 별도)")
+            st.divider()
+            st.markdown("##### ③ 품목 표 (수량·단가 편집)")
+            total = 0
+            if not st.session_state.po_items:
+                st.info("위에서 ➕ 버튼으로 품목을 추가하세요.")
+            else:
+                for i, it in enumerate(st.session_state.po_items):
+                    with st.container(border=True):
+                        cols = st.columns([3, 1.5, 2, 1.5, 1.5, 1.5, 0.5])
+                        cols[0].write(f"**{it['item_name']}**")
+                        cols[1].write(it.get("material") or "")
+                        cols[2].write(it.get("spec") or "")
+                        it["qty"] = cols[3].number_input("수량", 0, value=int(it.get("qty") or 0),
+                            step=10, key=f"qty_{i}", label_visibility="collapsed")
+                        it["unit_price"] = cols[4].number_input("단가", 0, value=int(it.get("unit_price") or 0),
+                            step=100, key=f"up_{i}", label_visibility="collapsed")
+                        amt = it["qty"] * it["unit_price"]
+                        cols[5].markdown(f"<div style='text-align:right;padding-top:8px'>₩{amt:,}</div>",
+                                         unsafe_allow_html=True)
+                        if cols[6].button("🗑", key=f"del_{i}"):
+                            st.session_state.po_items.pop(i); st.rerun()
+                total = sum(it["qty"] * it["unit_price"] for it in st.session_state.po_items)
+                st.markdown(f"### 합계: ₩{total:,} (VAT 별도)")
 
-    st.divider()
+            st.divider()
+            st.markdown("##### ④ 발주 정보")
+            fc1, fc2 = st.columns(2)
+            with fc1:
+                po_date = st.date_input("발주일", value=_date.today())
+                delivery_date = st.text_input("납기", placeholder="예: 14일 이내")
+            with fc2:
+                payment_terms = st.text_input("지불조건",
+                    value=vendor.get("payment_terms") or "말일 마감 60일 현금")
+                contact_person = st.text_input("담당자", value="김민수 과장 / 010-3881-1165")
+            delivery_address = st.text_input("배송지", value="부산광역시 기장군 산단4로 71")
 
-    # ──── 4. 발주 정보 ────
-    st.markdown("##### ④ 발주 정보")
-    fc1, fc2 = st.columns(2)
-    with fc1:
-        po_date = st.date_input("발주일", value=_date.today())
-        delivery_date = st.text_input("납기", placeholder="예: 발주일로부터 14일 이내")
-    with fc2:
-        payment_terms = st.text_input("지불조건",
-                                      value=vendor.get("payment_terms") or "말일 마감 60일 현금")
-        contact_person = st.text_input("담당자", value="김민수 과장 / 010-3881-1165")
-    delivery_address = st.text_input("배송지", value="부산광역시 기장군 산단4로 71")
+            st.divider()
 
-    st.divider()
+            if st.button("📄 발주서 xlsx 생성", type="primary", use_container_width=True,
+                         disabled=not st.session_state.po_items):
+                try:
+                    po_no = generate_po_number(_db)
+                except Exception:
+                    po_no = f"PO-{_date.today().strftime('%Y%m')}-001"
+                po_data = {"po_number": po_no, "po_date": po_date,
+                           "vendor_name": vendor["name"],
+                           "delivery_date": delivery_date,
+                           "payment_terms": payment_terms,
+                           "delivery_address": delivery_address,
+                           "contact_person": contact_person}
+                try:
+                    xlsx_bytes = fill_po_template(po_data, st.session_state.po_items)
+                    st.success(f"✅ 발주서 생성 완료: **{po_no}**")
+                    st.download_button("⬇ 다운로드", data=xlsx_bytes,
+                        file_name=f"{po_no}_{vendor['name']}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=True)
+                    try:
+                        _db.insert("purchase_orders", [{
+                            "po_number": po_no, "vendor_id": vendor["vendor_id"],
+                            "po_date": po_date.isoformat(),
+                            "delivery_date": delivery_date or None,
+                            "total_amount": total, "vat": int(total * 0.1),
+                            "payment_terms": payment_terms,
+                            "delivery_address": delivery_address,
+                            "contact_person": contact_person,
+                            "status": "DRAFT", "created_by": "김민수",
+                        }])
+                        po_row = _db.fetch_one("purchase_orders", f"po_number=eq.{po_no}", "po_id")
+                        if po_row:
+                            _db.insert("purchase_order_items", [{
+                                "po_id": po_row["po_id"], "line_no": i + 1,
+                                "item_name": it["item_name"], "spec": it.get("spec") or None,
+                                "qty": it["qty"], "unit": "EA",
+                                "unit_price": it["unit_price"],
+                                "amount": it["qty"] * it["unit_price"],
+                                "remark": it.get("material") or None,
+                            } for i, it in enumerate(st.session_state.po_items)])
+                            st.info(f"💾 발주 이력 저장 (po_id={po_row['po_id']})")
+                    except Exception as e:
+                        st.warning(f"⚠️ DB 저장 실패 (xlsx는 정상): {e}")
+                    if st.button("🔄 새 발주서 시작"):
+                        st.session_state.po_items = []; st.rerun()
+                except Exception as e:
+                    st.error(f"발주서 생성 실패: {e}")
 
-    # ──── 5. 발주서 발급 ────
-    if st.button("📄 발주서 xlsx 생성", type="primary", use_container_width=True,
-                 disabled=not st.session_state.po_items):
+    # ════════════ TAB 2: 발주 이력 ════════════
+    with tab_hist:
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            period = st.selectbox("기간", ["이번달", "최근 3개월", "올해", "전체"], index=0)
+        with c2:
+            status_f = st.selectbox("상태", ["전체", "DRAFT", "SENT", "RECEIVED", "CANCELLED"])
+        with c3:
+            v_search = st.text_input("거래처", placeholder="이름 검색")
+
+        # 쿼리 빌드
+        today = _date.today()
+        fq_parts = ["order=po_date.desc"]
+        if period == "이번달":
+            fq_parts.append(f"po_date=gte.{today.replace(day=1).isoformat()}")
+        elif period == "최근 3개월":
+            fq_parts.append(f"po_date=gte.{(today - _td(days=90)).isoformat()}")
+        elif period == "올해":
+            fq_parts.append(f"po_date=gte.{today.year}-01-01")
+        if status_f != "전체":
+            fq_parts.append(f"status=eq.{status_f}")
+        fq_h = "&".join(fq_parts)
+
         try:
-            po_no = generate_po_number(_db)
-        except Exception:
-            po_no = f"PO-{_date.today().strftime('%Y%m')}-001"
+            history = fetch("purchase_orders",
+                            "po_id,po_number,vendor_id,po_date,delivery_date,total_amount,vat,status,contact_person",
+                            fq_h, limit=500)
+        except Exception as e:
+            st.error(f"발주 이력 조회 실패: {e}"); history = []
 
-        po_data = {
-            "po_number": po_no,
-            "po_date": po_date,
-            "vendor_name": vendor["name"],
-            "delivery_date": delivery_date,
-            "payment_terms": payment_terms,
-            "delivery_address": delivery_address,
-            "contact_person": contact_person,
-        }
-        try:
-            xlsx_bytes = fill_po_template(po_data, st.session_state.po_items)
-            st.success(f"✅ 발주서 생성 완료: **{po_no}**")
-            fname = f"{po_no}_{vendor['name']}.xlsx"
-            st.download_button(
-                "⬇ 다운로드",
-                data=xlsx_bytes,
-                file_name=fname,
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True,
+        if not history:
+            st.info("이 조건의 발주 이력이 없습니다.")
+        else:
+            # 거래처명 매핑
+            vid_set = list({r["vendor_id"] for r in history if r.get("vendor_id")})
+            v_map = {}
+            if vid_set:
+                vid_str = ",".join(str(x) for x in vid_set)
+                vs = fetch("vendors", "vendor_id,name,vendor_group", f"vendor_id=in.({vid_str})", limit=500)
+                v_map = {v["vendor_id"]: v for v in vs}
+            for r in history:
+                vinfo = v_map.get(r.get("vendor_id"), {})
+                r["_vname"] = vinfo.get("name", "?")
+                r["_vgroup"] = vinfo.get("vendor_group", "")
+
+            # 거래처 필터
+            if v_search:
+                history = [r for r in history if v_search.lower() in (r["_vname"] or "").lower()]
+
+            # 통계
+            stat_cols = st.columns(3)
+            stat_cols[0].metric("발주 건수", len(history))
+            stat_cols[1].metric("총 발주액",
+                f"₩{sum(int(r.get('total_amount') or 0) for r in history):,}")
+            stat_cols[2].metric("거래처 수",
+                len({r["_vname"] for r in history}))
+
+            st.divider()
+
+            df = pd.DataFrame([{
+                "발주번호": r["po_number"],
+                "거래처": r["_vname"],
+                "그룹": r["_vgroup"],
+                "발주일": r["po_date"],
+                "납기": r.get("delivery_date") or "-",
+                "총액": int(r.get("total_amount") or 0),
+                "VAT": int(r.get("vat") or 0),
+                "상태": r["status"],
+            } for r in history])
+            st.dataframe(
+                df, use_container_width=True, hide_index=True,
+                column_config={
+                    "총액": st.column_config.NumberColumn(format="₩%d"),
+                    "VAT": st.column_config.NumberColumn(format="₩%d"),
+                }
             )
 
-            # DB 저장
-            try:
-                po_payload = {
-                    "po_number": po_no,
-                    "vendor_id": vendor["vendor_id"],
-                    "po_date": po_date.isoformat(),
-                    "delivery_date": delivery_date or None,
-                    "total_amount": total,
-                    "vat": int(total * 0.1),
-                    "payment_terms": payment_terms,
-                    "delivery_address": delivery_address,
-                    "contact_person": contact_person,
-                    "status": "DRAFT",
-                    "created_by": "김민수",
-                }
-                _db.insert("purchase_orders", [po_payload])
-                # po_id 조회
-                po_row = _db.fetch_one("purchase_orders", f"po_number=eq.{po_no}", "po_id")
-                if po_row:
-                    items_payload = [{
-                        "po_id": po_row["po_id"],
-                        "line_no": i + 1,
-                        "item_name": it["item_name"],
-                        "spec": it.get("spec") or None,
-                        "qty": it["qty"],
-                        "unit": "EA",
-                        "unit_price": it["unit_price"],
-                        "amount": it["qty"] * it["unit_price"],
-                        "remark": it.get("material") or None,
-                    } for i, it in enumerate(st.session_state.po_items)]
-                    _db.insert("purchase_order_items", items_payload)
-                    st.info(f"💾 발주 이력 DB에 저장 완료 (po_id={po_row['po_id']})")
-            except Exception as e:
-                st.warning(f"⚠️ DB 저장 실패 (xlsx는 정상 생성됨): {e}")
+            st.divider()
+            st.markdown("##### 🔍 발주서 상세 / 재발급")
+            opts = {f"{r['po_number']} | {r['_vname']} | ₩{int(r.get('total_amount') or 0):,}": r
+                    for r in history}
+            sel_po = st.selectbox("선택", list(opts.keys()))
+            if sel_po:
+                po = opts[sel_po]
+                items = fetch("purchase_order_items", "*",
+                              f"po_id=eq.{po['po_id']}&order=line_no", limit=50)
+                item_df = pd.DataFrame([{
+                    "NO": i.get("line_no"),
+                    "품명": i.get("item_name"),
+                    "규격": i.get("spec") or "-",
+                    "수량": i.get("qty"),
+                    "단가": int(i.get("unit_price") or 0),
+                    "공급가액": int(i.get("amount") or 0),
+                    "비고": i.get("remark") or "-",
+                } for i in items])
+                if not item_df.empty:
+                    st.dataframe(item_df, use_container_width=True, hide_index=True,
+                                 column_config={
+                                    "단가": st.column_config.NumberColumn(format="₩%d"),
+                                    "공급가액": st.column_config.NumberColumn(format="₩%d"),
+                                 })
 
-            # 품목 리셋 옵션
-            if st.button("🔄 새 발주서 시작 (품목 초기화)"):
-                st.session_state.po_items = []
-                st.rerun()
-        except Exception as e:
-            st.error(f"발주서 생성 실패: {e}")
+                rc1, rc2 = st.columns(2)
+                if rc1.button("📄 xlsx 재발급", use_container_width=True):
+                    vinfo = v_map.get(po["vendor_id"], {})
+                    re_po_data = {
+                        "po_number": po["po_number"],
+                        "po_date": po["po_date"],
+                        "vendor_name": po["_vname"],
+                        "delivery_date": po.get("delivery_date"),
+                        "payment_terms": po.get("payment_terms") or "",
+                        "delivery_address": "부산광역시 기장군 산단4로 71",
+                        "contact_person": po.get("contact_person") or "김민수 과장",
+                    }
+                    try:
+                        xb = fill_po_template(re_po_data, [{
+                            "item_name": i.get("item_name"),
+                            "material": i.get("remark") or "",
+                            "spec": i.get("spec") or "",
+                            "qty": int(i.get("qty") or 0),
+                            "unit_price": int(i.get("unit_price") or 0),
+                        } for i in items])
+                        st.download_button("⬇ 다운로드", data=xb,
+                            file_name=f"{po['po_number']}_{po['_vname']}.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            use_container_width=True)
+                    except Exception as e:
+                        st.error(f"재발급 실패: {e}")
+
+                new_status = rc2.selectbox(
+                    "상태 변경",
+                    ["DRAFT", "SENT", "RECEIVED", "CANCELLED"],
+                    index=["DRAFT", "SENT", "RECEIVED", "CANCELLED"].index(po["status"])
+                          if po["status"] in ["DRAFT","SENT","RECEIVED","CANCELLED"] else 0
+                )
+                if rc2.button("💾 상태 저장", use_container_width=True):
+                    if _db.update("purchase_orders", f"po_id=eq.{po['po_id']}",
+                                  {"status": new_status}):
+                        st.success(f"상태를 {new_status}로 변경"); st.rerun()
 
 
 elif page == "📦 입출고":
