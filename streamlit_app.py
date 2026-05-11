@@ -39,7 +39,7 @@ with st.sidebar:
     st.header("📋 메뉴")
     page = st.radio(
         "이동",
-        ["🏠 홈", "⚙️ 마스터 관리", "📥 수주", "📋 발주서 작성", "📦 입출고", "🏭 생산 보고", "📊 매출/재고"],
+        ["🏠 홈", "⚙️ 마스터 관리", "📥 수주", "📊 생산 계획", "📋 발주서 작성", "📦 입출고", "🏭 생산 보고", "📊 매출/재고"],
         label_visibility="collapsed",
     )
     st.divider()
@@ -919,6 +919,259 @@ elif page == "📥 수주":
                 st.info("결과 없음")
 
 
+elif page == "📊 생산 계획":
+    st.subheader("📊 생산 계획 — 자재 필요량 자동 산출")
+    if not DB_AVAILABLE: st.error("DB 연결 필요"); st.stop()
+
+    import db as _db
+    import pandas as pd
+    from collections import defaultdict as _dd
+    from datetime import date as _d2
+
+    st.caption("📌 활성 수주(미납 품목)의 BOM을 조회해 자재 필요량을 산출합니다. "
+               "단위 환산: 제품 EA × BOM.qty_per_pc = 자재 단위 (KG 또는 EA)")
+
+    # ── 1) 미납 수주 품목 조회 ──
+    with st.spinner("미납 수주 조회 중..."):
+        try:
+            # 미납수량 > 0 이고 product_id 매칭된 것만
+            sois = fetch("sales_order_items", "*",
+                         "pending_qty=gt.0&product_id=not.is.null&order=due_date.asc.nullslast",
+                         limit=1000)
+        except Exception as e:
+            st.error(f"수주 조회 실패: {e}"); sois = []
+
+    if not sois:
+        st.info("미납 수주 품목이 없습니다. 모든 수주가 완납되었거나 미납 품목이 매칭 안된 상태입니다.")
+        st.stop()
+
+    # ── 2) so_id 매핑 (수주 헤더 정보) ──
+    so_ids = list({i["so_id"] for i in sois})
+    ids_str = ",".join(str(x) for x in so_ids)
+    so_rows = fetch("sales_orders", "so_id,so_number,customer,so_date,due_date,status",
+                     f"so_id=in.({ids_str})", limit=500)
+    so_map = {s["so_id"]: s for s in so_rows}
+
+    # ── 3) BOM 조회 (제품별 자재 매핑) ──
+    pids = list({i["product_id"] for i in sois if i.get("product_id")})
+    if not pids:
+        st.warning("매칭된 product_id가 없습니다. 수주 → ❌ 매칭 안된 품목에서 매핑 필요.")
+        st.stop()
+
+    pids_str = ",".join(f'"{p}"' for p in pids)
+    bom_rows = fetch("bom", "product_id,material_id,raw_material_name,qty_per_pc,shared_factor",
+                     f"product_id=in.({pids_str})", limit=2000)
+    bom_by_pid = _dd(list)
+    for b in bom_rows:
+        bom_by_pid[b["product_id"]].append(b)
+
+    # ── 4) 자재 마스터 조회 ──
+    mids = list({b["material_id"] for b in bom_rows if b.get("material_id")})
+    if mids:
+        mids_str = ",".join(f'"{m}"' for m in mids)
+        mat_rows = fetch("materials", "material_id,raw_name,material_type,spec,unit,stock_qty,main_supplier",
+                          f"material_id=in.({mids_str})", limit=500)
+        mat_map = {m["material_id"]: m for m in mat_rows}
+    else:
+        mat_map = {}
+
+    # ── 5) 자재 필요량 계산 ──
+    # material_id → {required, by_pid: {pid: req}, by_so: {so_id: req}}
+    mat_req = _dd(lambda: {
+        "required": 0.0, "by_pid": _dd(float), "by_so": _dd(float),
+        "items_count": 0, "no_bom_pids": set(),
+    })
+    items_with_bom = 0
+    items_no_bom = []
+
+    for soi in sois:
+        pid = soi["product_id"]
+        pending = float(soi.get("pending_qty") or 0)
+        boms = bom_by_pid.get(pid, [])
+        if not boms:
+            items_no_bom.append({
+                "so_id": soi["so_id"], "product_id": pid,
+                "canonical_pn": soi.get("canonical_pn"),
+                "pending_qty": pending,
+            })
+            continue
+        items_with_bom += 1
+        for b in boms:
+            mid = b.get("material_id")
+            if not mid: continue
+            qpp = float(b.get("qty_per_pc") or 1)
+            sf = float(b.get("shared_factor") or 1) or 1
+            need = pending * qpp / sf
+            mat_req[mid]["required"] += need
+            mat_req[mid]["by_pid"][pid] += need
+            mat_req[mid]["by_so"][soi["so_id"]] += need
+            mat_req[mid]["items_count"] += 1
+
+    # ── 6) 상단 통계 ──
+    sc1, sc2, sc3, sc4 = st.columns(4)
+    sc1.metric("미납 수주 품목", len(sois))
+    sc2.metric("BOM 매핑된 품목", items_with_bom)
+    sc3.metric("필요 자재 종류", len(mat_req))
+    shortage_count = sum(1 for mid, info in mat_req.items()
+                          if info["required"] - (mat_map.get(mid, {}).get("stock_qty") or 0) > 0)
+    sc4.metric("🔴 자재 부족", shortage_count, delta_color="inverse")
+
+    if items_no_bom:
+        with st.expander(f"⚠️ BOM 미등록 품목 {len(items_no_bom)}건 — 마스터에서 BOM 등록 필요"):
+            df_no = pd.DataFrame(items_no_bom)
+            st.dataframe(df_no, use_container_width=True, hide_index=True)
+
+    st.divider()
+
+    # ── 7) 탭 구조 ──
+    tab_mat, tab_so, tab_po = st.tabs(["📦 자재별 필요량", "📋 수주별 BOM 전개", "🛒 발주 자동 제안"])
+
+    # ─── 탭 1: 자재별 ───
+    with tab_mat:
+        rows = []
+        for mid, info in mat_req.items():
+            mat = mat_map.get(mid, {})
+            req = info["required"]
+            stock = float(mat.get("stock_qty") or 0)
+            shortage = req - stock
+            rows.append({
+                "자재ID": mid,
+                "자재명": mat.get("raw_name") or "-",
+                "재질": mat.get("material_type") or "-",
+                "규격": mat.get("spec") or "-",
+                "단위": mat.get("unit") or "-",
+                "필요량": round(req, 2),
+                "현재재고": round(stock, 2),
+                "부족분": round(shortage, 2),
+                "주공급사": (mat.get("main_supplier") or "-")[:30],
+                "사용 제품수": len(info["by_pid"]),
+                "수주 건수": len(info["by_so"]),
+            })
+        # 부족분 큰 순
+        rows.sort(key=lambda x: -x["부족분"])
+        df = pd.DataFrame(rows)
+
+        if not df.empty:
+            # 행별 색상 (부족분 > 0: 빨간 표시는 dataframe에서 직접 안 됨 → 정보로)
+            st.dataframe(df, use_container_width=True, hide_index=True)
+
+            shortage_rows = [r for r in rows if r["부족분"] > 0]
+            if shortage_rows:
+                st.warning(f"🔴 자재 부족 {len(shortage_rows)}건 — '🛒 발주 자동 제안' 탭에서 발주서 생성 가능")
+
+    # ─── 탭 2: 수주별 BOM 전개 ───
+    with tab_so:
+        # so별 그룹화
+        by_so = _dd(list)
+        for soi in sois:
+            by_so[soi["so_id"]].append(soi)
+
+        for so_id, items in list(by_so.items())[:30]:  # 최대 30개 수주
+            so = so_map.get(so_id, {})
+            so_label = f"📋 {so.get('so_number')} | {so.get('customer')} | 납기: {so.get('due_date') or '-'}"
+            with st.expander(so_label):
+                so_rows = []
+                for soi in items:
+                    pid = soi["product_id"]
+                    pending = float(soi.get("pending_qty") or 0)
+                    boms = bom_by_pid.get(pid, [])
+                    if not boms:
+                        so_rows.append({
+                            "라인": soi["line_no"],
+                            "품번": soi.get("canonical_pn"),
+                            "미납수량": pending,
+                            "자재": "❌ BOM 미등록",
+                            "필요량": 0, "단위": "-", "재고": 0, "부족분": 0,
+                        })
+                        continue
+                    for b in boms:
+                        mid = b.get("material_id")
+                        mat = mat_map.get(mid, {})
+                        qpp = float(b.get("qty_per_pc") or 1)
+                        sf = float(b.get("shared_factor") or 1) or 1
+                        need = pending * qpp / sf
+                        stock = float(mat.get("stock_qty") or 0)
+                        so_rows.append({
+                            "라인": soi["line_no"],
+                            "품번": soi.get("canonical_pn"),
+                            "미납수량": pending,
+                            "자재": mat.get("raw_name") or "-",
+                            "필요량": round(need, 2),
+                            "단위": mat.get("unit") or "-",
+                            "재고": round(stock, 2),
+                            "부족분": round(max(0, need - stock), 2),
+                        })
+                st.dataframe(pd.DataFrame(so_rows), use_container_width=True, hide_index=True)
+
+    # ─── 탭 3: 발주 자동 제안 ───
+    with tab_po:
+        # 부족분 > 0인 자재만 + 거래처별 묶음
+        shortage_list = []
+        for mid, info in mat_req.items():
+            mat = mat_map.get(mid, {})
+            req = info["required"]
+            stock = float(mat.get("stock_qty") or 0)
+            shortage = req - stock
+            if shortage > 0:
+                # 주공급사 파싱 ("(주)명진메탈(967건)" → "(주)명진메탈")
+                sup_raw = (mat.get("main_supplier") or "").split("(")[0].strip()
+                # 또는 "(주)명진메탈(967건)" 같은 형식 처리
+                import re as _re3
+                sup_match = _re3.match(r'^([^(]+(?:\([^)]+\)[^(]*)?)', mat.get("main_supplier") or "")
+                supplier_name = sup_match.group(1).strip() if sup_match else sup_raw
+                supplier_name = supplier_name.split(",")[0].strip() if "," in supplier_name else supplier_name
+                # 공급사명에서 빈도수 표기 제거
+                supplier_name = _re3.sub(r'\(\d+건?\)$', '', supplier_name).strip()
+
+                shortage_list.append({
+                    "material_id": mid,
+                    "name": mat.get("raw_name") or "",
+                    "material_type": mat.get("material_type"),
+                    "spec": mat.get("spec"),
+                    "unit": mat.get("unit") or "EA",
+                    "required": req, "stock": stock, "shortage": shortage,
+                    "supplier": supplier_name or "(미정)",
+                })
+
+        if not shortage_list:
+            st.success("✅ 자재 부족 없음 — 발주 제안 사항 없습니다.")
+        else:
+            # 거래처별 묶음
+            by_supplier = _dd(list)
+            for s in shortage_list:
+                by_supplier[s["supplier"]].append(s)
+
+            for supplier, mats in sorted(by_supplier.items(), key=lambda x: -sum(m["shortage"] for m in x[1])):
+                total_short = sum(m["shortage"] for m in mats)
+                with st.expander(f"🛒 **{supplier}** — {len(mats)}개 자재 부족 (합 {total_short:.1f})",
+                                 expanded=True):
+                    pdf = pd.DataFrame([{
+                        "자재명": m["name"][:30],
+                        "재질": m["material_type"] or "-",
+                        "규격": m["spec"] or "-",
+                        "필요량": round(m["required"], 2),
+                        "재고": round(m["stock"], 2),
+                        "부족분 (발주 권장)": round(m["shortage"], 2),
+                        "단위": m["unit"],
+                    } for m in mats])
+                    st.dataframe(pdf, use_container_width=True, hide_index=True)
+
+                    if st.button(f"➕ 발주서 작성 화면으로 (이 {len(mats)}건)",
+                                 key=f"go_po_{supplier}"):
+                        # session_state로 발주 화면에 미리 채울 데이터 전달
+                        st.session_state["po_prefill_vendor_name"] = supplier
+                        st.session_state["po_prefill_items"] = [{
+                            "product_id": None,  # 자재 행이므로 product_id 없음
+                            "item_name": m["name"],
+                            "material": m["material_type"] or "",
+                            "spec": m["spec"] or "",
+                            "qty": int(m["shortage"]) if m["unit"] == "EA" else round(m["shortage"], 2),
+                            "unit_price": 0,
+                        } for m in mats]
+                        st.success(f"✅ '{supplier}'의 {len(mats)}개 품목이 발주서 작성에 임시 저장됨. "
+                                   f"좌측 '📋 발주서 작성' 메뉴로 이동해서 검토하세요.")
+
+
 elif page == "📋 발주서 작성":
     st.subheader("📋 발주 관리")
     if not DB_AVAILABLE:
@@ -946,6 +1199,20 @@ elif page == "📋 발주서 작성":
 
     # ════════════ TAB 1: 새 발주서 작성 ════════════
     with tab_new:
+        # 생산 계획에서 prefill된 경우 안내
+        if st.session_state.get("po_prefill_vendor_name") or st.session_state.get("po_prefill_items"):
+            pv = st.session_state.get("po_prefill_vendor_name", "")
+            pi = st.session_state.get("po_prefill_items", [])
+            st.info(f"🛒 **생산 계획에서 자동 제안 받은 발주 데이터**: 거래처 '{pv}', 품목 {len(pi)}개. "
+                    f"아래에서 거래처 선택 + 품목 확인 후 발주서 생성.")
+            if st.button("🔄 자동 제안 데이터 초기화"):
+                st.session_state.po_prefill_vendor_name = None
+                st.session_state.po_prefill_items = None
+                st.rerun()
+            # 품목 prefill
+            if pi and not st.session_state.get("po_items"):
+                st.session_state.po_items = list(pi)
+
         st.markdown("##### ① 거래처 선택")
         group_options = ["전체 (매입)"] + list(PURCHASE_GROUPS.values())
         sel_group_label = st.selectbox("발주 그룹", group_options, index=0)
