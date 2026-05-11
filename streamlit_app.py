@@ -157,7 +157,9 @@ elif page == "⚙️ 마스터 관리":
     import db as _db
     import pandas as pd
 
-    tab1, tab2 = st.tabs(["🏢 거래처 편집", "📊 DB 현황"])
+    tab1, tab_mat, tab_bom, tab2 = st.tabs([
+        "🏢 거래처 편집", "📦 자재 편집", "🔗 BOM 편집", "📊 DB 현황"
+    ])
 
     # ─── Tab 1: 거래처 편집 ───
     with tab1:
@@ -349,6 +351,136 @@ elif page == "⚙️ 마스터 관리":
                     st.rerun()
                 else:
                     st.info("변경 사항 없음")
+
+    # ─── Tab: 자재 편집 ───
+    with tab_mat:
+        st.caption("📌 모든 자재 단위는 **EA**로 통일됨 (수주·발주·생산·출고 일관성)")
+        mc1, mc2, mc3 = st.columns([2, 2, 1])
+        with mc1:
+            mat_q = st.text_input("자재 검색", placeholder="예: STS304, 환봉, 8HFDV")
+        with mc2:
+            mat_type_q = st.text_input("재질 필터", placeholder="예: SUS304")
+        with mc3:
+            mat_limit = st.number_input("행수", 20, 500, 100, 20)
+
+        mfq = ["order=material_id.asc"]
+        if mat_q: mfq.append(f"or=(raw_name.ilike.*{mat_q}*,material_id.ilike.*{mat_q}*)")
+        if mat_type_q: mfq.append(f"material_type=ilike.*{mat_type_q}*")
+        try:
+            mrows = fetch("materials",
+                "material_id,raw_name,material_type,spec,unit,stock_qty,main_supplier,procurement_type",
+                "&".join(mfq), limit=mat_limit)
+        except Exception as e: st.error(e); mrows = []
+
+        st.caption(f"검색 결과: **{len(mrows)}건**")
+
+        if mrows:
+            mdf = pd.DataFrame(mrows)
+            mediated = st.data_editor(
+                mdf,
+                column_config={
+                    "material_id": st.column_config.TextColumn("자재ID", disabled=True, width="small"),
+                    "raw_name": st.column_config.TextColumn("자재명", width="large"),
+                    "material_type": st.column_config.TextColumn("재질"),
+                    "spec": st.column_config.TextColumn("규격"),
+                    "unit": st.column_config.TextColumn("단위", disabled=True, width="small"),
+                    "stock_qty": st.column_config.NumberColumn("재고 (EA)", format="%.2f"),
+                    "main_supplier": st.column_config.TextColumn("주공급사", disabled=True, width="medium"),
+                    "procurement_type": st.column_config.TextColumn("조달유형", width="small"),
+                },
+                hide_index=True, use_container_width=True,
+                num_rows="fixed", key="mat_editor",
+            )
+            if st.button("💾 자재 변경 저장", type="primary"):
+                chg = 0
+                for orig, new in zip(mrows, mediated.to_dict("records")):
+                    upd = {k: new[k] for k in ("raw_name","material_type","spec","stock_qty","procurement_type")
+                           if orig.get(k) != new.get(k)}
+                    if upd:
+                        if _db.update("materials", f"material_id=eq.{orig['material_id']}", upd):
+                            chg += 1
+                if chg: st.success(f"✅ {chg}건 update"); st.rerun()
+                else: st.info("변경 사항 없음")
+
+    # ─── Tab: BOM 편집 ───
+    with tab_bom:
+        st.caption("📌 BOM = 제품-자재 매핑. **qty_per_pc**는 제품 1 EA당 자재 EA 수. "
+                   "**shared_factor**는 1 자재에서 여러 제품 분할 가공 시 (예: 환봉 1개 → 3 EA → shared_factor=3)")
+        bc1, bc2 = st.columns([3, 1])
+        with bc1:
+            bom_q = st.text_input("제품 또는 자재 검색", placeholder="예: 8HFDV, M001")
+        with bc2:
+            bom_limit = st.number_input("행수", 20, 500, 100, 20, key="bom_lim")
+
+        bfq = ["order=product_id.asc,line_no.asc.nullslast"]
+        if bom_q:
+            bfq.append(f"or=(product_id.ilike.*{bom_q}*,material_id.ilike.*{bom_q}*,raw_material_name.ilike.*{bom_q}*)")
+        try:
+            brows = fetch("bom",
+                "bom_id,product_id,material_id,raw_material_name,qty_per_pc,shared_factor,source,verification_status",
+                "&".join(bfq), limit=bom_limit)
+        except Exception as e: st.error(e); brows = []
+
+        st.caption(f"검색 결과: **{len(brows)}건**")
+
+        if brows:
+            bdf = pd.DataFrame(brows)
+            bedited = st.data_editor(
+                bdf,
+                column_config={
+                    "bom_id": st.column_config.NumberColumn("ID", disabled=True, width="small"),
+                    "product_id": st.column_config.TextColumn("제품ID", disabled=True, width="small"),
+                    "material_id": st.column_config.TextColumn("자재ID", disabled=True, width="small"),
+                    "raw_material_name": st.column_config.TextColumn("자재명", width="large", disabled=True),
+                    "qty_per_pc": st.column_config.NumberColumn("자재/PC (EA)", format="%.3f"),
+                    "shared_factor": st.column_config.NumberColumn("1자재→N제품", format="%.0f"),
+                    "source": st.column_config.TextColumn("출처", disabled=True, width="small"),
+                    "verification_status": st.column_config.SelectboxColumn("검증",
+                        options=["AUTO-추정", "AUTO-매입추정", "AUTO-명진추정", "확인완료", "재검토"],
+                        width="small"),
+                },
+                hide_index=True, use_container_width=True,
+                num_rows="fixed", key="bom_editor",
+            )
+            if st.button("💾 BOM 변경 저장", type="primary"):
+                chg = 0
+                for orig, new in zip(brows, bedited.to_dict("records")):
+                    upd = {k: new[k] for k in ("qty_per_pc","shared_factor","verification_status")
+                           if orig.get(k) != new.get(k)}
+                    if upd:
+                        if _db.update("bom", f"bom_id=eq.{orig['bom_id']}", upd):
+                            chg += 1
+                if chg: st.success(f"✅ {chg}건 update"); st.rerun()
+                else: st.info("변경 사항 없음")
+
+            st.divider()
+            st.markdown("##### ➕ 신규 BOM 추가")
+            nc1, nc2, nc3, nc4 = st.columns([2, 2, 1, 1])
+            with nc1:
+                new_pid = st.text_input("제품 ID *", placeholder="예: P0001", key="bom_new_pid")
+            with nc2:
+                new_mid = st.text_input("자재 ID *", placeholder="예: M001", key="bom_new_mid")
+            with nc3:
+                new_qpc = st.number_input("qty/PC (EA)", min_value=0.0, value=1.0, step=0.1, key="bom_new_qpc")
+            with nc4:
+                new_sf = st.number_input("shared_factor", min_value=1, value=1, step=1, key="bom_new_sf")
+            if st.button("➕ BOM 추가", key="bom_new_btn"):
+                if not new_pid or not new_mid:
+                    st.error("제품 ID와 자재 ID는 필수입니다.")
+                else:
+                    # 자재명 자동 조회
+                    mrow = _db.fetch_one("materials", f"material_id=eq.{new_mid}", "raw_name")
+                    try:
+                        _db.insert("bom", [{
+                            "product_id": new_pid, "material_id": new_mid,
+                            "raw_material_name": mrow.get("raw_name") if mrow else None,
+                            "qty_per_pc": new_qpc, "shared_factor": new_sf,
+                            "source": "MANUAL", "verification_status": "확인완료",
+                        }])
+                        st.success(f"✅ BOM 추가: {new_pid} ↔ {new_mid}")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"추가 실패: {e}")
 
     # ─── Tab 2: DB 현황 ───
     with tab2:
@@ -929,7 +1061,7 @@ elif page == "📊 생산 계획":
     from datetime import date as _d2
 
     st.caption("📌 활성 수주(미납 품목)의 BOM을 조회해 자재 필요량을 산출합니다. "
-               "단위 환산: 제품 EA × BOM.qty_per_pc = 자재 단위 (KG 또는 EA)")
+               "**모든 단위 EA 통일** — 제품 EA × BOM.qty_per_pc (자재 EA/PC) ÷ shared_factor")
 
     # ── 1) 미납 수주 품목 조회 ──
     with st.spinner("미납 수주 조회 중..."):
