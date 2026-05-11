@@ -410,6 +410,37 @@ elif page == "📥 수주":
                 if items:
                     st.success(f"✅ {len(items)}개 품목 파싱 완료")
 
+                    # ── 중복 수주번호 검증 (DB 기존 데이터 vs 파싱 결과) ──
+                    customer_name = items[0]["customer"]
+                    parsed_so_set = sorted({it["so_number"] for it in items if it.get("so_number")})
+                    if parsed_so_set:
+                        existing_filter = (
+                            f"customer=eq.{customer_name}&"
+                            f"so_number=in.({','.join(parsed_so_set)})"
+                        )
+                        try:
+                            existing = fetch("sales_orders", "so_number", existing_filter, limit=500)
+                            existing_set = {e["so_number"] for e in existing}
+                        except Exception:
+                            existing_set = set()
+                    else:
+                        existing_set = set()
+
+                    new_items = [it for it in items if it.get("so_number") not in existing_set]
+                    dup_items = [it for it in items if it.get("so_number") in existing_set]
+                    dup_so_nums = sorted({it["so_number"] for it in dup_items})
+
+                    if dup_so_nums:
+                        st.warning(
+                            f"⚠️ 이미 등록된 수주 **{len(dup_so_nums)}건** 자동 제외:\n\n"
+                            + "\n".join(f"- `{s}`" for s in dup_so_nums[:10])
+                            + (f"\n... 외 {len(dup_so_nums)-10}건" if len(dup_so_nums) > 10 else "")
+                        )
+                    if not new_items:
+                        st.error("모든 수주가 이미 등록되어 있습니다. 업로드 불필요.")
+                        st.stop()
+                    items = new_items  # 이후 매칭/저장은 신규만
+
                     # 우성정밀 품번 매칭
                     products = fetch("products", "product_id,pn,alias_list", limit=1500)
                     cm = {}
@@ -572,6 +603,14 @@ elif page == "📥 수주":
 
             if st.button("💾 수주 저장", type="primary",
                          disabled=not (m_so_no and m_cust and st.session_state.m_so_items)):
+                # 중복 체크
+                try:
+                    dup = fetch("sales_orders", "so_id,so_number",
+                                f"so_number=eq.{m_so_no}&customer=eq.{m_cust}", limit=1)
+                except Exception: dup = []
+                if dup:
+                    st.error(f"⚠️ 이미 등록됨: 수주 {m_so_no} / 거래처 {m_cust} (so_id={dup[0]['so_id']})")
+                    st.stop()
                 try:
                     v = fetch("vendors", "vendor_id", f"name=ilike.*{m_cust}*&limit=1", limit=1)
                     vendor_id = v[0]["vendor_id"] if v else None
@@ -600,95 +639,250 @@ elif page == "📥 수주":
                 except Exception as e:
                     st.error(f"저장 실패: {e}")
 
-    # ════════ TAB 2: 수주 목록 ════════
+    # ════════ TAB 2: 수주 목록 (다중 뷰) ════════
     with tab_list:
-        c1, c2, c3 = st.columns(3)
-        with c1:
+        view_mode = st.radio("뷰",
+            ["📋 수주별 (헤더)", "📦 품목별", "🏢 거래처별", "📅 납기 임박순", "❌ 매칭 안된 품목"],
+            horizontal=True)
+
+        fc1, fc2, fc3 = st.columns(3)
+        with fc1:
             sl_period = st.selectbox("기간", ["이번달", "최근 3개월", "올해", "전체"], index=2)
-        with c2:
+        with fc2:
             sl_cust = st.text_input("거래처", placeholder="예: HDX, 미진")
-        with c3:
-            sl_status = st.selectbox("상태", ["전체", "DRAFT", "CONFIRMED", "IN_PROD", "PARTIAL", "DELIVERED", "CANCELLED"])
+        with fc3:
+            sl_status = st.selectbox("상태",
+                ["전체", "DRAFT", "CONFIRMED", "IN_PROD", "PARTIAL", "DELIVERED", "CANCELLED"])
 
         today = _date.today()
-        fq = ["order=so_date.desc"]
+        common_fq = []
         if sl_period == "이번달":
-            fq.append(f"so_date=gte.{today.replace(day=1).isoformat()}")
+            common_fq.append(f"so_date=gte.{today.replace(day=1).isoformat()}")
         elif sl_period == "최근 3개월":
-            fq.append(f"so_date=gte.{(today - _td(days=90)).isoformat()}")
+            common_fq.append(f"so_date=gte.{(today - _td(days=90)).isoformat()}")
         elif sl_period == "올해":
-            fq.append(f"so_date=gte.{today.year}-01-01")
-        if sl_cust: fq.append(f"customer=ilike.*{sl_cust}*")
-        if sl_status != "전체": fq.append(f"status=eq.{sl_status}")
+            common_fq.append(f"so_date=gte.{today.year}-01-01")
+        if sl_cust: common_fq.append(f"customer=ilike.*{sl_cust}*")
+        if sl_status != "전체": common_fq.append(f"status=eq.{sl_status}")
 
-        try:
-            sos = fetch("sales_order_stats", "*", "&".join(fq), limit=300)
-        except Exception as e:
-            st.error(f"수주 조회 실패: {e}"); sos = []
+        # ── 뷰 1: 수주별 ──
+        if view_mode == "📋 수주별 (헤더)":
+            fq = ["order=so_date.desc"] + common_fq
+            try: sos = fetch("sales_order_stats", "*", "&".join(fq), limit=300)
+            except Exception as e: st.error(e); sos = []
 
-        if not sos:
-            st.info("이 조건의 수주가 없습니다.")
-        else:
-            sc1, sc2, sc3, sc4 = st.columns(4)
-            sc1.metric("수주 건수", len(sos))
-            sc2.metric("총 수주액", f"₩{sum(int(s.get('total_amount') or 0) for s in sos):,}")
-            sc3.metric("거래처 수", len({s["customer"] for s in sos}))
-            avg_match = sum(s.get("match_rate_pct") or 0 for s in sos) / len(sos) if sos else 0
-            sc4.metric("평균 매칭률", f"{avg_match:.1f}%")
+            if sos:
+                sc1, sc2, sc3, sc4 = st.columns(4)
+                sc1.metric("수주 건수", len(sos))
+                sc2.metric("총 수주액", f"₩{sum(int(s.get('total_amount') or 0) for s in sos):,}")
+                sc3.metric("거래처 수", len({s["customer"] for s in sos}))
+                avg_match = sum(s.get("match_rate_pct") or 0 for s in sos) / len(sos)
+                sc4.metric("평균 매칭률", f"{avg_match:.1f}%")
+                st.divider()
+                df = pd.DataFrame([{
+                    "수주번호": s["so_number"], "거래처": s["customer"],
+                    "수주일": s.get("so_date"), "납기": s.get("due_date"),
+                    "품목수": s.get("item_count"),
+                    "총수량": int(s.get("total_qty") or 0),
+                    "납품": int(s.get("total_received_qty") or 0),
+                    "미납": int(s.get("total_pending_qty") or 0),
+                    "납품상태": s.get("delivery_status"),
+                    "총액": int(s.get("total_amount") or 0),
+                    "매칭률": f"{s.get('match_rate_pct') or 0:.0f}%",
+                    "상태": s["status"],
+                } for s in sos])
+                st.dataframe(df, use_container_width=True, hide_index=True,
+                    column_config={"총액": st.column_config.NumberColumn(format="₩%d")})
 
-            st.divider()
-            df = pd.DataFrame([{
-                "수주번호": s["so_number"], "거래처": s["customer"],
-                "수주일": s.get("so_date"), "납기": s.get("due_date"),
-                "품목수": s.get("item_count"),
-                "총수량": int(s.get("total_qty") or 0),
-                "납품": int(s.get("total_received_qty") or 0),
-                "미납": int(s.get("total_pending_qty") or 0),
-                "납품상태": s.get("delivery_status"),
-                "총액": int(s.get("total_amount") or 0),
-                "매칭률": f"{s.get('match_rate_pct') or 0:.0f}%",
-                "상태": s["status"],
-            } for s in sos])
-            st.dataframe(df, use_container_width=True, hide_index=True,
-                column_config={"총액": st.column_config.NumberColumn(format="₩%d")})
+                st.divider()
+                st.markdown("##### 🔍 수주 상세")
+                opts = {f"{s['so_number']} | {s['customer']} | ₩{int(s.get('total_amount') or 0):,}": s
+                        for s in sos}
+                sel_so = st.selectbox("선택", list(opts.keys()))
+                if sel_so:
+                    so = opts[sel_so]
+                    sitems = fetch("sales_order_items", "*",
+                                   f"so_id=eq.{so['so_id']}&order=line_no", limit=200)
+                    idf = pd.DataFrame([{
+                        "라인": i["line_no"], "거래처 자재": i.get("customer_part_no"),
+                        "우성 품번": i.get("canonical_pn") or "❌",
+                        "수량": int(i.get("qty") or 0),
+                        "납품": int(i.get("received_qty") or 0),
+                        "미납": int(i.get("pending_qty") or 0),
+                        "단가": int(i.get("unit_price") or 0),
+                        "금액": int(i.get("amount") or 0),
+                        "납기": i.get("due_date"),
+                        "상태": i.get("status"),
+                    } for i in sitems])
+                    if not idf.empty:
+                        st.dataframe(idf, use_container_width=True, hide_index=True,
+                            column_config={
+                                "단가": st.column_config.NumberColumn(format="₩%d"),
+                                "금액": st.column_config.NumberColumn(format="₩%d"),
+                            })
+                    rc1, rc2 = st.columns(2)
+                    statuses = ["DRAFT","CONFIRMED","IN_PROD","PARTIAL","DELIVERED","CANCELLED"]
+                    new_st = rc1.selectbox("상태 변경", statuses,
+                        index=statuses.index(so["status"]) if so["status"] in statuses else 0)
+                    if rc2.button("💾 상태 저장"):
+                        if _db.update("sales_orders", f"so_id=eq.{so['so_id']}", {"status": new_st}):
+                            st.success(f"상태 변경: {new_st}"); st.rerun()
+            else:
+                st.info("결과 없음")
 
-            st.divider()
-            st.markdown("##### 🔍 수주 상세")
-            opts = {f"{s['so_number']} | {s['customer']} | ₩{int(s.get('total_amount') or 0):,}": s
-                    for s in sos}
-            sel_so = st.selectbox("선택", list(opts.keys()))
-            if sel_so:
-                so = opts[sel_so]
-                items = fetch("sales_order_items", "*",
-                              f"so_id=eq.{so['so_id']}&order=line_no", limit=200)
-                idf = pd.DataFrame([{
-                    "라인": i["line_no"],
-                    "거래처 자재": i.get("customer_part_no"),
-                    "우성 품번": i.get("canonical_pn") or "❌",
-                    "수량": int(i.get("qty") or 0),
-                    "납품": int(i.get("received_qty") or 0),
-                    "미납": int(i.get("pending_qty") or 0),
-                    "단가": int(i.get("unit_price") or 0),
-                    "금액": int(i.get("amount") or 0),
-                    "상태": i.get("status"),
-                } for i in items])
-                if not idf.empty:
-                    st.dataframe(idf, use_container_width=True, hide_index=True,
+        # ── 뷰 2: 품목별 ──
+        elif view_mode == "📦 품목별":
+            fq = ["order=so_date.desc"] + common_fq
+            try: sos = fetch("sales_orders", "so_id,so_number,customer,so_date,status",
+                              "&".join(fq), limit=500)
+            except Exception as e: st.error(e); sos = []
+            so_map = {s["so_id"]: s for s in sos}
+
+            if so_map:
+                ids_str = ",".join(str(x) for x in so_map.keys())
+                p_search = st.text_input("품목 검색", placeholder="품번 또는 자재명")
+                item_filter = f"so_id=in.({ids_str})&order=due_date.asc.nullslast"
+                if p_search:
+                    item_filter += f"&or=(canonical_pn.ilike.*{p_search}*,customer_part_no.ilike.*{p_search}*,customer_item_name.ilike.*{p_search}*)"
+                try: sitems = fetch("sales_order_items", "*", item_filter, limit=1000)
+                except Exception as e: st.error(e); sitems = []
+
+                if sitems:
+                    st.metric("품목 건수", len(sitems))
+                    df = pd.DataFrame([{
+                        "수주번호": so_map.get(i["so_id"], {}).get("so_number"),
+                        "거래처": so_map.get(i["so_id"], {}).get("customer"),
+                        "수주일": so_map.get(i["so_id"], {}).get("so_date"),
+                        "라인": i["line_no"],
+                        "거래처 자재": i.get("customer_part_no"),
+                        "우성 품번": i.get("canonical_pn") or "❌",
+                        "수량": int(i.get("qty") or 0),
+                        "미납": int(i.get("pending_qty") or 0),
+                        "단가": int(i.get("unit_price") or 0),
+                        "금액": int(i.get("amount") or 0),
+                        "납기": i.get("due_date"),
+                        "상태": i.get("status"),
+                    } for i in sitems])
+                    st.dataframe(df, use_container_width=True, hide_index=True,
                         column_config={
                             "단가": st.column_config.NumberColumn(format="₩%d"),
                             "금액": st.column_config.NumberColumn(format="₩%d"),
                         })
+                else:
+                    st.info("결과 없음")
+            else:
+                st.info("수주 데이터 없음")
 
-                # 상태 변경
-                rc1, rc2 = st.columns(2)
-                new_st = rc1.selectbox("상태 변경",
-                    ["DRAFT", "CONFIRMED", "IN_PROD", "PARTIAL", "DELIVERED", "CANCELLED"],
-                    index=["DRAFT", "CONFIRMED", "IN_PROD", "PARTIAL", "DELIVERED", "CANCELLED"]
-                          .index(so["status"]) if so["status"] in
-                          ["DRAFT", "CONFIRMED", "IN_PROD", "PARTIAL", "DELIVERED", "CANCELLED"] else 0)
-                if rc2.button("💾 상태 저장"):
-                    if _db.update("sales_orders", f"so_id=eq.{so['so_id']}", {"status": new_st}):
-                        st.success(f"상태 변경: {new_st}"); st.rerun()
+        # ── 뷰 3: 거래처별 ──
+        elif view_mode == "🏢 거래처별":
+            fq = ["order=customer.asc"] + common_fq
+            try: sos = fetch("sales_order_stats", "*", "&".join(fq), limit=500)
+            except Exception as e: st.error(e); sos = []
+
+            if sos:
+                from collections import defaultdict as _dd
+                agg = _dd(lambda: {"수주건수": 0, "품목수": 0, "총수량": 0, "납품": 0,
+                                    "미납": 0, "총액": 0, "_ms": 0, "_mn": 0})
+                for s in sos:
+                    a = agg[s["customer"]]
+                    a["수주건수"] += 1
+                    a["품목수"] += int(s.get("item_count") or 0)
+                    a["총수량"] += int(s.get("total_qty") or 0)
+                    a["납품"] += int(s.get("total_received_qty") or 0)
+                    a["미납"] += int(s.get("total_pending_qty") or 0)
+                    a["총액"] += int(s.get("total_amount") or 0)
+                    if s.get("match_rate_pct") is not None:
+                        a["_ms"] += s["match_rate_pct"]; a["_mn"] += 1
+
+                rows = [{
+                    "거래처": cust, "수주건수": a["수주건수"], "품목수": a["품목수"],
+                    "총수량": a["총수량"], "납품": a["납품"], "미납": a["미납"],
+                    "납품률": f"{100*a['납품']/a['총수량']:.1f}%" if a["총수량"] else "-",
+                    "총액": a["총액"],
+                    "평균매칭률": f"{(a['_ms']/a['_mn'] if a['_mn'] else 0):.1f}%",
+                } for cust, a in sorted(agg.items(), key=lambda x: -x[1]["총액"])]
+                df = pd.DataFrame(rows)
+                st.dataframe(df, use_container_width=True, hide_index=True,
+                    column_config={"총액": st.column_config.NumberColumn(format="₩%d")})
+            else:
+                st.info("결과 없음")
+
+        # ── 뷰 4: 납기 임박순 ──
+        elif view_mode == "📅 납기 임박순":
+            fq = ["order=so_date.desc"] + common_fq
+            try: sos = fetch("sales_orders", "so_id,so_number,customer,so_date,status",
+                              "&".join(fq), limit=500)
+            except Exception as e: st.error(e); sos = []
+            so_map = {s["so_id"]: s for s in sos}
+
+            if so_map:
+                ids_str = ",".join(str(x) for x in so_map.keys())
+                item_filter = f"so_id=in.({ids_str})&pending_qty=gt.0&due_date=not.is.null&order=due_date.asc"
+                try: sitems = fetch("sales_order_items", "*", item_filter, limit=500)
+                except Exception as e: st.error(e); sitems = []
+
+                if sitems:
+                    from datetime import datetime as _dt
+                    rows = []
+                    for i in sitems:
+                        so = so_map.get(i["so_id"], {})
+                        due_raw = i.get("due_date")
+                        days_left = None
+                        if due_raw:
+                            try:
+                                due_d = _dt.strptime(due_raw, "%Y-%m-%d").date() if isinstance(due_raw, str) else due_raw
+                                days_left = (due_d - today).days
+                            except: pass
+                        emoji = ("🔴" if days_left is not None and days_left < 0 else
+                                 "🟠" if days_left is not None and days_left <= 7 else
+                                 "🟡" if days_left is not None and days_left <= 30 else "🟢")
+                        rows.append({
+                            "🔥": emoji,
+                            "수주번호": so.get("so_number"),
+                            "거래처": so.get("customer"),
+                            "납기": due_raw, "D-day": days_left,
+                            "거래처 자재": i.get("customer_part_no"),
+                            "우성 품번": i.get("canonical_pn") or "❌",
+                            "수량": int(i.get("qty") or 0),
+                            "미납": int(i.get("pending_qty") or 0),
+                        })
+                    df = pd.DataFrame(rows)
+                    st.dataframe(df, use_container_width=True, hide_index=True)
+                else:
+                    st.info("미납 품목 없음")
+            else:
+                st.info("결과 없음")
+
+        # ── 뷰 5: 매칭 안된 품목 ──
+        elif view_mode == "❌ 매칭 안된 품목":
+            fq = ["order=so_date.desc"] + common_fq
+            try: sos = fetch("sales_orders", "so_id,so_number,customer,so_date",
+                              "&".join(fq), limit=500)
+            except Exception as e: st.error(e); sos = []
+            so_map = {s["so_id"]: s for s in sos}
+
+            if so_map:
+                ids_str = ",".join(str(x) for x in so_map.keys())
+                item_filter = f"so_id=in.({ids_str})&product_id=is.null&order=so_date.desc"
+                try: sitems = fetch("sales_order_items", "*", item_filter, limit=500)
+                except Exception as e: st.error(e); sitems = []
+
+                if sitems:
+                    st.warning(f"⚠️ 우성정밀 품번 매칭 안된 품목 **{len(sitems)}건**")
+                    df = pd.DataFrame([{
+                        "수주번호": so_map.get(i["so_id"], {}).get("so_number"),
+                        "거래처": so_map.get(i["so_id"], {}).get("customer"),
+                        "거래처 자재": i.get("customer_part_no"),
+                        "거래처 품명": (i.get("customer_item_name") or "")[:40],
+                        "수량": int(i.get("qty") or 0),
+                        "수주일": so_map.get(i["so_id"], {}).get("so_date"),
+                    } for i in sitems])
+                    st.dataframe(df, use_container_width=True, hide_index=True)
+                    st.caption("💡 거래처 자재코드 → 우성정밀 품번 매핑은 마스터 관리에서 추가 가능 (다음 push)")
+                else:
+                    st.success("✅ 모든 품목이 매칭되었습니다")
+            else:
+                st.info("결과 없음")
 
 
 elif page == "📋 발주서 작성":
