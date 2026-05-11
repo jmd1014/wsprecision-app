@@ -382,30 +382,44 @@ elif page == "📥 수주":
                         horizontal=True)
 
         if mode == "📁 파일 업로드 자동 파싱":
-            ftype = st.selectbox("거래처 양식 선택", [
-                "HDX (엑셀, 53열 ERP 양식)",
-                "미진정밀 (엑셀, 외주발주품목조회)",
-                "㈜엠제이티 (PDF 발주서)",
-            ])
+            st.caption("📌 양식은 파일을 보고 자동으로 인식합니다 (HDX / 미진정밀 / 엠제이티 PDF)")
             uploaded = st.file_uploader("파일 선택",
                 type=['xlsx','xls','pdf'],
-                help="HDX/미진은 엑셀(.xlsx), 엠제이티는 PDF")
+                help="여러 거래처 양식 자동 인식")
 
             if uploaded:
                 file_bytes = uploaded.read()
                 filename = uploaded.name
-                with st.spinner("파싱 중..."):
+                from utils.so_parser import detect_so_format, parse_so_auto
+                with st.spinner("양식 인식 + 파싱 중..."):
                     try:
-                        if ftype.startswith("HDX"):
-                            items = parse_hdx_excel(file_bytes, filename)
-                        elif ftype.startswith("미진"):
-                            items = parse_mijin_excel(file_bytes, filename)
-                        elif ftype.startswith("㈜엠제이티"):
-                            items = parse_mjt_pdf(file_bytes, filename)
-                        else:
-                            items = []
+                        fmt, items = parse_so_auto(file_bytes, filename)
                     except Exception as e:
-                        st.error(f"파싱 실패: {e}"); items = []
+                        st.error(f"파싱 실패: {e}"); fmt = "ERR"; items = []
+
+                fmt_labels = {
+                    "HDX": "🟢 HDX (ERP 엑셀)",
+                    "MIJIN": "🟢 미진정밀 (외주발주품목조회)",
+                    "MJT_PDF": "🟢 (주)엠제이티 (PDF 발주서)",
+                    "UNKNOWN_PDF": "⚠️ 알 수 없는 PDF — 수동 파서 선택 필요",
+                    "UNKNOWN_EXCEL": "⚠️ 알 수 없는 엑셀 양식 — 수동 파서 선택 필요",
+                    "UNKNOWN": "❌ 인식 실패",
+                }
+                st.info(f"**양식 인식**: {fmt_labels.get(fmt, fmt)}")
+
+                # 인식 실패 → 수동 선택 fallback
+                if fmt.startswith("UNKNOWN") or not items:
+                    manual = st.selectbox("수동 선택 (자동 인식 실패 시)",
+                        ["선택 안 함", "HDX (엑셀)", "미진정밀 (엑셀)", "엠제이티 (PDF)"])
+                    if manual == "HDX (엑셀)":
+                        try: items = parse_hdx_excel(file_bytes, filename)
+                        except Exception as e: st.error(e); items = []
+                    elif manual == "미진정밀 (엑셀)":
+                        try: items = parse_mijin_excel(file_bytes, filename)
+                        except Exception as e: st.error(e); items = []
+                    elif manual == "엠제이티 (PDF)":
+                        try: items = parse_mjt_pdf(file_bytes, filename)
+                        except Exception as e: st.error(e); items = []
 
                 if items:
                     st.success(f"✅ {len(items)}개 품목 파싱 완료")
@@ -457,15 +471,35 @@ elif page == "📥 수주":
                                 a = a.strip()
                                 if a: cm.setdefault(_mk(a), (p['pn'], p['product_id']))
 
+                    def _strip_prefix(s):
+                        """4S/S 접두어 제거 (PMLib _getBasePn)"""
+                        if not s: return ""
+                        p = str(s).upper().strip()
+                        if p.startswith('4S') and len(p) > 2 and (p[2].isalnum()):
+                            return p[2:]
+                        if p.startswith('S') and len(p) > 1 and (p[1].isalnum()):
+                            excluded = ('SP-','SDF','SUS','SODV','SFB','SCM','SKD','SKH',
+                                        'S45','S20','S30','S304','S316','S630')
+                            if not any(p.startswith(e) for e in excluded):
+                                return p[1:]
+                        return p
+
                     matched_count = 0
                     for it in items:
                         pn_hint = it.get("canonical_pn_hint") or it.get("customer_part_no") or ""
-                        # 정확 매칭
-                        m = cm.get(_mk(pn_hint))
-                        if not m:
-                            # ;OP, ;PM 제거 후 매칭
-                            norm = pn_hint.split(';')[0].strip() if pn_hint else ""
-                            m = cm.get(_mk(norm))
+                        base = pn_hint.split(';')[0].strip() if ';' in pn_hint else pn_hint
+                        # 시도 후보 4종
+                        candidates = [
+                            pn_hint,
+                            base,
+                            _strip_prefix(pn_hint),
+                            _strip_prefix(base),
+                        ]
+                        m = None
+                        for c in candidates:
+                            if not c: continue
+                            m = cm.get(_mk(c))
+                            if m: break
                         if m:
                             it["matched_pn"] = m[0]
                             it["matched_pid"] = m[1]
@@ -863,7 +897,7 @@ elif page == "📥 수주":
 
             if so_map:
                 ids_str = ",".join(str(x) for x in so_map.keys())
-                item_filter = f"so_id=in.({ids_str})&product_id=is.null&order=so_date.desc"
+                item_filter = f"so_id=in.({ids_str})&product_id=is.null&order=so_id.desc"
                 try: sitems = fetch("sales_order_items", "*", item_filter, limit=500)
                 except Exception as e: st.error(e); sitems = []
 

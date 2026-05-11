@@ -127,7 +127,10 @@ def parse_mijin_excel(file_bytes: bytes, filename: str = "") -> list[dict]:
 
 
 def parse_mjt_pdf(file_bytes: bytes, filename: str = "") -> list[dict]:
-    """엠제이티(MJT) PDF 발주서 파싱"""
+    """
+    엠제이티(MJT) PDF 발주서 파싱 — 텍스트 라인 기반 정규식
+    표 추출 대신 텍스트 직접 매칭 (PDF 표 셀 분리가 불안정함)
+    """
     try:
         import pdfplumber
     except ImportError:
@@ -137,62 +140,160 @@ def parse_mjt_pdf(file_bytes: bytes, filename: str = "") -> list[dict]:
     with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
         full_text = "\n".join(pg.extract_text() or "" for pg in pdf.pages)
 
-        # 발주번호: MJT-PO26-우성-414
-        m_no = re.search(r'발주번호\s+(MJT-[A-Z0-9가-힣\-]+)', full_text)
+        # 헤더 정보 추출
+        m_no = re.search(r'발주번호\s+([A-Z0-9가-힣\-]+)', full_text)
         so_number = m_no.group(1) if m_no else ""
-        # 발주일자
         m_date = re.search(r'발주일자\s+(\d{4}-\d{2}-\d{2})', full_text)
         so_date = _to_date(m_date.group(1)) if m_date else None
-        # 납기일자
         m_due = re.search(r'납기일자\s+(\d{4}-\d{2}-\d{2})', full_text)
         due_date = _to_date(m_due.group(1)) if m_due else None
 
-        # 표 추출
-        for pg in pdf.pages:
-            tables = pg.extract_tables() or []
-            for tbl in tables:
-                for row in tbl:
-                    if not row or not row[0]: continue
-                    # 행 첫 셀이 숫자(라인 번호)면 품목 행
-                    cell0 = str(row[0]).strip()
-                    if not cell0.isdigit(): continue
-                    line_no = int(cell0)
-                    # 품번, 단위, 수량, 단가, 금액, 비고
-                    pn = str(row[1] or "").strip() if len(row) > 1 else ""
-                    unit = str(row[2] or "").strip() if len(row) > 2 else "EA"
-                    qty = _to_num(row[3]) if len(row) > 3 else None
-                    unit_price = _to_num(row[4]) if len(row) > 4 else None
-                    amount_raw = row[5] if len(row) > 5 else None
-                    # 일부 PDF는 amount에 공백 들어감 (예: "7 8,000,000")
-                    if amount_raw:
-                        amount_str = re.sub(r'\s+', '', str(amount_raw))
-                        amount = _to_num(amount_str)
-                    else:
-                        amount = None
-                    remark = str(row[6] or "").strip() if len(row) > 6 else ""
-                    if not pn: continue
+        # 라인 파싱 — 품목 행 패턴
+        # 예: "1 12HFDVN-VM-03 EA 13,000 6,000 78,000,000 06/05"
+        # 또는 PDF 렌더링으로 "1 12HFDVN-VM-03 EA 13,000 6,000 7 8,000,000 06/05"
+        # 핵심: 첫 토큰 = 라인번호(숫자), 두번째 = 품번(공백 X), 세번째 = 단위, 나머지 = 숫자들
+        for line in full_text.split("\n"):
+            line = line.strip()
+            if not line: continue
+            # 라인 시작이 숫자 (1~99) + 공백 + 품번 + 단위
+            m = re.match(
+                r'^(\d{1,3})\s+'                    # NO
+                r'([A-Za-z0-9][A-Za-z0-9\-_/;\.]+)\s+' # 품번
+                r'(EA|개|kg|KG|m|M|set|SET|L|ℓ)\s+'  # 단위
+                r'(.+)$',                            # 나머지 (수량, 단가, 금액, 비고)
+                line
+            )
+            if not m: continue
+            line_no = int(m.group(1))
+            pn = m.group(2).strip()
+            unit = m.group(3).strip().upper()
+            rest = m.group(4).strip()
 
-                    items.append({
-                        "_source": "MJT_PDF",
-                        "_raw_filename": filename,
-                        "customer": "㈜엠제이티",
-                        "so_number": so_number,
-                        "line_no": line_no,
-                        "so_date": so_date,
-                        "due_date": due_date,
-                        # 엠제이티 품번도 우성정밀 형식 그대로
-                        "customer_part_no": pn,
-                        "canonical_pn_hint": pn,
-                        "customer_item_name": "",
-                        "qty": qty,
-                        "unit": unit,
-                        "unit_price": unit_price,
-                        "amount": amount,
-                        "remark": remark,
-                        "raw_row": {"line": line_no, "pn": pn, "qty": qty, "unit_price": unit_price},
-                    })
+            # rest에서 숫자 추출 — 콤마/공백 섞인 숫자들을 분리
+            # 예: "13,000 6,000 78,000,000 06/05" 또는 "13,000 6,000 7 8,000,000"
+            # 공백으로 분리한 토큰을 모음 후 콤마 있는 정수만 추출
+            tokens = rest.split()
+            nums = []
+            buf = ""
+            for tok in tokens:
+                # 토큰이 숫자(콤마/숫자만)이면
+                if re.match(r'^[\d,]+$', tok):
+                    if buf:
+                        # 직전이 숫자 = "7" 같은 단독 숫자였을 수도, 합쳐서 큰 수 의도일 수 있음
+                        # 콤마가 새 토큰에 있으면 새 숫자
+                        if ',' in tok and ',' not in buf:
+                            # 합쳐서 큰 수
+                            buf = buf + tok.replace(',', '')
+                        else:
+                            nums.append(_to_int(buf))
+                            buf = tok
+                    else:
+                        buf = tok
+                else:
+                    # 숫자 아닌 토큰 도착 → 직전 숫자 확정
+                    if buf:
+                        nums.append(_to_int(buf))
+                        buf = ""
+                    # 비고로 보존 (날짜 패턴 등)
+                    nums.append(tok)
+            if buf: nums.append(_to_int(buf))
+
+            # 첫 3개 숫자 = 수량/단가/금액
+            qty = next((n for n in nums if isinstance(n, int)), None)
+            num_only = [n for n in nums if isinstance(n, int)]
+            unit_price = num_only[1] if len(num_only) >= 2 else None
+            amount = num_only[2] if len(num_only) >= 3 else (
+                qty * unit_price if qty and unit_price else None
+            )
+            # 비고 (날짜 등)
+            remark_parts = [str(n) for n in nums if not isinstance(n, int)]
+            remark = " ".join(remark_parts) if remark_parts else ""
+
+            items.append({
+                "_source": "MJT_PDF",
+                "_raw_filename": filename,
+                "customer": "(주)엠제이티",
+                "so_number": so_number,
+                "line_no": line_no,
+                "so_date": so_date,
+                "due_date": due_date,
+                "customer_part_no": pn,
+                "canonical_pn_hint": pn,
+                "customer_item_name": "",
+                "qty": qty,
+                "unit": unit,
+                "unit_price": unit_price,
+                "amount": amount,
+                "remark": remark,
+                "raw_row": {"line": line_no, "pn": pn, "raw_line": line},
+            })
 
     return items
+
+
+# ────────────────────────────────────────────────
+# 양식 자동 인식
+# ────────────────────────────────────────────────
+
+def detect_so_format(file_bytes: bytes, filename: str = "") -> str:
+    """
+    파일 양식 자동 인식. 반환: 'HDX' / 'MIJIN' / 'MJT_PDF' / 'UNKNOWN'
+    """
+    fname_lower = filename.lower()
+    # PDF
+    if fname_lower.endswith('.pdf'):
+        try:
+            import pdfplumber
+            with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
+                text = "\n".join((pg.extract_text() or "")[:2000] for pg in pdf.pages[:1])
+            if any(k in text for k in ['MJT', '엠제이티', 'mjt-global', 'MJT-PO']):
+                return 'MJT_PDF'
+            # 향후 HDX/DIC PDF 양식 추가 가능
+            return 'UNKNOWN_PDF'
+        except Exception:
+            return 'UNKNOWN_PDF'
+
+    # 엑셀
+    if not (fname_lower.endswith('.xlsx') or fname_lower.endswith('.xls')):
+        return 'UNKNOWN'
+    try:
+        wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True)
+        ws = wb[wb.sheetnames[0]]
+        # 행 1, 2, 3 헤더/타이틀 검사
+        cells_top = []
+        for r in range(1, min(4, ws.max_row + 1)):
+            for c in range(1, min(15, ws.max_column + 1)):
+                v = ws.cell(r, c).value
+                if v is not None: cells_top.append(str(v))
+        text_block = " | ".join(cells_top)
+
+        # 미진정밀: 첫 행 "외주발주품목조회" 타이틀
+        if '외주발주품목조회' in text_block:
+            return 'MIJIN'
+        # HDX: "MRP", "수주번호", "업체자재코드", "납기요청일" 등 동시 등장
+        hdx_keys = ['수주번호', '업체자재코드', '협력업체', 'MRP']
+        if sum(1 for k in hdx_keys if k in text_block) >= 2:
+            return 'HDX'
+        # 거래처명을 파일명으로 추정
+        if 'HDX' in fname_lower.upper() or 'hdx' in fname_lower:
+            return 'HDX'
+        if '미진' in filename or 'mijin' in fname_lower:
+            return 'MIJIN'
+        return 'UNKNOWN_EXCEL'
+    except Exception:
+        return 'UNKNOWN'
+
+
+def parse_so_auto(file_bytes: bytes, filename: str = "") -> tuple[str, list[dict]]:
+    """자동 양식 인식 후 적절한 파서 호출. (format, items) 반환"""
+    fmt = detect_so_format(file_bytes, filename)
+    if fmt == 'HDX':
+        return fmt, parse_hdx_excel(file_bytes, filename)
+    if fmt == 'MIJIN':
+        return fmt, parse_mijin_excel(file_bytes, filename)
+    if fmt == 'MJT_PDF':
+        return fmt, parse_mjt_pdf(file_bytes, filename)
+    return fmt, []
 
 
 # ─── 우성정밀 품번 매칭 ───
