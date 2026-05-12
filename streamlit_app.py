@@ -421,15 +421,48 @@ elif page == "⚙️ 마스터 관리":
                 "&".join(bfq), limit=bom_limit)
         except Exception as e: st.error(e); brows = []
 
+        # 제품 정보 join (품번, 제품군)
+        if brows:
+            pids = list({b['product_id'] for b in brows if b.get('product_id')})
+            if pids:
+                pids_q = ",".join(f'"{p}"' for p in pids)
+                try:
+                    prows = fetch("products", "product_id,pn,sub_class,product_group",
+                                  f"product_id=in.({pids_q})", limit=1500)
+                except Exception: prows = []
+                pmap = {p['product_id']: p for p in prows}
+                for b in brows:
+                    p = pmap.get(b['product_id'], {})
+                    b['_pn'] = p.get('pn', '')
+                    b['_group'] = p.get('product_group', '')
+
+        # 검색 매칭에서 품번/제품군에도 매칭하도록 클라이언트 측 필터 추가
+        if bom_q and brows:
+            ql = bom_q.lower()
+            brows = [b for b in brows if
+                     ql in (b.get('_pn') or '').lower() or
+                     ql in (b.get('product_id') or '').lower() or
+                     ql in (b.get('material_id') or '').lower() or
+                     ql in (b.get('raw_material_name') or '').lower()]
+
         st.caption(f"검색 결과: **{len(brows)}건**")
 
         if brows:
             bdf = pd.DataFrame(brows)
+            # 컬럼 순서 재배치 (품번 먼저)
+            preferred_cols = ['bom_id', 'product_id', '_pn', '_group',
+                              'material_id', 'raw_material_name',
+                              'qty_per_pc', 'shared_factor',
+                              'source', 'verification_status']
+            preferred_cols = [c for c in preferred_cols if c in bdf.columns]
+            bdf = bdf[preferred_cols]
             bedited = st.data_editor(
                 bdf,
                 column_config={
                     "bom_id": st.column_config.NumberColumn("ID", disabled=True, width="small"),
                     "product_id": st.column_config.TextColumn("제품ID", disabled=True, width="small"),
+                    "_pn": st.column_config.TextColumn("품번", disabled=True, width="medium"),
+                    "_group": st.column_config.TextColumn("제품군", disabled=True, width="small"),
                     "material_id": st.column_config.TextColumn("자재ID", disabled=True, width="small"),
                     "raw_material_name": st.column_config.TextColumn("자재명", width="large", disabled=True),
                     "qty_per_pc": st.column_config.NumberColumn("자재/PC (EA)", format="%.3f"),
@@ -1335,15 +1368,18 @@ elif page == "📋 발주서 작성":
         if st.session_state.get("po_prefill_vendor_name") or st.session_state.get("po_prefill_items"):
             pv = st.session_state.get("po_prefill_vendor_name", "")
             pi = st.session_state.get("po_prefill_items", [])
-            st.info(f"🛒 **생산 계획에서 자동 제안 받은 발주 데이터**: 거래처 '{pv}', 품목 {len(pi)}개. "
-                    f"아래에서 거래처 선택 + 품목 확인 후 발주서 생성.")
-            if st.button("🔄 자동 제안 데이터 초기화"):
+            st.info(f"🛒 **생산 계획에서 자동 제안 받은 발주 데이터**: 거래처 '{pv}', 품목 {len(pi)}개")
+            if st.button("🔄 자동 제안 + 품목표 모두 초기화"):
                 st.session_state.po_prefill_vendor_name = None
                 st.session_state.po_prefill_items = None
+                st.session_state.po_items = []
                 st.rerun()
-            # 품목 prefill
+            # 품목 prefill (현재 품목표가 비어있을 때만)
             if pi and not st.session_state.get("po_items"):
-                st.session_state.po_items = list(pi)
+                import uuid as _uuid
+                st.session_state.po_items = [
+                    {**x, "_uid": str(_uuid.uuid4())[:8]} for x in pi
+                ]
 
         st.markdown("##### ① 거래처 선택")
         group_options = ["전체 (매입)"] + list(PURCHASE_GROUPS.values())
@@ -1473,7 +1509,9 @@ elif page == "📋 발주서 작성":
                         upd = int(p.get("material_unit_price") or 0)
                         cols[3].write(f"₩{upd:,}" if upd else "-")
                         if cols[4].button("➕", key=f"add_{p['product_id']}"):
+                            import uuid as _uuid
                             st.session_state.po_items.append({
+                                "_uid": str(_uuid.uuid4())[:8],
                                 "product_id": p["product_id"], "item_name": p["pn"],
                                 "material": p.get("material") or "",
                                 "spec": p.get("raw_material_spec") or "",
@@ -1488,7 +1526,9 @@ elif page == "📋 발주서 작성":
                 ns = c3.text_input("규격", key="nx_spec")
                 np_ = c4.number_input("단가", min_value=0, step=100, key="nx_price")
                 if st.button("➕ 추가 (즉석)") and nx:
+                    import uuid as _uuid
                     st.session_state.po_items.append({
+                        "_uid": str(_uuid.uuid4())[:8],
                         "product_id": None, "item_name": nx, "material": nm,
                         "spec": ns, "qty": 0, "unit_price": int(np_),
                     })
@@ -1500,21 +1540,35 @@ elif page == "📋 발주서 작성":
             if not st.session_state.po_items:
                 st.info("위에서 ➕ 버튼으로 품목을 추가하세요.")
             else:
+                # UID 부여 (기존 데이터에 _uid 없을 수도)
+                import uuid as _uuid_local
+                for it in st.session_state.po_items:
+                    if "_uid" not in it:
+                        it["_uid"] = str(_uuid_local.uuid4())[:8]
+
                 for i, it in enumerate(st.session_state.po_items):
+                    uid = it["_uid"]
                     with st.container(border=True):
                         cols = st.columns([3, 1.5, 2, 1.5, 1.5, 1.5, 0.5])
                         cols[0].write(f"**{it['item_name']}**")
                         cols[1].write(it.get("material") or "")
                         cols[2].write(it.get("spec") or "")
+                        # key는 UID로 (인덱스 사용 시 삭제 후 위젯 잔존값 이슈)
                         it["qty"] = cols[3].number_input("수량", 0, value=int(it.get("qty") or 0),
-                            step=10, key=f"qty_{i}", label_visibility="collapsed")
+                            step=10, key=f"qty_{uid}", label_visibility="collapsed")
                         it["unit_price"] = cols[4].number_input("단가", 0, value=int(it.get("unit_price") or 0),
-                            step=100, key=f"up_{i}", label_visibility="collapsed")
+                            step=100, key=f"up_{uid}", label_visibility="collapsed")
                         amt = it["qty"] * it["unit_price"]
                         cols[5].markdown(f"<div style='text-align:right;padding-top:8px'>₩{amt:,}</div>",
                                          unsafe_allow_html=True)
-                        if cols[6].button("🗑", key=f"del_{i}"):
-                            st.session_state.po_items.pop(i); st.rerun()
+                        if cols[6].button("🗑", key=f"del_{uid}"):
+                            # 해당 UID의 위젯 state도 정리
+                            for k in (f"qty_{uid}", f"up_{uid}"):
+                                if k in st.session_state: del st.session_state[k]
+                            st.session_state.po_items = [
+                                x for x in st.session_state.po_items if x["_uid"] != uid
+                            ]
+                            st.rerun()
                 total = sum(it["qty"] * it["unit_price"] for it in st.session_state.po_items)
                 st.markdown(f"### 합계: ₩{total:,} (VAT 별도)")
 
