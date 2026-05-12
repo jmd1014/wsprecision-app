@@ -412,7 +412,7 @@ elif page == "⚙️ 마스터 관리":
         with bc2:
             bom_limit = st.number_input("행수", 20, 500, 100, 20, key="bom_lim")
 
-        bfq = ["order=product_id.asc,line_no.asc.nullslast"]
+        bfq = ["order=product_id.asc,bom_id.asc"]
         if bom_q:
             bfq.append(f"or=(product_id.ilike.*{bom_q}*,material_id.ilike.*{bom_q}*,raw_material_name.ilike.*{bom_q}*)")
         try:
