@@ -211,7 +211,12 @@ def fill_po_template(po_data: dict, items: list[dict], vendor_info: dict = None)
         ws.cell(row, 1).border = BORDER_ALL
         # 데이터
         if item:
-            ws.cell(row, 2, item.get("item_name", ""))
+            # 품명 + (메모가 있으면 줄바꿈으로 부가 표시)
+            name_text = item.get("item_name", "")
+            memo = item.get("memo", "")
+            if memo:
+                name_text = f"{name_text}\n  └ {memo}"
+            ws.cell(row, 2, name_text)
             ws.cell(row, 3, item.get("material") or "")
             ws.cell(row, 4, item.get("spec") or "")
             qty = int(item.get("qty") or 0)
@@ -221,10 +226,12 @@ def fill_po_template(po_data: dict, items: list[dict], vendor_info: dict = None)
             ws.cell(row, 6, up if up else "")
             ws.cell(row, 7, amt if amt else "")
             total_amount += amt
-            # 포맷
             ws.cell(row, 5).number_format = "#,##0"
             ws.cell(row, 6).number_format = '"₩"#,##0'
             ws.cell(row, 7).number_format = '"₩"#,##0'
+            # 메모가 있으면 행 높이 조금 증가
+            if memo:
+                ws.row_dimensions[row].height = 28
 
         # 모든 셀 스타일
         ws.cell(row, 2).font = FONT_BODY; ws.cell(row, 2).alignment = LEFT; ws.cell(row, 2).border = BORDER_ALL

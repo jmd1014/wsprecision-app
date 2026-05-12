@@ -1487,6 +1487,59 @@ elif page == "📋 발주서 작성":
                     st.write(f"**주소**: {vendor.get('address') or '-'}")
                     st.write(f"**담당자**: {vendor.get('contact_person') or '-'}")
 
+            # ─── ② 최근 발주 복사 (이 거래처의 과거 발주 5건) ───
+            with st.expander("📋 최근 발주에서 복사 (이 거래처)"):
+                try:
+                    recent_pos = fetch("purchase_orders",
+                        "po_id,po_number,po_date,total_amount",
+                        f"vendor_id=eq.{vendor['vendor_id']}&order=po_date.desc",
+                        limit=10)
+                except Exception as e:
+                    st.error(e); recent_pos = []
+                if not recent_pos:
+                    st.caption("이 거래처에 과거 발주가 없습니다.")
+                else:
+                    for po in recent_pos:
+                        rc1, rc2, rc3 = st.columns([3, 2, 1])
+                        rc1.write(f"**{po['po_number']}** · {po.get('po_date','')}")
+                        rc2.write(f"₩{int(po.get('total_amount') or 0):,}")
+                        if rc3.button("📋 복사", key=f"copy_po_{po['po_id']}"):
+                            try:
+                                copied = fetch("purchase_order_items",
+                                    "item_name,spec,qty,unit_price,remark",
+                                    f"po_id=eq.{po['po_id']}&order=line_no", limit=50)
+                                import uuid as _uuid_c
+                                for it in copied:
+                                    st.session_state.po_items.append({
+                                        "_uid": str(_uuid_c.uuid4())[:8],
+                                        "product_id": None,
+                                        "item_name": it.get("item_name") or "",
+                                        "material": "",
+                                        "spec": it.get("spec") or "",
+                                        "qty": int(it.get("qty") or 0),
+                                        "unit_price": int(it.get("unit_price") or 0),
+                                        "memo": it.get("remark") or "",
+                                    })
+                                st.success(f"✅ {po['po_number']}의 {len(copied)}개 품목 복사")
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"복사 실패: {e}")
+
+            # ─── 거래처별 단가 자동 채움 helper ───
+            @st.cache_data(ttl=60)
+            def _get_vendor_recent_price(vid, item_name):
+                """이 거래처에서 같은 품목 최근 발주 단가"""
+                try:
+                    pos = fetch("purchase_orders", "po_id",
+                                f"vendor_id=eq.{vid}&order=po_date.desc", limit=20)
+                    if not pos: return None
+                    po_ids = ",".join(str(p["po_id"]) for p in pos)
+                    items = fetch("purchase_order_items", "unit_price,po_id",
+                                  f"po_id=in.({po_ids})&item_name=eq.{item_name}&order=po_id.desc",
+                                  limit=1)
+                    return int(items[0]["unit_price"]) if items else None
+                except: return None
+
             st.divider()
             st.markdown("##### ② 품목 추가")
             if "po_items" not in st.session_state:
@@ -1506,8 +1559,14 @@ elif page == "📋 발주서 작성":
                         cols[0].write(f"**{p['pn']}**")
                         cols[1].write(p.get("material") or "-")
                         cols[2].write(p.get("raw_material_spec") or p.get("bom_material_name") or "-")
-                        upd = int(p.get("material_unit_price") or 0)
-                        cols[3].write(f"₩{upd:,}" if upd else "-")
+                        # 거래처별 최근 단가 우선, 없으면 마스터 단가
+                        vendor_price = _get_vendor_recent_price(vendor["vendor_id"], p["pn"])
+                        upd = vendor_price or int(p.get("material_unit_price") or 0)
+                        if vendor_price:
+                            cols[3].markdown(f"₩{upd:,} <small>(이전)</small>",
+                                              unsafe_allow_html=True)
+                        else:
+                            cols[3].write(f"₩{upd:,}" if upd else "-")
                         if cols[4].button("➕", key=f"add_{p['product_id']}"):
                             import uuid as _uuid
                             st.session_state.po_items.append({
@@ -1515,9 +1574,42 @@ elif page == "📋 발주서 작성":
                                 "product_id": p["product_id"], "item_name": p["pn"],
                                 "material": p.get("material") or "",
                                 "spec": p.get("raw_material_spec") or "",
-                                "qty": 0, "unit_price": upd,
+                                "qty": 0, "unit_price": upd, "memo": "",
                             })
                             st.rerun()
+
+            # ─── ④ 품번 일괄 추가 ───
+            with st.expander("📋 품번 일괄 추가 (콤마/줄바꿈 구분)"):
+                bulk_txt = st.text_area("품번 목록",
+                    placeholder="8HFDV-VM-05\n4PDVN-02\nMRG6-07\n또는 콤마 구분: 8HFDV-VM-05, 4PDVN-02",
+                    key="bulk_pn")
+                if st.button("📋 일괄 추가", key="bulk_add_btn") and bulk_txt:
+                    import re as _re_bulk, uuid as _uuid_bulk
+                    pns = [x.strip() for x in _re_bulk.split(r'[,\n]+', bulk_txt) if x.strip()]
+                    added = 0; notfound = []
+                    for pn in pns:
+                        try:
+                            r = fetch("active_products",
+                                "product_id,pn,raw_material_name,raw_material_spec,material,material_unit_price",
+                                f"or=(pn.eq.{pn},alias_list.ilike.*{pn}*)&limit=1")
+                        except: r = []
+                        if not r:
+                            notfound.append(pn); continue
+                        p = r[0]
+                        vp = _get_vendor_recent_price(vendor["vendor_id"], p["pn"])
+                        upd = vp or int(p.get("material_unit_price") or 0)
+                        st.session_state.po_items.append({
+                            "_uid": str(_uuid_bulk.uuid4())[:8],
+                            "product_id": p["product_id"], "item_name": p["pn"],
+                            "material": p.get("material") or "",
+                            "spec": p.get("raw_material_spec") or "",
+                            "qty": 0, "unit_price": upd, "memo": "",
+                        })
+                        added += 1
+                    msg = f"✅ {added}개 추가"
+                    if notfound: msg += f"\n⚠️ 미발견: {', '.join(notfound[:10])}"
+                    if added: st.success(msg); st.rerun()
+                    else: st.warning(msg)
 
             with st.expander("✏️ 마스터에 없는 품목 즉석 추가"):
                 c1, c2, c3, c4 = st.columns([3, 2, 2, 2])
@@ -1530,7 +1622,7 @@ elif page == "📋 발주서 작성":
                     st.session_state.po_items.append({
                         "_uid": str(_uuid.uuid4())[:8],
                         "product_id": None, "item_name": nx, "material": nm,
-                        "spec": ns, "qty": 0, "unit_price": int(np_),
+                        "spec": ns, "qty": 0, "unit_price": int(np_), "memo": "",
                     })
                     st.rerun()
 
@@ -1546,29 +1638,37 @@ elif page == "📋 발주서 작성":
                     if "_uid" not in it:
                         it["_uid"] = str(_uuid_local.uuid4())[:8]
 
+                # 헤더 행
+                hcols = st.columns([2.5, 1.2, 1.8, 1.2, 1.3, 1.3, 2, 0.5])
+                hcols[0].markdown("**품명**"); hcols[1].markdown("**재질**")
+                hcols[2].markdown("**규격**"); hcols[3].markdown("**수량**")
+                hcols[4].markdown("**단가**"); hcols[5].markdown("**합계**")
+                hcols[6].markdown("**메모**"); hcols[7].markdown("")
+
                 for i, it in enumerate(st.session_state.po_items):
                     uid = it["_uid"]
-                    with st.container(border=True):
-                        cols = st.columns([3, 1.5, 2, 1.5, 1.5, 1.5, 0.5])
-                        cols[0].write(f"**{it['item_name']}**")
-                        cols[1].write(it.get("material") or "")
-                        cols[2].write(it.get("spec") or "")
-                        # key는 UID로 (인덱스 사용 시 삭제 후 위젯 잔존값 이슈)
-                        it["qty"] = cols[3].number_input("수량", 0, value=int(it.get("qty") or 0),
-                            step=10, key=f"qty_{uid}", label_visibility="collapsed")
-                        it["unit_price"] = cols[4].number_input("단가", 0, value=int(it.get("unit_price") or 0),
-                            step=100, key=f"up_{uid}", label_visibility="collapsed")
-                        amt = it["qty"] * it["unit_price"]
-                        cols[5].markdown(f"<div style='text-align:right;padding-top:8px'>₩{amt:,}</div>",
-                                         unsafe_allow_html=True)
-                        if cols[6].button("🗑", key=f"del_{uid}"):
-                            # 해당 UID의 위젯 state도 정리
-                            for k in (f"qty_{uid}", f"up_{uid}"):
-                                if k in st.session_state: del st.session_state[k]
-                            st.session_state.po_items = [
-                                x for x in st.session_state.po_items if x["_uid"] != uid
-                            ]
-                            st.rerun()
+                    cols = st.columns([2.5, 1.2, 1.8, 1.2, 1.3, 1.3, 2, 0.5])
+                    cols[0].write(f"**{it['item_name']}**")
+                    cols[1].write(it.get("material") or "")
+                    cols[2].write(it.get("spec") or "")
+                    it["qty"] = cols[3].number_input("수량", 0, value=int(it.get("qty") or 0),
+                        step=10, key=f"qty_{uid}", label_visibility="collapsed")
+                    it["unit_price"] = cols[4].number_input("단가", 0, value=int(it.get("unit_price") or 0),
+                        step=100, key=f"up_{uid}", label_visibility="collapsed")
+                    amt = it["qty"] * it["unit_price"]
+                    cols[5].markdown(
+                        f"<div style='text-align:right;padding-top:8px'>₩{amt:,}</div>",
+                        unsafe_allow_html=True)
+                    it["memo"] = cols[6].text_input("메모", value=it.get("memo") or "",
+                        key=f"memo_{uid}", label_visibility="collapsed",
+                        placeholder="예: 6/15 납기, 검수 후 입고")
+                    if cols[7].button("🗑", key=f"del_{uid}"):
+                        for k in (f"qty_{uid}", f"up_{uid}", f"memo_{uid}"):
+                            if k in st.session_state: del st.session_state[k]
+                        st.session_state.po_items = [
+                            x for x in st.session_state.po_items if x["_uid"] != uid
+                        ]
+                        st.rerun()
                 total = sum(it["qty"] * it["unit_price"] for it in st.session_state.po_items)
                 st.markdown(f"### 합계: ₩{total:,} (VAT 별도)")
 
@@ -1630,7 +1730,12 @@ elif page == "📋 발주서 작성":
                                 "qty": it["qty"], "unit": "EA",
                                 "unit_price": it["unit_price"],
                                 "amount": it["qty"] * it["unit_price"],
-                                "remark": it.get("material") or None,
+                                # 메모 + 재질 합쳐 remark에 저장
+                                "remark": (
+                                    (it.get("memo") or "") +
+                                    (" / " + it["material"] if it.get("memo") and it.get("material") else "") +
+                                    (it.get("material") or "" if not it.get("memo") else "")
+                                ) or None,
                             } for i, it in enumerate(st.session_state.po_items)])
                             st.info(f"💾 발주 이력 저장 (po_id={po_row['po_id']})")
                     except Exception as e:
