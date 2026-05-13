@@ -50,19 +50,30 @@ LEFT = Alignment(horizontal="left", vertical="center", wrap_text=True, indent=1)
 RIGHT = Alignment(horizontal="right", vertical="center", indent=1)
 
 
-def generate_po_number(client) -> str:
-    """발주번호 생성: PO-YYYYMM-### (월별 일련)"""
-    today = date.today()
-    prefix = f"PO-{today.strftime('%Y%m')}-"
+def generate_po_number(client=None) -> str:
+    """
+    발주번호 생성. 동시성 안전 DB 함수 우선 호출.
+    client 인자는 historical compat (현재는 사용 X). 신규 호출은
+    app.services.purchase_service.generate_po_number_safe() 권장.
+    """
     try:
-        rows = client.fetch(
-            "purchase_orders", "po_number",
-            f"po_number=like.{prefix}*&order=po_number.desc&limit=1"
-        )
-        seq = int(rows[0]["po_number"].replace(prefix, "")) + 1 if rows else 1
+        from app.services.purchase_service import generate_po_number_safe
+        return generate_po_number_safe()
     except Exception:
-        seq = 1
-    return f"{prefix}{seq:03d}"
+        # 의존성 import 실패 시에만 Python fallback
+        today = date.today()
+        prefix = f"PO-{today.strftime('%Y%m')}-"
+        if client is None:
+            return f"{prefix}001"
+        try:
+            rows = client.fetch(
+                "purchase_orders", "po_number",
+                f"po_number=like.{prefix}*&order=po_number.desc&limit=1",
+            )
+            seq = int(rows[0]["po_number"].replace(prefix, "")) + 1 if rows else 1
+        except Exception:
+            seq = 1
+        return f"{prefix}{seq:03d}"
 
 
 def fill_po_template(po_data: dict, items: list[dict], vendor_info: dict = None) -> bytes:
