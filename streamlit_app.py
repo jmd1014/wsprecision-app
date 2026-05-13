@@ -39,7 +39,7 @@ with st.sidebar:
     st.header("📋 메뉴")
     page = st.radio(
         "이동",
-        ["🏠 홈", "⚙️ 마스터 관리", "📥 수주", "📊 생산 계획", "📋 발주서 작성", "📦 입출고", "🏭 생산 보고", "📊 매출/재고"],
+        ["🏠 홈", "⚙️ 마스터 관리", "📥 수주", "📊 생산 계획", "📋 발주서 작성", "📦 입출고", "🏭 생산 보고", "📊 매출/재고", "💰 원가 분석"],
         label_visibility="collapsed",
     )
     st.divider()
@@ -1910,6 +1910,533 @@ elif page == "🏭 생산 보고":
 elif page == "📊 매출/재고":
     st.subheader("📊 매출/재고 조회")
     st.info("🚧 Stage 5에서 활성화 예정")
+
+
+elif page == "💰 원가 분석":
+    st.subheader("💰 원가 분석")
+    st.caption("정적 원가 스냅샷(소재/외주/열처리/표면) + 실판매가 → 마진 분석. 생산실적 추가 시 실원가 비교 탭 확장 예정.")
+
+    if not DB_AVAILABLE:
+        st.error("DB 연결이 활성화되지 않았습니다."); st.stop()
+
+    import db as _db
+    import pandas as pd
+
+    # 공통 fetch 헬퍼 — product_full view 기반
+    COST_FIELDS = (
+        "product_id,pn,customer,product_group,sub_class,"
+        "material_kg_price,material_unit_price,outsourcing_per_pc,"
+        "heat_treat_per_pc,surface_per_pc,estimated_cost_per_pc,"
+        "cost_data_quality,avg_unit_price,margin_pct,abc_grade,"
+        "total_sales_12m,sales_count_12m,activity_trend"
+    )
+
+    def _money(v):
+        try:    return f"{int(v):,}"
+        except: return "-"
+
+    def _pct(v):
+        try:    return f"{float(v):.1f}%"
+        except: return "-"
+
+    tabs = st.tabs(["📊 마진 대시보드", "🔍 품목 분석", "⚠️ 이상치", "✏️ 원가 편집"])
+
+    # ════════════════════════════════════════════════
+    # Tab 1: 마진 대시보드
+    # ════════════════════════════════════════════════
+    with tabs[0]:
+        st.markdown("### 핵심 지표")
+        try:
+            # 활성 제품 전체 (마진/원가 통계 산출 기반)
+            all_rows = fetch("product_full",
+                "product_id,estimated_cost_per_pc,avg_unit_price,margin_pct,total_sales_12m",
+                "archived_at=is.null", limit=5000)
+        except Exception as e:
+            st.error(f"데이터 로드 실패: {e}"); st.stop()
+
+        df_all = pd.DataFrame(all_rows) if all_rows else pd.DataFrame()
+        if df_all.empty:
+            st.warning("활성 제품 데이터가 없습니다."); st.stop()
+
+        # 숫자 강제 변환
+        for c in ["estimated_cost_per_pc", "avg_unit_price", "margin_pct", "total_sales_12m"]:
+            df_all[c] = pd.to_numeric(df_all[c], errors="coerce")
+
+        n_total = len(df_all)
+        n_has_cost = int((df_all["estimated_cost_per_pc"].fillna(0) > 0).sum())
+        n_has_sale = int((df_all["avg_unit_price"].fillna(0) > 0).sum())
+        n_both = int(((df_all["estimated_cost_per_pc"].fillna(0) > 0) &
+                      (df_all["avg_unit_price"].fillna(0) > 0)).sum())
+        # 마진 산출 가능한 것만으로 통계
+        df_m = df_all.dropna(subset=["margin_pct"])
+        avg_margin = df_m["margin_pct"].mean() if not df_m.empty else None
+        n_neg = int((df_m["margin_pct"] < 0).sum())
+        n_low = int(((df_m["margin_pct"] >= 0) & (df_m["margin_pct"] < 10)).sum())
+        n_missing = n_total - n_has_cost
+
+        k1, k2, k3, k4, k5 = st.columns(5)
+        k1.metric("활성 제품", f"{n_total:,}")
+        k2.metric("원가 데이터 보유", f"{n_has_cost:,}", f"{n_has_cost/n_total*100:.0f}%")
+        k3.metric("평균 마진율", _pct(avg_margin) if avg_margin is not None else "-")
+        k4.metric("역마진 (<0%)", f"{n_neg:,}", "주의" if n_neg > 0 else "양호")
+        k5.metric("저마진 (0~10%)", f"{n_low:,}")
+
+        k6, k7, k8 = st.columns(3)
+        k6.metric("원가 데이터 누락", f"{n_missing:,}", f"{n_missing/n_total*100:.0f}%")
+        k7.metric("판매 실적 있음", f"{n_has_sale:,}")
+        k8.metric("원가+판매 모두 보유", f"{n_both:,}", "마진 산출 가능")
+
+        st.divider()
+        st.markdown("### 마진율 분포")
+        if not df_m.empty:
+            # 구간화
+            bins = [-9999, -10, 0, 10, 20, 30, 50, 9999]
+            labels = ["역마진 (-10%↓)", "역마진 (-10~0%)", "저마진 (0~10%)",
+                      "보통 (10~20%)", "양호 (20~30%)", "우수 (30~50%)", "최우수 (50%+)"]
+            df_m["bucket"] = pd.cut(df_m["margin_pct"], bins=bins, labels=labels)
+            dist = df_m.groupby("bucket", observed=True).size().reset_index(name="품목수")
+            st.bar_chart(dist.set_index("bucket"), height=240)
+        else:
+            st.caption("마진 산출 가능한 품목이 없습니다.")
+
+        st.divider()
+        st.markdown("### ⛔ 저마진 BOTTOM 10 (마진율↑)")
+        try:
+            bottom = fetch("product_full", COST_FIELDS,
+                "archived_at=is.null&margin_pct=not.is.null&total_sales_12m=gt.0"
+                "&order=margin_pct.asc", limit=10)
+            if bottom:
+                df_b = pd.DataFrame(bottom)
+                df_b["판매가"] = df_b["avg_unit_price"].apply(_money)
+                df_b["추정원가"] = df_b["estimated_cost_per_pc"].apply(_money)
+                df_b["마진율"] = df_b["margin_pct"].apply(_pct)
+                df_b["12M매출"] = df_b["total_sales_12m"].apply(_money)
+                st.dataframe(
+                    df_b[["pn", "customer", "판매가", "추정원가", "마진율",
+                          "12M매출", "abc_grade", "activity_trend"]]
+                    .rename(columns={"pn": "품번", "customer": "고객사",
+                                     "abc_grade": "ABC", "activity_trend": "추세"}),
+                    use_container_width=True, hide_index=True)
+            else:
+                st.caption("데이터 없음")
+        except Exception as e:
+            st.caption(f"조회 실패: {e}")
+
+        st.divider()
+        st.markdown("### 🏆 고마진 TOP 10 (마진율↓)")
+        try:
+            top = fetch("product_full", COST_FIELDS,
+                "archived_at=is.null&margin_pct=not.is.null&total_sales_12m=gt.0"
+                "&order=margin_pct.desc", limit=10)
+            if top:
+                df_t = pd.DataFrame(top)
+                df_t["판매가"] = df_t["avg_unit_price"].apply(_money)
+                df_t["추정원가"] = df_t["estimated_cost_per_pc"].apply(_money)
+                df_t["마진율"] = df_t["margin_pct"].apply(_pct)
+                df_t["12M매출"] = df_t["total_sales_12m"].apply(_money)
+                st.dataframe(
+                    df_t[["pn", "customer", "판매가", "추정원가", "마진율",
+                          "12M매출", "abc_grade", "activity_trend"]]
+                    .rename(columns={"pn": "품번", "customer": "고객사",
+                                     "abc_grade": "ABC", "activity_trend": "추세"}),
+                    use_container_width=True, hide_index=True)
+        except Exception as e:
+            st.caption(f"조회 실패: {e}")
+
+    # ════════════════════════════════════════════════
+    # Tab 2: 품목 분석 (단일 품번 상세)
+    # ════════════════════════════════════════════════
+    with tabs[1]:
+        st.markdown("### 품목 검색")
+        c1, c2 = st.columns([3, 1])
+        with c1:
+            q = st.text_input("품번 / 품명 / 고객사", placeholder="예: 4S-001 또는 FLANGE 또는 명진",
+                              key="cost_search")
+        with c2:
+            ca_limit = st.number_input("표시", 5, 100, 20, 5, key="cost_search_limit")
+
+        if q:
+            parts = [f"archived_at=is.null"]
+            qq = q.strip()
+            # OR 검색 (PostgREST or= 문법)
+            parts.append(f"or=(pn.ilike.*{qq}*,customer.ilike.*{qq}*,product_group.ilike.*{qq}*)")
+            parts.append(f"order=total_sales_12m.desc.nullslast")
+            try:
+                rows = fetch("product_full", COST_FIELDS, "&".join(parts), limit=int(ca_limit))
+            except Exception as e:
+                st.error(f"검색 실패: {e}"); rows = []
+
+            if not rows:
+                st.info("검색 결과 없음")
+            else:
+                df_q = pd.DataFrame(rows)
+                df_q["_label"] = df_q.apply(
+                    lambda r: f"{r['pn']}  |  {r.get('customer','')}  |  마진 {r.get('margin_pct') or '-' }%",
+                    axis=1
+                )
+                sel = st.selectbox("분석할 품목 선택", df_q["_label"].tolist(), key="cost_pick")
+                row = df_q[df_q["_label"] == sel].iloc[0].to_dict() if sel else None
+
+                if row:
+                    st.divider()
+                    st.markdown(f"#### 🔧 {row['pn']}  ·  {row.get('customer') or '-'}")
+                    sale = float(row.get("avg_unit_price") or 0)
+                    mat = float(row.get("material_unit_price") or 0)
+                    out_ = float(row.get("outsourcing_per_pc") or 0)
+                    heat = float(row.get("heat_treat_per_pc") or 0)
+                    surf = float(row.get("surface_per_pc") or 0)
+                    cost = float(row.get("estimated_cost_per_pc") or 0)
+                    margin = sale - cost if (sale > 0 and cost > 0) else None
+                    margin_pct = (margin / sale * 100) if (margin is not None and sale > 0) else None
+
+                    m1, m2, m3, m4 = st.columns(4)
+                    m1.metric("평균 판매가 (12M)", _money(sale))
+                    m2.metric("추정 원가", _money(cost))
+                    m3.metric("마진", _money(margin) if margin is not None else "-")
+                    m4.metric("마진율", _pct(margin_pct) if margin_pct is not None else "-",
+                              delta=("역마진" if (margin_pct is not None and margin_pct < 0)
+                                     else "저마진" if (margin_pct is not None and margin_pct < 10)
+                                     else None),
+                              delta_color="inverse")
+
+                    st.markdown("##### 원가 구성")
+                    cc1, cc2, cc3, cc4 = st.columns(4)
+                    cc1.metric("소재비/EA", _money(mat),
+                               f"{(mat/cost*100):.0f}%" if cost > 0 else None)
+                    cc2.metric("외주비/EA", _money(out_),
+                               f"{(out_/cost*100):.0f}%" if cost > 0 else None)
+                    cc3.metric("열처리비/EA", _money(heat),
+                               f"{(heat/cost*100):.0f}%" if cost > 0 else None)
+                    cc4.metric("표면처리비/EA", _money(surf),
+                               f"{(surf/cost*100):.0f}%" if cost > 0 else None)
+
+                    # 구성 비율 bar
+                    if cost > 0:
+                        comp = pd.DataFrame({
+                            "항목": ["소재비", "외주비", "열처리", "표면처리", "기타"],
+                            "금액": [mat, out_, heat, surf,
+                                     max(cost - mat - out_ - heat - surf, 0)]
+                        }).set_index("항목")
+                        st.bar_chart(comp, height=200)
+
+                    st.markdown("##### 부가 정보")
+                    info_rows = [
+                        ("재질", row.get("material") or row.get("raw_material_name") or "-"),
+                        ("규격", row.get("raw_material_spec") or "-"),
+                        ("제품군", row.get("product_group") or "-"),
+                        ("ABC 등급", row.get("abc_grade") or "-"),
+                        ("12M 매출액", _money(row.get("total_sales_12m"))),
+                        ("12M 거래건수", row.get("sales_count_12m") or 0),
+                        ("매출 추세", row.get("activity_trend") or "-"),
+                        ("원가데이터 품질", row.get("cost_data_quality") or "-"),
+                        ("소재 KG단가", _money(row.get("material_kg_price"))),
+                    ]
+                    info_df = pd.DataFrame(info_rows, columns=["항목", "값"])
+                    st.dataframe(info_df, hide_index=True, use_container_width=True)
+        else:
+            st.caption("검색어를 입력하세요.")
+
+    # ════════════════════════════════════════════════
+    # Tab 3: 이상치 탐지
+    # ════════════════════════════════════════════════
+    with tabs[2]:
+        st.markdown("### 이상치 유형 선택")
+        outlier_kind = st.radio(
+            "유형",
+            ["역마진 (margin < 0%)",
+             "저마진 (0 ≤ margin < 10%)",
+             "원가 데이터 누락",
+             "소재비 과다 (판매가의 50% 초과)",
+             "원가 > 판매가 (적자)"],
+            horizontal=True,
+            key="outlier_kind"
+        )
+
+        ol_limit = st.number_input("최대 표시 행", 20, 500, 100, 20, key="ol_limit")
+
+        try:
+            if outlier_kind.startswith("역마진"):
+                rows = fetch("product_full", COST_FIELDS,
+                    "archived_at=is.null&margin_pct=lt.0&order=margin_pct.asc",
+                    limit=int(ol_limit))
+            elif outlier_kind.startswith("저마진"):
+                rows = fetch("product_full", COST_FIELDS,
+                    "archived_at=is.null&margin_pct=gte.0&margin_pct=lt.10"
+                    "&order=margin_pct.asc", limit=int(ol_limit))
+            elif outlier_kind.startswith("원가 데이터 누락"):
+                # estimated_cost_per_pc IS NULL or = 0
+                rows = fetch("product_full", COST_FIELDS,
+                    "archived_at=is.null&or=(estimated_cost_per_pc.is.null,estimated_cost_per_pc.eq.0)"
+                    "&order=total_sales_12m.desc.nullslast", limit=int(ol_limit))
+            elif outlier_kind.startswith("소재비 과다"):
+                rows = fetch("product_full", COST_FIELDS,
+                    "archived_at=is.null&avg_unit_price=gt.0&material_unit_price=gt.0"
+                    "&order=total_sales_12m.desc.nullslast", limit=2000)
+                # 클라이언트 측 필터
+                rows = [r for r in rows if
+                        (float(r.get("material_unit_price") or 0) >
+                         float(r.get("avg_unit_price") or 0) * 0.5)]
+                rows = rows[:int(ol_limit)]
+            else:  # 원가>판매가
+                rows = fetch("product_full", COST_FIELDS,
+                    "archived_at=is.null&avg_unit_price=gt.0&estimated_cost_per_pc=gt.0"
+                    "&order=total_sales_12m.desc.nullslast", limit=2000)
+                rows = [r for r in rows if
+                        (float(r.get("estimated_cost_per_pc") or 0) >
+                         float(r.get("avg_unit_price") or 0))]
+                rows = rows[:int(ol_limit)]
+        except Exception as e:
+            st.error(f"조회 실패: {e}"); rows = []
+
+        st.caption(f"검출: **{len(rows):,}건**")
+
+        if rows:
+            df_o = pd.DataFrame(rows)
+            for c in ["material_unit_price", "outsourcing_per_pc",
+                      "heat_treat_per_pc", "surface_per_pc",
+                      "estimated_cost_per_pc", "avg_unit_price",
+                      "margin_pct", "total_sales_12m"]:
+                if c in df_o.columns:
+                    df_o[c] = pd.to_numeric(df_o[c], errors="coerce")
+
+            df_o["판매가"] = df_o["avg_unit_price"].apply(_money)
+            df_o["소재비"] = df_o["material_unit_price"].apply(_money)
+            df_o["외주비"] = df_o["outsourcing_per_pc"].apply(_money)
+            df_o["열처리"] = df_o["heat_treat_per_pc"].apply(_money)
+            df_o["표면"] = df_o["surface_per_pc"].apply(_money)
+            df_o["추정원가"] = df_o["estimated_cost_per_pc"].apply(_money)
+            df_o["마진율"] = df_o["margin_pct"].apply(_pct)
+            df_o["12M매출"] = df_o["total_sales_12m"].apply(_money)
+
+            cols = ["pn", "customer", "product_group", "판매가", "소재비",
+                    "외주비", "열처리", "표면", "추정원가", "마진율",
+                    "12M매출", "abc_grade", "cost_data_quality"]
+            show = df_o[[c for c in cols if c in df_o.columns]].rename(columns={
+                "pn": "품번", "customer": "고객사", "product_group": "제품군",
+                "abc_grade": "ABC", "cost_data_quality": "데이터품질"
+            })
+            st.dataframe(show, use_container_width=True, hide_index=True, height=520)
+
+            csv = show.to_csv(index=False).encode("utf-8-sig")
+            st.download_button("📥 CSV 다운로드", csv,
+                file_name=f"cost_outliers_{outlier_kind[:6]}.csv",
+                mime="text/csv", use_container_width=False)
+        else:
+            st.info("해당 조건의 이상치가 없습니다.")
+
+    # ════════════════════════════════════════════════
+    # Tab 4: 원가 편집 (단건 또는 다건)
+    # ════════════════════════════════════════════════
+    with tabs[3]:
+        st.markdown("### 원가 편집")
+        st.caption("⚠️ 저장 시 products 테이블이 즉시 갱신됩니다. "
+                   "estimated_cost_per_pc 는 자동 재계산되지 않으므로 직접 입력해 주세요.")
+
+        edit_mode = st.radio("편집 방식",
+            ["🔧 단건 편집", "📑 다건 일괄 편집 (검색 결과)"],
+            horizontal=True, key="cost_edit_mode")
+
+        # ── 단건 편집 ──
+        if edit_mode == "🔧 단건 편집":
+            eq = st.text_input("품번 / 품명 / 고객사", key="cost_edit_search")
+            if eq:
+                try:
+                    rows = fetch("products",
+                        "product_id,pn,customer,material,raw_material_name,raw_material_spec,"
+                        "material_kg_price,material_unit_price,outsourcing_per_pc,"
+                        "heat_treat_per_pc,surface_per_pc,estimated_cost_per_pc,cost_data_quality",
+                        f"or=(pn.ilike.*{eq}*,customer.ilike.*{eq}*)"
+                        f"&archived_at=is.null&order=pn.asc",
+                        limit=30)
+                except Exception as e:
+                    st.error(f"검색 실패: {e}"); rows = []
+
+                if not rows:
+                    st.info("검색 결과 없음")
+                else:
+                    labels = [f"{r['pn']} | {r.get('customer','')}" for r in rows]
+                    pick = st.selectbox("편집할 품목", labels, key="cost_edit_pick")
+                    if pick:
+                        r = rows[labels.index(pick)]
+                        with st.form(f"cost_edit_form_{r['product_id']}"):
+                            st.markdown(f"**{r['pn']}** · {r.get('customer') or '-'}")
+                            ec1, ec2, ec3 = st.columns(3)
+                            with ec1:
+                                v_mkg = st.number_input("소재 KG단가",
+                                    value=float(r.get("material_kg_price") or 0),
+                                    step=100.0, format="%.2f")
+                                v_mup = st.number_input("소재 개당단가",
+                                    value=float(r.get("material_unit_price") or 0),
+                                    step=10.0, format="%.2f")
+                            with ec2:
+                                v_out = st.number_input("외주비/EA",
+                                    value=float(r.get("outsourcing_per_pc") or 0),
+                                    step=10.0, format="%.2f")
+                                v_heat = st.number_input("열처리비/EA",
+                                    value=float(r.get("heat_treat_per_pc") or 0),
+                                    step=10.0, format="%.2f")
+                            with ec3:
+                                v_surf = st.number_input("표면처리비/EA",
+                                    value=float(r.get("surface_per_pc") or 0),
+                                    step=10.0, format="%.2f")
+                                v_est = st.number_input("추정원가/EA (합계)",
+                                    value=float(r.get("estimated_cost_per_pc") or 0),
+                                    step=10.0, format="%.2f")
+
+                            v_quality = st.selectbox("데이터 품질",
+                                ["", "high", "medium", "low"],
+                                index=["", "high", "medium", "low"].index(
+                                    r.get("cost_data_quality") or "")
+                                if (r.get("cost_data_quality") or "") in
+                                   ["", "high", "medium", "low"] else 0)
+
+                            auto_sum = st.checkbox(
+                                "추정원가를 (소재+외주+열처리+표면) 합계로 자동계산",
+                                value=False)
+
+                            submit = st.form_submit_button("💾 저장",
+                                use_container_width=True, type="primary")
+
+                            if submit:
+                                est_val = (v_mup + v_out + v_heat + v_surf) if auto_sum else v_est
+                                payload = {
+                                    "material_kg_price": v_mkg or None,
+                                    "material_unit_price": v_mup or None,
+                                    "outsourcing_per_pc": v_out or None,
+                                    "heat_treat_per_pc": v_heat or None,
+                                    "surface_per_pc": v_surf or None,
+                                    "estimated_cost_per_pc": est_val or None,
+                                    "cost_data_quality": v_quality or None,
+                                }
+                                try:
+                                    ok = _db.update("products",
+                                        f"product_id=eq.{r['product_id']}", payload)
+                                    if ok:
+                                        st.success(f"✅ {r['pn']} 원가 저장 완료")
+                                        st.rerun()
+                                    else:
+                                        st.error("저장 실패")
+                                except Exception as e:
+                                    st.error(f"저장 오류: {e}")
+
+        # ── 다건 일괄 편집 ──
+        else:
+            st.markdown("##### 1) 검색 → 2) 표 내 직접 수정 → 3) 저장")
+            bq = st.text_input("검색 (품번/고객사/제품군) — 비우면 50건 노출",
+                               key="cost_bulk_search")
+            bfetch_limit = st.number_input("최대 행수", 10, 300, 50, 10,
+                                           key="cost_bulk_limit")
+
+            parts = ["archived_at=is.null", "order=pn.asc"]
+            if bq:
+                qq = bq.strip()
+                parts.append(f"or=(pn.ilike.*{qq}*,customer.ilike.*{qq}*,product_group.ilike.*{qq}*)")
+            try:
+                rows = fetch("products",
+                    "product_id,pn,customer,material_unit_price,outsourcing_per_pc,"
+                    "heat_treat_per_pc,surface_per_pc,estimated_cost_per_pc,cost_data_quality",
+                    "&".join(parts), limit=int(bfetch_limit))
+            except Exception as e:
+                st.error(f"검색 실패: {e}"); rows = []
+
+            if not rows:
+                st.info("검색 결과 없음")
+            else:
+                df_e = pd.DataFrame(rows)
+                # 표시할 컬럼 정렬
+                for c in ["material_unit_price", "outsourcing_per_pc",
+                          "heat_treat_per_pc", "surface_per_pc",
+                          "estimated_cost_per_pc"]:
+                    df_e[c] = pd.to_numeric(df_e[c], errors="coerce")
+
+                disp = df_e[["product_id", "pn", "customer",
+                             "material_unit_price", "outsourcing_per_pc",
+                             "heat_treat_per_pc", "surface_per_pc",
+                             "estimated_cost_per_pc", "cost_data_quality"]].copy()
+                disp = disp.rename(columns={
+                    "pn": "품번", "customer": "고객사",
+                    "material_unit_price": "소재비",
+                    "outsourcing_per_pc": "외주비",
+                    "heat_treat_per_pc": "열처리",
+                    "surface_per_pc": "표면",
+                    "estimated_cost_per_pc": "추정원가",
+                    "cost_data_quality": "품질",
+                })
+
+                edited = st.data_editor(
+                    disp,
+                    use_container_width=True,
+                    hide_index=True,
+                    num_rows="fixed",
+                    disabled=["product_id", "품번", "고객사"],
+                    column_config={
+                        "product_id": st.column_config.NumberColumn("PID", width="small"),
+                        "품질": st.column_config.SelectboxColumn(
+                            "품질", options=["", "high", "medium", "low"]),
+                    },
+                    key="cost_bulk_editor"
+                )
+
+                cc1, cc2 = st.columns([1, 4])
+                with cc1:
+                    auto_sum_b = st.checkbox("추정원가 자동합계",
+                                             value=False, key="bulk_auto_sum")
+                with cc2:
+                    save_btn = st.button("💾 변경분 일괄 저장",
+                                         type="primary", use_container_width=False)
+
+                if save_btn:
+                    # diff 계산
+                    orig = disp.set_index("product_id")
+                    new = edited.set_index("product_id")
+                    changed = []
+                    for pid in new.index:
+                        o_row = orig.loc[pid]
+                        n_row = new.loc[pid]
+                        diff = {}
+                        col_map = {
+                            "소재비": "material_unit_price",
+                            "외주비": "outsourcing_per_pc",
+                            "열처리": "heat_treat_per_pc",
+                            "표면": "surface_per_pc",
+                            "추정원가": "estimated_cost_per_pc",
+                            "품질": "cost_data_quality",
+                        }
+                        for k_ui, k_db in col_map.items():
+                            o_v = o_row[k_ui]
+                            n_v = n_row[k_ui]
+                            # NaN 비교 안전
+                            if pd.isna(o_v) and pd.isna(n_v):
+                                continue
+                            if o_v != n_v:
+                                diff[k_db] = (None if (pd.isna(n_v) or n_v == "" or n_v == 0)
+                                              else (n_v if isinstance(n_v, str) else float(n_v)))
+                        if auto_sum_b:
+                            est_sum = (
+                                (float(n_row["소재비"]) if not pd.isna(n_row["소재비"]) else 0) +
+                                (float(n_row["외주비"]) if not pd.isna(n_row["외주비"]) else 0) +
+                                (float(n_row["열처리"]) if not pd.isna(n_row["열처리"]) else 0) +
+                                (float(n_row["표면"]) if not pd.isna(n_row["표면"]) else 0)
+                            )
+                            diff["estimated_cost_per_pc"] = est_sum or None
+                        if diff:
+                            changed.append((int(pid), diff))
+
+                    if not changed:
+                        st.info("변경된 행이 없습니다.")
+                    else:
+                        ok_n, fail_n = 0, 0
+                        for pid, payload in changed:
+                            try:
+                                if _db.update("products", f"product_id=eq.{pid}", payload):
+                                    ok_n += 1
+                                else:
+                                    fail_n += 1
+                            except Exception:
+                                fail_n += 1
+                        st.success(f"✅ 저장 완료: {ok_n}건"
+                                   + (f" / 실패 {fail_n}건" if fail_n else ""))
+                        st.rerun()
 
 
 st.divider()
