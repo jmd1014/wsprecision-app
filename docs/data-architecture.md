@@ -71,26 +71,33 @@
 
 ---
 
-## 3. 원가 계산 우선순위
+## 3. 원가 계산 우선순위 (009 기준)
+
+**원칙**: BOM 은 **수량 정보만** 저장. 가격은 매입/원가 도메인에서.
 
 `product_cost_full_v.final_cost_per_pc` 가 다음 순서로 fallback:
 
 ```
 1순위: BOM 기반 자동 (product_bom_cost_v.bom_cost_per_pc)
-       ─ unit_price → material_price_v(3M) → material_price_v(12M) → 0
-       
+       MATERIAL 행:  단가 × qty_per_pc / shared_factor
+       공정 행:      products.<공정>_per_pc (현재는 PC 단위 그대로)
+
 2순위: products.estimated_cost_per_pc  (정적 스냅샷, legacy)
 
 3순위: NULL (마진 산출 불가)
 ```
 
-**BOM 단가 채움 우선순위**:
+**자재 단가 fallback (BOM MATERIAL 행)**:
 ```
-bom.unit_price        ← 1순위 (운영자 수기 / 외주·열처리)
-material_price_v.price_3m   ← 2순위 (최근 매입 평균)
-material_price_v.price_12m  ← 3순위 (장기 평균)
-0                            ← 4순위
+material_price_v.price_3m       ← 1순위 (최근 3개월 매입 평균)
+material_price_v.price_12m      ← 2순위 (12개월 평균)
+products.material_unit_price    ← 3순위 (legacy 스냅샷)
+0                                ← 4순위
 ```
+
+**공정 단가** (HEAT/SURFACE/OUTSOURCE 행):
+- 현재: `products.heat_treat_per_pc` / `surface_per_pc` / `outsourcing_per_pc` 그대로 (이미 PC 단위)
+- 향후: 매입 ledger의 공정 거래에서 자동 추출하는 `process_cost_v` 도입 가능
 
 이렇게 하면:
 - BOM 행에 단가 직접 입력 시 → 즉시 반영
