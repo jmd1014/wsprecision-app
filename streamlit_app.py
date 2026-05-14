@@ -364,7 +364,14 @@ elif page == "⚙️ 마스터 관리":
             mat_limit = st.number_input("행수", 20, 500, 100, 20)
 
         mfq = ["order=material_id.asc"]
-        if mat_q: mfq.append(f"or=(raw_name.ilike.*{mat_q}*,material_id.ilike.*{mat_q}*)")
+        if mat_q:
+            q = mat_q.strip()
+            # raw_name / material_id / material_type / spec / main_supplier 모두 OR 검색
+            mfq.append(
+                f"or=(raw_name.ilike.*{q}*,material_id.ilike.*{q}*,"
+                f"material_type.ilike.*{q}*,spec.ilike.*{q}*,"
+                f"main_supplier.ilike.*{q}*)"
+            )
         if mat_type_q: mfq.append(f"material_type=ilike.*{mat_type_q}*")
         try:
             mrows = fetch("materials",
@@ -412,14 +419,53 @@ elif page == "⚙️ 마스터 관리":
         with bc2:
             bom_limit = st.number_input("행수", 20, 500, 100, 20, key="bom_lim")
 
-        bfq = ["order=product_id.asc,bom_id.asc"]
-        if bom_q:
-            bfq.append(f"or=(product_id.ilike.*{bom_q}*,material_id.ilike.*{bom_q}*,raw_material_name.ilike.*{bom_q}*)")
+        # ── 2단계 검색: 검색어가 있으면 먼저 products.pn 으로 product_id 후보 추출 ──
+        bfq_parts = ["order=product_id.asc,bom_id.asc"]
+        brows = []
         try:
-            brows = fetch("bom",
-                "bom_id,product_id,material_id,raw_material_name,qty_per_pc,shared_factor,source,verification_status",
-                "&".join(bfq), limit=bom_limit)
-        except Exception as e: st.error(e); brows = []
+            if bom_q:
+                qq = bom_q.strip()
+                # (a) products 에서 pn / product_group 매칭되는 product_id 후보
+                try:
+                    pmatch = fetch("products", "product_id,pn,sub_class,product_group",
+                        f"or=(pn.ilike.*{qq}*,product_id.ilike.*{qq}*,product_group.ilike.*{qq}*)"
+                        f"&archived_at=is.null&order=pn.asc",
+                        limit=2000)
+                except Exception:
+                    pmatch = []
+                pid_candidates = [p['product_id'] for p in pmatch if p.get('product_id')]
+
+                # (b) materials 에서 매칭되는 material_id 후보
+                try:
+                    mmatch = fetch("materials", "material_id,raw_name",
+                        f"or=(material_id.ilike.*{qq}*,raw_name.ilike.*{qq}*,"
+                        f"material_type.ilike.*{qq}*,spec.ilike.*{qq}*)",
+                        limit=2000)
+                except Exception:
+                    mmatch = []
+                mid_candidates = [m['material_id'] for m in mmatch if m.get('material_id')]
+
+                # (c) bom 조회 — product_id IN 또는 material_id IN 또는 raw_material_name ilike
+                bom_filters = []
+                if pid_candidates:
+                    pids_in = ",".join(f'"{p}"' for p in pid_candidates[:200])
+                    bom_filters.append(f"product_id.in.({pids_in})")
+                if mid_candidates:
+                    mids_in = ",".join(f'"{m}"' for m in mid_candidates[:200])
+                    bom_filters.append(f"material_id.in.({mids_in})")
+                # raw_material_name 직접 매칭 (자재 마스터에 없어도 BOM에는 있을 수 있음)
+                bom_filters.append(f"raw_material_name.ilike.*{qq}*")
+
+                if bom_filters:
+                    bfq_parts.append(f"or=({','.join(bom_filters)})")
+            try:
+                brows = fetch("bom",
+                    "bom_id,product_id,material_id,raw_material_name,qty_per_pc,shared_factor,source,verification_status",
+                    "&".join(bfq_parts), limit=bom_limit)
+            except Exception as e:
+                st.error(f"BOM 검색 실패: {e}"); brows = []
+        except Exception as e:
+            st.error(f"검색 처리 오류: {e}"); brows = []
 
         # 제품 정보 join (품번, 제품군)
         if brows:
@@ -435,15 +481,6 @@ elif page == "⚙️ 마스터 관리":
                     p = pmap.get(b['product_id'], {})
                     b['_pn'] = p.get('pn', '')
                     b['_group'] = p.get('product_group', '')
-
-        # 검색 매칭에서 품번/제품군에도 매칭하도록 클라이언트 측 필터 추가
-        if bom_q and brows:
-            ql = bom_q.lower()
-            brows = [b for b in brows if
-                     ql in (b.get('_pn') or '').lower() or
-                     ql in (b.get('product_id') or '').lower() or
-                     ql in (b.get('material_id') or '').lower() or
-                     ql in (b.get('raw_material_name') or '').lower()]
 
         st.caption(f"검색 결과: **{len(brows)}건**")
 
@@ -1939,7 +1976,7 @@ elif page == "💰 원가 분석":
         try:    return f"{float(v):.1f}%"
         except: return "-"
 
-    tabs = st.tabs(["📊 마진 대시보드", "🔍 품목 분석", "⚠️ 이상치", "✏️ 원가 편집"])
+    tabs = st.tabs(["📊 마진 대시보드", "🔍 품목 분석", "⚠️ 이상치", "🧮 BOM 재산정", "✏️ 원가 편집"])
 
     # ════════════════════════════════════════════════
     # Tab 1: 마진 대시보드
@@ -2225,9 +2262,285 @@ elif page == "💰 원가 분석":
             st.info("해당 조건의 이상치가 없습니다.")
 
     # ════════════════════════════════════════════════
-    # Tab 4: 원가 편집 (단건 또는 다건)
+    # Tab 4: BOM 재산정 보조 (shared_factor 적용 시뮬레이션)
     # ════════════════════════════════════════════════
     with tabs[3]:
+        st.markdown("### 🧮 BOM 재산정 보조")
+        st.caption(
+            "원리: **실제 소재비/EA = (qty_per_pc × 자재단가) / shared_factor**. "
+            "현재 `products.material_unit_price`는 shared_factor 미반영 스냅샷이라 "
+            "분할가공(예: 환봉 1개 → N제품) 품목에서 과대 산정될 수 있습니다. "
+            "BOM 의 shared_factor 가 적용된 재계산 값을 미리 보고 일괄/단건으로 적용하세요."
+        )
+
+        # ── 모드 선택 ──
+        mode = st.radio("분석 범위", [
+            "🎯 의심 품목 자동 추출 (소재비 > 판매가 × 50%)",
+            "🔍 품번 검색 (단일 제품 상세)",
+        ], horizontal=True, key="bom_recalc_mode")
+
+        # ════════════════════
+        # 모드 A: 의심 품목 자동 추출
+        # ════════════════════
+        if mode.startswith("🎯"):
+            r_limit = st.number_input("최대 검토 행수", 10, 500, 50, 10,
+                                       key="bom_recalc_limit")
+
+            # 1) 의심 후보: 판매가 > 0, 소재비 > 판매가*0.5
+            try:
+                cand = fetch("product_full",
+                    "product_id,pn,customer,material_kg_price,material_unit_price,"
+                    "outsourcing_per_pc,heat_treat_per_pc,surface_per_pc,"
+                    "estimated_cost_per_pc,avg_unit_price,margin_pct,total_sales_12m",
+                    "archived_at=is.null&avg_unit_price=gt.0&material_unit_price=gt.0"
+                    "&order=total_sales_12m.desc.nullslast", limit=2000)
+            except Exception as e:
+                st.error(f"제품 조회 실패: {e}"); cand = []
+
+            cand = [r for r in cand if
+                    (float(r.get("material_unit_price") or 0) >
+                     float(r.get("avg_unit_price") or 0) * 0.5)]
+            cand = cand[:int(r_limit)]
+
+            if not cand:
+                st.info("의심 품목 없음. (또는 한도 내 매칭 없음)"); st.stop()
+
+            # 2) 해당 제품들의 BOM 조회 (product_id IN)
+            pids = [r["product_id"] for r in cand]
+            pids_q = ",".join(f'"{p}"' for p in pids[:300])
+            try:
+                bom_rows = fetch("bom",
+                    "bom_id,product_id,material_id,raw_material_name,"
+                    "qty_per_pc,shared_factor",
+                    f"product_id=in.({pids_q})&order=product_id.asc",
+                    limit=5000)
+            except Exception as e:
+                st.error(f"BOM 조회 실패: {e}"); bom_rows = []
+
+            # product_id → BOM 행들
+            bom_by_pid = {}
+            for b in bom_rows:
+                bom_by_pid.setdefault(b["product_id"], []).append(b)
+
+            # 3) 재계산 수행
+            rows = []
+            for c in cand:
+                pid = c["product_id"]
+                bs = bom_by_pid.get(pid, [])
+                # 주 BOM 한 줄 기준: shared_factor의 평균 또는 최대값 사용
+                # 실무: 1개 제품에 BOM 다수면 행별로 계산해야 하지만 화면 단순화 위해 합산.
+                cur_mat = float(c.get("material_unit_price") or 0)
+                # 단순화: shared_factor 가장 큰 것 적용 (가장 큰 분할가공)
+                max_sf = max((float(b.get("shared_factor") or 1) for b in bs), default=1) if bs else 1
+                # qty_per_pc 합 (자재 여러 개일 때)
+                sum_qpc = sum(float(b.get("qty_per_pc") or 1) for b in bs) if bs else 1
+                # 추정 재계산값: cur_mat / max_sf (가장 보수적)
+                est_recalc = cur_mat / max_sf if max_sf > 0 else cur_mat
+                # 더 정확한 BOM 기반: cur_mat × sum_qpc / max_sf
+                est_bom = cur_mat * sum_qpc / max_sf if max_sf > 0 else cur_mat
+
+                rows.append({
+                    "product_id": pid,
+                    "pn": c.get("pn"),
+                    "customer": c.get("customer"),
+                    "판매가": float(c.get("avg_unit_price") or 0),
+                    "현재_소재비": cur_mat,
+                    "소재비/판매가": (cur_mat / float(c["avg_unit_price"]) * 100)
+                                       if float(c["avg_unit_price"]) > 0 else 0,
+                    "BOM_행수": len(bs),
+                    "qty_per_pc합": sum_qpc,
+                    "shared_factor(최대)": max_sf,
+                    "재산정_단순": round(est_recalc, 2),
+                    "재산정_BOM": round(est_bom, 2),
+                    "현재_추정원가": float(c.get("estimated_cost_per_pc") or 0),
+                    "12M매출": float(c.get("total_sales_12m") or 0),
+                    "마진율": c.get("margin_pct"),
+                })
+
+            df_r = pd.DataFrame(rows)
+            st.caption(f"의심 후보: **{len(df_r):,}건**, 그 중 shared_factor > 1: "
+                       f"**{int((df_r['shared_factor(최대)'] > 1).sum()):,}건** (재계산 효과 있음)")
+
+            # 표시용 포맷
+            disp = df_r.copy()
+            for c in ["판매가", "현재_소재비", "재산정_단순", "재산정_BOM",
+                      "현재_추정원가", "12M매출"]:
+                disp[c] = disp[c].apply(lambda v: _money(v))
+            disp["소재비/판매가"] = disp["소재비/판매가"].apply(lambda v: f"{v:.0f}%")
+            disp["마진율"] = disp["마진율"].apply(_pct)
+
+            show_cols = ["pn", "customer", "판매가", "현재_소재비",
+                         "소재비/판매가", "BOM_행수", "qty_per_pc합",
+                         "shared_factor(최대)", "재산정_단순", "재산정_BOM",
+                         "12M매출", "마진율"]
+            disp = disp.rename(columns={"pn": "품번", "customer": "고객사"})
+            st.dataframe(
+                disp[[("품번" if c == "pn" else "고객사" if c == "customer" else c)
+                      for c in show_cols]],
+                use_container_width=True, hide_index=True, height=480
+            )
+
+            st.divider()
+            st.markdown("##### 🚀 일괄 적용")
+            apply_col1, apply_col2, apply_col3 = st.columns([2, 2, 2])
+            with apply_col1:
+                apply_kind = st.selectbox("적용할 값", [
+                    "재산정_단순 (현재값 ÷ shared_factor)",
+                    "재산정_BOM (현재값 × qty/PC ÷ shared_factor)",
+                ], key="recalc_apply_kind")
+            with apply_col2:
+                only_sf_gt1 = st.checkbox(
+                    "shared_factor > 1 인 행만 적용 (안전)",
+                    value=True, key="recalc_only_sf")
+            with apply_col3:
+                update_est = st.checkbox(
+                    "estimated_cost_per_pc 도 동시 재계산 "
+                    "(= 신_소재비 + 외주 + 열처리 + 표면)",
+                    value=True, key="recalc_update_est")
+
+            if st.button("✅ 검토 완료 — 위 추출 결과에 일괄 적용",
+                          type="primary", key="recalc_apply_btn"):
+                target = df_r.copy()
+                if only_sf_gt1:
+                    target = target[target["shared_factor(최대)"] > 1]
+                if target.empty:
+                    st.warning("적용 대상이 없습니다.")
+                else:
+                    ok_n, fail_n = 0, 0
+                    for _, r in target.iterrows():
+                        new_mat = (r["재산정_단순"] if apply_kind.startswith("재산정_단순")
+                                   else r["재산정_BOM"])
+                        payload = {"material_unit_price": float(new_mat)}
+                        if update_est:
+                            # 외주/열처리/표면은 별도 컬럼에서 가져와 합산
+                            try:
+                                src = next(c for c in cand
+                                           if c["product_id"] == r["product_id"])
+                                est = (float(new_mat)
+                                       + float(src.get("outsourcing_per_pc") or 0)
+                                       + float(src.get("heat_treat_per_pc") or 0)
+                                       + float(src.get("surface_per_pc") or 0))
+                                payload["estimated_cost_per_pc"] = est
+                            except StopIteration:
+                                pass
+                        try:
+                            if _db.update("products",
+                                f"product_id=eq.{r['product_id']}", payload):
+                                ok_n += 1
+                            else:
+                                fail_n += 1
+                        except Exception:
+                            fail_n += 1
+                    st.success(
+                        f"✅ 적용 완료: {ok_n}건"
+                        + (f" / 실패 {fail_n}건" if fail_n else ""))
+                    st.rerun()
+
+            csv = df_r.to_csv(index=False).encode("utf-8-sig")
+            st.download_button("📥 분석 결과 CSV", csv,
+                file_name="bom_recalc_review.csv", mime="text/csv")
+
+        # ════════════════════
+        # 모드 B: 품번 검색 (단일)
+        # ════════════════════
+        else:
+            sq = st.text_input("품번 / 품명 / 고객사", key="bom_recalc_search")
+            if sq:
+                try:
+                    matches = fetch("product_full",
+                        "product_id,pn,customer,material_unit_price,outsourcing_per_pc,"
+                        "heat_treat_per_pc,surface_per_pc,estimated_cost_per_pc,"
+                        "avg_unit_price,margin_pct",
+                        f"or=(pn.ilike.*{sq}*,customer.ilike.*{sq}*)"
+                        f"&archived_at=is.null&order=pn.asc", limit=30)
+                except Exception as e:
+                    st.error(f"검색 실패: {e}"); matches = []
+
+                if not matches:
+                    st.info("결과 없음")
+                else:
+                    labels = [f"{m['pn']} | {m.get('customer','')}" for m in matches]
+                    sel = st.selectbox("제품 선택", labels, key="bom_recalc_pick")
+                    if sel:
+                        m = matches[labels.index(sel)]
+                        st.markdown(f"#### {m['pn']} · {m.get('customer') or '-'}")
+
+                        cur_mat = float(m.get("material_unit_price") or 0)
+                        sale = float(m.get("avg_unit_price") or 0)
+
+                        # BOM rows
+                        try:
+                            bs = fetch("bom",
+                                "bom_id,material_id,raw_material_name,qty_per_pc,"
+                                "shared_factor,verification_status",
+                                f"product_id=eq.{m['product_id']}&order=bom_id.asc",
+                                limit=50)
+                        except Exception as e:
+                            st.error(f"BOM 조회 실패: {e}"); bs = []
+
+                        if not bs:
+                            st.warning("이 제품에는 BOM 행이 없습니다. BOM 편집에서 먼저 등록하세요.")
+                        else:
+                            st.markdown("##### BOM 행")
+                            bdf = pd.DataFrame(bs)
+                            st.dataframe(bdf, use_container_width=True, hide_index=True)
+
+                            max_sf = max(float(b.get("shared_factor") or 1) for b in bs)
+                            sum_qpc = sum(float(b.get("qty_per_pc") or 1) for b in bs)
+
+                            est_simple = cur_mat / max_sf if max_sf > 0 else cur_mat
+                            est_bom = cur_mat * sum_qpc / max_sf if max_sf > 0 else cur_mat
+
+                            cc1, cc2, cc3, cc4 = st.columns(4)
+                            cc1.metric("판매가", _money(sale))
+                            cc2.metric("현재 소재비", _money(cur_mat),
+                                       f"{cur_mat/sale*100:.0f}%" if sale > 0 else None)
+                            cc3.metric("재산정_단순", _money(est_simple),
+                                       f"-{(cur_mat-est_simple)/cur_mat*100:.0f}%"
+                                       if cur_mat > 0 else None,
+                                       delta_color="off")
+                            cc4.metric("재산정_BOM", _money(est_bom),
+                                       f"-{(cur_mat-est_bom)/cur_mat*100:.0f}%"
+                                       if cur_mat > 0 else None,
+                                       delta_color="off")
+
+                            st.divider()
+                            ac1, ac2 = st.columns([1, 3])
+                            with ac1:
+                                apply_pick = st.radio("적용값",
+                                    ["재산정_단순", "재산정_BOM"],
+                                    key="bom_recalc_single_kind")
+                            with ac2:
+                                if st.button("이 품목에 적용",
+                                             type="primary",
+                                             key="bom_recalc_single_btn"):
+                                    new_mat = (est_simple if apply_pick == "재산정_단순"
+                                               else est_bom)
+                                    payload = {
+                                        "material_unit_price": round(float(new_mat), 2),
+                                        "estimated_cost_per_pc": round(
+                                            float(new_mat)
+                                            + float(m.get("outsourcing_per_pc") or 0)
+                                            + float(m.get("heat_treat_per_pc") or 0)
+                                            + float(m.get("surface_per_pc") or 0), 2)
+                                    }
+                                    try:
+                                        if _db.update("products",
+                                            f"product_id=eq.{m['product_id']}",
+                                            payload):
+                                            st.success(
+                                                f"✅ {m['pn']} 소재비 → "
+                                                f"{int(new_mat):,}원 적용 완료")
+                                            st.rerun()
+                                        else:
+                                            st.error("적용 실패")
+                                    except Exception as e:
+                                        st.error(f"적용 오류: {e}")
+
+    # ════════════════════════════════════════════════
+    # Tab 5: 원가 편집 (단건 또는 다건)
+    # ════════════════════════════════════════════════
+    with tabs[4]:
         st.markdown("### 원가 편집")
         st.caption("⚠️ 저장 시 products 테이블이 즉시 갱신됩니다. "
                    "estimated_cost_per_pc 는 자동 재계산되지 않으므로 직접 입력해 주세요.")
