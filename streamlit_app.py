@@ -157,8 +157,9 @@ elif page == "⚙️ 마스터 관리":
     import db as _db
     import pandas as pd
 
-    tab1, tab_mat, tab_bom, tab2 = st.tabs([
-        "🏢 거래처 편집", "📦 자재 편집", "🔗 BOM 편집", "📊 DB 현황"
+    tab1, tab_mat, tab_bom, tab_map, tab2 = st.tabs([
+        "🏢 거래처 편집", "📦 자재 편집", "🔗 BOM 편집",
+        "🔌 매입↔자재 매핑", "📊 DB 현황"
     ])
 
     # ─── Tab 1: 거래처 편집 ───
@@ -458,12 +459,28 @@ elif page == "⚙️ 마스터 관리":
 
                 if bom_filters:
                     bfq_parts.append(f"or=({','.join(bom_filters)})")
+            # 007 적용 후 사용 가능한 컬럼들 (process_type/unit_price/lot_label)
+            # 마이그레이션 미적용 시 → 기존 컬럼만 fallback
+            full_select = ("bom_id,product_id,material_id,raw_material_name,"
+                           "qty_per_pc,shared_factor,source,verification_status,"
+                           "process_type,unit_price,lot_label")
             try:
-                brows = fetch("bom",
-                    "bom_id,product_id,material_id,raw_material_name,qty_per_pc,shared_factor,source,verification_status",
+                brows = fetch("bom", full_select,
                     "&".join(bfq_parts), limit=bom_limit)
-            except Exception as e:
-                st.error(f"BOM 검색 실패: {e}"); brows = []
+            except Exception:
+                # 007 미적용 환경 fallback
+                try:
+                    brows = fetch("bom",
+                        "bom_id,product_id,material_id,raw_material_name,"
+                        "qty_per_pc,shared_factor,source,verification_status",
+                        "&".join(bfq_parts), limit=bom_limit)
+                    # process_type 기본값 채움
+                    for b in brows:
+                        b.setdefault("process_type", "MATERIAL")
+                        b.setdefault("unit_price", None)
+                        b.setdefault("lot_label", None)
+                except Exception as e:
+                    st.error(f"BOM 검색 실패: {e}"); brows = []
         except Exception as e:
             st.error(f"검색 처리 오류: {e}"); brows = []
 
@@ -486,10 +503,10 @@ elif page == "⚙️ 마스터 관리":
 
         if brows:
             bdf = pd.DataFrame(brows)
-            # 컬럼 순서 재배치 (품번 먼저)
+            # 컬럼 순서 재배치 — process_type/unit_price/lot_label 포함
             preferred_cols = ['bom_id', 'product_id', '_pn', '_group',
-                              'material_id', 'raw_material_name',
-                              'qty_per_pc', 'shared_factor',
+                              'process_type', 'material_id', 'raw_material_name',
+                              'qty_per_pc', 'shared_factor', 'unit_price', 'lot_label',
                               'source', 'verification_status']
             preferred_cols = [c for c in preferred_cols if c in bdf.columns]
             bdf = bdf[preferred_cols]
@@ -500,10 +517,20 @@ elif page == "⚙️ 마스터 관리":
                     "product_id": st.column_config.TextColumn("제품ID", disabled=True, width="small"),
                     "_pn": st.column_config.TextColumn("품번", disabled=True, width="medium"),
                     "_group": st.column_config.TextColumn("제품군", disabled=True, width="small"),
+                    "process_type": st.column_config.SelectboxColumn("구분",
+                        options=["MATERIAL","HEAT","SURFACE","OUTSOURCE","PACKING","LABOR","OTHER"],
+                        width="small",
+                        help="MATERIAL=자재 / HEAT=열처리(LOT) / SURFACE=표면 / OUTSOURCE=외주 등"),
                     "material_id": st.column_config.TextColumn("자재ID", disabled=True, width="small"),
-                    "raw_material_name": st.column_config.TextColumn("자재명", width="large", disabled=True),
-                    "qty_per_pc": st.column_config.NumberColumn("자재/PC (EA)", format="%.3f"),
-                    "shared_factor": st.column_config.NumberColumn("1자재→N제품", format="%.0f"),
+                    "raw_material_name": st.column_config.TextColumn("자재/공정명", width="large"),
+                    "qty_per_pc": st.column_config.NumberColumn("자재/PC", format="%.3f",
+                        help="제품 1EA당 자재 사용량. 공정행은 보통 1."),
+                    "shared_factor": st.column_config.NumberColumn("분할/LOT", format="%.0f",
+                        help="자재: 1자재→N제품. 공정: 1 LOT 처리수량."),
+                    "unit_price": st.column_config.NumberColumn("단가", format="%.2f",
+                        help="행 단위 단가. 자재행은 NULL이면 매입 평균에서 자동 채움."),
+                    "lot_label": st.column_config.TextColumn("LOT단위", width="small",
+                        help="표시용. 예: LOT, CH, BATCH"),
                     "source": st.column_config.TextColumn("출처", disabled=True, width="small"),
                     "verification_status": st.column_config.SelectboxColumn("검증",
                         options=["AUTO-추정", "AUTO-매입추정", "AUTO-명진추정", "확인완료", "재검토"],
@@ -514,9 +541,17 @@ elif page == "⚙️ 마스터 관리":
             )
             if st.button("💾 BOM 변경 저장", type="primary"):
                 chg = 0
+                editable_keys = ("qty_per_pc","shared_factor","verification_status",
+                                 "process_type","unit_price","lot_label","raw_material_name")
                 for orig, new in zip(brows, bedited.to_dict("records")):
-                    upd = {k: new[k] for k in ("qty_per_pc","shared_factor","verification_status")
-                           if orig.get(k) != new.get(k)}
+                    upd = {}
+                    for k in editable_keys:
+                        if k in new and orig.get(k) != new.get(k):
+                            v = new.get(k)
+                            # 빈 문자열 → NULL
+                            if v == "":
+                                v = None
+                            upd[k] = v
                     if upd:
                         if _db.update("bom", f"bom_id=eq.{orig['bom_id']}", upd):
                             chg += 1
@@ -524,7 +559,7 @@ elif page == "⚙️ 마스터 관리":
                 else: st.info("변경 사항 없음")
 
             st.divider()
-            st.markdown("##### ➕ 신규 BOM 추가")
+            st.markdown("##### ➕ 신규 BOM 자재행 추가")
             nc1, nc2, nc3, nc4 = st.columns([2, 2, 1, 1])
             with nc1:
                 new_pid = st.text_input("제품 ID *", placeholder="예: P0001", key="bom_new_pid")
@@ -534,7 +569,7 @@ elif page == "⚙️ 마스터 관리":
                 new_qpc = st.number_input("qty/PC (EA)", min_value=0.0, value=1.0, step=0.1, key="bom_new_qpc")
             with nc4:
                 new_sf = st.number_input("shared_factor", min_value=1, value=1, step=1, key="bom_new_sf")
-            if st.button("➕ BOM 추가", key="bom_new_btn"):
+            if st.button("➕ 자재행 추가", key="bom_new_btn"):
                 if not new_pid or not new_mid:
                     st.error("제품 ID와 자재 ID는 필수입니다.")
                 else:
@@ -545,12 +580,202 @@ elif page == "⚙️ 마스터 관리":
                             "product_id": new_pid, "material_id": new_mid,
                             "raw_material_name": mrow.get("raw_name") if mrow else None,
                             "qty_per_pc": new_qpc, "shared_factor": new_sf,
+                            "process_type": "MATERIAL",
                             "source": "MANUAL", "verification_status": "확인완료",
                         }])
-                        st.success(f"✅ BOM 추가: {new_pid} ↔ {new_mid}")
+                        st.success(f"✅ 자재행 추가: {new_pid} ↔ {new_mid}")
                         st.rerun()
                     except Exception as e:
                         st.error(f"추가 실패: {e}")
+
+            st.divider()
+            st.markdown("##### ➕ 신규 공정행 추가 (열처리/외주/표면 등)")
+            st.caption("공식: per_pc = unit_price × qty_per_pc / shared_factor. "
+                       "예: 1 LOT 500EA 처리, LOT가격 50,000 → unit_price=50000, qty=1, shared=500 → 100원/EA")
+            pc1, pc2, pc3, pc4, pc5 = st.columns([2, 2, 1, 1, 1])
+            with pc1:
+                proc_pid = st.text_input("제품 ID *", placeholder="예: P0001", key="bom_proc_pid")
+            with pc2:
+                proc_type = st.selectbox("공정 *",
+                    ["HEAT", "SURFACE", "OUTSOURCE", "PACKING", "LABOR", "OTHER"],
+                    key="bom_proc_type")
+            with pc3:
+                proc_unit_price = st.number_input("단가/LOT", min_value=0.0,
+                    value=0.0, step=100.0, key="bom_proc_price")
+            with pc4:
+                proc_qty = st.number_input("qty/PC", min_value=0.0,
+                    value=1.0, step=0.1, key="bom_proc_qty")
+            with pc5:
+                proc_lot_size = st.number_input("LOT수량", min_value=1,
+                    value=1, step=1, key="bom_proc_lot")
+            pc6, pc7, pc8 = st.columns([3, 2, 1])
+            with pc6:
+                proc_name = st.text_input("공정 설명",
+                    placeholder="예: 진공열처리, 무전해Ni도금, 외주가공",
+                    key="bom_proc_name")
+            with pc7:
+                proc_lot_label = st.selectbox("LOT단위 표시",
+                    ["", "LOT", "CH", "BATCH"], key="bom_proc_label")
+            with pc8:
+                proc_vendor = st.text_input("거래처ID", placeholder="(선택)",
+                    key="bom_proc_vendor")
+            if st.button("➕ 공정행 추가", key="bom_proc_btn"):
+                if not proc_pid:
+                    st.error("제품 ID는 필수입니다.")
+                elif proc_unit_price <= 0:
+                    st.error("단가는 0보다 커야 합니다.")
+                else:
+                    record = {
+                        "product_id": proc_pid,
+                        "material_id": None,
+                        "raw_material_name": proc_name or proc_type,
+                        "process_type": proc_type,
+                        "unit_price": proc_unit_price,
+                        "qty_per_pc": proc_qty,
+                        "shared_factor": proc_lot_size,
+                        "lot_label": proc_lot_label or None,
+                        "source": "MANUAL",
+                        "verification_status": "확인완료",
+                    }
+                    if proc_vendor:
+                        try:
+                            record["process_vendor_id"] = int(proc_vendor)
+                        except ValueError:
+                            pass
+                    try:
+                        _db.insert("bom", [record])
+                        per_pc = (proc_unit_price * proc_qty / proc_lot_size
+                                  if proc_lot_size > 0 else 0)
+                        st.success(
+                            f"✅ {proc_type} 공정행 추가 — per_pc = {per_pc:,.2f}원"
+                        )
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"추가 실패: {e}")
+
+    # ─── Tab: 매입↔자재 매핑 (Phase 2 스캐폴딩) ───
+    with tab_map:
+        st.caption(
+            "📌 `purchase_ledger.matched_material_id` 를 채워서 자재별 시점 단가가 "
+            "자동 계산되도록 합니다. (Migration 007 적용 필요)"
+        )
+
+        # 매핑 현황 카드
+        try:
+            total_pl = _db.fetch_one("purchase_ledger",
+                "matched_material_id=is.null", "ledger_id")
+            mapped_pl = _db.fetch_one("purchase_ledger",
+                "matched_material_id=not.is.null", "ledger_id")
+            map_view_ok = True
+        except Exception as e:
+            map_view_ok = False
+            st.warning(f"⚠️ Migration 007 (`matched_material_id` 컬럼) 적용 필요: {e}")
+
+        if map_view_ok:
+            try:
+                unmapped = fetch("purchase_ledger",
+                    "ledger_id,trade_date,vendor,vendor_normalized,item,category,"
+                    "qty,unit,unit_price,kg_price,ea_price",
+                    "matched_material_id=is.null"
+                    "&category=like.MAT_*"
+                    "&order=trade_date.desc",
+                    limit=500)
+            except Exception as e:
+                st.error(f"미매핑 조회 실패: {e}"); unmapped = []
+
+            # 카테고리 필터
+            cat_choices = sorted({u.get("category") or "" for u in unmapped if u.get("category")})
+            mc1, mc2 = st.columns([2, 1])
+            with mc1:
+                cat_pick = st.selectbox("카테고리", ["전체"] + cat_choices,
+                                        key="map_cat")
+            with mc2:
+                search_item = st.text_input("품목명 검색", key="map_search_item")
+
+            view_rows = unmapped
+            if cat_pick != "전체":
+                view_rows = [r for r in view_rows if r.get("category") == cat_pick]
+            if search_item:
+                ssi = search_item.strip().lower()
+                view_rows = [r for r in view_rows
+                             if ssi in (r.get("item") or "").lower()]
+
+            st.caption(
+                f"매입 매핑 현황 — **미매핑 매입(MAT_*):** {len(unmapped):,}건 / "
+                f"표시: **{len(view_rows):,}건**"
+            )
+
+            if not view_rows:
+                st.info("표시할 미매핑 거래 없음. (또는 007 적용 후 데이터 없음)")
+            else:
+                # 동일 item 그룹핑 → 한 번 매핑 시 일괄 적용 후보
+                from collections import defaultdict
+                groups = defaultdict(list)
+                for r in view_rows:
+                    key = (r.get("item") or "", r.get("vendor_normalized") or "")
+                    groups[key].append(r)
+
+                # 상위 그룹 (거래 빈도 순)
+                sorted_groups = sorted(groups.items(),
+                                       key=lambda kv: -len(kv[1]))[:50]
+
+                # 자재 목록 한 번만 로드
+                try:
+                    all_mats = fetch("materials",
+                        "material_id,raw_name,material_type,spec",
+                        "order=raw_name.asc", limit=2000)
+                except Exception:
+                    all_mats = []
+                mat_labels = [f"{m['material_id']} | {m.get('raw_name','')}" for m in all_mats]
+
+                st.markdown("##### 그룹별 매핑 (동일 품목 → 일괄 적용)")
+                for (item, vendor), rows in sorted_groups[:20]:
+                    n = len(rows)
+                    avg_p = sum(float(r.get("unit_price") or 0) for r in rows) / n
+                    with st.expander(
+                        f"📦 **{item or '(품목명 없음)'}**  "
+                        f"· {vendor or '-'}  · {n}건  · 평균 {avg_p:,.0f}원",
+                        expanded=False
+                    ):
+                        gc1, gc2 = st.columns([3, 1])
+                        with gc1:
+                            sel = st.selectbox(
+                                "매핑할 자재", ["(선택)"] + mat_labels,
+                                key=f"map_sel_{hash((item, vendor)) & 0xFFFF}"
+                            )
+                        with gc2:
+                            apply_btn = st.button("✅ 일괄 매핑",
+                                key=f"map_btn_{hash((item, vendor)) & 0xFFFF}")
+                        if apply_btn and sel != "(선택)":
+                            mid = sel.split(" | ")[0]
+                            ok_n, fail_n = 0, 0
+                            for r in rows:
+                                try:
+                                    if _db.update("purchase_ledger",
+                                        f"ledger_id=eq.{r['ledger_id']}",
+                                        {"matched_material_id": mid,
+                                         "mapping_status": "MANUAL"}):
+                                        ok_n += 1
+                                    else:
+                                        fail_n += 1
+                                except Exception:
+                                    fail_n += 1
+                            st.success(
+                                f"✅ {ok_n}건 매핑 완료 → {mid}"
+                                + (f" / 실패 {fail_n}건" if fail_n else "")
+                            )
+                            st.rerun()
+
+                st.divider()
+                st.markdown("##### 개별 거래 매핑 (필요 시)")
+                st.caption("위 그룹에 안 묶이거나 일회성 거래만 별도 매핑.")
+                st.dataframe(
+                    pd.DataFrame(view_rows[:200])[[
+                        "trade_date", "vendor", "item", "category",
+                        "qty", "unit", "unit_price", "kg_price"
+                    ]],
+                    use_container_width=True, hide_index=True, height=320
+                )
 
     # ─── Tab 2: DB 현황 ───
     with tab2:
@@ -1976,7 +2201,8 @@ elif page == "💰 원가 분석":
         try:    return f"{float(v):.1f}%"
         except: return "-"
 
-    tabs = st.tabs(["📊 마진 대시보드", "🔍 품목 분석", "⚠️ 이상치", "🧮 BOM 재산정", "✏️ 원가 편집"])
+    tabs = st.tabs(["📊 마진 대시보드", "🔍 품목 분석", "⚠️ 이상치",
+                    "🧮 BOM 재산정", "✏️ 원가 편집", "🏗 통합 view (Beta)"])
 
     # ════════════════════════════════════════════════
     # Tab 1: 마진 대시보드
@@ -2750,6 +2976,107 @@ elif page == "💰 원가 분석":
                         st.success(f"✅ 저장 완료: {ok_n}건"
                                    + (f" / 실패 {fail_n}건" if fail_n else ""))
                         st.rerun()
+
+    # ════════════════════════════════════════════════
+    # Tab 6: 통합 view (Beta) — product_cost_full_v 사용
+    # ════════════════════════════════════════════════
+    with tabs[5]:
+        st.markdown("### 🏗 통합 원가 view (Beta)")
+        st.caption(
+            "Migration 007/008 적용 시 자동 활성. **BOM 기반 자동 원가 + legacy fallback + "
+            "데이터 신뢰도 배지** 를 한 곳에서 확인."
+        )
+
+        cs_filter = st.multiselect(
+            "신뢰도 필터",
+            ["BOM_FULL", "BOM_PARTIAL", "LEGACY_ONLY", "NO_DATA"],
+            default=["BOM_FULL", "BOM_PARTIAL", "LEGACY_ONLY"],
+            key="cs_filter")
+        cv_limit = st.number_input("최대 행수", 50, 1000, 200, 50, key="cv_limit")
+
+        # view 조회 시도 — 미적용 시 graceful fail
+        try:
+            cv_rows = fetch("product_cost_full_v",
+                "product_id,pn,customer,product_group,"
+                "legacy_estimated_cost,bom_cost_per_pc,material_cost_per_pc,"
+                "heat_cost_per_pc,surface_cost_per_pc,outsource_cost_per_pc,"
+                "final_cost_per_pc,sale_price,margin_pct_calc,"
+                "cost_source,bom_row_count,material_rows,process_rows,"
+                "total_sales_12m,abc_grade",
+                "order=total_sales_12m.desc.nullslast",
+                limit=int(cv_limit))
+            view_available = True
+        except Exception as e:
+            cv_rows = []
+            view_available = False
+            st.warning(
+                f"⚠️ `product_cost_full_v` 가 아직 적용되지 않았습니다. "
+                f"Migration 007/008 을 SQL Editor 에서 실행하세요. ({str(e)[:80]})"
+            )
+
+        if view_available and cv_rows:
+            df_v = pd.DataFrame(cv_rows)
+            if cs_filter:
+                df_v = df_v[df_v["cost_source"].isin(cs_filter)]
+
+            # 통계 헤더
+            n_full = (df_v["cost_source"] == "BOM_FULL").sum()
+            n_partial = (df_v["cost_source"] == "BOM_PARTIAL").sum()
+            n_legacy = (df_v["cost_source"] == "LEGACY_ONLY").sum()
+            n_none = (df_v["cost_source"] == "NO_DATA").sum()
+
+            mk1, mk2, mk3, mk4 = st.columns(4)
+            mk1.metric("🟢 BOM_FULL", f"{n_full:,}")
+            mk2.metric("🟡 BOM_PARTIAL", f"{n_partial:,}")
+            mk3.metric("🟠 LEGACY_ONLY", f"{n_legacy:,}")
+            mk4.metric("🔴 NO_DATA", f"{n_none:,}")
+
+            # 표시용 변환
+            for c in ["legacy_estimated_cost", "bom_cost_per_pc",
+                      "material_cost_per_pc", "heat_cost_per_pc",
+                      "surface_cost_per_pc", "outsource_cost_per_pc",
+                      "final_cost_per_pc", "sale_price", "total_sales_12m"]:
+                if c in df_v.columns:
+                    df_v[c] = pd.to_numeric(df_v[c], errors="coerce")
+
+            df_v["판매가"] = df_v["sale_price"].apply(_money)
+            df_v["BOM원가"] = df_v["bom_cost_per_pc"].apply(_money)
+            df_v["legacy원가"] = df_v["legacy_estimated_cost"].apply(_money)
+            df_v["최종원가"] = df_v["final_cost_per_pc"].apply(_money)
+            df_v["소재"] = df_v["material_cost_per_pc"].apply(_money)
+            df_v["열처리"] = df_v["heat_cost_per_pc"].apply(_money)
+            df_v["표면"] = df_v["surface_cost_per_pc"].apply(_money)
+            df_v["외주"] = df_v["outsource_cost_per_pc"].apply(_money)
+            df_v["마진율(계산)"] = df_v["margin_pct_calc"].apply(_pct)
+            df_v["12M매출"] = df_v["total_sales_12m"].apply(_money)
+
+            badge_map = {"BOM_FULL": "🟢", "BOM_PARTIAL": "🟡",
+                         "LEGACY_ONLY": "🟠", "NO_DATA": "🔴"}
+            df_v["신뢰도"] = df_v["cost_source"].apply(
+                lambda v: f"{badge_map.get(v,'?')} {v}")
+
+            show_cols = ["pn", "customer", "신뢰도", "판매가", "최종원가",
+                         "마진율(계산)", "BOM원가", "legacy원가",
+                         "소재", "열처리", "표면", "외주",
+                         "bom_row_count", "12M매출", "abc_grade"]
+            disp_v = df_v[[c for c in show_cols if c in df_v.columns]].rename(columns={
+                "pn": "품번", "customer": "고객사",
+                "bom_row_count": "BOM행수", "abc_grade": "ABC"
+            })
+            st.dataframe(disp_v, use_container_width=True,
+                         hide_index=True, height=520)
+
+            st.caption(
+                "👉 **BOM_PARTIAL** / **LEGACY_ONLY** 품목을 BOM 편집에서 보완하면 "
+                "자동으로 BOM_FULL 로 격상됩니다. "
+                "**BOM원가** 와 **legacy원가** 가 크게 다르면 BOM 단가 정확도 점검 필요."
+            )
+
+            csv = disp_v.to_csv(index=False).encode("utf-8-sig")
+            st.download_button("📥 CSV 다운로드", csv,
+                file_name="product_cost_full.csv", mime="text/csv")
+        elif view_available:
+            st.info("표시할 행이 없습니다.")
 
 
 st.divider()

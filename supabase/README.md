@@ -18,6 +18,8 @@ migrations/
 ├── 004_status_constraints.sql
 ├── 005_po_number_function.sql
 ├── 006_pending_qty_view.sql
+├── 007_bom_processes_and_mapping.sql
+├── 008_cost_views.sql
 └── ...
 ```
 
@@ -49,7 +51,9 @@ migrations/
 |---|---|---|---|
 | 001 | vendor_group.sql | 2026-05-07 | vendors에 vendor_group 컬럼 추가 |
 | 002 | sales_orders.sql | 2026-05-08 | sales_orders / sales_order_items / customer_part_mapping |
-| 003 | inventory_transactions.sql | (미적용) | 재고 거래 이력 + material_stock view |
-| 004 | status_constraints.sql | (미적용) | CHECK 제약 |
-| 005 | po_number_function.sql | (미적용) | 동시성 안전 채번 함수 |
-| 006 | pending_qty_view.sql | (미적용) | pending_qty view 계산 |
+| 003 | inventory_transactions.sql | 2026-05-13 | 재고 거래 이력 + material_stock view |
+| 004 | status_constraints.sql | 2026-05-13 | CHECK 제약 |
+| 005 | po_number_function.sql | 2026-05-13 | 동시성 안전 채번 함수 |
+| 006 | pending_qty_view.sql | 2026-05-13 | pending_qty view 계산 |
+| 007 | bom_processes_and_mapping.sql | (미적용) | BOM 공정행 + 매입/생산 매핑 컬럼 |
+| 008 | cost_views.sql | (미적용) | material_price_v / product_cost_full_v 등 |
