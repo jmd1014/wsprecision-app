@@ -21,6 +21,7 @@ migrations/
 ├── 007_bom_processes_and_mapping.sql
 ├── 008_cost_views.sql
 ├── 009_cost_view_refactor.sql
+├── 010_bom_process_price.sql
 └── ...
 ```
 
@@ -59,3 +60,4 @@ migrations/
 | 007 | bom_processes_and_mapping.sql | (미적용) | BOM 공정행 + 매입/생산 매핑 컬럼 |
 | 008 | cost_views.sql | (미적용) | material_price_v / product_cost_full_v 등 |
 | 009 | cost_view_refactor.sql | (미적용) | BOM=수량 / 가격=원가·매입 분리. 호환 alias 추가 |
+| 010 | bom_process_price.sql | (미적용) | 공정행 unit_price (LOT 단가) 우선 활용 |

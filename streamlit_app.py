@@ -39,7 +39,7 @@ with st.sidebar:
     st.header("📋 메뉴")
     page = st.radio(
         "이동",
-        ["🏠 홈", "⚙️ 마스터 관리", "📥 수주", "📊 생산 계획", "📋 발주서 작성", "📦 입출고", "🏭 생산 보고", "📊 매출/재고", "💰 원가 분석"],
+        ["🏠 홈", "⚙️ 마스터 관리", "🚀 BOM 빠른 정비", "📥 수주", "📊 생산 계획", "📋 발주서 작성", "📦 입출고", "🏭 생산 보고", "📊 매출/재고", "💰 원가 분석"],
         label_visibility="collapsed",
     )
     st.divider()
@@ -642,10 +642,10 @@ elif page == "⚙️ 마스터 관리":
                         help="제품 1EA당 자재 사용량. 공정행은 보통 1."),
                     "shared_factor": st.column_config.NumberColumn("분할/LOT", format="%.0f",
                         help="자재: 1자재→N제품. 공정: 1 LOT 처리수량."),
-                    "unit_price": st.column_config.NumberColumn("단가 (legacy)",
-                        format="%.2f", disabled=True,
-                        help="legacy 컬럼. BOM 에서는 가격을 관리하지 않습니다. "
-                             "매입/원가에서 자동 산정."),
+                    "unit_price": st.column_config.NumberColumn("LOT 단가",
+                        format="%.2f",
+                        help="공정행: LOT 단가 직접 입력 (예: 200,000). "
+                             "자재행: 비워두면 매입 평균에서 자동. 자재 단가는 원가편집에서 관리 권장."),
                     "lot_label": st.column_config.TextColumn("LOT단위", width="small",
                         help="표시용. 예: LOT, CH, BATCH"),
                     "source": st.column_config.TextColumn("출처", disabled=True, width="small"),
@@ -658,21 +658,33 @@ elif page == "⚙️ 마스터 관리":
             )
             if st.button("💾 BOM 변경 저장", type="primary"):
                 chg = 0
-                # BOM 은 수량 정보만 관리 → unit_price 는 편집 불가
+                # 공정행은 unit_price 편집 가능, 자재행은 무시 (저장 로직에서 필터)
                 editable_keys = ("qty_per_pc","shared_factor","verification_status",
-                                 "process_type","lot_label","raw_material_name")
+                                 "process_type","lot_label","raw_material_name",
+                                 "unit_price")
+                ignored_mat_unit_price = 0
                 for orig, new in zip(brows, bedited.to_dict("records")):
                     upd = {}
+                    # MATERIAL 행은 unit_price 변경 무시 (자재 단가는 원가/매입에서)
+                    is_material = (new.get("process_type") or
+                                   orig.get("process_type") or "MATERIAL") == "MATERIAL"
                     for k in editable_keys:
                         if k in new and orig.get(k) != new.get(k):
+                            if k == "unit_price" and is_material:
+                                # 자재행은 BOM 가격 입력 무시
+                                if (new.get(k) or 0) != (orig.get(k) or 0):
+                                    ignored_mat_unit_price += 1
+                                continue
                             v = new.get(k)
-                            # 빈 문자열 → NULL
                             if v == "":
                                 v = None
                             upd[k] = v
                     if upd:
                         if _db.update("bom", f"bom_id=eq.{orig['bom_id']}", upd):
                             chg += 1
+                if ignored_mat_unit_price:
+                    st.caption(f"ℹ️ 자재행 LOT 단가 {ignored_mat_unit_price}건 변경 무시됨 "
+                               f"(자재 단가는 원가 편집/매입에서 관리)")
                 if chg: st.success(f"✅ {chg}건 update"); st.rerun()
                 else: st.info("변경 사항 없음")
 
@@ -807,8 +819,9 @@ elif page == "⚙️ 마스터 관리":
             st.divider()
             st.markdown("##### ➕ 신규 공정행 추가 (열처리/외주/표면 등)")
             st.caption(
-                "BOM 공정행은 **수량 관계만 저장** (어떤 공정이 들어가는지 + LOT 처리수량). "
-                "단가는 **원가/매입 데이터**에서 자동 산정합니다."
+                "공정행은 **LOT 단가 + LOT 처리수량** 을 BOM 에 직접 입력합니다 "
+                "(공정 단계별로 달라서). 공식: **per_pc = LOT단가 × qty/PC ÷ LOT처리수량**. "
+                "예) 소재열처리 200,000원/5,000EA → 40원/EA"
             )
 
             pr1, pr2 = st.columns(2)
@@ -850,19 +863,32 @@ elif page == "⚙️ 마스터 관리":
                     }.get(v, v),
                     key="bom_proc_type")
 
-            pr3, pr4, pr5 = st.columns([1, 1, 2])
+            pr3, pr4, pr5, pr_lbl = st.columns([1, 1, 1, 1])
             with pr3:
+                proc_unit_price = st.number_input("LOT 단가 *",
+                    min_value=0.0, value=0.0, step=1000.0,
+                    key="bom_proc_unit_price",
+                    help="1 LOT 처리비. 예: 열처리 200,000원/LOT")
+            with pr4:
                 proc_qty = st.number_input("qty/PC", min_value=0.0,
                     value=1.0, step=0.1, key="bom_proc_qty",
                     help="제품 1EA당 공정 횟수. 보통 1.")
-            with pr4:
+            with pr5:
                 proc_lot_size = st.number_input("LOT 처리수량",
                     min_value=1, value=1, step=1, key="bom_proc_lot",
-                    help="1 LOT/CH 에서 처리되는 제품 수. 예: 500EA")
-            with pr5:
+                    help="1 LOT/CH 에서 처리되는 제품 수. 예: 5000EA")
+            with pr_lbl:
                 proc_lot_label = st.selectbox("LOT 단위",
                     ["", "LOT", "CH", "BATCH"], key="bom_proc_label",
-                    help="표시용. 단가 계산에는 미사용.")
+                    help="표시용")
+
+            # per_pc 미리보기
+            if proc_unit_price > 0 and proc_lot_size > 0:
+                est_per_pc = proc_unit_price * proc_qty / proc_lot_size
+                st.info(
+                    f"💡 자동 계산 → **{est_per_pc:,.2f} 원/EA** "
+                    f"(= {proc_unit_price:,.0f} × {proc_qty} ÷ {proc_lot_size})"
+                )
 
             pr6, pr7 = st.columns([3, 2])
             with pr6:
@@ -886,12 +912,15 @@ elif page == "⚙️ 마스터 관리":
             if st.button("➕ 공정행 추가", key="bom_proc_btn", type="primary"):
                 if not pp_pick_pid:
                     st.error("제품을 선택해주세요.")
+                elif proc_unit_price <= 0:
+                    st.error("LOT 단가는 0보다 커야 합니다.")
                 else:
                     record = {
                         "product_id": pp_pick_pid,
                         "material_id": None,
                         "raw_material_name": proc_name or proc_type,
                         "process_type": proc_type,
+                        "unit_price": proc_unit_price,
                         "qty_per_pc": proc_qty,
                         "shared_factor": proc_lot_size,
                         "lot_label": proc_lot_label or None,
@@ -905,10 +934,11 @@ elif page == "⚙️ 마스터 관리":
                             pass
                     try:
                         _db.insert("bom", [record])
+                        per_pc = proc_unit_price * proc_qty / proc_lot_size
                         st.success(
-                            f"✅ {proc_type} 공정행 추가: **{pp_pick_pn}** "
-                            f"(LOT 처리={proc_lot_size}EA, qty/PC={proc_qty}). "
-                            f"단가는 원가/매입 데이터에서 자동 산정됩니다."
+                            f"✅ {proc_type} 공정행 추가: **{pp_pick_pn}** — "
+                            f"**{per_pc:,.2f}원/EA** "
+                            f"({proc_unit_price:,.0f} × {proc_qty} ÷ {proc_lot_size})"
                         )
                         st.rerun()
                     except Exception as e:
@@ -1367,6 +1397,368 @@ elif page == "⚙️ 마스터 관리":
                     st.dataframe(pdf, use_container_width=True, hide_index=True)
                 else:
                     st.info("정비 우선 항목이 없습니다. (이상적 상태 또는 진단 데이터 부족)")
+
+
+elif page == "🚀 BOM 빠른 정비":
+    st.subheader("🚀 BOM 빠른 정비")
+    st.caption(
+        "1제품의 자재·공정행을 한 화면에서 입력/수정하고, 동일 BOM 구조를 분기 제품에 일괄 복사합니다. "
+        "제품 마스터 정비 속도를 크게 올려줍니다."
+    )
+
+    if not DB_AVAILABLE:
+        st.error("DB 연결이 활성화되지 않았습니다."); st.stop()
+
+    import db as _db
+    import pandas as pd
+
+    # ════════════════════════════════════════════════
+    # 1. 제품 검색 + 선택
+    # ════════════════════════════════════════════════
+    s1, s2, s3 = st.columns([3, 1, 1])
+    with s1:
+        fq = st.text_input("🔍 제품 검색 (품번/품명/고객사/제품군)",
+            placeholder="예: MRG6-07, FLANGE, 미진정밀",
+            key="fast_search")
+    with s2:
+        filter_no_bom = st.checkbox("BOM 미보유만",
+            value=False, key="fast_no_bom")
+    with s3:
+        f_limit = st.number_input("결과", 10, 200, 50, 10, key="fast_limit")
+
+    sel_pid = None
+    sel_pn = None
+    sel_customer = None
+
+    if fq:
+        qq = fq.strip()
+        try:
+            cand = fetch("products",
+                "product_id,pn,customer,product_group,sub_class,"
+                "material,raw_material_name,raw_material_spec,"
+                "material_unit_price,heat_treat_per_pc,surface_per_pc,outsourcing_per_pc,"
+                "estimated_cost_per_pc",
+                f"or=(pn.ilike.*{qq}*,customer.ilike.*{qq}*,"
+                f"product_group.ilike.*{qq}*,sub_class.ilike.*{qq}*)"
+                f"&archived_at=is.null&order=pn.asc",
+                limit=int(f_limit))
+        except Exception as e:
+            st.error(f"검색 실패: {e}"); cand = []
+
+        # BOM 미보유 필터
+        if filter_no_bom and cand:
+            pids = [c["product_id"] for c in cand]
+            pids_q = ",".join(f'"{p}"' for p in pids)
+            try:
+                bp = fetch("bom", "product_id",
+                    f"product_id=in.({pids_q})", limit=5000)
+                has_bom = {b["product_id"] for b in bp}
+                cand = [c for c in cand if c["product_id"] not in has_bom]
+            except Exception:
+                pass
+
+        if not cand:
+            st.info("결과 없음")
+        else:
+            labels = [
+                f"{c['pn']}  |  {c.get('customer','-')}  |  {c.get('product_group','-')}"
+                for c in cand
+            ]
+            sel = st.selectbox(f"제품 선택 ({len(cand)}건)",
+                labels, key="fast_pick")
+            if sel:
+                picked = cand[labels.index(sel)]
+                sel_pid = picked["product_id"]
+                sel_pn = picked["pn"]
+                sel_customer = picked.get("customer")
+
+    # ════════════════════════════════════════════════
+    # 2. 선택된 제품의 현재 BOM + 정비 폼
+    # ════════════════════════════════════════════════
+    if sel_pid:
+        st.divider()
+        st.markdown(f"### 🔧 {sel_pn}  ·  {sel_customer or '-'}")
+
+        # 현재 BOM 행
+        try:
+            cur_bom = fetch("bom",
+                "bom_id,process_type,material_id,raw_material_name,"
+                "qty_per_pc,shared_factor,unit_price,lot_label,"
+                "verification_status,source",
+                f"product_id=eq.{sel_pid}&order=bom_id.asc", limit=100)
+        except Exception as e:
+            st.error(f"BOM 조회 실패: {e}"); cur_bom = []
+
+        if cur_bom:
+            st.markdown(f"##### 현재 BOM ({len(cur_bom)}행)")
+            df_b = pd.DataFrame(cur_bom)
+            for c in ["qty_per_pc","shared_factor","unit_price"]:
+                df_b[c] = pd.to_numeric(df_b[c], errors="coerce")
+            # per_pc 계산 미리보기
+            def _per_pc(r):
+                up = r.get("unit_price")
+                qp = r.get("qty_per_pc") or 1
+                sf = r.get("shared_factor") or 1
+                if pd.notna(up) and up and sf:
+                    return up * qp / sf
+                return None
+            df_b["per_pc 추정"] = df_b.apply(_per_pc, axis=1)
+            df_b["per_pc 추정"] = df_b["per_pc 추정"].apply(
+                lambda v: f"{v:,.2f}" if pd.notna(v) else "-")
+
+            show_cols = ["bom_id","process_type","material_id","raw_material_name",
+                         "qty_per_pc","shared_factor","unit_price","lot_label",
+                         "per_pc 추정","verification_status"]
+            st.dataframe(df_b[show_cols].rename(columns={
+                "bom_id":"ID","process_type":"구분","material_id":"자재ID",
+                "raw_material_name":"자재/공정명","qty_per_pc":"qty/PC",
+                "shared_factor":"분할/LOT","unit_price":"LOT단가",
+                "lot_label":"단위","verification_status":"검증"
+            }), use_container_width=True, hide_index=True, height=240)
+
+            # 삭제 (선택적 권장)
+            with st.expander("⚠️ 개별 행 삭제", expanded=False):
+                del_id = st.number_input("삭제할 BOM ID", min_value=0,
+                    value=0, step=1, key="fast_del_id")
+                if st.button("🗑 삭제", key="fast_del_btn"):
+                    if del_id > 0:
+                        try:
+                            import requests
+                            sr = st.secrets["supabase"]["service_role_key"]
+                            r = requests.delete(
+                                f"{st.secrets['supabase']['url']}/rest/v1/bom?"
+                                f"bom_id=eq.{del_id}",
+                                headers={"apikey": sr,
+                                         "Authorization": f"Bearer {sr}"},
+                                timeout=15)
+                            if r.status_code in (200, 204):
+                                st.success(f"✅ bom_id={del_id} 삭제 완료")
+                                st.rerun()
+                            else:
+                                st.error(f"삭제 실패: {r.status_code} {r.text[:100]}")
+                        except Exception as e:
+                            st.error(f"삭제 오류: {e}")
+        else:
+            st.info("이 제품에 등록된 BOM 행이 없습니다. 아래에서 입력하세요.")
+
+        st.divider()
+
+        # ── 자재행 추가 ──
+        st.markdown("##### 1️⃣ 자재행 추가")
+        with st.form(f"fast_mat_form_{sel_pid}"):
+            mc1, mc2, mc3, mc4 = st.columns([2, 1, 1, 1])
+            with mc1:
+                mat_q = st.text_input("자재 검색 (자재명/규격/재질)",
+                    placeholder="예: 환봉 STS304, SCM440",
+                    key=f"fast_mat_q_{sel_pid}")
+            with mc2:
+                mat_qpc = st.number_input("qty/PC", min_value=0.0,
+                    value=1.0, step=0.1, key=f"fast_mat_qpc_{sel_pid}")
+            with mc3:
+                mat_sf = st.number_input("분할가공 N",
+                    min_value=1, value=1, step=1,
+                    key=f"fast_mat_sf_{sel_pid}",
+                    help="환봉 1개 → N제품 분할가공 시 N. 분할 없으면 1.")
+            with mc4:
+                st.write(""); st.write("")
+                mat_submit = st.form_submit_button("➕ 자재행 추가", type="primary")
+
+            if mat_q:
+                qq = mat_q.strip()
+                try:
+                    m_found = fetch("materials",
+                        "material_id,raw_name,material_type,spec",
+                        f"or=(raw_name.ilike.*{qq}*,material_type.ilike.*{qq}*,"
+                        f"spec.ilike.*{qq}*)&order=raw_name.asc", limit=20)
+                except Exception:
+                    m_found = []
+                if m_found:
+                    m_labels = [
+                        f"{m['raw_name']} · {m.get('material_type','-')} · {m.get('spec','-')}"
+                        for m in m_found
+                    ]
+                    sel_m_label = st.selectbox(f"자재 선택 ({len(m_found)}건)",
+                        m_labels, key=f"fast_mat_pick_{sel_pid}")
+                else:
+                    sel_m_label = None
+                    st.caption("일치하는 자재 없음")
+            else:
+                sel_m_label = None
+                m_found = []
+
+            if mat_submit:
+                if not sel_m_label:
+                    st.error("자재를 선택해주세요.")
+                else:
+                    m = m_found[m_labels.index(sel_m_label)]
+                    try:
+                        _db.insert("bom", [{
+                            "product_id": sel_pid,
+                            "material_id": m["material_id"],
+                            "raw_material_name": m["raw_name"],
+                            "process_type": "MATERIAL",
+                            "qty_per_pc": mat_qpc,
+                            "shared_factor": mat_sf,
+                            "source": "MANUAL",
+                            "verification_status": "확인완료",
+                        }])
+                        st.success(f"✅ 자재행 추가: {m['raw_name']} "
+                                   f"(qty/PC={mat_qpc}, 분할={mat_sf})")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"추가 실패: {e}")
+
+        # ── 공정행 추가 ──
+        st.markdown("##### 2️⃣ 공정행 추가 (열처리/외주/표면 등)")
+        with st.form(f"fast_proc_form_{sel_pid}"):
+            fc1, fc2, fc3, fc4 = st.columns([1, 1, 1, 1])
+            with fc1:
+                pt = st.selectbox("공정", ["HEAT","SURFACE","OUTSOURCE",
+                    "PACKING","LABOR","OTHER"],
+                    format_func=lambda v: {
+                        "HEAT":"🔥 HEAT","SURFACE":"💎 SURFACE",
+                        "OUTSOURCE":"🏭 OUTSOURCE","PACKING":"📦 PACKING",
+                        "LABOR":"👷 LABOR","OTHER":"❔ OTHER"
+                    }[v], key=f"fast_pt_{sel_pid}")
+            with fc2:
+                pp = st.number_input("LOT 단가", min_value=0.0,
+                    value=0.0, step=1000.0, key=f"fast_pp_{sel_pid}")
+            with fc3:
+                pqpc = st.number_input("qty/PC", min_value=0.0,
+                    value=1.0, step=0.1, key=f"fast_pqpc_{sel_pid}")
+            with fc4:
+                plot = st.number_input("LOT 처리수량",
+                    min_value=1, value=1, step=1, key=f"fast_plot_{sel_pid}")
+
+            fc5, fc6, fc7 = st.columns([2, 1, 1])
+            with fc5:
+                pn = st.text_input("공정 설명",
+                    placeholder="예: 소재열처리, 제품열처리, 무전해Ni도금",
+                    key=f"fast_pn_{sel_pid}")
+            with fc6:
+                plbl = st.selectbox("LOT단위", ["","LOT","CH","BATCH"],
+                    key=f"fast_plbl_{sel_pid}")
+            with fc7:
+                st.write(""); st.write("")
+                proc_submit = st.form_submit_button("➕ 공정행 추가", type="primary")
+
+            # 미리보기
+            if pp > 0 and plot > 0:
+                est = pp * pqpc / plot
+                st.info(f"💡 per_pc = **{est:,.2f}원/EA** "
+                        f"(= {pp:,.0f} × {pqpc} ÷ {plot})")
+
+            if proc_submit:
+                if pp <= 0:
+                    st.error("LOT 단가는 0보다 커야 합니다.")
+                else:
+                    try:
+                        _db.insert("bom", [{
+                            "product_id": sel_pid,
+                            "material_id": None,
+                            "raw_material_name": pn or pt,
+                            "process_type": pt,
+                            "unit_price": pp,
+                            "qty_per_pc": pqpc,
+                            "shared_factor": plot,
+                            "lot_label": plbl or None,
+                            "source": "MANUAL",
+                            "verification_status": "확인완료",
+                        }])
+                        per_pc = pp * pqpc / plot
+                        st.success(f"✅ {pt} 추가 — **{per_pc:,.2f}원/EA**")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"추가 실패: {e}")
+
+        st.divider()
+
+        # ── 분기 일괄 복사 ──
+        if cur_bom:
+            st.markdown("##### 3️⃣ 이 BOM을 다른 제품에 일괄 복사 (분기 적용)")
+            st.caption(
+                f"현재 **{sel_pn}** 의 BOM **{len(cur_bom)}행** 을 다른 제품에 그대로 복제합니다. "
+                "분기 제품군(예: -A/-B/-C) 한 번에 정비할 때 유용."
+            )
+            cp_c1, cp_c2 = st.columns([3, 1])
+            with cp_c1:
+                cp_q = st.text_input("대상 제품 검색 (다중 선택)",
+                    placeholder=f"예: {sel_pn[:6]} (분기 베이스로 검색)",
+                    key=f"fast_cp_q_{sel_pid}")
+            with cp_c2:
+                cp_limit = st.number_input("결과수",
+                    10, 200, 50, 10, key=f"fast_cp_lim_{sel_pid}")
+
+            if cp_q:
+                cqq = cp_q.strip()
+                try:
+                    cp_found = fetch("products", "product_id,pn,customer",
+                        f"or=(pn.ilike.*{cqq}*,customer.ilike.*{cqq}*)"
+                        f"&archived_at=is.null&product_id=neq.{sel_pid}"
+                        f"&order=pn.asc", limit=int(cp_limit))
+                except Exception:
+                    cp_found = []
+                if cp_found:
+                    cp_labels = [f"{p['pn']} | {p.get('customer','-')}"
+                                 for p in cp_found]
+                    cp_sel = st.multiselect(
+                        f"복사할 대상 제품 선택 (최대 {cp_limit}개)",
+                        cp_labels, key=f"fast_cp_sel_{sel_pid}")
+
+                    cp_opt1, cp_opt2 = st.columns([1, 3])
+                    with cp_opt1:
+                        cp_overwrite = st.checkbox("기존 BOM 덮어쓰기",
+                            value=False, key=f"fast_cp_ow_{sel_pid}",
+                            help="체크 시 대상 제품의 기존 BOM 행 모두 삭제 후 복사.")
+                    if cp_sel and st.button(
+                        f"📋 {len(cp_sel)}개 제품에 BOM 복사",
+                        type="primary", key=f"fast_cp_btn_{sel_pid}"
+                    ):
+                        target_pids = [cp_found[cp_labels.index(l)]["product_id"]
+                                       for l in cp_sel]
+                        ok_n, fail_n = 0, 0
+                        # 1) 덮어쓰기면 기존 삭제
+                        if cp_overwrite:
+                            for tpid in target_pids:
+                                try:
+                                    import requests
+                                    sr = st.secrets["supabase"]["service_role_key"]
+                                    r = requests.delete(
+                                        f"{st.secrets['supabase']['url']}/rest/v1/bom?"
+                                        f"product_id=eq.{tpid}",
+                                        headers={"apikey": sr,
+                                                 "Authorization": f"Bearer {sr}"},
+                                        timeout=15)
+                                except Exception:
+                                    pass
+                        # 2) 행 복제
+                        for tpid in target_pids:
+                            records = []
+                            for b in cur_bom:
+                                rec = {
+                                    "product_id": tpid,
+                                    "material_id": b.get("material_id"),
+                                    "raw_material_name": b.get("raw_material_name"),
+                                    "process_type": b.get("process_type") or "MATERIAL",
+                                    "qty_per_pc": b.get("qty_per_pc"),
+                                    "shared_factor": b.get("shared_factor"),
+                                    "unit_price": b.get("unit_price"),
+                                    "lot_label": b.get("lot_label"),
+                                    "source": f"COPY_FROM:{sel_pn}",
+                                    "verification_status": b.get("verification_status"),
+                                }
+                                records.append(rec)
+                            try:
+                                _db.insert("bom", records)
+                                ok_n += 1
+                            except Exception:
+                                fail_n += 1
+                        st.success(
+                            f"✅ {ok_n}개 제품 복사 완료"
+                            + (f" / 실패 {fail_n}개" if fail_n else "")
+                            + (" (기존 BOM 덮어씀)" if cp_overwrite else "")
+                        )
+                        st.rerun()
 
 
 elif page == "📥 수주":
