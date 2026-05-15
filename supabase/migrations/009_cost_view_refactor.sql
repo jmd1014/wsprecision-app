@@ -147,6 +147,7 @@ SELECT
   ac.log_count_6m,
   -- ── Layer D: 매출/판매가 ───────────
   ps.avg_unit_price            AS sale_price,
+  ps.avg_unit_price            AS avg_unit_price,   -- legacy alias (UI 호환)
   ps.total_sales_12m,
   ps.sales_count_12m,
   ps.abc_grade,
