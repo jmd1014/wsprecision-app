@@ -18,6 +18,12 @@
 -- bom.unit_price 컬럼은 그대로 두되 (legacy 호환), view 에서 미사용.
 -- ════════════════════════════════════════════════════════════
 
+-- 008 의 product_bom_cost_v 와 컬럼 타입이 달라지므로 CREATE OR REPLACE 불가.
+-- DROP CASCADE 로 의존 view (product_cost_full_v) 까지 같이 제거 후 재생성.
+DROP VIEW IF EXISTS product_cost_full_v CASCADE;
+DROP VIEW IF EXISTS product_bom_cost_v  CASCADE;
+
+
 CREATE OR REPLACE VIEW product_bom_cost_v AS
 SELECT
   b.product_id,
@@ -65,8 +71,8 @@ SELECT
   -- 기타 공정 (PACKING/LABOR/OTHER) — 추후 process_cost_v 로 확장
   SUM(
     CASE WHEN b.process_type IN ('PACKING','LABOR','OTHER')
-    THEN 0  -- 현재는 단가 없음. 향후 process_cost_v 도입 시 활성
-    ELSE 0 END
+    THEN 0::numeric  -- 현재는 단가 없음. 향후 process_cost_v 도입 시 활성
+    ELSE 0::numeric END
   ) AS other_cost_per_pc,
   -- ── 메타 ──
   COUNT(*)                                                                                AS bom_row_count,
@@ -83,8 +89,8 @@ SELECT
       AND mp.price_12m IS NULL
       AND p.material_unit_price IS NULL
   ) AS rows_with_no_price,
-  -- legacy 호환 (008 컬럼)
-  0::numeric                                                                              AS rows_with_explicit_price
+  -- legacy 호환 (008 컬럼) — BOM 가격 미사용 정책이지만 컬럼 유지
+  COUNT(*) FILTER (WHERE b.unit_price IS NOT NULL)                                        AS rows_with_explicit_price
 FROM bom b
 LEFT JOIN material_price_v mp ON mp.material_id = b.material_id
 LEFT JOIN products p ON p.product_id = b.product_id
