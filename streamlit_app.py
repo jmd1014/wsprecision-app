@@ -414,6 +414,93 @@ elif page == "⚙️ 마스터 관리":
     with tab_bom:
         st.caption("📌 BOM = 제품-자재 매핑. **qty_per_pc**는 제품 1 EA당 자재 EA 수. "
                    "**shared_factor**는 1 자재에서 여러 제품 분할 가공 시 (예: 환봉 1개 → 3 EA → shared_factor=3)")
+
+        # ── 📊 매입 단가 조회 위젯 (BOM 작업 보조) ──
+        with st.expander("📊 자재 최근 매입 단가 조회 (BOM 작업 보조)", expanded=False):
+            st.caption("자재명/규격으로 매입 ledger 를 검색해 최근 거래가를 확인합니다. "
+                       "products.material_unit_price 갱신 또는 BOM 작성 시 참고용.")
+            pql_c1, pql_c2, pql_c3 = st.columns([3, 1, 1])
+            with pql_c1:
+                pl_q = st.text_input("자재명/규격 검색",
+                    placeholder="예: 환봉 STS304, SCM440 ⌀45, 8HFDV",
+                    key="pl_search")
+            with pql_c2:
+                pl_limit = st.number_input("최근 N건", 3, 50, 15, 1, key="pl_limit")
+            with pql_c3:
+                pl_only_mat = st.checkbox("MAT_* 만",
+                    value=True, key="pl_only_mat",
+                    help="자재 카테고리만 (외주/소모품 제외)")
+
+            if pl_q:
+                qq = pl_q.strip()
+                filt = [f"item=ilike.*{qq}*", "order=trade_date.desc"]
+                if pl_only_mat:
+                    filt.append("category=like.MAT_*")
+                try:
+                    pl_rows = fetch("purchase_ledger",
+                        "ledger_id,trade_date,vendor,vendor_normalized,item,"
+                        "qty,unit,unit_price,kg_price,ea_price,category",
+                        "&".join(filt), limit=int(pl_limit))
+                except Exception as e:
+                    st.error(f"매입 조회 실패: {e}"); pl_rows = []
+
+                if not pl_rows:
+                    st.info("해당 자재명에 대한 매입 이력이 없습니다.")
+                else:
+                    # 통계 카드
+                    prices_unit = [float(r.get("unit_price") or 0) for r in pl_rows
+                                   if r.get("unit_price")]
+                    prices_kg = [float(r.get("kg_price") or 0) for r in pl_rows
+                                 if r.get("kg_price")]
+                    prices_ea = [float(r.get("ea_price") or 0) for r in pl_rows
+                                 if r.get("ea_price")]
+
+                    s1, s2, s3, s4 = st.columns(4)
+                    s1.metric("검색결과", f"{len(pl_rows):,}건")
+                    if prices_unit:
+                        s2.metric("평균 단가", f"{sum(prices_unit)/len(prices_unit):,.0f}",
+                                  f"최근 {prices_unit[0]:,.0f}")
+                    if prices_kg:
+                        s3.metric("평균 KG단가",
+                                  f"{sum(prices_kg)/len(prices_kg):,.0f}")
+                    if prices_ea:
+                        s4.metric("평균 EA단가",
+                                  f"{sum(prices_ea)/len(prices_ea):,.0f}")
+
+                    # 표
+                    df_pl = pd.DataFrame(pl_rows)
+                    df_pl["unit_price"] = pd.to_numeric(df_pl["unit_price"], errors="coerce")
+                    df_pl["qty"] = pd.to_numeric(df_pl["qty"], errors="coerce")
+                    show = df_pl[["trade_date","vendor","item","category",
+                                  "qty","unit","unit_price","kg_price","ea_price"]].rename(
+                        columns={
+                            "trade_date":"거래일", "vendor":"거래처",
+                            "item":"품목", "category":"분류",
+                            "qty":"수량", "unit":"단위",
+                            "unit_price":"단가", "kg_price":"KG단가",
+                            "ea_price":"EA단가"
+                        }
+                    )
+                    st.dataframe(show, use_container_width=True,
+                                 hide_index=True, height=280)
+
+                    # 거래처별 평균 (상위 5)
+                    if len(pl_rows) >= 3:
+                        st.markdown("##### 거래처별 평균 단가")
+                        by_vendor = (df_pl.groupby("vendor_normalized")
+                                     .agg(거래수=("ledger_id","count"),
+                                          평균단가=("unit_price","mean"),
+                                          최근거래=("trade_date","max"))
+                                     .reset_index()
+                                     .sort_values("거래수", ascending=False)
+                                     .head(5))
+                        by_vendor["평균단가"] = by_vendor["평균단가"].apply(
+                            lambda v: f"{v:,.0f}" if pd.notna(v) else "-")
+                        st.dataframe(by_vendor.rename(columns={
+                            "vendor_normalized":"거래처(정규)"
+                        }), use_container_width=True, hide_index=True)
+
+        st.divider()
         bc1, bc2 = st.columns([3, 1])
         with bc1:
             bom_q = st.text_input("제품 또는 자재 검색", placeholder="예: 8HFDV, M001")
@@ -636,6 +723,35 @@ elif page == "⚙️ 마스터 관리":
                     f"제품: **{p_pick_pn or '(미선택)'}** · "
                     f"자재: **{m_pick_name or '(미선택)'}**"
                 )
+
+            # ── 선택된 자재의 매입 단가 미리보기 ──
+            if m_pick_name:
+                try:
+                    # raw_name 토큰 분리 후 ilike 검색 (정확도 향상)
+                    qq = m_pick_name.split()[0] if m_pick_name else m_pick_name
+                    preview_rows = fetch("purchase_ledger",
+                        "trade_date,vendor,item,unit_price,kg_price,ea_price",
+                        f"item=ilike.*{qq}*&order=trade_date.desc",
+                        limit=5)
+                except Exception:
+                    preview_rows = []
+                if preview_rows:
+                    prices = [float(r.get("unit_price") or 0) for r in preview_rows
+                              if r.get("unit_price")]
+                    if prices:
+                        avg_p = sum(prices) / len(prices)
+                        last_p = prices[0]
+                        # 자재 단가 산정 예시 (qty_per_pc × shared_factor)
+                        est_per_pc = (avg_p * new_qpc / new_sf) if new_sf > 0 else 0
+                        st.info(
+                            f"💡 **'{m_pick_name}'** 최근 매입 단가 ({len(prices)}건): "
+                            f"평균 **{avg_p:,.0f}**원 · 최근 **{last_p:,.0f}**원  "
+                            f"→ 현재 입력값으로 계산 시 **{est_per_pc:,.0f}원/EA** "
+                            f"(= {avg_p:,.0f} × {new_qpc} ÷ {new_sf})"
+                        )
+                else:
+                    st.caption(f"💡 '{m_pick_name}' 매입 이력 조회 결과 없음. "
+                               f"위 '매입 단가 조회' 위젯에서 키워드 조정 가능.")
 
             if st.button("➕ 자재행 추가", key="bom_new_btn", type="primary"):
                 if not p_pick_pid or not m_pick_mid:
