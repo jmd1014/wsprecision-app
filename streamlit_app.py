@@ -157,8 +157,9 @@ elif page == "⚙️ 마스터 관리":
     import db as _db
     import pandas as pd
 
-    tab1, tab_mat, tab_bom, tab_map, tab2 = st.tabs([
+    tab1, tab_mat, tab_bom, tab_excl, tab_map, tab2 = st.tabs([
         "🏢 거래처 편집", "📦 자재 편집", "🔗 BOM 편집",
+        "🚫 데이터 제외 규칙",
         "🔌 매입↔자재 매핑 (레거시)", "🧭 마스터/연결 점검"
     ])
 
@@ -789,6 +790,167 @@ elif page == "⚙️ 마스터 관리":
                         st.rerun()
                     except Exception as e:
                         st.error(f"추가 실패: {e}")
+
+    # ─── Tab: 데이터 제외 규칙 ───
+    with tab_excl:
+        st.caption(
+            "특정 거래처의 특정 기간 데이터(예: 구ERP 마이그레이션 이전)를 "
+            "**평균/마진 계산에서 제외**합니다. 원본은 `sales_ledger` 에 보존."
+        )
+        st.markdown("##### 현재 규칙")
+        try:
+            excl_rows = fetch("sales_data_exclusion",
+                "id,customer_pattern,before_date,after_date,reason,active,created_at",
+                "order=created_at.desc", limit=200)
+            excl_available = True
+        except Exception as e:
+            excl_rows = []
+            excl_available = False
+            st.warning(
+                f"⚠️ `sales_data_exclusion` 테이블이 없습니다. "
+                f"Migration 012 적용 필요. ({str(e)[:80]})"
+            )
+
+        if excl_available:
+            if not excl_rows:
+                st.info("등록된 제외 규칙 없음.")
+            else:
+                df_e = pd.DataFrame(excl_rows)
+                edited_e = st.data_editor(
+                    df_e[["id","customer_pattern","before_date","after_date",
+                          "reason","active"]],
+                    column_config={
+                        "id": st.column_config.NumberColumn("ID",
+                            disabled=True, width="small"),
+                        "customer_pattern": st.column_config.TextColumn(
+                            "거래처 패턴 (ILIKE)", width="medium",
+                            help="예: %미진% 은 '미진' 포함 거래처 모두 매칭"),
+                        "before_date": st.column_config.DateColumn(
+                            "이 날짜 이전 제외", width="small"),
+                        "after_date": st.column_config.DateColumn(
+                            "이 날짜 이후 제외", width="small"),
+                        "reason": st.column_config.TextColumn("사유",
+                            width="large"),
+                        "active": st.column_config.CheckboxColumn("활성",
+                            width="small"),
+                    },
+                    hide_index=True, use_container_width=True,
+                    num_rows="fixed", key="excl_editor"
+                )
+                if st.button("💾 변경 저장", type="primary", key="excl_save"):
+                    chg = 0
+                    for o, n in zip(excl_rows, edited_e.to_dict("records")):
+                        upd = {}
+                        for k in ("customer_pattern","before_date","after_date",
+                                  "reason","active"):
+                            ov = o.get(k); nv = n.get(k)
+                            if pd.isna(nv): nv = None
+                            if str(ov) != str(nv):
+                                upd[k] = nv
+                        if upd:
+                            try:
+                                if _db.update("sales_data_exclusion",
+                                    f"id=eq.{o['id']}", upd):
+                                    chg += 1
+                            except Exception:
+                                pass
+                    if chg:
+                        st.success(f"✅ {chg}건 변경 저장")
+                        st.rerun()
+                    else:
+                        st.info("변경 사항 없음")
+
+            st.divider()
+            st.markdown("##### ➕ 신규 제외 규칙 추가")
+            with st.form("new_excl_form"):
+                nec1, nec2, nec3 = st.columns([2, 1, 1])
+                with nec1:
+                    new_pat = st.text_input(
+                        "거래처 패턴 (ILIKE)",
+                        placeholder="예: %미진% / %두산% / %HDX%",
+                        help="% 는 와일드카드. '%미진%' 은 '미진' 포함 모두.")
+                with nec2:
+                    new_before = st.date_input("이 날짜 이전 제외",
+                        value=None, key="new_excl_before")
+                with nec3:
+                    new_after = st.date_input("이 날짜 이후 제외",
+                        value=None, key="new_excl_after")
+                new_reason = st.text_input("사유",
+                    placeholder="예: 구ERP 마이그레이션 전 데이터 가격 정합성 부족")
+                add_btn = st.form_submit_button("➕ 규칙 추가",
+                    type="primary")
+
+                if add_btn:
+                    if not new_pat:
+                        st.error("거래처 패턴은 필수입니다.")
+                    elif not new_before and not new_after:
+                        st.error("before/after 중 하나는 반드시 지정해야 합니다.")
+                    else:
+                        record = {
+                            "customer_pattern": new_pat,
+                            "before_date": str(new_before) if new_before else None,
+                            "after_date":  str(new_after)  if new_after  else None,
+                            "reason": new_reason or None,
+                            "active": True,
+                        }
+                        try:
+                            _db.insert("sales_data_exclusion", [record])
+                            st.success(f"✅ 규칙 추가됨: {new_pat}")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"추가 실패: {e}")
+
+            # 영향 미리보기
+            if excl_rows:
+                st.divider()
+                st.markdown("##### 📊 제외 영향 미리보기")
+                if st.button("🔍 활성 규칙 적용 시 제외되는 거래 수 계산",
+                             key="excl_preview_btn"):
+                    total_excluded = 0
+                    breakdown = []
+                    for r in excl_rows:
+                        if not r.get("active"):
+                            continue
+                        filt = [f"customer=ilike.{r['customer_pattern']}"]
+                        if r.get("before_date"):
+                            filt.append(f"item_date=lt.{r['before_date']}")
+                        if r.get("after_date"):
+                            filt.append(f"item_date=gt.{r['after_date']}")
+                        try:
+                            from db import count_rows as _cnt
+                            # count via Range header
+                            import requests
+                            url = (f"{st.secrets['supabase']['url']}/rest/v1/"
+                                   f"sales_ledger?select=*&limit=1&" +
+                                   "&".join(filt))
+                            sr = st.secrets["supabase"]["service_role_key"]
+                            rr = requests.get(url, headers={
+                                "apikey": sr, "Authorization": f"Bearer {sr}",
+                                "Prefer": "count=exact"}, timeout=15)
+                            cr = rr.headers.get("content-range", "")
+                            n = 0
+                            if "/" in cr:
+                                nstr = cr.split("/")[-1]
+                                n = int(nstr) if nstr.isdigit() else 0
+                            total_excluded += n
+                            breakdown.append({
+                                "패턴": r['customer_pattern'],
+                                "기간": f"{r.get('before_date') or '-'} ~ {r.get('after_date') or '-'}",
+                                "제외 건수": n,
+                                "사유": r.get('reason') or "-"
+                            })
+                        except Exception as e:
+                            breakdown.append({
+                                "패턴": r['customer_pattern'],
+                                "기간": "ERR",
+                                "제외 건수": "-",
+                                "사유": str(e)[:60]
+                            })
+                    st.metric("🎯 총 제외 거래", f"{total_excluded:,}건")
+                    if breakdown:
+                        st.dataframe(pd.DataFrame(breakdown),
+                            use_container_width=True, hide_index=True)
+
 
     # ─── Tab: 매입↔자재 매핑 (Phase 2 스캐폴딩) ───
     with tab_map:
