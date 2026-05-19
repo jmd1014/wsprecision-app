@@ -22,6 +22,7 @@ migrations/
 ├── 008_cost_views.sql
 ├── 009_cost_view_refactor.sql
 ├── 010_bom_process_price.sql
+├── 011_sales_stats_recent_avg.sql
 └── ...
 ```
 
@@ -61,3 +62,4 @@ migrations/
 | 008 | cost_views.sql | (미적용) | material_price_v / product_cost_full_v 등 |
 | 009 | cost_view_refactor.sql | (미적용) | BOM=수량 / 가격=원가·매입 분리. 호환 alias 추가 |
 | 010 | bom_process_price.sql | (미적용) | 공정행 unit_price (LOT 단가) 우선 활용 |
+| 011 | sales_stats_recent_avg.sql | (미적용) | avg_unit_price=12M 필터, 3M/all/last 컬럼 추가 |
