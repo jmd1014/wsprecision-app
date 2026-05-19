@@ -3032,47 +3032,93 @@ elif page == "💰 원가 분석":
     # ════════════════════════════════════════════════
     # 📊 매입 단가 조회 (페이지 공통 보조 위젯)
     # ════════════════════════════════════════════════
-    with st.expander("📊 매입 단가 조회 (자재명/규격으로 최근 거래가 확인)",
+    with st.expander("📊 매입 단가 조회 (자재명/품번으로 최근 거래가 확인)",
                      expanded=False):
-        st.caption("BOM 작성·단가 입력 전 참고. 매입 ledger 의 최근 거래가를 조회합니다.")
+        st.caption("BOM 작성·단가 입력 전 참고. 매입 ledger 의 `item` (자재명), "
+                   "`matched_pn` (제품 매칭), `remark` 를 모두 검색합니다.")
 
-        # 실제 distinct 카테고리 로드 → multiselect (LIKE underscore 회피)
+        # 데이터 상태 진단 (silent fail 방지)
+        from db import count_rows as _cnt_rows
+        pl_total = _cnt_rows("purchase_ledger")
         try:
             cat_rows = fetch("purchase_ledger", "category",
                 "category=not.is.null&order=category.asc", limit=2000)
             all_cats = sorted({r['category'] for r in cat_rows if r.get('category')})
-        except Exception:
+            cat_err = None
+        except Exception as e:
             all_cats = []
+            cat_err = str(e)[:120]
         mat_default = [c for c in all_cats if c.upper().startswith('MAT')]
+
+        # 상태 헤더
+        st_c1, st_c2, st_c3 = st.columns(3)
+        st_c1.metric("매입 ledger 총 건수",
+                     f"{pl_total:,}" if isinstance(pl_total, int) else "ERR")
+        st_c2.metric("category 보유 종류",
+                     f"{len(all_cats)}종",
+                     "데이터 부재" if len(all_cats) == 0 else None,
+                     delta_color="inverse" if len(all_cats) == 0 else "off")
+        st_c3.metric("MAT_* 종", f"{len(mat_default)}종")
+        if cat_err:
+            st.error(f"카테고리 로드 오류: {cat_err}")
+        if len(all_cats) == 0 and not cat_err:
+            st.warning(
+                "ℹ️ purchase_ledger.category 가 모두 NULL. "
+                "카테고리 필터는 비활성. 키워드 검색만 작동합니다."
+            )
 
         pql_c1, pql_c2 = st.columns([3, 1])
         with pql_c1:
-            pl_q = st.text_input("자재명/규격 검색",
-                placeholder="예: 환봉 STS304, SCM440 ⌀45",
+            pl_q = st.text_input("키워드 (자재명/품번/메모)",
+                placeholder="예: 환봉, STS304, SCM440, MRG6-07, 8HFDV",
                 key="cost_pl_search")
         with pql_c2:
             pl_limit = st.number_input("최근 N건", 3, 50, 15, 1, key="cost_pl_limit")
 
-        pl_cats = st.multiselect(
-            f"카테고리 필터 (전체 {len(all_cats)}종, 기본=MAT_*)",
-            all_cats, default=mat_default, key="cost_pl_cats")
+        if all_cats:
+            pl_cats = st.multiselect(
+                f"카테고리 필터 (전체 {len(all_cats)}종, 기본=MAT_*)",
+                all_cats, default=mat_default, key="cost_pl_cats")
+        else:
+            pl_cats = []
 
         if pl_q:
             qq = pl_q.strip()
-            filt = [f"item=ilike.*{qq}*", "order=trade_date.desc"]
+            # item / matched_pn / remark 모두 검색 → 자재명/품번/메모 어느 쪽이든 매칭
+            filt = [
+                f"or=(item.ilike.*{qq}*,matched_pn.ilike.*{qq}*,remark.ilike.*{qq}*)",
+                "order=trade_date.desc"
+            ]
             if pl_cats:
                 cat_in = ",".join(f'"{c}"' for c in pl_cats)
                 filt.append(f"category=in.({cat_in})")
             try:
                 pl_rows = fetch("purchase_ledger",
                     "ledger_id,trade_date,vendor,vendor_normalized,item,"
-                    "qty,unit,unit_price,kg_price,ea_price,category",
+                    "qty,unit,unit_price,kg_price,ea_price,category,"
+                    "matched_pn,remark",
                     "&".join(filt), limit=int(pl_limit))
             except Exception as e:
                 st.error(f"매입 조회 실패: {e}"); pl_rows = []
 
             if not pl_rows:
-                st.info("해당 키워드 매입 이력 없음.")
+                # 진단: 카테고리 필터를 끄면 결과가 나오는지 점검
+                try:
+                    raw_rows = fetch("purchase_ledger", "ledger_id",
+                        f"or=(item.ilike.*{qq}*,matched_pn.ilike.*{qq}*,"
+                        f"remark.ilike.*{qq}*)", limit=5)
+                except Exception:
+                    raw_rows = []
+                if raw_rows and pl_cats:
+                    st.warning(
+                        f"⚠️ 카테고리 필터 때문에 0건. "
+                        f"필터 없이는 **{len(raw_rows)}건 이상** 매칭 — 카테고리 해제 후 재시도."
+                    )
+                elif not raw_rows:
+                    st.info(
+                        f"'{qq}' 와 일치하는 매입 이력 없음. "
+                        f"키워드를 짧게(부분)·자재명 위주로 변경해 보세요."
+                    )
             else:
                 prices_unit = [float(r.get("unit_price") or 0) for r in pl_rows
                                if r.get("unit_price")]
@@ -3094,9 +3140,12 @@ elif page == "💰 원가 분석":
                 df_pl = pd.DataFrame(pl_rows)
                 df_pl["unit_price"] = pd.to_numeric(df_pl["unit_price"], errors="coerce")
                 df_pl["qty"] = pd.to_numeric(df_pl["qty"], errors="coerce")
-                show = df_pl[["trade_date","vendor","item","category",
-                              "qty","unit","unit_price","kg_price","ea_price"]].rename(
+                cols_avail = [c for c in ["trade_date","vendor","item","matched_pn",
+                                          "category","qty","unit","unit_price",
+                                          "kg_price","ea_price"] if c in df_pl.columns]
+                show = df_pl[cols_avail].rename(
                     columns={"trade_date":"거래일","vendor":"거래처","item":"품목",
+                             "matched_pn":"매칭품번",
                              "category":"분류","qty":"수량","unit":"단위",
                              "unit_price":"단가","kg_price":"KG단가","ea_price":"EA단가"})
                 st.dataframe(show, use_container_width=True,
