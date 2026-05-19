@@ -412,106 +412,9 @@ elif page == "⚙️ 마스터 관리":
 
     # ─── Tab: BOM 편집 ───
     with tab_bom:
-        st.caption("📌 BOM = 제품-자재 매핑. **qty_per_pc**는 제품 1 EA당 자재 EA 수. "
-                   "**shared_factor**는 1 자재에서 여러 제품 분할 가공 시 (예: 환봉 1개 → 3 EA → shared_factor=3)")
-
-        # ── 📊 매입 단가 조회 위젯 (BOM 작업 보조) ──
-        with st.expander("📊 자재 최근 매입 단가 조회 (BOM 작업 보조)", expanded=False):
-            st.caption("자재명/규격으로 매입 ledger 를 검색해 최근 거래가를 확인합니다. "
-                       "products.material_unit_price 갱신 또는 BOM 작성 시 참고용.")
-
-            # 실제 존재하는 카테고리만 로드 → multiselect (LIKE 의 underscore 와일드카드 회피)
-            try:
-                cat_rows = fetch("purchase_ledger", "category",
-                    "category=not.is.null&order=category.asc", limit=2000)
-                all_cats = sorted({r['category'] for r in cat_rows if r.get('category')})
-            except Exception:
-                all_cats = []
-            mat_default = [c for c in all_cats if c.upper().startswith('MAT')]
-
-            pql_c1, pql_c2 = st.columns([3, 1])
-            with pql_c1:
-                pl_q = st.text_input("자재명/규격 검색",
-                    placeholder="예: 환봉 STS304, SCM440 ⌀45, 8HFDV",
-                    key="pl_search")
-            with pql_c2:
-                pl_limit = st.number_input("최근 N건", 3, 50, 15, 1, key="pl_limit")
-
-            pl_cats = st.multiselect(
-                f"카테고리 필터 (전체 {len(all_cats)}종, 기본=MAT_*)",
-                all_cats, default=mat_default, key="pl_cats")
-
-            if pl_q:
-                qq = pl_q.strip()
-                filt = [f"item=ilike.*{qq}*", "order=trade_date.desc"]
-                if pl_cats:
-                    cat_in = ",".join(f'"{c}"' for c in pl_cats)
-                    filt.append(f"category=in.({cat_in})")
-                try:
-                    pl_rows = fetch("purchase_ledger",
-                        "ledger_id,trade_date,vendor,vendor_normalized,item,"
-                        "qty,unit,unit_price,kg_price,ea_price,category",
-                        "&".join(filt), limit=int(pl_limit))
-                except Exception as e:
-                    st.error(f"매입 조회 실패: {e}"); pl_rows = []
-
-                if not pl_rows:
-                    st.info("해당 자재명에 대한 매입 이력이 없습니다.")
-                else:
-                    # 통계 카드
-                    prices_unit = [float(r.get("unit_price") or 0) for r in pl_rows
-                                   if r.get("unit_price")]
-                    prices_kg = [float(r.get("kg_price") or 0) for r in pl_rows
-                                 if r.get("kg_price")]
-                    prices_ea = [float(r.get("ea_price") or 0) for r in pl_rows
-                                 if r.get("ea_price")]
-
-                    s1, s2, s3, s4 = st.columns(4)
-                    s1.metric("검색결과", f"{len(pl_rows):,}건")
-                    if prices_unit:
-                        s2.metric("평균 단가", f"{sum(prices_unit)/len(prices_unit):,.0f}",
-                                  f"최근 {prices_unit[0]:,.0f}")
-                    if prices_kg:
-                        s3.metric("평균 KG단가",
-                                  f"{sum(prices_kg)/len(prices_kg):,.0f}")
-                    if prices_ea:
-                        s4.metric("평균 EA단가",
-                                  f"{sum(prices_ea)/len(prices_ea):,.0f}")
-
-                    # 표
-                    df_pl = pd.DataFrame(pl_rows)
-                    df_pl["unit_price"] = pd.to_numeric(df_pl["unit_price"], errors="coerce")
-                    df_pl["qty"] = pd.to_numeric(df_pl["qty"], errors="coerce")
-                    show = df_pl[["trade_date","vendor","item","category",
-                                  "qty","unit","unit_price","kg_price","ea_price"]].rename(
-                        columns={
-                            "trade_date":"거래일", "vendor":"거래처",
-                            "item":"품목", "category":"분류",
-                            "qty":"수량", "unit":"단위",
-                            "unit_price":"단가", "kg_price":"KG단가",
-                            "ea_price":"EA단가"
-                        }
-                    )
-                    st.dataframe(show, use_container_width=True,
-                                 hide_index=True, height=280)
-
-                    # 거래처별 평균 (상위 5)
-                    if len(pl_rows) >= 3:
-                        st.markdown("##### 거래처별 평균 단가")
-                        by_vendor = (df_pl.groupby("vendor_normalized")
-                                     .agg(거래수=("ledger_id","count"),
-                                          평균단가=("unit_price","mean"),
-                                          최근거래=("trade_date","max"))
-                                     .reset_index()
-                                     .sort_values("거래수", ascending=False)
-                                     .head(5))
-                        by_vendor["평균단가"] = by_vendor["평균단가"].apply(
-                            lambda v: f"{v:,.0f}" if pd.notna(v) else "-")
-                        st.dataframe(by_vendor.rename(columns={
-                            "vendor_normalized":"거래처(정규)"
-                        }), use_container_width=True, hide_index=True)
-
-        st.divider()
+        st.caption("📌 BOM = 제품-자재 + 공정 **수량 관계** 만 관리. "
+                   "**qty_per_pc**=제품 1EA당 자재 EA수, **shared_factor**=분할가공 N제품 "
+                   "또는 1LOT 처리수량. 단가 정보는 모두 **💰 원가 분석** 페이지에서 관리.")
         bc1, bc2 = st.columns([3, 1])
         with bc1:
             bom_q = st.text_input("제품 또는 자재 검색", placeholder="예: 8HFDV, M001")
@@ -642,10 +545,10 @@ elif page == "⚙️ 마스터 관리":
                         help="제품 1EA당 자재 사용량. 공정행은 보통 1."),
                     "shared_factor": st.column_config.NumberColumn("분할/LOT", format="%.0f",
                         help="자재: 1자재→N제품. 공정: 1 LOT 처리수량."),
-                    "unit_price": st.column_config.NumberColumn("LOT 단가",
-                        format="%.2f",
-                        help="공정행: LOT 단가 직접 입력 (예: 200,000). "
-                             "자재행: 비워두면 매입 평균에서 자동. 자재 단가는 원가편집에서 관리 권장."),
+                    "unit_price": st.column_config.NumberColumn("LOT 단가 (조회)",
+                        format="%.2f", disabled=True,
+                        help="단가 편집은 💰 원가 분석 → 단가 관리 탭에서. "
+                             "여기서는 조회만 가능."),
                     "lot_label": st.column_config.TextColumn("LOT단위", width="small",
                         help="표시용. 예: LOT, CH, BATCH"),
                     "source": st.column_config.TextColumn("출처", disabled=True, width="small"),
@@ -658,23 +561,13 @@ elif page == "⚙️ 마스터 관리":
             )
             if st.button("💾 BOM 변경 저장", type="primary"):
                 chg = 0
-                # 공정행은 unit_price 편집 가능, 자재행은 무시 (저장 로직에서 필터)
+                # BOM 편집 = 수량 관계만. 단가(unit_price)는 원가 분석에서 관리.
                 editable_keys = ("qty_per_pc","shared_factor","verification_status",
-                                 "process_type","lot_label","raw_material_name",
-                                 "unit_price")
-                ignored_mat_unit_price = 0
+                                 "process_type","lot_label","raw_material_name")
                 for orig, new in zip(brows, bedited.to_dict("records")):
                     upd = {}
-                    # MATERIAL 행은 unit_price 변경 무시 (자재 단가는 원가/매입에서)
-                    is_material = (new.get("process_type") or
-                                   orig.get("process_type") or "MATERIAL") == "MATERIAL"
                     for k in editable_keys:
                         if k in new and orig.get(k) != new.get(k):
-                            if k == "unit_price" and is_material:
-                                # 자재행은 BOM 가격 입력 무시
-                                if (new.get(k) or 0) != (orig.get(k) or 0):
-                                    ignored_mat_unit_price += 1
-                                continue
                             v = new.get(k)
                             if v == "":
                                 v = None
@@ -682,9 +575,6 @@ elif page == "⚙️ 마스터 관리":
                     if upd:
                         if _db.update("bom", f"bom_id=eq.{orig['bom_id']}", upd):
                             chg += 1
-                if ignored_mat_unit_price:
-                    st.caption(f"ℹ️ 자재행 LOT 단가 {ignored_mat_unit_price}건 변경 무시됨 "
-                               f"(자재 단가는 원가 편집/매입에서 관리)")
                 if chg: st.success(f"✅ {chg}건 update"); st.rerun()
                 else: st.info("변경 사항 없음")
 
@@ -764,34 +654,7 @@ elif page == "⚙️ 마스터 관리":
                     f"자재: **{m_pick_name or '(미선택)'}**"
                 )
 
-            # ── 선택된 자재의 매입 단가 미리보기 ──
-            if m_pick_name:
-                try:
-                    # raw_name 토큰 분리 후 ilike 검색 (정확도 향상)
-                    qq = m_pick_name.split()[0] if m_pick_name else m_pick_name
-                    preview_rows = fetch("purchase_ledger",
-                        "trade_date,vendor,item,unit_price,kg_price,ea_price",
-                        f"item=ilike.*{qq}*&order=trade_date.desc",
-                        limit=5)
-                except Exception:
-                    preview_rows = []
-                if preview_rows:
-                    prices = [float(r.get("unit_price") or 0) for r in preview_rows
-                              if r.get("unit_price")]
-                    if prices:
-                        avg_p = sum(prices) / len(prices)
-                        last_p = prices[0]
-                        # 자재 단가 산정 예시 (qty_per_pc × shared_factor)
-                        est_per_pc = (avg_p * new_qpc / new_sf) if new_sf > 0 else 0
-                        st.info(
-                            f"💡 **'{m_pick_name}'** 최근 매입 단가 ({len(prices)}건): "
-                            f"평균 **{avg_p:,.0f}**원 · 최근 **{last_p:,.0f}**원  "
-                            f"→ 현재 입력값으로 계산 시 **{est_per_pc:,.0f}원/EA** "
-                            f"(= {avg_p:,.0f} × {new_qpc} ÷ {new_sf})"
-                        )
-                else:
-                    st.caption(f"💡 '{m_pick_name}' 매입 이력 조회 결과 없음. "
-                               f"위 '매입 단가 조회' 위젯에서 키워드 조정 가능.")
+            # 단가/원가 미리보기는 💰 원가 분석 페이지에서 확인하세요.
 
             if st.button("➕ 자재행 추가", key="bom_new_btn", type="primary"):
                 if not p_pick_pid or not m_pick_mid:
@@ -819,9 +682,9 @@ elif page == "⚙️ 마스터 관리":
             st.divider()
             st.markdown("##### ➕ 신규 공정행 추가 (열처리/외주/표면 등)")
             st.caption(
-                "공정행은 **LOT 단가 + LOT 처리수량** 을 BOM 에 직접 입력합니다 "
-                "(공정 단계별로 달라서). 공식: **per_pc = LOT단가 × qty/PC ÷ LOT처리수량**. "
-                "예) 소재열처리 200,000원/5,000EA → 40원/EA"
+                "공정행 = **수량 관계** 만 입력 (어떤 공정 + LOT 처리수량). "
+                "**LOT 단가는 💰 원가 분석 → 단가 관리** 에서 입력하세요. "
+                "공식: per_pc = LOT단가 × qty/PC ÷ LOT처리수량 (단가 입력 후 자동 계산)."
             )
 
             pr1, pr2 = st.columns(2)
@@ -863,17 +726,12 @@ elif page == "⚙️ 마스터 관리":
                     }.get(v, v),
                     key="bom_proc_type")
 
-            pr3, pr4, pr5, pr_lbl = st.columns([1, 1, 1, 1])
+            pr3, pr4, pr_lbl = st.columns([1, 1, 1])
             with pr3:
-                proc_unit_price = st.number_input("LOT 단가 *",
-                    min_value=0.0, value=0.0, step=1000.0,
-                    key="bom_proc_unit_price",
-                    help="1 LOT 처리비. 예: 열처리 200,000원/LOT")
-            with pr4:
                 proc_qty = st.number_input("qty/PC", min_value=0.0,
                     value=1.0, step=0.1, key="bom_proc_qty",
                     help="제품 1EA당 공정 횟수. 보통 1.")
-            with pr5:
+            with pr4:
                 proc_lot_size = st.number_input("LOT 처리수량",
                     min_value=1, value=1, step=1, key="bom_proc_lot",
                     help="1 LOT/CH 에서 처리되는 제품 수. 예: 5000EA")
@@ -881,14 +739,6 @@ elif page == "⚙️ 마스터 관리":
                 proc_lot_label = st.selectbox("LOT 단위",
                     ["", "LOT", "CH", "BATCH"], key="bom_proc_label",
                     help="표시용")
-
-            # per_pc 미리보기
-            if proc_unit_price > 0 and proc_lot_size > 0:
-                est_per_pc = proc_unit_price * proc_qty / proc_lot_size
-                st.info(
-                    f"💡 자동 계산 → **{est_per_pc:,.2f} 원/EA** "
-                    f"(= {proc_unit_price:,.0f} × {proc_qty} ÷ {proc_lot_size})"
-                )
 
             pr6, pr7 = st.columns([3, 2])
             with pr6:
@@ -912,15 +762,12 @@ elif page == "⚙️ 마스터 관리":
             if st.button("➕ 공정행 추가", key="bom_proc_btn", type="primary"):
                 if not pp_pick_pid:
                     st.error("제품을 선택해주세요.")
-                elif proc_unit_price <= 0:
-                    st.error("LOT 단가는 0보다 커야 합니다.")
                 else:
                     record = {
                         "product_id": pp_pick_pid,
                         "material_id": None,
                         "raw_material_name": proc_name or proc_type,
                         "process_type": proc_type,
-                        "unit_price": proc_unit_price,
                         "qty_per_pc": proc_qty,
                         "shared_factor": proc_lot_size,
                         "lot_label": proc_lot_label or None,
@@ -934,11 +781,10 @@ elif page == "⚙️ 마스터 관리":
                             pass
                     try:
                         _db.insert("bom", [record])
-                        per_pc = proc_unit_price * proc_qty / proc_lot_size
                         st.success(
-                            f"✅ {proc_type} 공정행 추가: **{pp_pick_pn}** — "
-                            f"**{per_pc:,.2f}원/EA** "
-                            f"({proc_unit_price:,.0f} × {proc_qty} ÷ {proc_lot_size})"
+                            f"✅ {proc_type} 공정행 추가: **{pp_pick_pn}** "
+                            f"(LOT 처리 {proc_lot_size}EA). "
+                            f"단가는 💰 원가 분석 → 단가 관리에서 입력하세요."
                         )
                         st.rerun()
                     except Exception as e:
@@ -1611,7 +1457,8 @@ elif page == "🚀 BOM 빠른 정비":
         # ── 공정행 추가 ──
         st.markdown("##### 2️⃣ 공정행 추가 (열처리/외주/표면 등)")
         with st.form(f"fast_proc_form_{sel_pid}"):
-            fc1, fc2, fc3, fc4 = st.columns([1, 1, 1, 1])
+            st.caption("공정행 = **수량 관계만** 등록. LOT 단가는 💰 원가 분석 → 단가 관리에서.")
+            fc1, fc2, fc3 = st.columns([1, 1, 1])
             with fc1:
                 pt = st.selectbox("공정", ["HEAT","SURFACE","OUTSOURCE",
                     "PACKING","LABOR","OTHER"],
@@ -1621,12 +1468,9 @@ elif page == "🚀 BOM 빠른 정비":
                         "LABOR":"👷 LABOR","OTHER":"❔ OTHER"
                     }[v], key=f"fast_pt_{sel_pid}")
             with fc2:
-                pp = st.number_input("LOT 단가", min_value=0.0,
-                    value=0.0, step=1000.0, key=f"fast_pp_{sel_pid}")
-            with fc3:
                 pqpc = st.number_input("qty/PC", min_value=0.0,
                     value=1.0, step=0.1, key=f"fast_pqpc_{sel_pid}")
-            with fc4:
+            with fc3:
                 plot = st.number_input("LOT 처리수량",
                     min_value=1, value=1, step=1, key=f"fast_plot_{sel_pid}")
 
@@ -1642,34 +1486,26 @@ elif page == "🚀 BOM 빠른 정비":
                 st.write(""); st.write("")
                 proc_submit = st.form_submit_button("➕ 공정행 추가", type="primary")
 
-            # 미리보기
-            if pp > 0 and plot > 0:
-                est = pp * pqpc / plot
-                st.info(f"💡 per_pc = **{est:,.2f}원/EA** "
-                        f"(= {pp:,.0f} × {pqpc} ÷ {plot})")
-
             if proc_submit:
-                if pp <= 0:
-                    st.error("LOT 단가는 0보다 커야 합니다.")
-                else:
-                    try:
-                        _db.insert("bom", [{
-                            "product_id": sel_pid,
-                            "material_id": None,
-                            "raw_material_name": pn or pt,
-                            "process_type": pt,
-                            "unit_price": pp,
-                            "qty_per_pc": pqpc,
-                            "shared_factor": plot,
-                            "lot_label": plbl or None,
-                            "source": "MANUAL",
-                            "verification_status": "확인완료",
-                        }])
-                        per_pc = pp * pqpc / plot
-                        st.success(f"✅ {pt} 추가 — **{per_pc:,.2f}원/EA**")
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"추가 실패: {e}")
+                try:
+                    _db.insert("bom", [{
+                        "product_id": sel_pid,
+                        "material_id": None,
+                        "raw_material_name": pn or pt,
+                        "process_type": pt,
+                        "qty_per_pc": pqpc,
+                        "shared_factor": plot,
+                        "lot_label": plbl or None,
+                        "source": "MANUAL",
+                        "verification_status": "확인완료",
+                    }])
+                    st.success(
+                        f"✅ {pt} 추가 (LOT 처리 {plot}EA). "
+                        f"단가는 💰 원가 분석 → 단가 관리에서 입력하세요."
+                    )
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"추가 실패: {e}")
 
         st.divider()
 
@@ -3193,6 +3029,93 @@ elif page == "💰 원가 분석":
             "Migration 007/008/009 적용 후 자동 활성."
         )
 
+    # ════════════════════════════════════════════════
+    # 📊 매입 단가 조회 (페이지 공통 보조 위젯)
+    # ════════════════════════════════════════════════
+    with st.expander("📊 매입 단가 조회 (자재명/규격으로 최근 거래가 확인)",
+                     expanded=False):
+        st.caption("BOM 작성·단가 입력 전 참고. 매입 ledger 의 최근 거래가를 조회합니다.")
+
+        # 실제 distinct 카테고리 로드 → multiselect (LIKE underscore 회피)
+        try:
+            cat_rows = fetch("purchase_ledger", "category",
+                "category=not.is.null&order=category.asc", limit=2000)
+            all_cats = sorted({r['category'] for r in cat_rows if r.get('category')})
+        except Exception:
+            all_cats = []
+        mat_default = [c for c in all_cats if c.upper().startswith('MAT')]
+
+        pql_c1, pql_c2 = st.columns([3, 1])
+        with pql_c1:
+            pl_q = st.text_input("자재명/규격 검색",
+                placeholder="예: 환봉 STS304, SCM440 ⌀45",
+                key="cost_pl_search")
+        with pql_c2:
+            pl_limit = st.number_input("최근 N건", 3, 50, 15, 1, key="cost_pl_limit")
+
+        pl_cats = st.multiselect(
+            f"카테고리 필터 (전체 {len(all_cats)}종, 기본=MAT_*)",
+            all_cats, default=mat_default, key="cost_pl_cats")
+
+        if pl_q:
+            qq = pl_q.strip()
+            filt = [f"item=ilike.*{qq}*", "order=trade_date.desc"]
+            if pl_cats:
+                cat_in = ",".join(f'"{c}"' for c in pl_cats)
+                filt.append(f"category=in.({cat_in})")
+            try:
+                pl_rows = fetch("purchase_ledger",
+                    "ledger_id,trade_date,vendor,vendor_normalized,item,"
+                    "qty,unit,unit_price,kg_price,ea_price,category",
+                    "&".join(filt), limit=int(pl_limit))
+            except Exception as e:
+                st.error(f"매입 조회 실패: {e}"); pl_rows = []
+
+            if not pl_rows:
+                st.info("해당 키워드 매입 이력 없음.")
+            else:
+                prices_unit = [float(r.get("unit_price") or 0) for r in pl_rows
+                               if r.get("unit_price")]
+                prices_kg = [float(r.get("kg_price") or 0) for r in pl_rows
+                             if r.get("kg_price")]
+                prices_ea = [float(r.get("ea_price") or 0) for r in pl_rows
+                             if r.get("ea_price")]
+                s1, s2, s3, s4 = st.columns(4)
+                s1.metric("검색결과", f"{len(pl_rows):,}건")
+                if prices_unit:
+                    s2.metric("평균 단가", f"{sum(prices_unit)/len(prices_unit):,.0f}",
+                              f"최근 {prices_unit[0]:,.0f}")
+                if prices_kg:
+                    s3.metric("평균 KG단가",
+                              f"{sum(prices_kg)/len(prices_kg):,.0f}")
+                if prices_ea:
+                    s4.metric("평균 EA단가",
+                              f"{sum(prices_ea)/len(prices_ea):,.0f}")
+                df_pl = pd.DataFrame(pl_rows)
+                df_pl["unit_price"] = pd.to_numeric(df_pl["unit_price"], errors="coerce")
+                df_pl["qty"] = pd.to_numeric(df_pl["qty"], errors="coerce")
+                show = df_pl[["trade_date","vendor","item","category",
+                              "qty","unit","unit_price","kg_price","ea_price"]].rename(
+                    columns={"trade_date":"거래일","vendor":"거래처","item":"품목",
+                             "category":"분류","qty":"수량","unit":"단위",
+                             "unit_price":"단가","kg_price":"KG단가","ea_price":"EA단가"})
+                st.dataframe(show, use_container_width=True,
+                             hide_index=True, height=280)
+                if len(pl_rows) >= 3:
+                    st.markdown("##### 거래처별 평균 단가 (상위 5)")
+                    by_vendor = (df_pl.groupby("vendor_normalized")
+                                 .agg(거래수=("ledger_id","count"),
+                                      평균단가=("unit_price","mean"),
+                                      최근거래=("trade_date","max"))
+                                 .reset_index()
+                                 .sort_values("거래수", ascending=False)
+                                 .head(5))
+                    by_vendor["평균단가"] = by_vendor["평균단가"].apply(
+                        lambda v: f"{v:,.0f}" if pd.notna(v) else "-")
+                    st.dataframe(by_vendor.rename(columns={
+                        "vendor_normalized":"거래처(정규)"}),
+                        use_container_width=True, hide_index=True)
+
     tabs = st.tabs(["📊 마진 대시보드", "🔍 품목 분석", "⚠️ 이상치",
                     "🧮 BOM 재산정", "✏️ 원가 편집", "🏗 통합 view (Beta)"])
 
@@ -3388,6 +3311,95 @@ elif page == "💰 원가 분석":
                     ]
                     info_df = pd.DataFrame(info_rows, columns=["항목", "값"])
                     st.dataframe(info_df, hide_index=True, use_container_width=True)
+
+                    # ── 📋 BOM 행 + 공정행 단가 인라인 편집 ──
+                    st.divider()
+                    st.markdown("##### 📋 BOM 행 / 공정행 단가 편집")
+                    try:
+                        bom_rows = fetch("bom",
+                            "bom_id,process_type,material_id,raw_material_name,"
+                            "qty_per_pc,shared_factor,unit_price,lot_label,"
+                            "verification_status",
+                            f"product_id=eq.{row['product_id']}&order=bom_id.asc",
+                            limit=50)
+                    except Exception as e:
+                        st.error(f"BOM 조회 실패: {e}"); bom_rows = []
+
+                    if not bom_rows:
+                        st.info("이 제품에 등록된 BOM 행이 없습니다. "
+                                "🚀 BOM 빠른 정비 또는 🔗 BOM 편집에서 등록.")
+                    else:
+                        bom_df = pd.DataFrame(bom_rows)
+                        for c in ["qty_per_pc","shared_factor","unit_price"]:
+                            bom_df[c] = pd.to_numeric(bom_df[c], errors="coerce")
+
+                        # per_pc 미리보기
+                        def _calc_pp(r):
+                            up = r.get("unit_price")
+                            qp = r.get("qty_per_pc") or 1
+                            sf = r.get("shared_factor") or 1
+                            if pd.notna(up) and up and sf:
+                                return up * qp / sf
+                            return None
+                        bom_df["per_pc"] = bom_df.apply(_calc_pp, axis=1)
+
+                        edit_df = bom_df[["bom_id","process_type",
+                                          "raw_material_name","qty_per_pc",
+                                          "shared_factor","unit_price","per_pc",
+                                          "lot_label"]].copy()
+
+                        st.caption(
+                            "**unit_price (LOT 단가)** 만 편집하세요. 수량 정보는 BOM 편집 화면에서. "
+                            "자재행은 unit_price 비워두면 매입 평균에서 자동 산정됩니다."
+                        )
+                        edited_bom = st.data_editor(
+                            edit_df,
+                            column_config={
+                                "bom_id": st.column_config.NumberColumn(
+                                    "ID", disabled=True, width="small"),
+                                "process_type": st.column_config.TextColumn(
+                                    "구분", disabled=True, width="small"),
+                                "raw_material_name": st.column_config.TextColumn(
+                                    "자재/공정", disabled=True, width="large"),
+                                "qty_per_pc": st.column_config.NumberColumn(
+                                    "qty/PC", format="%.3f", disabled=True),
+                                "shared_factor": st.column_config.NumberColumn(
+                                    "분할/LOT", format="%.0f", disabled=True),
+                                "unit_price": st.column_config.NumberColumn(
+                                    "LOT 단가 ✏️", format="%.2f",
+                                    help="여기서 편집 가능"),
+                                "per_pc": st.column_config.NumberColumn(
+                                    "per_pc (자동)", format="%.2f", disabled=True),
+                                "lot_label": st.column_config.TextColumn(
+                                    "단위", disabled=True, width="small"),
+                            },
+                            hide_index=True, use_container_width=True,
+                            num_rows="fixed",
+                            key=f"cost_bom_editor_{row['product_id']}")
+
+                        if st.button("💾 BOM 단가 저장",
+                                     type="primary",
+                                     key=f"cost_bom_save_{row['product_id']}"):
+                            chg = 0
+                            for o, n in zip(bom_rows, edited_bom.to_dict("records")):
+                                o_up = o.get("unit_price")
+                                n_up = n.get("unit_price")
+                                # NaN safety
+                                o_v = None if (o_up is None or pd.isna(o_up)) else float(o_up)
+                                n_v = None if (n_up is None or pd.isna(n_up)) else float(n_up)
+                                if o_v != n_v:
+                                    try:
+                                        if _db.update("bom",
+                                            f"bom_id=eq.{o['bom_id']}",
+                                            {"unit_price": n_v}):
+                                            chg += 1
+                                    except Exception:
+                                        pass
+                            if chg:
+                                st.success(f"✅ {chg}건 단가 변경 저장")
+                                st.rerun()
+                            else:
+                                st.info("변경 사항 없음")
         else:
             st.caption("검색어를 입력하세요.")
 
