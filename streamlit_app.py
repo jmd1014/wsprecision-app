@@ -157,8 +157,8 @@ elif page == "⚙️ 마스터 관리":
     import db as _db
     import pandas as pd
 
-    tab1, tab_mat, tab_bom, tab_excl, tab_map, tab2 = st.tabs([
-        "🏢 거래처 편집", "📦 자재 편집", "🔗 BOM 편집",
+    tab1, tab_prod, tab_mat, tab_bom, tab_excl, tab_map, tab2 = st.tabs([
+        "🏢 거래처 편집", "🧱 제품 편집", "📦 자재 편집", "🔗 BOM 편집",
         "🚫 데이터 제외 규칙",
         "🔌 매입↔자재 매핑 (레거시)", "🧭 마스터/연결 점검"
     ])
@@ -353,6 +353,303 @@ elif page == "⚙️ 마스터 관리":
                     st.rerun()
                 else:
                     st.info("변경 사항 없음")
+
+    # ─── Tab: 제품 편집 ───
+    with tab_prod:
+        st.caption("📌 제품 마스터 편집. **비용 컬럼 (소재비/외주/열처리/표면) 은 "
+                   "💰 원가 분석 → ✏️ 원가 편집** 에서 관리. 여기서는 "
+                   "분류·재질·조달·상태 등 일반 정보만.")
+
+        # ── 검색 / 필터 ──
+        with st.expander("🔍 검색 / 필터", expanded=True):
+            pfc1, pfc2, pfc3, pfc4 = st.columns(4)
+            with pfc1:
+                fpn = st.text_input("품번", placeholder="MRG6, 8HFDV",
+                                    key="prod_f_pn")
+            with pfc2:
+                fcust = st.text_input("고객사", placeholder="미진, 명진, 두산",
+                                      key="prod_f_cust")
+            with pfc3:
+                fgroup = st.text_input("제품군", placeholder="FLANGE, ADAPTER",
+                                       key="prod_f_group")
+            with pfc4:
+                fstatus = st.selectbox("상태",
+                    ["활성", "휴면", "전체"], key="prod_f_status")
+
+            pfc5, pfc6, pfc7 = st.columns([2, 2, 1])
+            with pfc5:
+                fmat = st.text_input("재질/규격/자재명",
+                    placeholder="STS304, 환봉, SCM440",
+                    key="prod_f_mat")
+            with pfc6:
+                fproc = st.selectbox("조달",
+                    ["전체", "도급", "사급"], key="prod_f_proc")
+            with pfc7:
+                plim = st.number_input("행수", 20, 1000, 100, 20,
+                                       key="prod_lim")
+
+        # ── 쿼리 빌드 ──
+        parts = ["order=pn.asc"]
+        if fpn:
+            parts.append(f"pn=ilike.*{fpn.strip()}*")
+        if fcust:
+            parts.append(f"customer=ilike.*{fcust.strip()}*")
+        if fgroup:
+            parts.append(f"product_group=ilike.*{fgroup.strip()}*")
+        if fmat:
+            mq = fmat.strip()
+            parts.append(
+                f"or=(material.ilike.*{mq}*,raw_material_name.ilike.*{mq}*,"
+                f"raw_material_spec.ilike.*{mq}*)"
+            )
+        if fstatus == "활성":
+            parts.append("archived_at=is.null")
+        elif fstatus == "휴면":
+            parts.append("archived_at=not.is.null")
+        if fproc != "전체":
+            parts.append(f"procurement_type=eq.{fproc}")
+
+        try:
+            prows = fetch("products",
+                "product_id,pn,customer,product_group,sub_class,material,"
+                "raw_material_name,raw_material_spec,procurement_type,"
+                "caution,active,archived_at,archive_reason,drawing_no,"
+                "alias_list,updated_at",
+                "&".join(parts), limit=int(plim))
+        except Exception as e:
+            st.error(f"조회 실패: {e}"); prows = []
+
+        st.caption(f"검색 결과: **{len(prows)}건**")
+
+        if prows:
+            pdf = pd.DataFrame(prows)
+            # 표시할 컬럼 (편집/조회용)
+            show_cols = ["product_id","pn","customer","product_group","sub_class",
+                         "material","raw_material_name","raw_material_spec",
+                         "procurement_type","caution","active","archived_at",
+                         "archive_reason","drawing_no","alias_list"]
+            show_cols = [c for c in show_cols if c in pdf.columns]
+            pdf = pdf[show_cols]
+
+            edited_p = st.data_editor(
+                pdf,
+                column_config={
+                    "product_id": st.column_config.TextColumn("PID",
+                        disabled=True, width="small"),
+                    "pn": st.column_config.TextColumn("품번 *", width="medium",
+                        help="중복 금지 — 수정 시 매출/매입 매핑에 영향"),
+                    "customer": st.column_config.TextColumn("고객사",
+                        width="medium"),
+                    "product_group": st.column_config.TextColumn("제품군",
+                        width="small"),
+                    "sub_class": st.column_config.TextColumn("하위분류",
+                        width="small"),
+                    "material": st.column_config.TextColumn("재질",
+                        width="small"),
+                    "raw_material_name": st.column_config.TextColumn(
+                        "자재명", width="medium"),
+                    "raw_material_spec": st.column_config.TextColumn(
+                        "규격", width="small"),
+                    "procurement_type": st.column_config.SelectboxColumn("조달",
+                        options=["", "도급", "사급"], width="small"),
+                    "caution": st.column_config.TextColumn("주의사항",
+                        width="medium"),
+                    "active": st.column_config.TextColumn("active",
+                        width="small", help="'1'=활성, '0'=비활성"),
+                    "archived_at": st.column_config.DatetimeColumn("휴면일자",
+                        disabled=True, width="small"),
+                    "archive_reason": st.column_config.TextColumn("휴면사유",
+                        width="medium"),
+                    "drawing_no": st.column_config.TextColumn("도면번호",
+                        width="small"),
+                    "alias_list": st.column_config.TextColumn("별칭(콤마)",
+                        width="medium"),
+                },
+                hide_index=True, use_container_width=True,
+                num_rows="fixed", key="prod_editor", height=440
+            )
+
+            psv1, psv2 = st.columns([1, 4])
+            with psv1:
+                save_prod = st.button("💾 변경 저장", type="primary",
+                                       key="prod_save")
+            with psv2:
+                st.caption("⚠️ 품번(pn) 변경은 매출/매입 매핑에 영향 — "
+                           "변경 시 sales_ledger / purchase_ledger 의 "
+                           "관련 행 재매핑 검토 필요")
+
+            if save_prod:
+                chg = 0
+                editable_keys = ("pn", "customer", "product_group", "sub_class",
+                                 "material", "raw_material_name", "raw_material_spec",
+                                 "procurement_type", "caution", "active",
+                                 "archive_reason", "drawing_no", "alias_list")
+                for orig, new in zip(prows, edited_p.to_dict("records")):
+                    upd = {}
+                    for k in editable_keys:
+                        if k in new:
+                            ov = orig.get(k)
+                            nv = new.get(k)
+                            if isinstance(nv, float) and pd.isna(nv):
+                                nv = None
+                            if nv == "":
+                                nv = None
+                            if ov != nv:
+                                upd[k] = nv
+                    if upd:
+                        try:
+                            if _db.update("products",
+                                f"product_id=eq.{orig['product_id']}", upd):
+                                chg += 1
+                        except Exception:
+                            pass
+                if chg:
+                    st.success(f"✅ {chg}건 변경 저장")
+                    st.rerun()
+                else:
+                    st.info("변경 사항 없음")
+
+            # ── 휴면 처리 / 휴면 해제 ──
+            st.divider()
+            with st.expander("🟡 휴면 처리 / 해제", expanded=False):
+                ar1, ar2 = st.columns([2, 1])
+                with ar1:
+                    ar_pid = st.text_input(
+                        "처리할 product_id (또는 pn)",
+                        key="prod_arch_pid",
+                        help="예: P0001 또는 품번 직접")
+                with ar2:
+                    ar_action = st.radio("작업",
+                        ["휴면 처리", "휴면 해제"], horizontal=True,
+                        key="prod_arch_action")
+                ar_reason = st.text_input("휴면 사유 (휴면 처리 시)",
+                    placeholder="예: 12개월 이상 거래 없음, 단종, EOS",
+                    key="prod_arch_reason")
+                if st.button("실행", key="prod_arch_btn"):
+                    if not ar_pid:
+                        st.error("product_id / pn 입력 필요")
+                    else:
+                        target_pid = ar_pid.strip()
+                        # pn 으로 입력했으면 product_id 조회
+                        if not target_pid.startswith("P"):
+                            try:
+                                lookup = _db.fetch_one("products",
+                                    f"pn=eq.{target_pid}",
+                                    "product_id")
+                                if lookup:
+                                    target_pid = lookup["product_id"]
+                                else:
+                                    st.error(f"품번 '{ar_pid}' 못 찾음"); st.stop()
+                            except Exception as e:
+                                st.error(f"조회 실패: {e}"); st.stop()
+
+                        if ar_action == "휴면 처리":
+                            payload = {
+                                "archived_at": "now()",
+                                "archive_reason": ar_reason or "운영자 수동 처리"
+                            }
+                        else:
+                            payload = {"archived_at": None,
+                                       "archive_reason": None}
+                        try:
+                            if _db.update("products",
+                                f"product_id=eq.{target_pid}", payload):
+                                st.success(
+                                    f"✅ {target_pid} {ar_action} 완료")
+                                st.rerun()
+                            else:
+                                st.error("처리 실패")
+                        except Exception as e:
+                            st.error(f"처리 오류: {e}")
+
+        st.divider()
+        st.markdown("##### ➕ 신규 제품 추가")
+        with st.form("new_prod_form"):
+            npc1, npc2, npc3 = st.columns(3)
+            with npc1:
+                new_pn = st.text_input("품번 * (고유)",
+                    placeholder="예: MRG6-07")
+            with npc2:
+                new_cust = st.text_input("고객사",
+                    placeholder="예: 미진정밀")
+            with npc3:
+                new_group = st.text_input("제품군",
+                    placeholder="예: ADAPTER, FLANGE")
+
+            npc4, npc5, npc6 = st.columns(3)
+            with npc4:
+                new_subclass = st.text_input("하위분류",
+                    placeholder="예: M타입")
+            with npc5:
+                new_mat = st.text_input("재질",
+                    placeholder="예: STS630, SCM440")
+            with npc6:
+                new_proc = st.selectbox("조달", ["", "도급", "사급"],
+                    key="new_prod_proc")
+
+            npc7, npc8 = st.columns([2, 1])
+            with npc7:
+                new_spec = st.text_input("자재 규격",
+                    placeholder="예: ⌀25 × 400, S630")
+            with npc8:
+                new_drawing = st.text_input("도면번호 (선택)")
+
+            new_caution = st.text_input("주의사항 (선택)",
+                placeholder="예: 진공열처리 필수")
+
+            if st.form_submit_button("➕ 제품 추가", type="primary"):
+                if not new_pn:
+                    st.error("품번은 필수입니다.")
+                else:
+                    # 중복 체크
+                    try:
+                        existing = _db.fetch_one("products",
+                            f"pn=eq.{new_pn.strip()}",
+                            "product_id,pn")
+                    except Exception:
+                        existing = None
+                    if existing:
+                        st.error(f"⚠️ 품번 '{new_pn}' 이 이미 존재합니다. "
+                                 f"(product_id={existing['product_id']})")
+                    else:
+                        # 자동 product_id 생성 — P + 다음 번호
+                        try:
+                            latest = fetch("products", "product_id",
+                                "product_id=like.P*&order=product_id.desc",
+                                limit=1)
+                        except Exception:
+                            latest = []
+                        if latest and latest[0]["product_id"].startswith("P"):
+                            try:
+                                next_n = int(latest[0]["product_id"][1:]) + 1
+                            except Exception:
+                                next_n = 9000
+                        else:
+                            next_n = 1
+                        new_pid = f"P{next_n:04d}"
+
+                        try:
+                            _db.insert("products", [{
+                                "product_id": new_pid,
+                                "pn": new_pn.strip(),
+                                "customer": new_cust.strip() or None,
+                                "product_group": new_group.strip() or None,
+                                "sub_class": new_subclass.strip() or None,
+                                "material": new_mat.strip() or None,
+                                "raw_material_spec": new_spec.strip() or None,
+                                "procurement_type": new_proc or None,
+                                "drawing_no": new_drawing.strip() or None,
+                                "caution": new_caution.strip() or None,
+                                "active": "1",
+                            }])
+                            st.success(
+                                f"✅ 제품 추가: **{new_pid}** | {new_pn}. "
+                                f"💰 원가 분석에서 비용 정보 입력하세요."
+                            )
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"추가 실패: {e}")
+
 
     # ─── Tab: 자재 편집 ───
     with tab_mat:
