@@ -3151,6 +3151,22 @@ elif page == "💰 원가 분석":
                 st.dataframe(show, use_container_width=True,
                              hide_index=True, height=280)
                 if len(pl_rows) >= 3:
+                    # 월별 추이 (시간순)
+                    df_pl_chart = df_pl.copy()
+                    df_pl_chart["trade_date"] = pd.to_datetime(
+                        df_pl_chart["trade_date"], errors="coerce")
+                    df_pl_chart = df_pl_chart.dropna(
+                        subset=["trade_date","unit_price"])
+                    df_pl_chart = df_pl_chart[df_pl_chart["unit_price"] > 0]
+                    if len(df_pl_chart) >= 2:
+                        df_pl_chart["월"] = df_pl_chart["trade_date"].dt.to_period("M").astype(str)
+                        monthly_pl = (df_pl_chart.groupby("월")["unit_price"]
+                                      .mean().sort_index())
+                        if len(monthly_pl) >= 2:
+                            st.markdown("##### 월별 평균 단가 추이")
+                            st.line_chart(monthly_pl, height=200,
+                                          use_container_width=True)
+
                     st.markdown("##### 거래처별 평균 단가 (상위 5)")
                     by_vendor = (df_pl.groupby("vendor_normalized")
                                  .agg(거래수=("ledger_id","count"),
@@ -3360,6 +3376,97 @@ elif page == "💰 원가 분석":
                     ]
                     info_df = pd.DataFrame(info_rows, columns=["항목", "값"])
                     st.dataframe(info_df, hide_index=True, use_container_width=True)
+
+                    # ── 📈 판매가 변동 이력 ──
+                    st.divider()
+                    st.markdown("##### 📈 판매가 변동 이력")
+                    st.caption(
+                        "12M 평균에 과거 오류 거래가 섞일 수 있어 **최근 단가 / 3M / 12M** "
+                        "을 비교 표시. 새 거래가 누적될수록 평균 정확도 향상."
+                    )
+                    try:
+                        sales_rows = fetch("sales_ledger",
+                            "voucher_date,item_date,customer,qty,unit,unit_price,amount,remark",
+                            f"product_id=eq.{row['product_id']}"
+                            f"&order=item_date.desc.nullslast",
+                            limit=50)
+                    except Exception as e:
+                        st.error(f"매출 이력 조회 실패: {e}"); sales_rows = []
+
+                    if not sales_rows:
+                        st.info(
+                            "매출 거래 이력 없음. "
+                            "(sales_ledger.product_id 매핑 누락 또는 거래 없음)"
+                        )
+                    else:
+                        df_s = pd.DataFrame(sales_rows)
+                        df_s["unit_price"] = pd.to_numeric(df_s["unit_price"], errors="coerce")
+                        df_s["qty"] = pd.to_numeric(df_s["qty"], errors="coerce")
+                        df_s["item_date"] = pd.to_datetime(df_s["item_date"], errors="coerce")
+                        df_s["amount"] = pd.to_numeric(df_s["amount"], errors="coerce")
+
+                        # 단가/날짜 유효한 행만
+                        valid = df_s.dropna(subset=["unit_price", "item_date"])
+                        valid = valid[valid["unit_price"] > 0]
+
+                        # 메트릭
+                        now_ts = pd.Timestamp.now()
+                        recent_price = (valid.iloc[0]["unit_price"]
+                                        if len(valid) else None)
+                        three_m = valid[valid["item_date"]
+                                        >= now_ts - pd.Timedelta(days=90)]
+                        twelve_m = valid[valid["item_date"]
+                                         >= now_ts - pd.Timedelta(days=365)]
+                        avg_3m = (three_m["unit_price"].mean()
+                                  if len(three_m) else None)
+                        avg_12m = (twelve_m["unit_price"].mean()
+                                   if len(twelve_m) else None)
+
+                        sm1, sm2, sm3, sm4 = st.columns(4)
+                        sm1.metric("최근 단가", _money(recent_price))
+                        sm2.metric("최근 3M 평균",
+                                   _money(avg_3m) if avg_3m else "-",
+                                   f"{(recent_price-avg_3m)/avg_3m*100:+.1f}% vs 3M"
+                                   if (recent_price and avg_3m and avg_3m > 0)
+                                   else None)
+                        sm3.metric("12M 평균",
+                                   _money(avg_12m) if avg_12m else "-",
+                                   f"{(recent_price-avg_12m)/avg_12m*100:+.1f}% vs 12M"
+                                   if (recent_price and avg_12m and avg_12m > 0)
+                                   else None)
+                        sm4.metric("거래 건수 (12M)",
+                                   f"{len(twelve_m):,}건")
+
+                        # 월별 평균 line chart
+                        if len(valid) >= 2:
+                            valid_c = valid.copy()
+                            valid_c["월"] = valid_c["item_date"].dt.to_period("M").astype(str)
+                            monthly = (valid_c.groupby("월")["unit_price"]
+                                       .mean().sort_index())
+                            if len(monthly) >= 2:
+                                st.markdown("**월별 평균 단가 추이**")
+                                st.line_chart(monthly, height=200,
+                                              use_container_width=True)
+
+                        # 최근 거래 표 (상위 20건)
+                        st.markdown("**최근 거래 (20건)**")
+                        df_show = df_s.head(20).copy()
+                        df_show["item_date"] = df_show["item_date"].dt.strftime("%Y-%m-%d")
+                        df_show["unit_price"] = df_show["unit_price"].apply(
+                            lambda v: f"{v:,.0f}" if pd.notna(v) else "-")
+                        df_show["amount"] = df_show["amount"].apply(
+                            lambda v: f"{v:,.0f}" if pd.notna(v) else "-")
+                        df_show["qty"] = df_show["qty"].apply(
+                            lambda v: f"{v:,.0f}" if pd.notna(v) else "-")
+                        st.dataframe(
+                            df_show[["item_date","customer","qty","unit",
+                                     "unit_price","amount","remark"]].rename(
+                                columns={"item_date":"거래일","customer":"고객사",
+                                         "qty":"수량","unit":"단위",
+                                         "unit_price":"단가","amount":"금액",
+                                         "remark":"비고"}),
+                            use_container_width=True, hide_index=True, height=280
+                        )
 
                     # ── 📋 BOM 행 + 공정행 단가 인라인 편집 ──
                     st.divider()
