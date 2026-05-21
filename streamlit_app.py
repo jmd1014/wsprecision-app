@@ -1113,6 +1113,18 @@ elif page == "⚙️ 마스터 관리":
                 st.info("등록된 제외 규칙 없음.")
             else:
                 df_e = pd.DataFrame(excl_rows)
+                # PostgREST → str/None → Streamlit DateColumn 호환 형식으로 변환
+                df_e["before_date"] = pd.to_datetime(
+                    df_e.get("before_date"), errors="coerce"
+                ).dt.date
+                df_e["after_date"] = pd.to_datetime(
+                    df_e.get("after_date"), errors="coerce"
+                ).dt.date
+                df_e["active"] = df_e["active"].astype(bool)
+                df_e["id"] = pd.to_numeric(df_e["id"], errors="coerce").astype("Int64")
+                df_e["customer_pattern"] = df_e["customer_pattern"].fillna("").astype(str)
+                df_e["reason"] = df_e["reason"].fillna("").astype(str)
+
                 edited_e = st.data_editor(
                     df_e[["id","customer_pattern","before_date","after_date",
                           "reason","active"]],
@@ -1123,9 +1135,11 @@ elif page == "⚙️ 마스터 관리":
                             "거래처 패턴 (ILIKE)", width="medium",
                             help="예: %미진% 은 '미진' 포함 거래처 모두 매칭"),
                         "before_date": st.column_config.DateColumn(
-                            "이 날짜 이전 제외", width="small"),
+                            "이 날짜 이전 제외", width="small",
+                            format="YYYY-MM-DD"),
                         "after_date": st.column_config.DateColumn(
-                            "이 날짜 이후 제외", width="small"),
+                            "이 날짜 이후 제외", width="small",
+                            format="YYYY-MM-DD"),
                         "reason": st.column_config.TextColumn("사유",
                             width="large"),
                         "active": st.column_config.CheckboxColumn("활성",
@@ -1135,22 +1149,37 @@ elif page == "⚙️ 마스터 관리":
                     num_rows="fixed", key="excl_editor"
                 )
                 if st.button("💾 변경 저장", type="primary", key="excl_save"):
+                    import datetime as _dt
                     chg = 0
                     for o, n in zip(excl_rows, edited_e.to_dict("records")):
                         upd = {}
                         for k in ("customer_pattern","before_date","after_date",
                                   "reason","active"):
                             ov = o.get(k); nv = n.get(k)
-                            if pd.isna(nv): nv = None
-                            if str(ov) != str(nv):
+                            # NaN / NaT 정리
+                            if isinstance(nv, float) and pd.isna(nv):
+                                nv = None
+                            try:
+                                if nv is not None and pd.isna(nv):
+                                    nv = None
+                            except Exception:
+                                pass
+                            # date 객체 → ISO 문자열
+                            if isinstance(nv, (_dt.date, _dt.datetime)):
+                                nv = nv.strftime("%Y-%m-%d")
+                            # 원본 ov 도 같은 형식으로 정규화 비교
+                            ov_norm = ov
+                            if isinstance(ov, str) and "T" in ov:
+                                ov_norm = ov.split("T")[0]
+                            if str(ov_norm or "") != str(nv or ""):
                                 upd[k] = nv
                         if upd:
                             try:
                                 if _db.update("sales_data_exclusion",
                                     f"id=eq.{o['id']}", upd):
                                     chg += 1
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                st.warning(f"id={o['id']} 저장 실패: {e}")
                     if chg:
                         st.success(f"✅ {chg}건 변경 저장")
                         st.rerun()
