@@ -24,6 +24,7 @@ migrations/
 ├── 010_bom_process_price.sql
 ├── 011_sales_stats_recent_avg.sql
 ├── 012_data_quality_exclusion.sql
+├── 013_active_master_views.sql
 └── ...
 ```
 
@@ -64,4 +65,5 @@ migrations/
 | 009 | cost_view_refactor.sql | (미적용) | BOM=수량 / 가격=원가·매입 분리. 호환 alias 추가 |
 | 010 | bom_process_price.sql | (미적용) | 공정행 unit_price (LOT 단가) 우선 활용 |
 | 011 | sales_stats_recent_avg.sql | (미적용) | avg_unit_price=12M 필터, 3M/all/last 컬럼 추가 |
-| 012 | data_quality_exclusion.sql | (미적용) | sales_data_exclusion 테이블 + 미진 2023-02 이전 제외 |
+| 012 | data_quality_exclusion.sql | 2026-05-20 | sales_data_exclusion 테이블 + 미진 2023-02 이전 제외 |
+| 013 | active_master_views.sql | 2026-05-21 | 활성 기준 정비 view + 매칭 view 6종 |

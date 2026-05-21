@@ -39,9 +39,22 @@ with st.sidebar:
     st.header("📋 메뉴")
     page = st.radio(
         "이동",
-        ["🏠 홈", "⚙️ 마스터 관리", "🚀 BOM 빠른 정비", "📥 수주", "📊 생산 계획", "📋 발주서 작성", "📦 입출고", "🏭 생산 보고", "📊 매출/재고", "💰 원가 분석"],
+        [
+            # ── 메인 업무 ──
+            "🏠 홈",
+            "📥 수주",
+            "⚙️ 마스터 관리",
+            "🔗 BOM 정비",
+            "🔌 자재/구매 매칭",
+            "💰 원가 확인",
+            "📋 발주서 작성",
+            "📊 생산 준비",
+            # ── 보조 ──
+            "🩺 보조 점검",
+        ],
         label_visibility="collapsed",
     )
+    st.caption("Stage 4 (입출고/생산보고/매출재고) 는 마스터 정비 완료 후 활성")
     st.divider()
     st.caption("🔧 시스템")
     if st.button("🔍 DB 상태 확인", use_container_width=True):
@@ -845,7 +858,7 @@ elif page == "⚙️ 마스터 관리":
                         help="자재: 1자재→N제품. 공정: 1 LOT 처리수량."),
                     "unit_price": st.column_config.NumberColumn("LOT 단가 (조회)",
                         format="%.2f", disabled=True,
-                        help="단가 편집은 💰 원가 분석 → 단가 관리 탭에서. "
+                        help="단가 편집은 💰 원가 확인 → 단가 관리 탭에서. "
                              "여기서는 조회만 가능."),
                     "lot_label": st.column_config.TextColumn("LOT단위", width="small",
                         help="표시용. 예: LOT, CH, BATCH"),
@@ -981,7 +994,7 @@ elif page == "⚙️ 마스터 관리":
             st.markdown("##### ➕ 신규 공정행 추가 (열처리/외주/표면 등)")
             st.caption(
                 "공정행 = **수량 관계** 만 입력 (어떤 공정 + LOT 처리수량). "
-                "**LOT 단가는 💰 원가 분석 → 단가 관리** 에서 입력하세요. "
+                "**LOT 단가는 💰 원가 확인 → 단가 관리** 에서 입력하세요. "
                 "공식: per_pc = LOT단가 × qty/PC ÷ LOT처리수량 (단가 입력 후 자동 계산)."
             )
 
@@ -1082,7 +1095,7 @@ elif page == "⚙️ 마스터 관리":
                         st.success(
                             f"✅ {proc_type} 공정행 추가: **{pp_pick_pn}** "
                             f"(LOT 처리 {proc_lot_size}EA). "
-                            f"단가는 💰 원가 분석 → 단가 관리에서 입력하세요."
+                            f"단가는 💰 원가 확인 → 단가 관리에서 입력하세요."
                         )
                         st.rerun()
                     except Exception as e:
@@ -1733,11 +1746,12 @@ elif page == "⚙️ 마스터 관리":
                     st.info("정비 우선 항목이 없습니다. (이상적 상태 또는 진단 데이터 부족)")
 
 
-elif page == "🚀 BOM 빠른 정비":
-    st.subheader("🚀 BOM 빠른 정비")
+elif page == "🔗 BOM 정비":
+    st.subheader("🔗 BOM 정비")
     st.caption(
-        "1제품의 자재·공정행을 한 화면에서 입력/수정하고, 동일 BOM 구조를 분기 제품에 일괄 복사합니다. "
-        "제품 마스터 정비 속도를 크게 올려줍니다."
+        "**BOM 화면은 구조와 수량만 담당** — 자재 선택, qty_per_pc, shared_factor, "
+        "process_type, verification_status, 적용기간. "
+        "**가격/단가/원가는 💰 원가 확인 에서만 관리**."
     )
 
     if not DB_AVAILABLE:
@@ -1945,7 +1959,7 @@ elif page == "🚀 BOM 빠른 정비":
         # ── 공정행 추가 ──
         st.markdown("##### 2️⃣ 공정행 추가 (열처리/외주/표면 등)")
         with st.form(f"fast_proc_form_{sel_pid}"):
-            st.caption("공정행 = **수량 관계만** 등록. LOT 단가는 💰 원가 분석 → 단가 관리에서.")
+            st.caption("공정행 = **수량 관계만** 등록. LOT 단가는 💰 원가 확인 → 단가 관리에서.")
             fc1, fc2, fc3 = st.columns([1, 1, 1])
             with fc1:
                 pt = st.selectbox("공정", ["HEAT","SURFACE","OUTSOURCE",
@@ -1989,7 +2003,7 @@ elif page == "🚀 BOM 빠른 정비":
                     }])
                     st.success(
                         f"✅ {pt} 추가 (LOT 처리 {plot}EA). "
-                        f"단가는 💰 원가 분석 → 단가 관리에서 입력하세요."
+                        f"단가는 💰 원가 확인 → 단가 관리에서 입력하세요."
                     )
                     st.rerun()
                 except Exception as e:
@@ -2641,7 +2655,7 @@ elif page == "📥 수주":
                 st.info("결과 없음")
 
 
-elif page == "📊 생산 계획":
+elif page == "📊 생산 준비":
     st.subheader("📊 생산 계획 — 자재 필요량 자동 산출")
     if not DB_AVAILABLE: st.error("DB 연결 필요"); st.stop()
 
@@ -3454,24 +3468,466 @@ elif page == "📋 발주서 작성":
                         st.success(f"상태를 {new_status}로 변경"); st.rerun()
 
 
-elif page == "📦 입출고":
-    st.subheader("📦 입출고 등록")
-    st.info("🚧 Stage 4에서 활성화 예정")
+# ════════════════════════════════════════════════════════════════
+# 🔌 자재/구매 매칭 — 마스터 안정화 단계 핵심 화면
+# ════════════════════════════════════════════════════════════════
+elif page == "🔌 자재/구매 매칭":
+    st.subheader("🔌 자재/구매 매칭")
+    st.caption(
+        "purchase_ledger.matched_material_id 를 채워서 자재 단가 시점화 활성. "
+        "**자동 확정 금지** — 후보 추천 → 사용자 직접 선택 → 일괄 매핑."
+    )
+
+    if not DB_AVAILABLE:
+        st.error("DB 연결이 활성화되지 않았습니다."); st.stop()
+
+    import db as _db
+    import pandas as pd
+
+    # ── 진행률 ──
+    try:
+        prog = _db.fetch_one("purchase_material_match_progress", "", "*")
+    except Exception as e:
+        st.error(f"진행률 조회 실패 (Migration 013 필요): {e}"); st.stop()
+
+    if prog:
+        mc1, mc2, mc3, mc4 = st.columns(4)
+        mc1.metric("전체 매입 행", f"{int(prog.get('total_purchase_rows') or 0):,}")
+        mc2.metric("매핑 완료", f"{int(prog.get('matched_rows') or 0):,}",
+                   f"{prog.get('match_rate_pct') or 0}%")
+        mc3.metric("미매핑", f"{int(prog.get('unmatched_rows') or 0):,}")
+        mc4.metric("미매핑 distinct 품목",
+                   f"{int(prog.get('unique_unresolved_items') or 0):,}",
+                   "정비 대상")
+
+        mat_pct = prog.get('mat_match_rate_pct')
+        if mat_pct is None:
+            st.warning(
+                "ℹ️ `purchase_ledger.category` 가 대부분 NULL — "
+                "MAT_* 기준 매칭률 산출 불가. 품목명/금액 기준으로 매칭 진행."
+            )
+        else:
+            st.info(f"MAT_* 카테고리 매칭률: {mat_pct}% (목표 80%)")
+
+    st.divider()
+
+    # ── 미매핑 상위 그룹 + 후보 ──
+    st.markdown("### 📋 미매핑 매입 그룹 (정비 우선순위)")
+    fc1, fc2, fc3 = st.columns([3, 1, 1])
+    with fc1:
+        search_kw = st.text_input(
+            "품목 검색 (자재명/규격 키워드)",
+            placeholder="예: 환봉, STS304, BONNET, SCM440",
+            key="match_search"
+        )
+    with fc2:
+        min_count = st.number_input("최소 거래수",
+            min_value=1, value=3, step=1, key="match_min_count",
+            help="이 수치 이상 반복된 품목만 표시 (일회성 제외)")
+    with fc3:
+        list_limit = st.number_input("표시 행수",
+            min_value=10, max_value=200, value=30, step=10,
+            key="match_list_limit")
+
+    filt = [f"purchase_count=gte.{int(min_count)}",
+            "order=purchase_count.desc,total_amount.desc.nullslast"]
+    if search_kw:
+        filt.append(f"item=ilike.*{search_kw.strip()}*")
+
+    try:
+        groups = fetch("unresolved_purchase_materials",
+            "item_key,item,vendor_normalized,category,purchase_count,"
+            "avg_unit_price,avg_kg_price,last_purchase_date,total_amount,vendors_text",
+            "&".join(filt), limit=int(list_limit))
+    except Exception as e:
+        st.error(f"미매핑 그룹 조회 실패: {e}"); groups = []
+
+    st.caption(f"검색 결과: **{len(groups)}건**")
+
+    if not groups:
+        st.info("표시할 미매핑 그룹 없음.")
+    else:
+        # 각 그룹에 대해 후보 1개 inline 표시
+        for g in groups[:20]:  # 상위 20개만 expander 형식
+            item = g['item']
+            cnt = g['purchase_count']
+            avg_p = g.get('avg_unit_price') or 0
+            last_d = g.get('last_purchase_date') or '-'
+            total_amt = g.get('total_amount') or 0
+
+            header_label = (
+                f"📦 **{item}** · {cnt}건 · 평균 {float(avg_p or 0):,.0f}원 · "
+                f"누적 {float(total_amt or 0):,.0f}원 · 최근 {last_d}"
+            )
+            with st.expander(header_label, expanded=False):
+                # 후보 조회
+                try:
+                    cands = fetch("material_mapping_candidates",
+                        "material_id,raw_name,material_type,spec,unit,"
+                        "main_supplier,confidence_score",
+                        f"item_key=eq.{g['item_key'].replace(',', '%2C')}"
+                        f"&order=confidence_score.desc,material_id.asc",
+                        limit=5)
+                except Exception:
+                    cands = []
+
+                left, right = st.columns([3, 2])
+                with left:
+                    if cands:
+                        st.markdown("**자재 마스터 후보 (자동 추천)**")
+                        cdf = pd.DataFrame(cands)
+                        cdf["score"] = cdf["confidence_score"]
+                        cdf_show = cdf[["material_id","raw_name","material_type",
+                                        "spec","main_supplier","score"]]
+                        st.dataframe(cdf_show, use_container_width=True,
+                                     hide_index=True, height=180)
+                    else:
+                        st.caption("자동 후보 없음. 아래 검색에서 직접 선택.")
+
+                with right:
+                    st.markdown("**거래처**")
+                    if g.get('vendors_text'):
+                        st.caption(g['vendors_text'])
+                    else:
+                        st.caption("-")
+
+                # 매핑 선택
+                st.markdown("**매핑 자재 선택**")
+                m_search = st.text_input(
+                    "자재 검색 (또는 후보 ID 직접 입력)",
+                    key=f"map_search_{g['item_key']}",
+                    placeholder="자재명 / 재질 / 규격"
+                )
+
+                sel_material_id = None
+                sel_label = None
+                if m_search:
+                    qq = m_search.strip()
+                    try:
+                        mats = fetch("materials",
+                            "material_id,raw_name,material_type,spec,main_supplier",
+                            f"or=(material_id.eq.{qq},raw_name.ilike.*{qq}*,"
+                            f"material_type.ilike.*{qq}*,spec.ilike.*{qq}*)"
+                            f"&order=raw_name.asc", limit=20)
+                    except Exception:
+                        mats = []
+                    if mats:
+                        labels = [
+                            f"{m['material_id']} | {m['raw_name']} "
+                            f"({m.get('material_type','-')}, {m.get('spec','-')})"
+                            for m in mats
+                        ]
+                        pick = st.selectbox(
+                            f"검색 결과 ({len(mats)}건)",
+                            labels, key=f"map_pick_{g['item_key']}"
+                        )
+                        if pick:
+                            sel_material_id = mats[labels.index(pick)]['material_id']
+                            sel_label = pick
+                    else:
+                        st.caption("일치하는 자재 없음")
+
+                bc1, bc2 = st.columns([1, 3])
+                with bc1:
+                    apply_btn = st.button("✅ 일괄 매핑",
+                        key=f"apply_{g['item_key']}",
+                        disabled=(sel_material_id is None))
+                with bc2:
+                    if sel_label:
+                        st.caption(f"→ **{sel_label}** 로 매핑 (확인 후 적용)")
+                    else:
+                        st.caption("자재 검색 후 선택 → 매핑 버튼 활성화")
+
+                if apply_btn and sel_material_id:
+                    # item_key 같은 모든 purchase_ledger 행 업데이트
+                    try:
+                        ok = _db.update("purchase_ledger",
+                            f"item=eq.{g['item']}&matched_material_id=is.null",
+                            {"matched_material_id": sel_material_id,
+                             "mapping_status": "MANUAL"})
+                        if ok:
+                            st.success(
+                                f"✅ '{g['item']}' → {sel_material_id} "
+                                f"({cnt}건 매핑됨)"
+                            )
+                            st.rerun()
+                        else:
+                            st.error("매핑 실패")
+                    except Exception as e:
+                        st.error(f"매핑 오류: {e}")
 
 
-elif page == "🏭 생산 보고":
-    st.subheader("🏭 일일 생산 보고")
-    st.info("🚧 Stage 4에서 활성화 예정 (모바일 입력 우선 최적화)")
+# ════════════════════════════════════════════════════════════════
+# 🩺 보조 점검 — 종합 진단 + 데이터 무결성 (자동수정 X)
+# ════════════════════════════════════════════════════════════════
+elif page == "🩺 보조 점검":
+    st.subheader("🩺 보조 점검")
+    st.caption(
+        "**메인 업무 흐름을 방해하지 않는 보조 진단 도구**. "
+        "자동 수정 금지 — 결과는 작업 우선순위 후보로만."
+    )
+
+    if not DB_AVAILABLE:
+        st.error("DB 연결이 활성화되지 않았습니다."); st.stop()
+
+    import db as _db
+    import pandas as pd
+
+    diag_tabs = st.tabs([
+        "📊 종합 진단",
+        "🧱 활성 제품 BOM 완성도",
+        "🩹 데이터 무결성",
+        "🚨 원가 이상치 (참고용)"
+    ])
+
+    # ── Tab 1: 종합 진단 ──
+    with diag_tabs[0]:
+        st.markdown("### 활성 제품 기준 진행률")
+
+        try:
+            # 활성 BOM 완성도 분포
+            bom_dist = fetch("active_bom_completion_v",
+                "completion_status", "", limit=2000)
+            from collections import Counter
+            bc = Counter(r['completion_status'] for r in bom_dist)
+            total_active = sum(bc.values())
+
+            t1, t2, t3, t4 = st.columns(4)
+            t1.metric("🟢 COMPLETE", f"{bc.get('COMPLETE', 0):,}",
+                      f"{bc.get('COMPLETE',0)/total_active*100:.0f}%"
+                      if total_active else None)
+            t2.metric("🟡 UNVERIFIED", f"{bc.get('UNVERIFIED', 0):,}",
+                      "verification_status 확인 필요"
+                      if bc.get('UNVERIFIED', 0) > 0 else None)
+            t3.metric("🟠 INCOMPLETE", f"{bc.get('INCOMPLETE', 0):,}",
+                      "BOM 정비 필요"
+                      if bc.get('INCOMPLETE', 0) > 0 else None,
+                      delta_color="inverse")
+            t4.metric("🔴 NO_BOM", f"{bc.get('NO_BOM', 0):,}",
+                      "BOM 신규 등록 필요"
+                      if bc.get('NO_BOM', 0) > 0 else None,
+                      delta_color="inverse")
+        except Exception as e:
+            st.error(f"BOM 완성도 조회 실패 (Migration 013 필요): {e}")
+
+        st.divider()
+        st.markdown("### 매입↔자재 매칭 진행률")
+        try:
+            prog = _db.fetch_one("purchase_material_match_progress", "", "*")
+            if prog:
+                mc1, mc2, mc3 = st.columns(3)
+                mc1.metric("매핑률 (전체)", f"{prog.get('match_rate_pct') or 0}%")
+                mc2.metric("MAT_* 매핑률",
+                           f"{prog.get('mat_match_rate_pct') or 'N/A'}%"
+                           if prog.get('mat_match_rate_pct') is not None else "N/A")
+                mc3.metric("미매핑 distinct 품목",
+                           f"{int(prog.get('unique_unresolved_items') or 0):,}")
+        except Exception as e:
+            st.caption(f"진행률 조회 실패: {e}")
+
+        st.divider()
+        st.markdown("### 단계 종료 기준 점검 (마스터 안정화)")
+        st.caption(
+            "기준: docs/master-stabilization-exit-criteria.md. "
+            "모두 충족 시 Stage 4 (생산/LOT) 진입 가능."
+        )
+        try:
+            criteria = []
+            if total_active:
+                conn_rate = (total_active - bc.get('NO_BOM', 0)) / total_active * 100
+                criteria.append(("활성 제품 BOM 연결률",
+                                 f"{conn_rate:.1f}%", "90%",
+                                 "🟢" if conn_rate >= 90 else "🔴"))
+                conf_complete = bc.get('COMPLETE', 0) / total_active * 100
+                criteria.append(("verification 확인완료 비율",
+                                 f"{conf_complete:.1f}%", "80%",
+                                 "🟢" if conf_complete >= 80 else "🔴"))
+            if prog and prog.get('match_rate_pct') is not None:
+                rate = float(prog.get('match_rate_pct'))
+                criteria.append(("매입 자재 매칭률 (전체)",
+                                 f"{rate}%", "80%",
+                                 "🟢" if rate >= 80 else "🔴"))
+            if criteria:
+                cdf = pd.DataFrame(criteria,
+                    columns=["항목", "현재", "목표", "충족"])
+                st.dataframe(cdf, use_container_width=True,
+                             hide_index=True)
+        except Exception:
+            pass
+
+    # ── Tab 2: 활성 BOM 완성도 ──
+    with diag_tabs[1]:
+        st.markdown("### 정비 대상 활성 제품 (NO_BOM + INCOMPLETE + UNVERIFIED)")
+        st.caption("매출 큰 순으로 정비 우선순위 자동 부여 (priority 1=긴급).")
+
+        try:
+            todo = fetch("bom_cleanup_todo_v",
+                "product_id,pn,customer,product_group,completion_status,"
+                "bom_row_count,material_row_count,process_row_count,"
+                "missing_material_id,missing_qty,missing_sf,unverified,"
+                "total_sales_12m,sales_count_12m,abc_grade,priority",
+                "order=priority.asc,total_sales_12m.desc.nullslast",
+                limit=500)
+        except Exception as e:
+            st.error(f"정비 대상 조회 실패: {e}"); todo = []
+
+        if todo:
+            tdf = pd.DataFrame(todo)
+            tdf["12M매출"] = tdf["total_sales_12m"].apply(
+                lambda v: f"{int(v):,}" if pd.notna(v) and v else "-")
+            show = tdf[["priority","completion_status","pn","customer",
+                        "product_group","abc_grade",
+                        "bom_row_count","missing_material_id","missing_qty",
+                        "missing_sf","unverified","12M매출"]].rename(
+                columns={"priority":"우선","completion_status":"상태",
+                         "pn":"품번","customer":"고객사",
+                         "product_group":"제품군","abc_grade":"ABC",
+                         "bom_row_count":"BOM행","missing_material_id":"자재누락",
+                         "missing_qty":"수량누락","missing_sf":"분할누락",
+                         "unverified":"미확인"})
+            st.dataframe(show, use_container_width=True,
+                         hide_index=True, height=520)
+
+            csv = show.to_csv(index=False).encode("utf-8-sig")
+            st.download_button("📥 CSV 다운로드", csv,
+                file_name="bom_cleanup_todo.csv", mime="text/csv")
+
+            st.caption(
+                "→ 정비는 **🔗 BOM 정비** 페이지에서 진행 (자동 수정 X)."
+            )
+        else:
+            st.success("✅ 정비 대상 없음. 활성 제품 BOM 완성 상태.")
+
+    # ── Tab 3: 데이터 무결성 ──
+    with diag_tabs[2]:
+        st.markdown("### 무결성 점검 (참고용, 자동 수정 X)")
+
+        infos = []
+        # 1. orphan BOM rows
+        try:
+            orphan_bom = fetch("bom",
+                "bom_id,product_id,material_id,raw_material_name",
+                "material_id=is.null&process_type=eq.MATERIAL", limit=200)
+            infos.append((
+                "MATERIAL 행인데 material_id NULL",
+                len(orphan_bom),
+                "BOM 자재 매핑 누락. 🔗 BOM 정비 에서 보완."
+            ))
+        except Exception:
+            pass
+
+        # 2. BOM rows for archived products
+        try:
+            archived_bom = fetch("products",
+                "product_id",
+                "archived_at=not.is.null", limit=2000)
+            archived_ids = {p['product_id'] for p in archived_bom}
+            if archived_ids:
+                aids_q = ",".join(f'"{p}"' for p in list(archived_ids)[:100])
+                bom_on_arch = fetch("bom", "bom_id",
+                    f"product_id=in.({aids_q})", limit=2000)
+                infos.append((
+                    "휴면 제품에 BOM 행 존재",
+                    len(bom_on_arch),
+                    "휴면화 시점에 정리 안 됨. 영향 없으나 정리 권장."
+                ))
+        except Exception:
+            pass
+
+        # 3. duplicate BOM rows (same product + material + process)
+        st.caption("중복 BOM (같은 제품-자재-공정) 체크는 별도 SQL 점검 권장.")
+
+        if infos:
+            idf = pd.DataFrame(infos, columns=["항목", "건수", "조치 가이드"])
+            st.dataframe(idf, use_container_width=True, hide_index=True)
+        else:
+            st.info("점검 결과 없음.")
+
+        st.divider()
+        st.markdown("### 수동 점검 SQL")
+        st.code("""-- 중복 BOM 행
+SELECT product_id, material_id, COALESCE(process_type,'MATERIAL') AS pt,
+       COUNT(*) AS dup
+FROM bom
+GROUP BY 1,2,3
+HAVING COUNT(*) > 1;
+
+-- 활성 제품 중 BOM 행에 material_id 누락 (MATERIAL 행)
+SELECT b.bom_id, p.pn, b.raw_material_name
+FROM bom b JOIN products p ON p.product_id = b.product_id
+WHERE p.archived_at IS NULL
+  AND COALESCE(b.process_type,'MATERIAL') = 'MATERIAL'
+  AND b.material_id IS NULL;""", language="sql")
+
+    # ── Tab 4: 원가 이상치 (참고용) ──
+    with diag_tabs[3]:
+        st.markdown("### 원가 이상치 후보 (참고용 / 자동 수정 X)")
+        st.caption(
+            "이상치는 **참고 정보** 입니다. 자동 제외/수정 없음. "
+            "원본 거래는 항상 보존."
+        )
+
+        ano_type = st.radio("유형",
+            ["역마진 (margin_pct < 0)",
+             "비현실적 마진 (>90%)",
+             "원가 데이터 누락 (NO_DATA + 매출 있음)"],
+            horizontal=True, key="anom_type")
+
+        try:
+            if ano_type.startswith("역마진"):
+                rows = fetch("product_cost_full_v",
+                    "pn,customer,product_group,avg_unit_price,"
+                    "final_cost_per_pc,margin_pct,total_sales_12m,cost_source",
+                    "archived_at=is.null&margin_pct=lt.0"
+                    "&order=margin_pct.asc",
+                    limit=100)
+            elif ano_type.startswith("비현실적"):
+                rows = fetch("product_cost_full_v",
+                    "pn,customer,product_group,avg_unit_price,"
+                    "final_cost_per_pc,margin_pct,total_sales_12m,cost_source",
+                    "archived_at=is.null&margin_pct=gt.90"
+                    "&order=margin_pct.desc",
+                    limit=100)
+            else:
+                rows = fetch("product_cost_full_v",
+                    "pn,customer,product_group,avg_unit_price,"
+                    "final_cost_per_pc,margin_pct,total_sales_12m,cost_source",
+                    "archived_at=is.null&cost_source=eq.NO_DATA"
+                    "&total_sales_12m=gt.0"
+                    "&order=total_sales_12m.desc",
+                    limit=100)
+        except Exception as e:
+            st.error(f"조회 실패: {e}"); rows = []
+
+        st.caption(f"검출: **{len(rows):,}건**")
+        if rows:
+            rdf = pd.DataFrame(rows)
+            for c in ["avg_unit_price","final_cost_per_pc","margin_pct","total_sales_12m"]:
+                rdf[c] = pd.to_numeric(rdf[c], errors="coerce")
+            rdf["판매가"] = rdf["avg_unit_price"].apply(
+                lambda v: f"{int(v):,}" if pd.notna(v) and v else "-")
+            rdf["원가"] = rdf["final_cost_per_pc"].apply(
+                lambda v: f"{int(v):,}" if pd.notna(v) and v else "-")
+            rdf["마진율"] = rdf["margin_pct"].apply(
+                lambda v: f"{float(v):.1f}%" if pd.notna(v) else "-")
+            rdf["12M매출"] = rdf["total_sales_12m"].apply(
+                lambda v: f"{int(v):,}" if pd.notna(v) and v else "-")
+            st.dataframe(rdf[["pn","customer","판매가","원가","마진율",
+                              "12M매출","cost_source"]].rename(
+                columns={"pn":"품번","customer":"고객사",
+                         "cost_source":"신뢰도"}),
+                use_container_width=True, hide_index=True, height=480)
+            st.caption(
+                "💡 정비는 **🔗 BOM 정비** 또는 **💰 원가 확인** 에서 수동 진행."
+            )
 
 
-elif page == "📊 매출/재고":
-    st.subheader("📊 매출/재고 조회")
-    st.info("🚧 Stage 5에서 활성화 예정")
-
-
-elif page == "💰 원가 분석":
-    st.subheader("💰 원가 분석")
-    st.caption("정적 원가 스냅샷(소재/외주/열처리/표면) + 실판매가 → 마진 분석. 생산실적 추가 시 실원가 비교 탭 확장 예정.")
+elif page == "💰 원가 확인":
+    st.subheader("💰 원가 확인")
+    st.caption(
+        "**가격·원가·마진만 다루는 화면**. BOM 구조 편집은 🔗 BOM 정비 에서. "
+        "**자동 반영 / 자동 overwrite 없음** — 후보 확인 → 사용자 직접 반영."
+    )
 
     if not DB_AVAILABLE:
         st.error("DB 연결이 활성화되지 않았습니다."); st.stop()
@@ -3669,8 +4125,10 @@ elif page == "💰 원가 분석":
                         "vendor_normalized":"거래처(정규)"}),
                         use_container_width=True, hide_index=True)
 
-    tabs = st.tabs(["📊 마진 대시보드", "🔍 품목 분석", "⚠️ 이상치",
-                    "🧮 BOM 재산정", "✏️ 원가 편집", "🏗 통합 view (Beta)"])
+    # ⚠️ / 🧮 는 보조 점검 페이지 활용 권장 (여기서는 참고용 유지)
+    tabs = st.tabs(["📊 마진 대시보드", "🔍 품목 분석",
+                    "⚠️ 이상치 (참고)", "🧮 BOM 재산정 (참고)",
+                    "✏️ 원가 편집", "🏗 통합 view"])
 
     # ════════════════════════════════════════════════
     # Tab 1: 마진 대시보드
@@ -4564,13 +5022,20 @@ elif page == "💰 원가 분석":
                     key="cost_bulk_editor"
                 )
 
-                cc1, cc2 = st.columns([1, 4])
+                cc1, cc2, cc3 = st.columns([1, 1, 3])
                 with cc1:
                     auto_sum_b = st.checkbox("추정원가 자동합계",
-                                             value=False, key="bulk_auto_sum")
+                                             value=False, key="bulk_auto_sum",
+                                             help="기본 OFF. 체크 시 estimated_cost_per_pc = "
+                                                  "소재+외주+열처리+표면 자동 덮어쓰기.")
                 with cc2:
+                    confirm_save = st.checkbox("⚠️ 일괄 저장 확인",
+                                                value=False, key="bulk_confirm",
+                                                help="2단계 확인. 체크해야 저장 버튼 활성화.")
+                with cc3:
                     save_btn = st.button("💾 변경분 일괄 저장",
-                                         type="primary", use_container_width=False)
+                                         type="primary", use_container_width=False,
+                                         disabled=not confirm_save)
 
                 if save_btn:
                     # diff 계산
