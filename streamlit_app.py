@@ -1120,7 +1120,7 @@ elif page == "⚙️ 마스터 관리":
                 df_e["after_date"] = pd.to_datetime(
                     df_e.get("after_date"), errors="coerce"
                 ).dt.date
-                df_e["active"] = df_e["active"].astype(bool)
+                df_e["active"] = df_e["active"].fillna(False).astype(bool)
                 df_e["id"] = pd.to_numeric(df_e["id"], errors="coerce").astype("Int64")
                 df_e["customer_pattern"] = df_e["customer_pattern"].fillna("").astype(str)
                 df_e["reason"] = df_e["reason"].fillna("").astype(str)
