@@ -37,24 +37,39 @@ st.divider()
 # ─── 사이드바 ───
 with st.sidebar:
     st.header("📋 메뉴")
+    # ─── 3그룹 구조: 메인 / 관리·정비 / 진단 ───
+    # 단일 radio + 그룹 caption 으로 시각 분리.
+    MENU_MAIN = [
+        "🏠 홈",
+        "📥 수주 관리",
+        "⚙️ 마스터 관리",
+        "💰 원가 확인",
+        "📋 구매/발주",
+        "📊 생산 준비",
+    ]
+    MENU_MAINT = [
+        "🔌 구매↔자재 매칭",
+        "🔗 BOM 정비",
+        "🧹 데이터 정리",
+    ]
+    MENU_DIAG = [
+        "🩺 보조 점검",
+    ]
+    ALL_MENU = MENU_MAIN + MENU_MAINT + MENU_DIAG
+
+    # caption 으로 그룹 구분 (radio 자체는 단일)
+    st.markdown(
+        "**📋 메인 업무**  ·  홈 / 수주 / 마스터 / 원가 / 발주 / 생산\n\n"
+        "**🛠 관리·정비**  ·  매칭 / BOM 정비 / 데이터 정리\n\n"
+        "**🩺 진단**  ·  보조 점검"
+    )
+    st.divider()
     page = st.radio(
         "이동",
-        [
-            # ── 메인 업무 ──
-            "🏠 홈",
-            "📥 수주",
-            "⚙️ 마스터 관리",
-            "🔗 BOM 정비",
-            "🔌 자재/구매 매칭",
-            "💰 원가 확인",
-            "📋 발주서 작성",
-            "📊 생산 준비",
-            # ── 보조 ──
-            "🩺 보조 점검",
-        ],
+        ALL_MENU,
         label_visibility="collapsed",
     )
-    st.caption("Stage 4 (입출고/생산보고/매출재고) 는 마스터 정비 완료 후 활성")
+    st.caption("ℹ️ Stage 4 (입출고/생산보고/매출재고) 는 Master Stabilization 완료 후 활성")
     st.divider()
     st.caption("🔧 시스템")
     if st.button("🔍 DB 상태 확인", use_container_width=True):
@@ -2099,7 +2114,7 @@ elif page == "🔗 BOM 정비":
                         st.rerun()
 
 
-elif page == "📥 수주":
+elif page == "📥 수주 관리":
     st.subheader("📥 수주 관리")
     if not DB_AVAILABLE: st.error("DB 연결 필요"); st.stop()
 
@@ -2908,7 +2923,7 @@ elif page == "📊 생산 준비":
                                    f"좌측 '📋 발주서 작성' 메뉴로 이동해서 검토하세요.")
 
 
-elif page == "📋 발주서 작성":
+elif page == "📋 구매/발주":
     st.subheader("📋 발주 관리")
     if not DB_AVAILABLE:
         st.error("DB 연결 필요"); st.stop()
@@ -3471,7 +3486,7 @@ elif page == "📋 발주서 작성":
 # ════════════════════════════════════════════════════════════════
 # 🔌 자재/구매 매칭 — 마스터 안정화 단계 핵심 화면
 # ════════════════════════════════════════════════════════════════
-elif page == "🔌 자재/구매 매칭":
+elif page == "🔌 구매↔자재 매칭":
     st.subheader("🔌 자재/구매 매칭")
     st.caption(
         "purchase_ledger.matched_material_id 를 채워서 자재 단가 시점화 활성. "
@@ -3660,6 +3675,48 @@ elif page == "🔌 자재/구매 매칭":
 # ════════════════════════════════════════════════════════════════
 # 🩺 보조 점검 — 종합 진단 + 데이터 무결성 (자동수정 X)
 # ════════════════════════════════════════════════════════════════
+elif page == "🧹 데이터 정리":
+    st.subheader("🧹 데이터 정리")
+    st.caption(
+        "원본 데이터 보존 + 집계 view 에서만 노이즈 제외 (원칙). "
+        "현재 적용된 규칙은 **마스터 관리 → 🚫 데이터 제외 규칙** 탭에서 관리."
+    )
+
+    if not DB_AVAILABLE:
+        st.error("DB 연결이 활성화되지 않았습니다."); st.stop()
+
+    import db as _db
+    import pandas as pd
+
+    # 현재 활성 제외 규칙 요약
+    try:
+        rules = fetch("sales_data_exclusion",
+            "id,customer_pattern,before_date,after_date,reason,active",
+            "order=created_at.desc", limit=100)
+    except Exception as e:
+        st.warning(f"sales_data_exclusion 조회 실패 (Migration 012 필요): {e}")
+        rules = []
+
+    if rules:
+        r1, r2 = st.columns([1, 1])
+        with r1:
+            st.metric("등록 규칙 수", f"{len(rules)}")
+        with r2:
+            st.metric("활성 규칙 수",
+                      f"{sum(1 for r in rules if r.get('active'))}")
+        st.dataframe(pd.DataFrame(rules), use_container_width=True,
+                     hide_index=True, height=180)
+
+    st.divider()
+    st.markdown("##### 📌 정리 가이드")
+    st.markdown(
+        "- 거래처 단위 / 날짜 범위 단위 제외 → **마스터 관리 → 🚫 데이터 제외 규칙** 탭\n"
+        "- 개별 거래 단위 제외 → (이번 단계 X — Stage 4 이후 검토)\n"
+        "- 원본 ledger 행 삭제는 **금지** (감사·추적용)\n"
+        "- 향후 매입/매출 입력 화면 신설 시 → 입력 시점 카테고리 분류로 노이즈 자동 차단"
+    )
+
+
 elif page == "🩺 보조 점검":
     st.subheader("🩺 보조 점검")
     st.caption(
