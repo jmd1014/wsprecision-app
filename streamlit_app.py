@@ -846,6 +846,8 @@ elif page == "⚙️ 마스터 관리":
                     "- `materials_matched>0 이지만 BOM 0건` → 해당 자재를 쓰는 제품이 BOM 에 없음\n"
                     "- 모두 0 이면 → 키워드를 더 짧게 / 일부만 (예: 'MRG' 'STS' '환봉')"
                 )
+
+        if brows:
             bdf = pd.DataFrame(brows)
             # 컬럼 순서 재배치 — process_type/unit_price/lot_label 포함
             preferred_cols = ['bom_id', 'product_id', '_pn', '_group',
