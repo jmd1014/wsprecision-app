@@ -3598,6 +3598,70 @@ elif page == "🎯 TOP 우선 정비":
     s4.metric("마진율", f"{float(sel.get('margin_pct') or 0):.1f}%",
                delta=badge_map.get(sel.get('cost_source'),''))
 
+    st.caption(
+        "💡 판매가는 sales_ledger 평균이라 직접 수정 불가. 잘못된 거래 행 제외는 "
+        "**🧹 데이터 정리** 또는 **마스터 관리 → 🚫 데이터 제외 규칙** 에서."
+    )
+
+    # ── 선택 제품 상세 (procurement_type 포함) ──
+    try:
+        sel_detail = _db.fetch_one("products",
+            f"product_id=eq.{sel_pid}",
+            "procurement_type,procurement_start_date,procurement_prev_type,"
+            "material,raw_material_name,raw_material_spec,material_unit_price,"
+            "material_kg_price,heat_treat_per_pc,surface_per_pc,outsourcing_per_pc,"
+            "estimated_cost_per_pc")
+    except Exception:
+        sel_detail = None
+    sel_detail = sel_detail or {}
+
+    procurement_type = (sel_detail.get('procurement_type') or '').strip()
+    is_도급 = procurement_type == '도급'
+    is_사급 = procurement_type == '사급'
+    auto_도급_hint = sel_pn.upper().startswith('4S') and not procurement_type
+
+    # ── 🏷 조달 분류 ──
+    st.markdown("##### 🏷 조달 분류 (도급/사급)")
+    pc1, pc2 = st.columns([1, 2])
+    with pc1:
+        if is_도급:
+            st.success("🟢 **도급** (소재비 포함)")
+        elif is_사급:
+            st.info("🟡 **사급** (소재 공급받음 — 자재 단가 입력 X)")
+        elif auto_도급_hint:
+            st.warning("⚠️ **분류 미설정** — 4S 접두사 → **도급** 추정")
+        else:
+            st.warning("⚠️ **분류 미설정** — 도급/사급 지정 필요")
+        if sel_detail.get('procurement_prev_type'):
+            st.caption(
+                f"이전: {sel_detail['procurement_prev_type']} "
+                f"→ 변경일 {sel_detail.get('procurement_start_date') or '-'}"
+            )
+    with pc2:
+        with st.form(f"form_proc_type_{sel_pid}"):
+            radio_options = ["(변경 안 함)", "도급", "사급"]
+            default_idx = 0
+            new_proc = st.radio(
+                "조달 분류 변경 (잘못 지정된 경우 정정)",
+                radio_options, horizontal=True, index=default_idx,
+                key=f"proc_radio_{sel_pid}")
+            if st.form_submit_button("💾 조달 분류 저장"):
+                if new_proc in ('도급', '사급'):
+                    from datetime import date as _date
+                    payload = {"procurement_type": new_proc}
+                    if procurement_type and procurement_type != new_proc:
+                        payload["procurement_prev_type"] = procurement_type
+                        payload["procurement_start_date"] = str(_date.today())
+                    try:
+                        _db.update("products",
+                                    f"product_id=eq.{sel_pid}", payload)
+                        st.success(f"✅ 조달 분류 = {new_proc}")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"저장 실패: {e}")
+
+    st.divider()
+
     # 현재 BOM 조회
     try:
         cur_bom = fetch("bom",
@@ -3612,15 +3676,15 @@ elif page == "🎯 TOP 우선 정비":
     process_rows_list = [b for b in cur_bom
                          if (b.get('process_type') or 'MATERIAL') != 'MATERIAL']
 
-    # ── 체크리스트 ──
+    # ── 체크리스트 (조달 분류 인식) ──
     st.markdown("##### ✅ 정비 체크리스트")
 
     checks = []
 
     # 1. 자재명
-    has_mat_name = bool(sel.get('raw_material_name') or sel.get('material'))
+    has_mat_name = bool(sel_detail.get('raw_material_name') or sel_detail.get('material'))
     checks.append(('mat_name', '자재명/재질 식별',
-        sel.get('raw_material_name') or sel.get('material') or '(없음)',
+        sel_detail.get('raw_material_name') or sel_detail.get('material') or '(없음)',
         has_mat_name, False))
 
     # 2. BOM 자재행
@@ -3655,12 +3719,17 @@ elif page == "🎯 TOP 우선 정비":
         f'{len(unverified_rows)} 행 미확인' if unverified_rows else ('OK' if cur_bom else '-'),
         verify_ok, False))
 
-    # 6. 자재 단가
-    up_value = sel.get('material_unit_price') or 0
+    # 6. 자재 단가 — 사급일 때는 체크 제외, 도급은 필수
+    up_value = sel_detail.get('material_unit_price') or 0
     has_up = up_value and float(up_value) > 0
-    checks.append(('unit_price', '자재 단가 (products.material_unit_price)',
-        f"{int(up_value):,}원" if has_up else '(없음)',
-        has_up, False))
+    if is_사급:
+        checks.append(('unit_price', '자재 단가 (사급 — N/A)',
+            '🟡 사급 제품 — 소재비 미적용', True, True))  # optional, ok=True
+    else:
+        checks.append(('unit_price',
+            '자재 단가 (products.material_unit_price)',
+            f"{int(up_value):,}원" if has_up else '(없음)',
+            bool(has_up), False))
 
     # 7. 공정행 (선택)
     has_process = len(process_rows_list) > 0
@@ -3673,7 +3742,7 @@ elif page == "🎯 TOP 우선 정비":
         icon = '✅' if ok else ('❔' if optional else '❌')
         st.markdown(f"- {icon} **{name}** — {detail}")
 
-    # 전체 완료 여부
+    # 전체 완료 여부 (사급일 때는 자재 단가 제외)
     all_required_ok = all(c[3] for c in checks if not c[4])
     if all_required_ok:
         st.success(
@@ -3682,30 +3751,47 @@ elif page == "🎯 TOP 우선 정비":
 
     st.divider()
 
-    # ── 누락 항목 인라인 입력 ──
-    st.markdown("##### ⚡ 누락 항목 입력")
-    st.caption("앱이 빠진 정보를 요청합니다. 채우는 즉시 체크리스트 자동 갱신.")
+    # ── 항목별 입력/정정 (✅ 도 정정 가능) ──
+    st.markdown("##### ⚡ 입력 / 정정")
+    st.caption(
+        "❌ 누락은 자동 펼침. ✅ 도 expander 펼쳐서 **현재 값 수정 가능**. "
+        "잘못된 정보는 모두 여기서 정정."
+    )
 
-    # 1. 자재명 입력
-    if not has_mat_name:
-        with st.expander("❌ 1) 자재명/재질 입력 필요", expanded=True):
-            with st.form(f"form_matname_{sel_pid}"):
-                fc1, fc2 = st.columns(2)
-                with fc1:
-                    in_mat_name = st.text_input(
-                        "자재명/규격",
-                        placeholder="예: 환봉 STS304 ⌀45 × 400")
-                with fc2:
-                    in_mat = st.text_input(
-                        "재질",
-                        placeholder="예: STS304, SCM440, S630")
-                if st.form_submit_button("💾 저장", type="primary"):
-                    payload = {}
-                    if in_mat_name: payload['raw_material_name'] = in_mat_name
-                    if in_mat: payload['material'] = in_mat
-                    if payload:
-                        _db.update("products", f"product_id=eq.{sel_pid}", payload)
-                        st.success("✅ 자재명 저장"); st.rerun()
+    # 1. 자재명/재질 (항상 표시)
+    with st.expander(
+        f"{'✅' if has_mat_name else '❌'} 1) 자재명/재질"
+        f" — 현재: {(sel_detail.get('raw_material_name') or sel_detail.get('material') or '(없음)')[:40]}",
+        expanded=not has_mat_name):
+        with st.form(f"form_matname_{sel_pid}"):
+            fc1, fc2, fc3 = st.columns(3)
+            with fc1:
+                in_mat_name = st.text_input(
+                    "자재명/규격",
+                    value=sel_detail.get('raw_material_name') or '',
+                    placeholder="예: 환봉 STS304 ⌀45 × 400")
+            with fc2:
+                in_mat = st.text_input(
+                    "재질",
+                    value=sel_detail.get('material') or '',
+                    placeholder="예: STS304, SCM440")
+            with fc3:
+                in_spec = st.text_input(
+                    "규격 (선택)",
+                    value=sel_detail.get('raw_material_spec') or '',
+                    placeholder="예: ⌀45 × 400")
+            if st.form_submit_button("💾 저장", type="primary"):
+                payload = {
+                    'raw_material_name': in_mat_name or None,
+                    'material': in_mat or None,
+                    'raw_material_spec': in_spec or None,
+                }
+                try:
+                    _db.update("products",
+                                f"product_id=eq.{sel_pid}", payload)
+                    st.success("✅ 자재명 저장"); st.rerun()
+                except Exception as e:
+                    st.error(f"저장 실패: {e}")
 
     # 2. BOM 자재행 추가
     if not has_mat_bom:
@@ -3804,30 +3890,74 @@ elif page == "🎯 TOP 우선 정비":
                 st.success(f"✅ {done}건 확인완료 처리")
                 st.rerun()
 
-    # 6. 자재 단가 입력
-    if not has_up:
-        with st.expander("❌ 6) 자재 단가 입력 (products.material_unit_price)",
-                          expanded=True):
+    # 6. 자재 단가 입력 — 사급은 표시 X, 도급/미설정은 항상 정정 가능 expander
+    if is_사급:
+        st.info(
+            "🟡 **사급 제품 — 자재 단가 입력 영역 비활성화**. "
+            "원가 = 외주/열처리/표면처리만 산입. 잘못된 단가가 있으면 "
+            "아래 ⚠️ 영역에서 0 으로 초기화."
+        )
+        # 사급인데 단가가 0보다 큰 값이 있으면 정정 안내
+        if has_up:
+            with st.expander(
+                f"⚠️ 사급인데 자재 단가가 입력되어 있음 — 정정 필요 "
+                f"(현재: {int(up_value):,}원)",
+                expanded=True):
+                st.warning(
+                    "사급 제품은 자재 단가가 없는 것이 정상입니다. "
+                    "0 으로 초기화하면 추정원가에서 소재비가 빠집니다."
+                )
+                if st.button("🗑 자재 단가 0 으로 초기화 (사급 정합성)",
+                              key=f"reset_up_{sel_pid}", type="primary"):
+                    try:
+                        _db.update("products", f"product_id=eq.{sel_pid}",
+                                    {"material_unit_price": 0,
+                                     "material_kg_price": 0})
+                        st.success("✅ 자재 단가 초기화")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"초기화 실패: {e}")
+    else:
+        # 도급 또는 미설정 — 항상 정정 가능 expander
+        with st.expander(
+            f"{'✅' if has_up else '❌'} 6) 자재 단가 (도급)"
+            f" — 현재: {int(up_value):,}원" if has_up else
+            "❌ 6) 자재 단가 (도급) — 입력 필요",
+            expanded=not has_up):
             st.caption(
-                "BOM 자동 원가 계산의 fallback 단가. 매입 매핑 시 자동 갱신되나 "
-                "현재는 직접 입력 권장."
+                "도급 제품의 소재비. BOM 자동 원가 계산의 fallback. "
+                "매입 매핑 시 평균가로 자동 갱신되나 현재 단계에서는 직접 입력."
             )
             with st.form(f"form_up_{sel_pid}"):
-                in_up = st.number_input("자재 개당 단가 (원/EA)",
-                    min_value=0.0, value=0.0, step=10.0)
-                in_kg = st.number_input("자재 KG 단가 (참고, 선택)",
-                    min_value=0.0, value=0.0, step=100.0)
-                if st.form_submit_button("💾 저장", type="primary"):
-                    if in_up > 0:
-                        payload = {"material_unit_price": in_up}
-                        if in_kg > 0:
-                            payload["material_kg_price"] = in_kg
+                fc1, fc2 = st.columns(2)
+                with fc1:
+                    in_up = st.number_input("자재 개당 단가 (원/EA)",
+                        min_value=0.0,
+                        value=float(up_value or 0),
+                        step=10.0)
+                with fc2:
+                    in_kg = st.number_input("자재 KG 단가 (참고)",
+                        min_value=0.0,
+                        value=float(sel_detail.get('material_kg_price') or 0),
+                        step=100.0)
+                ec1, ec2 = st.columns([1, 4])
+                with ec1:
+                    save_up = st.form_submit_button("💾 저장",
+                        type="primary")
+                with ec2:
+                    if has_up:
+                        st.caption(f"💡 잘못된 단가면 현재 값 위에 새 값 덮어쓰기")
+                if save_up:
+                    payload = {"material_unit_price": in_up or None}
+                    if in_kg > 0:
+                        payload["material_kg_price"] = in_kg
+                    try:
                         _db.update("products",
                                     f"product_id=eq.{sel_pid}", payload)
-                        st.success(f"✅ 단가 {in_up:,}원 저장")
+                        st.success(f"✅ 단가 저장: {in_up:,}원/EA")
                         st.rerun()
-                    else:
-                        st.error("단가는 0보다 커야 합니다.")
+                    except Exception as e:
+                        st.error(f"저장 실패: {e}")
 
     # 7. 공정행 추가 (선택)
     if not has_process:
