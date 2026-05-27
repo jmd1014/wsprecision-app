@@ -3506,15 +3506,28 @@ elif page == "🎯 TOP 우선 정비":
     import pandas as pd
 
     # ── 상단: 필터 + 진행률 ──
-    fc1, fc2, fc3 = st.columns([1, 1, 3])
+    fc1, fc2, fc3 = st.columns([1, 2, 2])
     with fc1:
-        top_n = st.number_input("상위 N", 5, 50, 10, 5, key="top_n_value")
+        top_n = st.number_input("상위 N", 5, 100, 20, 5, key="top_n_value")
     with fc2:
-        only_incomp = st.checkbox("미완료만", value=True, key="top_only_incomp")
+        view_mode = st.radio(
+            "보기 모드",
+            ["전체 매출 TOP (BOM_FULL 포함)",
+             "미완료만 (정비 필요)",
+             "완료만 (BOM_FULL — 분기 복사용)"],
+            horizontal=False, index=0, key="top_view_mode",
+            help="기본은 '전체' — 매출 큰 제품을 모두 표시. "
+                 "정비 작업만 집중하려면 '미완료만'.")
     with fc3:
         st.caption(
             "🟢 BOM_FULL · 🟡 BOM_PARTIAL · 🟠 LEGACY_ONLY · 🔴 NO_DATA"
         )
+        # 검색 입력 (매출 큰 특정 PN 직접 찾을 때)
+        direct_pn = st.text_input(
+            "직접 검색 (옵션)",
+            placeholder="예: 8HFDV-VM-05",
+            key="top_direct_pn",
+            help="이 키워드 우선 표시 (필터 무시)")
 
     try:
         top_rows = fetch("product_cost_full_v",
@@ -3525,12 +3538,22 @@ elif page == "🎯 TOP 우선 정비":
             "legacy_estimated_cost",
             "archived_at=is.null&total_sales_12m=gt.0"
             "&order=total_sales_12m.desc.nullslast",
-            limit=int(top_n * 3))
+            limit=int(top_n * 4))
     except Exception as e:
         st.error(f"조회 실패: {e}"); top_rows = []
 
-    if only_incomp:
+    # 직접 검색이 있으면 그것만
+    if direct_pn:
+        dq = direct_pn.strip().lower()
+        top_rows = [p for p in top_rows
+                    if dq in (p.get('pn') or '').lower()
+                    or dq in (p.get('customer') or '').lower()]
+    elif view_mode.startswith("미완료"):
         top_rows = [p for p in top_rows if p.get('cost_source') != 'BOM_FULL']
+    elif view_mode.startswith("완료만"):
+        top_rows = [p for p in top_rows if p.get('cost_source') == 'BOM_FULL']
+    # 전체 모드는 필터 없음 (매출 큰 순 그대로)
+
     top_rows = top_rows[:int(top_n)]
 
     # 진행률 메트릭
