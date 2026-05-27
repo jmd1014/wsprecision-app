@@ -3613,17 +3613,25 @@ elif page == "🎯 TOP 우선 정비":
     st.divider()
     st.markdown(f"## 🔧 {sel_pn}  ·  {sel.get('customer','-')}")
 
-    # 현재 상태 카드
+    # 현재 상태 카드 — 판매가는 최근 거래가
     s1, s2, s3, s4 = st.columns(4)
     s1.metric("매출 (12M)", f"{int(sel.get('total_sales_12m') or 0):,}원")
-    s2.metric("판매가", f"{int(sel.get('sale_price') or 0):,}원")
+    recent_p = sel.get('sale_price') or 0
+    avg_12m = sel.get('avg_unit_price_12m') or 0
+    delta_label = None
+    if recent_p and avg_12m and avg_12m > 0:
+        diff = (recent_p - avg_12m) / avg_12m * 100
+        if abs(diff) >= 5:
+            delta_label = f"vs 12M평균 {diff:+.0f}%"
+    s2.metric("판매가 (최근)", f"{int(recent_p):,}원", delta_label)
     s3.metric("추정원가", f"{int(sel.get('final_cost_per_pc') or 0):,}원")
     s4.metric("마진율", f"{float(sel.get('margin_pct') or 0):.1f}%",
                delta=badge_map.get(sel.get('cost_source'),''))
 
     st.caption(
-        "💡 판매가는 sales_ledger 평균이라 직접 수정 불가. 잘못된 거래 행 제외는 "
-        "**🧹 데이터 정리** 또는 **마스터 관리 → 🚫 데이터 제외 규칙** 에서."
+        f"💡 판매가 = **최근 거래가** (sales_ledger 최신). "
+        f"12M 평균: {int(avg_12m):,}원. 차이는 거래 분포 변동 (정상). "
+        "잘못된 거래 제외는 **🧹 데이터 정리**."
     )
 
     # ── 선택 제품 상세 (procurement_type + v11 매입 매핑 메타데이터 포함) ──

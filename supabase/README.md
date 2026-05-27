@@ -25,6 +25,8 @@ migrations/
 ├── 011_sales_stats_recent_avg.sql
 ├── 012_data_quality_exclusion.sql
 ├── 013_active_master_views.sql
+├── 014_material_price_status.sql
+├── 015_recent_price_basis.sql
 └── ...
 ```
 
@@ -67,3 +69,5 @@ migrations/
 | 011 | sales_stats_recent_avg.sql | (미적용) | avg_unit_price=12M 필터, 3M/all/last 컬럼 추가 |
 | 012 | data_quality_exclusion.sql | 2026-05-20 | sales_data_exclusion 테이블 + 미진 2023-02 이전 제외 |
 | 013 | active_master_views.sql | 2026-05-21 | 활성 기준 정비 view + 매칭 view 6종 |
+| 014 | material_price_status.sql | 2026-05-21 | 자재 가격 출처 view (매입/legacy/없음) |
+| 015 | recent_price_basis.sql | 2026-05-21 | 최근 거래가 기준 + 사급 BOM_FULL 인정 |
