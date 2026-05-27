@@ -3618,7 +3618,8 @@ elif page == "🎯 TOP 우선 정비":
     procurement_type = (sel_detail.get('procurement_type') or '').strip()
     is_도급 = procurement_type == '도급'
     is_사급 = procurement_type == '사급'
-    auto_도급_hint = sel_pn.upper().startswith('4S') and not procurement_type
+    # ⚠️ PN 접두사(4S/S 등)는 재질 구분 컨벤션 — 도급 여부와 무관.
+    #    자동 추론 금지. 사용자가 procurement_type 명시적 지정만 인정.
 
     # ── 🏷 조달 분류 ──
     st.markdown("##### 🏷 조달 분류 (도급/사급)")
@@ -3628,10 +3629,12 @@ elif page == "🎯 TOP 우선 정비":
             st.success("🟢 **도급** (소재비 포함)")
         elif is_사급:
             st.info("🟡 **사급** (소재 공급받음 — 자재 단가 입력 X)")
-        elif auto_도급_hint:
-            st.warning("⚠️ **분류 미설정** — 4S 접두사 → **도급** 추정")
         else:
-            st.warning("⚠️ **분류 미설정** — 도급/사급 지정 필요")
+            st.warning("⚠️ **분류 미설정** — 사용자가 직접 지정")
+        st.caption(
+            "💡 PN 접두사(4S, S 등)는 **재질 구분** 컨벤션이며 "
+            "도급/사급과 무관합니다. 자동 추론 안 함."
+        )
         if sel_detail.get('procurement_prev_type'):
             st.caption(
                 f"이전: {sel_detail['procurement_prev_type']} "
