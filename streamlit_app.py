@@ -3739,6 +3739,83 @@ elif page == "🎯 TOP 우선 정비":
     process_rows_list = [b for b in cur_bom
                          if (b.get('process_type') or 'MATERIAL') != 'MATERIAL']
 
+    # ── 현재 BOM 행 인라인 수정 (qty / shared_factor / LOT 단가) ──
+    if cur_bom:
+        with st.expander(
+            f"📋 현재 BOM 행 ({len(cur_bom)}개) — 클릭해서 수정",
+            expanded=False):
+            st.caption(
+                "qty/PC, 분할/LOT, 공정 LOT단가 직접 수정. "
+                "자재행 LOT단가는 입력해도 무시 (매입/원가에서 관리)."
+            )
+            for r in cur_bom:
+                is_proc = (r.get('process_type') or 'MATERIAL') != 'MATERIAL'
+                row_type = r.get('process_type') or 'MATERIAL'
+                badge = {'MATERIAL':'🧱','HEAT':'🔥','SURFACE':'💎',
+                         'OUTSOURCE':'🏭','PACKING':'📦','LABOR':'👷',
+                         'OTHER':'❔'}.get(row_type, '?')
+                with st.container():
+                    rh = st.columns([3, 1, 1, 1, 1])
+                    with rh[0]:
+                        st.markdown(
+                            f"**{badge} {row_type}** · "
+                            f"`{r.get('material_id') or '(자재 X)'}` · "
+                            f"{r.get('raw_material_name') or '-'} "
+                            f"(BOM #{r['bom_id']})"
+                        )
+                    cur_qpc = float(r.get('qty_per_pc') or 1)
+                    cur_sf = int(float(r.get('shared_factor') or 1))
+                    cur_up = float(r.get('unit_price') or 0)
+                    with rh[1]:
+                        ed_qpc = st.number_input(
+                            "qty/PC", min_value=0.0, value=cur_qpc, step=0.1,
+                            key=f"ed_qpc_{r['bom_id']}",
+                            label_visibility="collapsed",
+                            help="qty/PC")
+                    with rh[2]:
+                        ed_sf = st.number_input(
+                            "분할/LOT", min_value=1, value=cur_sf, step=1,
+                            key=f"ed_sf_{r['bom_id']}",
+                            label_visibility="collapsed",
+                            help="자재: 분할 N · 공정: LOT 처리수량")
+                    with rh[3]:
+                        if is_proc:
+                            ed_up = st.number_input(
+                                "LOT단가", min_value=0.0, value=cur_up,
+                                step=1000.0,
+                                key=f"ed_up_{r['bom_id']}",
+                                label_visibility="collapsed",
+                                help="공정 LOT 단가")
+                        else:
+                            st.caption("(자재 단가 X)")
+                            ed_up = None
+                    with rh[4]:
+                        if st.button("💾", key=f"ed_save_{r['bom_id']}",
+                                      help="이 행만 저장"):
+                            upd = {}
+                            if ed_qpc != cur_qpc:
+                                upd['qty_per_pc'] = ed_qpc
+                            if ed_sf != cur_sf:
+                                upd['shared_factor'] = ed_sf
+                            if is_proc and ed_up is not None and ed_up != cur_up:
+                                upd['unit_price'] = ed_up if ed_up > 0 else None
+                            if upd:
+                                try:
+                                    if _db.update("bom",
+                                        f"bom_id=eq.{r['bom_id']}", upd):
+                                        st.success(
+                                            f"✅ BOM #{r['bom_id']} 저장: "
+                                            f"{', '.join(f'{k}={v}' for k,v in upd.items())}"
+                                        )
+                                        st.rerun()
+                                    else:
+                                        st.error("저장 실패")
+                                except Exception as e:
+                                    st.error(f"저장 오류: {e}")
+                            else:
+                                st.info("변경 사항 없음")
+                st.divider()
+
     # ── 체크리스트 (조달 분류 인식) ──
     st.markdown("##### ✅ 정비 체크리스트")
 
@@ -5208,6 +5285,138 @@ elif page == "💰 원가 확인":
                     ]
                     info_df = pd.DataFrame(info_rows, columns=["항목", "값"])
                     st.dataframe(info_df, hide_index=True, use_container_width=True)
+
+                    # ── 📊 BOM 자재의 매입 단가 변동 추이 ──
+                    try:
+                        prod_bom = fetch("bom",
+                            "bom_id,material_id,raw_material_name,process_type",
+                            f"product_id=eq.{row['product_id']}"
+                            f"&process_type=eq.MATERIAL", limit=10)
+                    except Exception:
+                        prod_bom = []
+                    prod_mat_rows = [b for b in prod_bom
+                                     if (b.get('process_type') or 'MATERIAL') == 'MATERIAL']
+                    if prod_mat_rows:
+                        st.divider()
+                        st.markdown("##### 📊 BOM 자재 매입 단가 변동 추이")
+                        st.caption(
+                            "각 자재의 매입 거래 (자재명/규격 기준 검색). "
+                            "matched_material_id 가 없어도 item 키워드로 시계열 산출."
+                        )
+
+                        for mat_row in prod_mat_rows:
+                            mat_name = (mat_row.get('raw_material_name') or
+                                        '').strip()
+                            mat_id = mat_row.get('material_id')
+                            if not mat_name:
+                                continue
+
+                            # 1) matched_material_id 기준 우선 검색
+                            mp_rows = []
+                            if mat_id:
+                                try:
+                                    mp_rows = fetch("purchase_ledger",
+                                        "trade_date,vendor,item,qty,unit_price,kg_price,ea_price",
+                                        f"matched_material_id=eq.{mat_id}"
+                                        f"&order=trade_date.desc",
+                                        limit=300)
+                                except Exception:
+                                    mp_rows = []
+
+                            # 2) item 키워드로 fallback 검색
+                            if not mp_rows:
+                                # 자재명에서 핵심 키워드 추출 (첫 단어 또는 재질명)
+                                kw = mat_name.split()[0] if mat_name else mat_name
+                                try:
+                                    mp_rows = fetch("purchase_ledger",
+                                        "trade_date,vendor,item,qty,unit_price,kg_price,ea_price",
+                                        f"item=ilike.*{kw}*"
+                                        f"&order=trade_date.desc",
+                                        limit=300)
+                                except Exception:
+                                    mp_rows = []
+                                # 추가 필터: 자재명 다른 단어도 매칭 (정확도 향상)
+                                if mp_rows and len(mat_name.split()) > 1:
+                                    tokens = [t for t in mat_name.split()
+                                              if len(t) >= 2]
+                                    if len(tokens) >= 2:
+                                        mp_rows = [
+                                            r for r in mp_rows
+                                            if all(t.lower() in (r.get('item') or '').lower()
+                                                   for t in tokens)
+                                        ]
+
+                            with st.expander(
+                                f"🔧 {mat_name} (BOM #{mat_row['bom_id']}, "
+                                f"{mat_id or '-'}) — 매입 {len(mp_rows)}건",
+                                expanded=False):
+                                if not mp_rows:
+                                    st.info(
+                                        f"'{mat_name}' 키워드로 매입 이력 없음. "
+                                        "매입 단가 조회 위젯에서 다른 키워드 시도 가능."
+                                    )
+                                    continue
+
+                                df_mp = pd.DataFrame(mp_rows)
+                                df_mp["unit_price"] = pd.to_numeric(
+                                    df_mp["unit_price"], errors="coerce")
+                                df_mp["trade_date"] = pd.to_datetime(
+                                    df_mp["trade_date"], errors="coerce")
+                                valid_mp = df_mp.dropna(
+                                    subset=["trade_date", "unit_price"])
+                                valid_mp = valid_mp[valid_mp["unit_price"] > 0]
+
+                                if len(valid_mp) >= 1:
+                                    recent_mp = valid_mp.iloc[0]["unit_price"]
+                                    avg_mp = valid_mp["unit_price"].mean()
+                                    min_mp = valid_mp["unit_price"].min()
+                                    max_mp = valid_mp["unit_price"].max()
+                                    last_d = valid_mp.iloc[0]["trade_date"]
+
+                                    mm1, mm2, mm3, mm4, mm5 = st.columns(5)
+                                    mm1.metric("최근 단가", _money(recent_mp))
+                                    mm2.metric("평균 단가", _money(avg_mp))
+                                    mm3.metric("최저", _money(min_mp))
+                                    mm4.metric("최고", _money(max_mp))
+                                    mm5.metric("최근 거래",
+                                        last_d.strftime("%Y-%m-%d")
+                                        if pd.notna(last_d) else "-")
+
+                                    # 월별 평균 차트
+                                    if len(valid_mp) >= 2:
+                                        vc = valid_mp.copy()
+                                        vc["월"] = (vc["trade_date"]
+                                            .dt.to_period("M").astype(str))
+                                        monthly = (vc.groupby("월")["unit_price"]
+                                                   .mean().sort_index())
+                                        if len(monthly) >= 2:
+                                            st.line_chart(monthly, height=180,
+                                                use_container_width=True)
+
+                                    # 최근 거래 표
+                                    df_show = df_mp.head(20).copy()
+                                    df_show["trade_date"] = (
+                                        df_show["trade_date"]
+                                        .dt.strftime("%Y-%m-%d")
+                                        if pd.api.types.is_datetime64_any_dtype(
+                                            df_show["trade_date"])
+                                        else df_show["trade_date"]
+                                    )
+                                    df_show["unit_price"] = df_show["unit_price"].apply(
+                                        lambda v: f"{v:,.0f}"
+                                        if pd.notna(v) else "-")
+                                    st.dataframe(
+                                        df_show[["trade_date","vendor","item",
+                                                 "qty","unit_price"]].rename(
+                                            columns={"trade_date":"거래일",
+                                                     "vendor":"거래처",
+                                                     "item":"품목",
+                                                     "qty":"수량",
+                                                     "unit_price":"단가"}),
+                                        use_container_width=True,
+                                        hide_index=True, height=200)
+                                else:
+                                    st.caption("유효한 단가 데이터 없음.")
 
                     # ── 📈 판매가 변동 이력 ──
                     st.divider()
