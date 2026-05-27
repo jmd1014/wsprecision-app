@@ -41,6 +41,7 @@ with st.sidebar:
     # 단일 radio + 그룹 caption 으로 시각 분리.
     MENU_MAIN = [
         "🏠 홈",
+        "🎯 TOP 우선 정비",
         "📥 수주 관리",
         "⚙️ 마스터 관리",
         "💰 원가 확인",
@@ -3488,6 +3489,523 @@ elif page == "📋 구매/발주":
 # ════════════════════════════════════════════════════════════════
 # 🔌 자재/구매 매칭 — 마스터 안정화 단계 핵심 화면
 # ════════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════
+# 🎯 TOP 우선 정비 — 매출 큰 제품부터 완성 → 분기 수평 전개
+# ════════════════════════════════════════════════════════════════
+elif page == "🎯 TOP 우선 정비":
+    st.subheader("🎯 TOP 우선 정비")
+    st.caption(
+        "매출 큰 활성 제품부터 BOM/원가 완성 → 같은 베이스 분기 제품에 일괄 복사. "
+        "**선택 → 체크리스트 → 누락 항목만 입력** 흐름."
+    )
+
+    if not DB_AVAILABLE:
+        st.error("DB 연결이 활성화되지 않았습니다."); st.stop()
+
+    import db as _db
+    import pandas as pd
+
+    # ── 상단: 필터 + 진행률 ──
+    fc1, fc2, fc3 = st.columns([1, 1, 3])
+    with fc1:
+        top_n = st.number_input("상위 N", 5, 50, 10, 5, key="top_n_value")
+    with fc2:
+        only_incomp = st.checkbox("미완료만", value=True, key="top_only_incomp")
+    with fc3:
+        st.caption(
+            "🟢 BOM_FULL · 🟡 BOM_PARTIAL · 🟠 LEGACY_ONLY · 🔴 NO_DATA"
+        )
+
+    try:
+        top_rows = fetch("product_cost_full_v",
+            "product_id,pn,customer,product_group,raw_material_name,material,"
+            "raw_material_spec,total_sales_12m,sales_count_12m,abc_grade,"
+            "cost_source,bom_row_count,material_rows,process_rows,"
+            "sale_price,final_cost_per_pc,margin_pct,material_unit_price,"
+            "legacy_estimated_cost",
+            "archived_at=is.null&total_sales_12m=gt.0"
+            "&order=total_sales_12m.desc.nullslast",
+            limit=int(top_n * 3))
+    except Exception as e:
+        st.error(f"조회 실패: {e}"); top_rows = []
+
+    if only_incomp:
+        top_rows = [p for p in top_rows if p.get('cost_source') != 'BOM_FULL']
+    top_rows = top_rows[:int(top_n)]
+
+    # 진행률 메트릭
+    cnt_full = sum(1 for p in top_rows if p.get('cost_source') == 'BOM_FULL')
+    cnt_partial = sum(1 for p in top_rows if p.get('cost_source') == 'BOM_PARTIAL')
+    cnt_legacy = sum(1 for p in top_rows if p.get('cost_source') == 'LEGACY_ONLY')
+    cnt_none = sum(1 for p in top_rows if p.get('cost_source') == 'NO_DATA')
+
+    pm1, pm2, pm3, pm4, pm5 = st.columns(5)
+    pm1.metric("표시 TOP", len(top_rows))
+    pm2.metric("🟢 완료", cnt_full)
+    pm3.metric("🟡 부분", cnt_partial)
+    pm4.metric("🟠 정적", cnt_legacy)
+    pm5.metric("🔴 없음", cnt_none)
+
+    st.divider()
+
+    if not top_rows:
+        st.info("표시할 TOP 품목이 없습니다. 필터 해제 또는 N 조정.")
+        st.stop()
+
+    # ── TOP 표 ──
+    badge_map = {'BOM_FULL':'🟢','BOM_PARTIAL':'🟡',
+                 'LEGACY_ONLY':'🟠','NO_DATA':'🔴'}
+    tdf = pd.DataFrame(top_rows)
+    tdf['신뢰도'] = tdf['cost_source'].apply(lambda v: badge_map.get(v, '?'))
+    tdf['12M매출'] = tdf['total_sales_12m'].apply(
+        lambda v: f"{int(v):,}" if pd.notna(v) and v else "-")
+    tdf['판매가'] = tdf['sale_price'].apply(
+        lambda v: f"{int(v):,}" if pd.notna(v) and v else "-")
+    tdf['추정원가'] = tdf['final_cost_per_pc'].apply(
+        lambda v: f"{int(v):,}" if pd.notna(v) and v else "-")
+    tdf['마진율'] = tdf['margin_pct'].apply(
+        lambda v: f"{float(v):.1f}%" if pd.notna(v) else "-")
+
+    show_cols = ['신뢰도','pn','customer','12M매출','판매가','추정원가',
+                 '마진율','bom_row_count','cost_source']
+    st.dataframe(tdf[show_cols].rename(columns={
+        'pn':'품번','customer':'고객사','bom_row_count':'BOM행','cost_source':'상세'
+    }), use_container_width=True, hide_index=True, height=280)
+
+    st.divider()
+
+    # ── 작업 대상 선택 ──
+    st.markdown("### 정비 대상 선택")
+    labels = [
+        f"{badge_map.get(p.get('cost_source'),'?')} {p['pn']} | "
+        f"{p.get('customer','-')} | 매출 {int(p.get('total_sales_12m') or 0):,}원"
+        for p in top_rows
+    ]
+    sel_idx = st.selectbox("품목 선택 (위 표에서 매출 큰 순)",
+        range(len(labels)), format_func=lambda i: labels[i], key="top_pick_idx")
+    sel = top_rows[sel_idx]
+    sel_pid = sel['product_id']
+    sel_pn = sel['pn']
+
+    st.divider()
+    st.markdown(f"## 🔧 {sel_pn}  ·  {sel.get('customer','-')}")
+
+    # 현재 상태 카드
+    s1, s2, s3, s4 = st.columns(4)
+    s1.metric("매출 (12M)", f"{int(sel.get('total_sales_12m') or 0):,}원")
+    s2.metric("판매가", f"{int(sel.get('sale_price') or 0):,}원")
+    s3.metric("추정원가", f"{int(sel.get('final_cost_per_pc') or 0):,}원")
+    s4.metric("마진율", f"{float(sel.get('margin_pct') or 0):.1f}%",
+               delta=badge_map.get(sel.get('cost_source'),''))
+
+    # 현재 BOM 조회
+    try:
+        cur_bom = fetch("bom",
+            "bom_id,process_type,material_id,raw_material_name,"
+            "qty_per_pc,shared_factor,unit_price,verification_status",
+            f"product_id=eq.{sel_pid}&order=bom_id.asc", limit=50)
+    except Exception:
+        cur_bom = []
+
+    material_rows_list = [b for b in cur_bom
+                          if (b.get('process_type') or 'MATERIAL') == 'MATERIAL']
+    process_rows_list = [b for b in cur_bom
+                         if (b.get('process_type') or 'MATERIAL') != 'MATERIAL']
+
+    # ── 체크리스트 ──
+    st.markdown("##### ✅ 정비 체크리스트")
+
+    checks = []
+
+    # 1. 자재명
+    has_mat_name = bool(sel.get('raw_material_name') or sel.get('material'))
+    checks.append(('mat_name', '자재명/재질 식별',
+        sel.get('raw_material_name') or sel.get('material') or '(없음)',
+        has_mat_name, False))
+
+    # 2. BOM 자재행
+    has_mat_bom = len(material_rows_list) > 0
+    checks.append(('mat_bom', 'BOM 자재행 등록',
+        f'{len(material_rows_list)} 행', has_mat_bom, False))
+
+    # 3. material_id 채움
+    missing_mid_rows = [r for r in material_rows_list if not r.get('material_id')]
+    mid_ok = has_mat_bom and not missing_mid_rows
+    checks.append(('mat_id', 'material_id 모두 채움',
+        f'{len(missing_mid_rows)} 행 누락' if missing_mid_rows else ('OK' if has_mat_bom else '-'),
+        mid_ok, False))
+
+    # 4. qty / sf
+    missing_qty_rows = [r for r in material_rows_list
+                       if not (r.get('qty_per_pc') or 0)]
+    missing_sf_rows = [r for r in material_rows_list
+                      if not (r.get('shared_factor') or 0)]
+    qty_ok = has_mat_bom and not missing_qty_rows and not missing_sf_rows
+    qty_detail = ('OK' if has_mat_bom else '-') if qty_ok else (
+        f'{len(missing_qty_rows)} qty 누락, {len(missing_sf_rows)} sf 누락'
+    )
+    checks.append(('qty_sf', 'qty_per_pc / shared_factor 채움',
+        qty_detail, qty_ok, False))
+
+    # 5. verification
+    unverified_rows = [r for r in cur_bom
+                       if r.get('verification_status') != '확인완료']
+    verify_ok = (len(cur_bom) > 0) and not unverified_rows
+    checks.append(('verify', 'verification = 확인완료',
+        f'{len(unverified_rows)} 행 미확인' if unverified_rows else ('OK' if cur_bom else '-'),
+        verify_ok, False))
+
+    # 6. 자재 단가
+    up_value = sel.get('material_unit_price') or 0
+    has_up = up_value and float(up_value) > 0
+    checks.append(('unit_price', '자재 단가 (products.material_unit_price)',
+        f"{int(up_value):,}원" if has_up else '(없음)',
+        has_up, False))
+
+    # 7. 공정행 (선택)
+    has_process = len(process_rows_list) > 0
+    checks.append(('process', '공정행 (열처리/외주/표면 등)',
+        f'{len(process_rows_list)} 공정행' if has_process else '(없음 — 필요 없으면 OK)',
+        True, True))  # optional
+
+    # 체크 표시
+    for code, name, detail, ok, optional in checks:
+        icon = '✅' if ok else ('❔' if optional else '❌')
+        st.markdown(f"- {icon} **{name}** — {detail}")
+
+    # 전체 완료 여부
+    all_required_ok = all(c[3] for c in checks if not c[4])
+    if all_required_ok:
+        st.success(
+            "🟢 필수 항목 모두 완료. 아래에서 분기 제품에 BOM 일괄 복사 가능."
+        )
+
+    st.divider()
+
+    # ── 누락 항목 인라인 입력 ──
+    st.markdown("##### ⚡ 누락 항목 입력")
+    st.caption("앱이 빠진 정보를 요청합니다. 채우는 즉시 체크리스트 자동 갱신.")
+
+    # 1. 자재명 입력
+    if not has_mat_name:
+        with st.expander("❌ 1) 자재명/재질 입력 필요", expanded=True):
+            with st.form(f"form_matname_{sel_pid}"):
+                fc1, fc2 = st.columns(2)
+                with fc1:
+                    in_mat_name = st.text_input(
+                        "자재명/규격",
+                        placeholder="예: 환봉 STS304 ⌀45 × 400")
+                with fc2:
+                    in_mat = st.text_input(
+                        "재질",
+                        placeholder="예: STS304, SCM440, S630")
+                if st.form_submit_button("💾 저장", type="primary"):
+                    payload = {}
+                    if in_mat_name: payload['raw_material_name'] = in_mat_name
+                    if in_mat: payload['material'] = in_mat
+                    if payload:
+                        _db.update("products", f"product_id=eq.{sel_pid}", payload)
+                        st.success("✅ 자재명 저장"); st.rerun()
+
+    # 2. BOM 자재행 추가
+    if not has_mat_bom:
+        with st.expander("❌ 2) BOM 자재행 추가 필요", expanded=True):
+            st.caption("이 제품에 사용되는 자재 1개 선택 + 수량 정보 입력.")
+            ar_search = st.text_input(
+                "자재 검색 (자재명/재질/규격)",
+                placeholder="예: 환봉 STS304",
+                key=f"add_mat_q_{sel_pid}")
+            if ar_search:
+                qq = ar_search.strip()
+                try:
+                    mfound = fetch("materials",
+                        "material_id,raw_name,material_type,spec",
+                        f"or=(raw_name.ilike.*{qq}*,"
+                        f"material_type.ilike.*{qq}*,spec.ilike.*{qq}*)"
+                        f"&order=raw_name.asc", limit=20)
+                except Exception:
+                    mfound = []
+                if mfound:
+                    mlabs = [
+                        f"{m['material_id']} | {m['raw_name']} "
+                        f"({m.get('material_type','-')}, {m.get('spec','-')})"
+                        for m in mfound
+                    ]
+                    mpick = st.selectbox("자재 선택", mlabs,
+                                          key=f"add_mat_pick_{sel_pid}")
+                    if mpick:
+                        msel = mfound[mlabs.index(mpick)]
+                        ic1, ic2, ic3 = st.columns(3)
+                        with ic1:
+                            qpc_in = st.number_input("qty/PC (EA)",
+                                min_value=0.0, value=1.0, step=0.1,
+                                key=f"add_qpc_{sel_pid}")
+                        with ic2:
+                            sf_in = st.number_input("분할 N (환봉 1개 → N제품)",
+                                min_value=1, value=1, step=1,
+                                key=f"add_sf_{sel_pid}",
+                                help="MRG6-07 처럼 환봉 1개→57제품이면 57")
+                        with ic3:
+                            st.write(""); st.write("")
+                            if st.button("➕ BOM 자재행 추가",
+                                          type="primary",
+                                          key=f"add_matbom_btn_{sel_pid}"):
+                                _db.insert("bom", [{
+                                    "product_id": sel_pid,
+                                    "material_id": msel['material_id'],
+                                    "raw_material_name": msel['raw_name'],
+                                    "qty_per_pc": qpc_in,
+                                    "shared_factor": sf_in,
+                                    "process_type": "MATERIAL",
+                                    "source": "MANUAL",
+                                    "verification_status": "확인완료",
+                                }])
+                                st.success(
+                                    f"✅ 자재행 추가: {msel['raw_name']}")
+                                st.rerun()
+                else:
+                    st.caption("일치하는 자재 없음. 마스터 관리 → 📦 자재 편집 "
+                               "에서 신규 등록 후 돌아오기.")
+
+    # 3. material_id 누락 (BOM 행이 있는데 매핑이 없는 경우)
+    if missing_mid_rows:
+        with st.expander(f"❌ 3) material_id 누락 {len(missing_mid_rows)}건",
+                          expanded=True):
+            for r in missing_mid_rows:
+                st.write(f"BOM {r['bom_id']}: {r.get('raw_material_name','-')}")
+            st.caption("자재 검색해서 매핑하거나, ⚙️ 마스터 관리 → BOM 편집 "
+                       "에서 직접 material_id 입력.")
+
+    # 4. qty/sf 누락
+    if (missing_qty_rows or missing_sf_rows) and has_mat_bom:
+        with st.expander("❌ 4) qty/PC 또는 shared_factor 누락 — "
+                         "마스터 관리 → BOM 편집 에서 보완",
+                         expanded=False):
+            for r in (missing_qty_rows + missing_sf_rows):
+                st.caption(f"BOM {r['bom_id']}: {r.get('raw_material_name','-')} "
+                           f"(qty={r.get('qty_per_pc')}, sf={r.get('shared_factor')})")
+
+    # 5. verification 일괄 확인
+    if unverified_rows:
+        with st.expander(f"❌ 5) verification 미확인 {len(unverified_rows)}건",
+                          expanded=True):
+            st.caption("BOM 행 검증 완료 표시. 한 번 클릭 = 일괄 처리.")
+            if st.button(f"✅ {len(unverified_rows)}건 일괄 '확인완료'",
+                          type="primary",
+                          key=f"verify_all_{sel_pid}"):
+                done = 0
+                for r in unverified_rows:
+                    try:
+                        if _db.update("bom", f"bom_id=eq.{r['bom_id']}",
+                                       {"verification_status": "확인완료"}):
+                            done += 1
+                    except Exception:
+                        pass
+                st.success(f"✅ {done}건 확인완료 처리")
+                st.rerun()
+
+    # 6. 자재 단가 입력
+    if not has_up:
+        with st.expander("❌ 6) 자재 단가 입력 (products.material_unit_price)",
+                          expanded=True):
+            st.caption(
+                "BOM 자동 원가 계산의 fallback 단가. 매입 매핑 시 자동 갱신되나 "
+                "현재는 직접 입력 권장."
+            )
+            with st.form(f"form_up_{sel_pid}"):
+                in_up = st.number_input("자재 개당 단가 (원/EA)",
+                    min_value=0.0, value=0.0, step=10.0)
+                in_kg = st.number_input("자재 KG 단가 (참고, 선택)",
+                    min_value=0.0, value=0.0, step=100.0)
+                if st.form_submit_button("💾 저장", type="primary"):
+                    if in_up > 0:
+                        payload = {"material_unit_price": in_up}
+                        if in_kg > 0:
+                            payload["material_kg_price"] = in_kg
+                        _db.update("products",
+                                    f"product_id=eq.{sel_pid}", payload)
+                        st.success(f"✅ 단가 {in_up:,}원 저장")
+                        st.rerun()
+                    else:
+                        st.error("단가는 0보다 커야 합니다.")
+
+    # 7. 공정행 추가 (선택)
+    if not has_process:
+        with st.expander("❔ 7) 공정행 추가 (열처리/외주/표면이 있는 경우만)",
+                          expanded=False):
+            st.caption("MRG6-07 사례: HEAT LOT 200,000/5,000EA = 40원/EA. "
+                       "필요 없으면 이 단계 건너뛰기 가능.")
+            with st.form(f"form_proc_{sel_pid}"):
+                pc1, pc2, pc3, pc4 = st.columns(4)
+                with pc1:
+                    p_type = st.selectbox("공정",
+                        ["HEAT","SURFACE","OUTSOURCE","PACKING","LABOR","OTHER"])
+                with pc2:
+                    p_price = st.number_input("LOT 단가",
+                        min_value=0.0, value=0.0, step=1000.0)
+                with pc3:
+                    p_qty = st.number_input("qty/PC",
+                        min_value=0.0, value=1.0, step=0.1)
+                with pc4:
+                    p_lot = st.number_input("LOT 처리수량",
+                        min_value=1, value=1, step=1)
+                p_name = st.text_input("공정 설명",
+                    placeholder="예: 소재열처리, 무전해Ni도금")
+                if p_price > 0 and p_lot > 0:
+                    est = p_price * p_qty / p_lot
+                    st.info(f"💡 per_pc = **{est:,.2f}원/EA**")
+                if st.form_submit_button("➕ 공정행 추가",
+                                          type="primary"):
+                    if p_price > 0:
+                        _db.insert("bom", [{
+                            "product_id": sel_pid,
+                            "process_type": p_type,
+                            "raw_material_name": p_name or p_type,
+                            "unit_price": p_price,
+                            "qty_per_pc": p_qty,
+                            "shared_factor": p_lot,
+                            "source": "MANUAL",
+                            "verification_status": "확인완료",
+                        }])
+                        st.success(f"✅ {p_type} 공정행 추가")
+                        st.rerun()
+                    else:
+                        st.error("LOT 단가는 0보다 커야 합니다.")
+
+    # ── 분기 일괄 전개 ──
+    if cur_bom and all_required_ok:
+        st.divider()
+        st.markdown("##### 🚀 분기 제품에 BOM 일괄 복사")
+        st.caption(
+            f"**{sel_pn}** BOM 정비가 완료되었습니다. 같은 베이스/제품군의 "
+            "분기 제품에 같은 BOM 구조를 복사할 수 있습니다."
+        )
+
+        # 분기 후보: 같은 product_group 또는 같은 pn prefix
+        base_prefix = sel_pn.split('-')[0] if '-' in sel_pn else sel_pn[:4]
+        try:
+            sibs = fetch("product_cost_full_v",
+                "product_id,pn,customer,total_sales_12m,bom_row_count,cost_source",
+                f"or=(pn.ilike.{base_prefix}*,product_group.eq.{sel.get('product_group') or 'NULL_NEVER'})"
+                f"&archived_at=is.null&product_id=neq.{sel_pid}"
+                f"&order=total_sales_12m.desc.nullslast",
+                limit=50)
+        except Exception:
+            sibs = []
+
+        sibs_no_bom = [s for s in sibs if (s.get('bom_row_count') or 0) == 0]
+        sibs_with_bom = [s for s in sibs if (s.get('bom_row_count') or 0) > 0]
+
+        sc1, sc2 = st.columns(2)
+        sc1.metric("분기 후보 (BOM 없음)", len(sibs_no_bom))
+        sc2.metric("분기 후보 (BOM 있음, 덮어쓰기)", len(sibs_with_bom))
+
+        if not sibs:
+            st.caption(f"같은 베이스 '{base_prefix}*' 또는 제품군의 분기 제품 없음.")
+        else:
+            tab_no, tab_with = st.tabs(["📋 BOM 없는 분기 (권장)",
+                                          "⚠️ BOM 있는 분기 (덮어쓰기)"])
+            with tab_no:
+                if sibs_no_bom:
+                    cp_labels = [
+                        f"{s['pn']} | {s.get('customer','-')} | "
+                        f"매출 {int(s.get('total_sales_12m') or 0):,}원"
+                        for s in sibs_no_bom
+                    ]
+                    cp_sel = st.multiselect(
+                        f"복사할 분기 ({len(sibs_no_bom)}개 중)",
+                        cp_labels, key=f"prop_no_sel_{sel_pid}")
+                    if cp_sel and st.button(
+                        f"📋 {len(cp_sel)}개에 복사",
+                        type="primary",
+                        key=f"prop_no_btn_{sel_pid}"
+                    ):
+                        targets = [sibs_no_bom[cp_labels.index(l)]['product_id']
+                                   for l in cp_sel]
+                        ok = 0
+                        for tpid in targets:
+                            records = [
+                                {
+                                    "product_id": tpid,
+                                    "material_id": b.get('material_id'),
+                                    "raw_material_name": b.get('raw_material_name'),
+                                    "process_type": b.get('process_type') or "MATERIAL",
+                                    "qty_per_pc": b.get('qty_per_pc'),
+                                    "shared_factor": b.get('shared_factor'),
+                                    "unit_price": b.get('unit_price'),
+                                    "source": f"COPY_FROM:{sel_pn}",
+                                    "verification_status": "확인완료",
+                                }
+                                for b in cur_bom
+                            ]
+                            try:
+                                _db.insert("bom", records); ok += 1
+                            except Exception:
+                                pass
+                        st.success(f"✅ {ok}개 분기에 BOM 복사 완료")
+                        st.rerun()
+                else:
+                    st.info("BOM 미보유 분기 없음 (이미 모두 정비됨).")
+
+            with tab_with:
+                st.warning(
+                    "⚠️ 기존 BOM 행을 삭제하고 새로 복사합니다. "
+                    "기존 정비된 BOM 손실 가능. 신중히."
+                )
+                if sibs_with_bom:
+                    ow_labels = [
+                        f"{s['pn']} | BOM {s.get('bom_row_count')}행 | "
+                        f"매출 {int(s.get('total_sales_12m') or 0):,}원"
+                        for s in sibs_with_bom
+                    ]
+                    ow_sel = st.multiselect(
+                        "덮어쓰기 대상",
+                        ow_labels, key=f"prop_ow_sel_{sel_pid}")
+                    ow_confirm = st.checkbox("⚠️ 정말 덮어쓰기",
+                        value=False, key=f"prop_ow_confirm_{sel_pid}")
+                    if ow_sel and ow_confirm and st.button(
+                        f"🔥 {len(ow_sel)}개 BOM 덮어쓰기",
+                        type="primary",
+                        key=f"prop_ow_btn_{sel_pid}"
+                    ):
+                        import requests as _r
+                        sr = st.secrets["supabase"]["service_role_key"]
+                        ok = 0
+                        for l in ow_sel:
+                            tpid = sibs_with_bom[ow_labels.index(l)]['product_id']
+                            # 1) 기존 BOM 삭제
+                            try:
+                                _r.delete(
+                                    f"{st.secrets['supabase']['url']}/rest/v1/bom?"
+                                    f"product_id=eq.{tpid}",
+                                    headers={"apikey": sr,
+                                             "Authorization": f"Bearer {sr}"},
+                                    timeout=15)
+                            except Exception:
+                                continue
+                            # 2) 새 BOM 복사
+                            records = [
+                                {
+                                    "product_id": tpid,
+                                    "material_id": b.get('material_id'),
+                                    "raw_material_name": b.get('raw_material_name'),
+                                    "process_type": b.get('process_type') or "MATERIAL",
+                                    "qty_per_pc": b.get('qty_per_pc'),
+                                    "shared_factor": b.get('shared_factor'),
+                                    "unit_price": b.get('unit_price'),
+                                    "source": f"COPY_FROM:{sel_pn}",
+                                    "verification_status": "확인완료",
+                                }
+                                for b in cur_bom
+                            ]
+                            try:
+                                _db.insert("bom", records); ok += 1
+                            except Exception:
+                                pass
+                        st.success(f"✅ {ok}개 분기 덮어쓰기 완료")
+                        st.rerun()
+
+
 elif page == "🔌 구매↔자재 매칭":
     st.subheader("🔌 자재/구매 매칭")
     st.caption(
