@@ -3603,17 +3603,46 @@ elif page == "🎯 TOP 우선 정비":
         "**🧹 데이터 정리** 또는 **마스터 관리 → 🚫 데이터 제외 규칙** 에서."
     )
 
-    # ── 선택 제품 상세 (procurement_type 포함) ──
+    # ── 선택 제품 상세 (procurement_type + v11 매입 매핑 메타데이터 포함) ──
     try:
         sel_detail = _db.fetch_one("products",
             f"product_id=eq.{sel_pid}",
             "procurement_type,procurement_start_date,procurement_prev_type,"
             "material,raw_material_name,raw_material_spec,material_unit_price,"
             "material_kg_price,heat_treat_per_pc,surface_per_pc,outsourcing_per_pc,"
-            "estimated_cost_per_pc")
+            "estimated_cost_per_pc,"
+            "material_purchase_count,material_main_supplier,"
+            "material_last_purchase_date,material_data_quality,bom_material_name")
     except Exception:
         sel_detail = None
     sel_detail = sel_detail or {}
+
+    # v11 에서 가져온 매입 매핑 이력 (있으면 명시적 표시)
+    v11_mapped = bool(sel_detail.get('material_purchase_count') and
+                       int(sel_detail.get('material_purchase_count') or 0) > 0)
+    if v11_mapped:
+        with st.expander(
+            f"📜 v11 매입 매핑 이력 (Stage 1 import) — "
+            f"매입 {sel_detail.get('material_purchase_count')}건 · "
+            f"공급사 {sel_detail.get('material_main_supplier') or '-'} · "
+            f"최근 {sel_detail.get('material_last_purchase_date') or '-'}",
+            expanded=False):
+            vm1, vm2, vm3, vm4 = st.columns(4)
+            vm1.metric("매입 건수",
+                f"{int(sel_detail.get('material_purchase_count') or 0)}건")
+            vm2.metric("주 공급사",
+                sel_detail.get('material_main_supplier') or '-')
+            vm3.metric("최근 매입일",
+                sel_detail.get('material_last_purchase_date') or '-')
+            vm4.metric("데이터 품질",
+                sel_detail.get('material_data_quality') or '-')
+            kg = sel_detail.get('material_kg_price') or 0
+            up = sel_detail.get('material_unit_price') or 0
+            st.caption(
+                f"💡 매입 평균 단가 (Stage 1 시점): KG **{int(kg):,}원** · "
+                f"EA **{int(up):,}원**. 이 값이 products.material_unit_price 의 "
+                f"근거이며 BOM 원가의 legacy fallback 출처."
+            )
 
     procurement_type = (sel_detail.get('procurement_type') or '').strip()
     is_도급 = procurement_type == '도급'
