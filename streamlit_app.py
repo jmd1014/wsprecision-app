@@ -888,24 +888,96 @@ elif page == "⚙️ 마스터 관리":
                 hide_index=True, use_container_width=True,
                 num_rows="fixed", key="bom_editor",
             )
-            if st.button("💾 BOM 변경 저장", type="primary"):
-                chg = 0
-                # BOM 편집 = 수량 관계만. 단가(unit_price)는 원가 분석에서 관리.
-                editable_keys = ("qty_per_pc","shared_factor","verification_status",
-                                 "process_type","lot_label","raw_material_name")
-                for orig, new in zip(brows, bedited.to_dict("records")):
-                    upd = {}
-                    for k in editable_keys:
-                        if k in new and orig.get(k) != new.get(k):
-                            v = new.get(k)
-                            if v == "":
+            sc1, sc2 = st.columns([1, 4])
+            with sc1:
+                save_clicked = st.button("💾 BOM 변경 저장", type="primary")
+            with sc2:
+                show_debug = st.checkbox("🔍 변경 내역 확인",
+                    value=False, key="bom_save_debug",
+                    help="저장 전에 변경 내역을 미리 확인합니다.")
+
+            # Streamlit data_editor 의 edited_rows API 로 정확한 변경 감지
+            # (PostgREST 의 NUMERIC 문자열 ↔ data_editor float 비교 회피)
+            editor_state = st.session_state.get("bom_editor", {})
+            edited_rows = editor_state.get("edited_rows", {}) if isinstance(editor_state, dict) else {}
+
+            # 편집 가능 컬럼 (자재행 unit_price 는 무시)
+            editable_keys = {"qty_per_pc", "shared_factor", "verification_status",
+                             "process_type", "lot_label", "raw_material_name",
+                             "unit_price"}
+
+            if show_debug and edited_rows:
+                st.caption(f"🔍 감지된 변경: {len(edited_rows)} 행")
+                for row_idx, changes in edited_rows.items():
+                    try:
+                        orig_row = brows[int(row_idx)]
+                        bom_id = orig_row.get("bom_id")
+                        pn = orig_row.get("_pn") or "?"
+                        st.caption(f"  • BOM #{bom_id} ({pn}): {changes}")
+                    except Exception:
+                        st.caption(f"  • row_idx={row_idx}: {changes}")
+
+            if save_clicked:
+                if not edited_rows:
+                    st.info("변경된 셀이 없습니다. data_editor 셀 수정 후 다른 곳 클릭 → 저장 버튼.")
+                else:
+                    chg = 0
+                    fail = 0
+                    ignored_mat_unit_price = 0
+                    for row_idx, changes in edited_rows.items():
+                        try:
+                            orig_row = brows[int(row_idx)]
+                        except Exception:
+                            fail += 1; continue
+                        bom_id = orig_row.get("bom_id")
+                        if not bom_id:
+                            fail += 1; continue
+
+                        # MATERIAL 행 unit_price 무시
+                        is_material = (
+                            changes.get("process_type")
+                            or orig_row.get("process_type")
+                            or "MATERIAL"
+                        ) == "MATERIAL"
+
+                        upd = {}
+                        for k, v in changes.items():
+                            if k not in editable_keys:
+                                continue
+                            if k == "unit_price" and is_material:
+                                ignored_mat_unit_price += 1
+                                continue
+                            if isinstance(v, str) and v.strip() == "":
                                 v = None
                             upd[k] = v
-                    if upd:
-                        if _db.update("bom", f"bom_id=eq.{orig['bom_id']}", upd):
-                            chg += 1
-                if chg: st.success(f"✅ {chg}건 update"); st.rerun()
-                else: st.info("변경 사항 없음")
+
+                        if not upd:
+                            continue
+
+                        try:
+                            if _db.update("bom",
+                                f"bom_id=eq.{bom_id}", upd):
+                                chg += 1
+                            else:
+                                fail += 1
+                                st.warning(f"BOM #{bom_id} 저장 실패: {upd}")
+                        except Exception as e:
+                            fail += 1
+                            st.warning(f"BOM #{bom_id} 저장 오류: {e}")
+
+                    if chg:
+                        msg = f"✅ {chg}건 저장 완료"
+                        if fail:
+                            msg += f" / 실패 {fail}건"
+                        if ignored_mat_unit_price:
+                            msg += f" / 자재행 단가 무시 {ignored_mat_unit_price}건"
+                        st.success(msg)
+                        st.rerun()
+                    elif fail:
+                        st.error(f"❌ 모든 변경 저장 실패 ({fail}건). "
+                                 "로그 확인 필요.")
+                    else:
+                        st.info("변경 사항 없음 (편집 가능 컬럼 외 수정만 시도됨)")
 
             st.divider()
             st.markdown("##### ➕ 신규 BOM 자재행 추가")
