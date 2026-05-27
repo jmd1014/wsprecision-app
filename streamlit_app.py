@@ -3893,6 +3893,66 @@ elif page == "🎯 TOP 우선 정비":
                 st.success(f"✅ {done}건 확인완료 처리")
                 st.rerun()
 
+    # 6a. 자재 가격 출처 상태 — BOM 자재행별
+    if material_rows_list:
+        try:
+            price_status = fetch("product_material_price_status_v",
+                "bom_id,material_id,bom_material_name,master_raw_name,"
+                "qty_per_pc,shared_factor,purchase_price_3m,purchase_price_12m,"
+                "purchase_count_12m,last_purchase_date,legacy_price,"
+                "price_source,effective_price,has_purchase_history",
+                f"product_id=eq.{sel_pid}", limit=20)
+        except Exception:
+            price_status = []
+
+        if price_status:
+            with st.expander(
+                "🧪 6a) BOM 자재행별 가격 출처 (매입 매핑 vs legacy vs 없음)",
+                expanded=True):
+                src_badge = {
+                    'PURCHASE_3M':'🟢 매입3M',
+                    'PURCHASE_12M':'🟢 매입12M',
+                    'LEGACY':'🟠 legacy',
+                    'NA_SAGEUP':'🟡 사급 N/A',
+                    'NONE':'🔴 없음',
+                }
+                psdf = pd.DataFrame(price_status)
+                psdf['출처'] = psdf['price_source'].apply(lambda v: src_badge.get(v, v))
+                psdf['유효가격'] = psdf['effective_price'].apply(
+                    lambda v: f"{float(v):,.0f}원" if pd.notna(v) and v else "-")
+                psdf['매입(3M)'] = psdf['purchase_price_3m'].apply(
+                    lambda v: f"{float(v):,.0f}" if pd.notna(v) and v else "-")
+                psdf['매입(12M)'] = psdf['purchase_price_12m'].apply(
+                    lambda v: f"{float(v):,.0f}" if pd.notna(v) and v else "-")
+                psdf['legacy'] = psdf['legacy_price'].apply(
+                    lambda v: f"{float(v):,.0f}" if pd.notna(v) and v else "-")
+                psdf['매입 거래'] = psdf['purchase_count_12m'].apply(
+                    lambda v: f"{int(v):,}건" if pd.notna(v) and v else "0건")
+                psdf['최근거래'] = psdf['last_purchase_date'].fillna('-')
+                psdf['자재명'] = psdf['master_raw_name'].fillna(
+                    psdf['bom_material_name']).fillna('-')
+
+                show_cols = ['bom_id','material_id','자재명','출처','유효가격',
+                             '매입(3M)','매입(12M)','legacy','매입 거래','최근거래']
+                st.dataframe(psdf[show_cols].rename(columns={
+                    'bom_id':'BOM','material_id':'자재ID'
+                }), use_container_width=True, hide_index=True, height=200)
+
+                # 출처 분포 메트릭
+                src_count = psdf['price_source'].value_counts().to_dict()
+                ms1, ms2, ms3, ms4 = st.columns(4)
+                ms1.metric("🟢 매입 매핑",
+                    src_count.get('PURCHASE_3M', 0) + src_count.get('PURCHASE_12M', 0))
+                ms2.metric("🟠 legacy", src_count.get('LEGACY', 0))
+                ms3.metric("🟡 사급 N/A", src_count.get('NA_SAGEUP', 0))
+                ms4.metric("🔴 없음", src_count.get('NONE', 0))
+
+                st.caption(
+                    "💡 우선순위: 매입(3M) → 매입(12M) → legacy → 0. "
+                    "🔴 없음은 자재 단가 입력 필요. "
+                    "🟠 legacy 는 매입 데이터 누적되면 자동 우선 교체."
+                )
+
     # 6. 자재 단가 입력 — 사급은 표시 X, 도급/미설정은 항상 정정 가능 expander
     if is_사급:
         st.info(
@@ -4434,6 +4494,62 @@ elif page == "🩺 보조 점검":
                            f"{int(prog.get('unique_unresolved_items') or 0):,}")
         except Exception as e:
             st.caption(f"진행률 조회 실패: {e}")
+
+        st.divider()
+        st.markdown("### 🧪 자재 가격 출처 분포 (활성 BOM 자재행 기준)")
+        st.caption(
+            "BOM 자재 연결은 잘 되어 있어도 가격이 어디서 오는지 별개 점검 필요. "
+            "매입 매핑 0% 라도 legacy 스냅샷이 fallback. 진짜 갭은 🔴 NONE."
+        )
+        try:
+            cov = _db.fetch_one("material_price_coverage_v", "", "*")
+        except Exception as e:
+            cov = None
+            st.caption(f"가격 출처 조회 실패 (Migration 014 필요): {e}")
+
+        if cov:
+            total = int(cov.get('total_active_bom_material_rows') or 0)
+            from_purchase = int(cov.get('price_purchase_3m') or 0) + int(cov.get('price_purchase_12m') or 0)
+            from_legacy = int(cov.get('price_legacy') or 0)
+            na_sageup = int(cov.get('price_na_sageup') or 0)
+            none_cnt = int(cov.get('price_none') or 0)
+
+            pp1, pp2, pp3, pp4, pp5 = st.columns(5)
+            pp1.metric("총 자재행", f"{total:,}")
+            pp2.metric("🟢 매입 매핑", f"{from_purchase:,}",
+                       f"{cov.get('pct_from_purchase') or 0}%")
+            pp3.metric("🟠 legacy", f"{from_legacy:,}",
+                       f"{cov.get('pct_from_legacy') or 0}%")
+            pp4.metric("🟡 사급 N/A", f"{na_sageup:,}")
+            pp5.metric("🔴 없음", f"{none_cnt:,}",
+                       f"{cov.get('pct_none') or 0}% 정비 필요",
+                       delta_color="inverse" if none_cnt > 0 else "off")
+
+            if none_cnt > 0:
+                with st.expander(
+                    f"🔴 가격 없는 자재행 {none_cnt}건 보기",
+                    expanded=False):
+                    try:
+                        none_rows = fetch("product_material_price_status_v",
+                            "product_id,pn,customer,material_id,master_raw_name,"
+                            "bom_material_name,procurement_type",
+                            "archived_at=is.null&price_source=eq.NONE"
+                            "&order=pn.asc", limit=200)
+                    except Exception:
+                        none_rows = []
+                    if none_rows:
+                        ndf = pd.DataFrame(none_rows)
+                        ndf['자재명'] = ndf['master_raw_name'].fillna(
+                            ndf['bom_material_name']).fillna('-')
+                        st.dataframe(ndf[['pn','customer','procurement_type',
+                                          'material_id','자재명']].rename(columns={
+                            'pn':'품번','customer':'고객사',
+                            'procurement_type':'조달','material_id':'자재ID'
+                        }), use_container_width=True, hide_index=True, height=240)
+                        st.caption(
+                            "→ 🎯 TOP 우선 정비 에서 해당 제품 선택 후 "
+                            "자재 단가 입력 또는 사급 처리."
+                        )
 
         st.divider()
         st.markdown("### 단계 종료 기준 점검 (마스터 안정화)")
