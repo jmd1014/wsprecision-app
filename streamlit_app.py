@@ -37,40 +37,29 @@ st.divider()
 # ─── 사이드바 ───
 with st.sidebar:
     st.header("📋 메뉴")
-    # ─── 3그룹 구조: 메인 / 관리·정비 / 진단 ───
-    # 단일 radio + 그룹 caption 으로 시각 분리.
+    # ─── 메인 운영 6개 (정비/진단 메뉴는 정비 완료 후 비활성) ───
+    # 정비용 페이지 (TOP 정비 / BOM 정비 / 데이터 정리 / 구매↔자재 매칭 /
+    # 보조 점검) 의 코드는 보존되어 있어 향후 재활성 가능. 메뉴에서만 빠짐.
     MENU_MAIN = [
         "🏠 홈",
-        "🎯 TOP 우선 정비",
         "📥 수주 관리",
         "⚙️ 마스터 관리",
         "💰 원가 확인",
         "📋 구매/발주",
         "📊 생산 준비",
     ]
-    MENU_MAINT = [
-        "🔌 구매↔자재 매칭",
-        "🔗 BOM 정비",
-        "🧹 데이터 정리",
-    ]
-    MENU_DIAG = [
-        "🩺 보조 점검",
-    ]
-    ALL_MENU = MENU_MAIN + MENU_MAINT + MENU_DIAG
+    ALL_MENU = MENU_MAIN
 
-    # caption 으로 그룹 구분 (radio 자체는 단일)
-    st.markdown(
-        "**📋 메인 업무**  ·  홈 / 수주 / 마스터 / 원가 / 발주 / 생산\n\n"
-        "**🛠 관리·정비**  ·  매칭 / BOM 정비 / 데이터 정리\n\n"
-        "**🩺 진단**  ·  보조 점검"
-    )
+    st.markdown("**📋 메인 업무**")
+    st.caption("홈 / 수주 / 마스터 / 원가 / 발주 / 생산 준비")
     st.divider()
     page = st.radio(
         "이동",
         ALL_MENU,
         label_visibility="collapsed",
     )
-    st.caption("ℹ️ Stage 4 (입출고/생산보고/매출재고) 는 Master Stabilization 완료 후 활성")
+    st.caption("ℹ️ 정비/진단 메뉴는 마스터 안정화 완료로 비활성. "
+               "Stage 4 (입출고/생산보고/매출재고) 는 다음 단계.")
     st.divider()
     st.caption("🔧 시스템")
     if st.button("🔍 DB 상태 확인", use_container_width=True):
