@@ -1,9 +1,16 @@
 """
-pytest 공통 설정 — Streamlit 의존성 회피용 fake 모듈
-streamlit.secrets 접근 없이 단위 테스트가 돌도록 함.
+pytest 공통 설정.
+
+- streamlit 이 설치되어 있으면 그대로 사용 (AppTest 기능 테스트 가능)
+- 설치 안 된 환경 (CI 미니멀 등) 에서는 fake 모듈로 단위 테스트만 지원
 """
 import sys
 import types
+import importlib.util
+
+
+def _streamlit_available() -> bool:
+    return importlib.util.find_spec("streamlit") is not None
 
 
 def _install_fake_streamlit():
@@ -25,4 +32,5 @@ def _install_fake_streamlit():
     sys.modules["streamlit"] = fake
 
 
-_install_fake_streamlit()
+if not _streamlit_available():
+    _install_fake_streamlit()

@@ -2630,8 +2630,19 @@ elif page == "📊 생산 준비":
                             "qty": int(m["shortage"]) if m["unit"] == "EA" else round(m["shortage"], 2),
                             "unit_price": 0,
                         } for m in mats]
+                        # 수주 출처 추적 — 이 자재들이 어느 수주에서 필요해졌는지
+                        src_so_ids = set()
+                        for m in mats:
+                            src_so_ids.update(
+                                mat_req.get(m["material_id"], {}).get("by_so", {}).keys())
+                        src_so_numbers = sorted({
+                            so_map.get(sid, {}).get("so_number") or str(sid)
+                            for sid in src_so_ids
+                        })
+                        st.session_state["po_prefill_source_so"] = ", ".join(src_so_numbers[:10])
                         st.success(f"✅ '{supplier}'의 {len(mats)}개 품목이 발주서 작성에 임시 저장됨. "
-                                   f"좌측 '📋 발주서 작성' 메뉴로 이동해서 검토하세요.")
+                                   f"좌측 **📋 구매/발주** 메뉴로 이동해서 검토하세요. "
+                                   f"(출처 수주: {len(src_so_numbers)}건)")
 
 
 elif page == "📋 구매/발주":
@@ -2665,10 +2676,15 @@ elif page == "📋 구매/발주":
         if st.session_state.get("po_prefill_vendor_name") or st.session_state.get("po_prefill_items"):
             pv = st.session_state.get("po_prefill_vendor_name", "")
             pi = st.session_state.get("po_prefill_items", [])
-            st.info(f"🛒 **생산 계획에서 자동 제안 받은 발주 데이터**: 거래처 '{pv}', 품목 {len(pi)}개")
+            src_so = st.session_state.get("po_prefill_source_so", "")
+            st.info(
+                f"🛒 **생산 계획에서 자동 제안 받은 발주 데이터**: 거래처 '{pv}', 품목 {len(pi)}개"
+                + (f" · 출처 수주: {src_so}" if src_so else "")
+            )
             if st.button("🔄 자동 제안 + 품목표 모두 초기화"):
                 st.session_state.po_prefill_vendor_name = None
                 st.session_state.po_prefill_items = None
+                st.session_state.po_prefill_source_so = None
                 st.session_state.po_items = []
                 st.rerun()
             # 품목 prefill (현재 품목표가 비어있을 때만)
@@ -2772,7 +2788,18 @@ elif page == "📋 구매/발주":
 
         if vendors:
             vendor_options = {f"{v['name']} ({v.get('vendor_group') or '-'})": v for v in vendors}
-            sel = st.selectbox(f"거래처 선택 ({len(vendors)}개)", list(vendor_options.keys()))
+            option_keys = list(vendor_options.keys())
+            # 생산 준비 prefill 거래처 자동 선택 (이름 부분 매칭)
+            default_idx = 0
+            pv_name = (st.session_state.get("po_prefill_vendor_name") or "").strip()
+            if pv_name:
+                for i, k in enumerate(option_keys):
+                    vn = vendor_options[k]["name"]
+                    if pv_name in vn or vn in pv_name:
+                        default_idx = i
+                        break
+            sel = st.selectbox(f"거래처 선택 ({len(vendors)}개)",
+                               option_keys, index=default_idx)
             vendor = vendor_options[sel]
 
             with st.expander("선택한 거래처 정보"):
@@ -3009,7 +3036,9 @@ elif page == "📋 구매/발주":
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                         use_container_width=True)
                     try:
-                        _db.insert("purchase_orders", [{
+                        # 수주 출처 추적 (생산 준비 → 발주 흐름인 경우)
+                        _src_so = st.session_state.get("po_prefill_source_so") or None
+                        _po_record = {
                             "po_number": po_no, "vendor_id": vendor["vendor_id"],
                             "po_date": po_date.isoformat(),
                             "delivery_date": delivery_date or None,
@@ -3018,7 +3047,15 @@ elif page == "📋 구매/발주":
                             "delivery_address": delivery_address,
                             "contact_person": contact_person,
                             "status": "DRAFT", "created_by": "김민수",
-                        }])
+                        }
+                        if _src_so:
+                            _po_record["remark"] = f"출처 수주: {_src_so}"
+                        try:
+                            _db.insert("purchase_orders", [_po_record])
+                        except Exception:
+                            # remark 컬럼 미적용 (Migration 016 전) fallback
+                            _po_record.pop("remark", None)
+                            _db.insert("purchase_orders", [_po_record])
                         po_row = _db.fetch_one("purchase_orders", f"po_number=eq.{po_no}", "po_id")
                         if po_row:
                             _db.insert("purchase_order_items", [{
