@@ -1836,7 +1836,8 @@ elif page == "📥 수주 관리":
     import pandas as pd
     import re as _re
 
-    tab_input, tab_list = st.tabs(["📤 새 수주 입력", "📋 수주 목록"])
+    tab_input, tab_list, tab_deliver = st.tabs(
+        ["📤 새 수주 입력", "📋 수주 목록", "📦 납품 등록"])
 
     # ════════ TAB 1: 새 수주 입력 ════════
     with tab_input:
@@ -2379,6 +2380,170 @@ elif page == "📥 수주 관리":
                     st.success("✅ 모든 품목이 매칭되었습니다")
             else:
                 st.info("결과 없음")
+
+    # ════════ TAB 3: 납품 등록 ════════
+    with tab_deliver:
+        st.caption(
+            "수주 라인에 납품 수량을 기록합니다. received_qty 누적 + "
+            "상태 자동 전환 (PENDING → PARTIAL → DELIVERED). "
+            "재고 차감 연동은 Stage 4 (입출고) 에서 추가 예정."
+        )
+
+        # ── 1) 미납 수주 조회 ──
+        dc1, dc2 = st.columns([3, 1])
+        with dc1:
+            dq = st.text_input("수주번호 / 거래처 검색",
+                placeholder="예: 202605, G264, 미진",
+                key="deliver_search")
+        with dc2:
+            d_limit = st.number_input("표시", 5, 50, 10, 5, key="deliver_limit")
+
+        d_filter = ["status=not.in.(\"DELIVERED\",\"CANCELLED\")",
+                    "order=so_date.desc"]
+        if dq:
+            qq = dq.strip()
+            d_filter.append(f"or=(so_number.ilike.*{qq}*,customer.ilike.*{qq}*)")
+        try:
+            d_sos = fetch("sales_orders",
+                "so_id,so_number,customer,so_date,due_date,status",
+                "&".join(d_filter), limit=int(d_limit))
+        except Exception as e:
+            st.error(f"수주 조회 실패: {e}"); d_sos = []
+
+        if not d_sos:
+            st.info("미납 수주 없음 (또는 검색 결과 없음).")
+        else:
+            d_labels = [
+                f"{s['so_number']} | {s.get('customer','-')} | "
+                f"수주일 {s.get('so_date','-')} | {s.get('status','-')}"
+                for s in d_sos
+            ]
+            d_pick = st.selectbox("수주 선택", d_labels, key="deliver_so_pick")
+            d_so = d_sos[d_labels.index(d_pick)]
+
+            # ── 2) 수주 라인 조회 ──
+            try:
+                d_items = fetch("sales_order_items",
+                    "soi_id,line_no,customer_part_no,customer_item_name,"
+                    "canonical_pn,product_id,qty,received_qty,unit,status",
+                    f"so_id=eq.{d_so['so_id']}&order=line_no.asc", limit=100)
+            except Exception as e:
+                st.error(f"라인 조회 실패: {e}"); d_items = []
+
+            if not d_items:
+                st.info("수주 라인 없음.")
+            else:
+                st.markdown(f"##### 📋 {d_so['so_number']} 라인 "
+                            f"({len(d_items)}개)")
+
+                # 납품 입력 — 라인별 number_input + 일괄 처리 버튼
+                deliver_inputs = {}
+                for it in d_items:
+                    qty = float(it.get("qty") or 0)
+                    rcv = float(it.get("received_qty") or 0)
+                    pending = max(qty - rcv, 0)
+                    pn_label = (it.get("canonical_pn")
+                                or it.get("customer_part_no") or "-")
+                    lc = st.columns([3, 1, 1, 1, 2])
+                    with lc[0]:
+                        st.markdown(
+                            f"**L{it.get('line_no','-')}** {pn_label}  \n"
+                            f"<small>{(it.get('customer_item_name') or '')[:40]}</small>",
+                            unsafe_allow_html=True)
+                    with lc[1]:
+                        st.metric("수주", f"{qty:,.0f}",
+                                  label_visibility="collapsed",
+                                  help="수주 수량")
+                        st.caption(f"수주 {qty:,.0f}")
+                    with lc[2]:
+                        st.caption(f"기납품 {rcv:,.0f}")
+                        st.caption(f"미납 **{pending:,.0f}**")
+                    with lc[3]:
+                        if pending > 0:
+                            deliver_inputs[it["soi_id"]] = st.number_input(
+                                "납품", min_value=0.0, max_value=float(pending),
+                                value=0.0, step=1.0,
+                                key=f"dlv_{it['soi_id']}",
+                                label_visibility="collapsed",
+                                help="이번 납품 수량")
+                        else:
+                            st.success("✅ 완납")
+                    with lc[4]:
+                        if pending > 0:
+                            if st.button(f"전량 ({pending:,.0f})",
+                                          key=f"dlv_full_{it['soi_id']}",
+                                          help="미납 전량 납품 처리"):
+                                st.session_state[f"dlv_{it['soi_id']}"] = float(pending)
+                                st.rerun()
+
+                st.divider()
+                total_to_deliver = sum(v for v in deliver_inputs.values() if v > 0)
+                bc1, bc2 = st.columns([1, 3])
+                with bc1:
+                    do_deliver = st.button(
+                        f"📦 납품 처리 ({total_to_deliver:,.0f})",
+                        type="primary",
+                        disabled=total_to_deliver <= 0,
+                        key="deliver_submit")
+                with bc2:
+                    st.caption(
+                        "입력된 수량만큼 received_qty 누적. "
+                        "라인 상태 자동 전환 + 수주 헤더 상태 자동 갱신."
+                    )
+
+                if do_deliver and total_to_deliver > 0:
+                    ok_n, fail_n = 0, 0
+                    for soi_id, dlv_qty in deliver_inputs.items():
+                        if dlv_qty <= 0:
+                            continue
+                        it = next(x for x in d_items if x["soi_id"] == soi_id)
+                        qty = float(it.get("qty") or 0)
+                        new_rcv = float(it.get("received_qty") or 0) + dlv_qty
+                        new_pending = max(qty - new_rcv, 0)
+                        new_status = ("DELIVERED" if new_rcv >= qty
+                                      else "PARTIAL" if new_rcv > 0
+                                      else "PENDING")
+                        try:
+                            if _db.update("sales_order_items",
+                                f"soi_id=eq.{soi_id}",
+                                {"received_qty": new_rcv,
+                                 "pending_qty": new_pending,
+                                 "status": new_status}):
+                                ok_n += 1
+                            else:
+                                fail_n += 1
+                        except Exception as e:
+                            fail_n += 1
+                            st.warning(f"라인 {soi_id} 실패: {e}")
+
+                    # 수주 헤더 상태 자동 갱신
+                    if ok_n:
+                        try:
+                            fresh = fetch("sales_order_items",
+                                "qty,received_qty",
+                                f"so_id=eq.{d_so['so_id']}", limit=100)
+                            all_done = all(
+                                float(x.get("received_qty") or 0)
+                                >= float(x.get("qty") or 0)
+                                for x in fresh) if fresh else False
+                            any_rcv = any(
+                                float(x.get("received_qty") or 0) > 0
+                                for x in fresh) if fresh else False
+                            hdr_status = ("DELIVERED" if all_done
+                                          else "PARTIAL" if any_rcv
+                                          else d_so.get("status") or "CONFIRMED")
+                            _db.update("sales_orders",
+                                f"so_id=eq.{d_so['so_id']}",
+                                {"status": hdr_status})
+                        except Exception:
+                            pass
+                        st.success(
+                            f"✅ 납품 처리 완료: {ok_n}개 라인"
+                            + (f" / 실패 {fail_n}" if fail_n else "")
+                        )
+                        st.rerun()
+                    elif fail_n:
+                        st.error(f"납품 처리 실패 ({fail_n}건)")
 
 
 elif page == "📊 생산 준비":
