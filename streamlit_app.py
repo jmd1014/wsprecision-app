@@ -123,11 +123,12 @@ with st.sidebar:
         "💰 원가 확인",
         "📋 구매/발주",
         "📊 생산 준비",
+        "🏭 생산 보고",
     ]
     ALL_MENU = MENU_MAIN
 
     st.markdown("**📋 메인 업무**")
-    st.caption("홈 / 수주 / 마스터 / 원가 / 발주 / 생산 준비")
+    st.caption("홈 / 수주 / 마스터 / 원가 / 발주 / 생산 준비 / 생산 보고")
     st.divider()
     page = st.radio(
         "이동",
@@ -3695,6 +3696,262 @@ elif page == "📋 구매/발주":
                             st.rerun()
                         elif fail_n:
                             st.error(f"입고 처리 실패 ({fail_n}건)")
+
+
+# ════════════════════════════════════════════════════════════════
+# 🏭 생산 보고 — Phase B (production_log + BOM 자재 자동 차감)
+# ════════════════════════════════════════════════════════════════
+elif page == "🏭 생산 보고":
+    st.subheader("🏭 생산 보고")
+    st.caption(
+        "생산 완료 보고 → `production_log` 기록 + BOM 기준 자재 자동 차감 "
+        "(PROD_INPUT) + 제품 완성 재고 (PROD_OUTPUT). 모두 원장 기반."
+    )
+
+    if not DB_AVAILABLE:
+        st.error("DB 연결이 활성화되지 않았습니다."); st.stop()
+
+    import db as _db
+    import pandas as pd
+    from datetime import date as _pb_date
+
+    tab_report, tab_history = st.tabs(["📝 생산 보고 입력", "📜 생산 이력"])
+
+    # ════════ TAB 1: 생산 보고 입력 ════════
+    with tab_report:
+        # ── 1) 제품 선택 ──
+        pc1, pc2 = st.columns([3, 1])
+        with pc1:
+            prod_q = st.text_input(
+                "제품 검색 (품번/고객사)",
+                placeholder="예: 8HFDV-VM-05, MRG6, 미진",
+                key="pb_prod_q")
+        with pc2:
+            st.write("")
+
+        sel_prod = None
+        if prod_q:
+            qq = prod_q.strip()
+            try:
+                p_cands = fetch("products",
+                    "product_id,pn,customer,product_group",
+                    f"or=(pn.ilike.*{qq}*,customer.ilike.*{qq}*)"
+                    f"&archived_at=is.null&order=pn.asc", limit=20)
+            except Exception as e:
+                st.error(f"제품 검색 실패: {e}"); p_cands = []
+            if p_cands:
+                p_labels = [f"{p['pn']} | {p.get('customer') or '-'}"
+                            for p in p_cands]
+                p_pick = st.selectbox(
+                    f"제품 선택 ({len(p_cands)}건)",
+                    p_labels, key="pb_prod_pick")
+                if p_pick:
+                    sel_prod = p_cands[p_labels.index(p_pick)]
+            else:
+                st.info("일치하는 활성 제품 없음.")
+
+        if sel_prod:
+            st.divider()
+            st.markdown(f"##### 🔧 {sel_prod['pn']} · {sel_prod.get('customer') or '-'}")
+
+            # ── 2) 생산 정보 입력 ──
+            ic1, ic2, ic3, ic4 = st.columns(4)
+            with ic1:
+                pb_qty = st.number_input("생산 수량 (양품)", min_value=0.0,
+                    value=0.0, step=1.0, key="pb_qty")
+            with ic2:
+                pb_defect = st.number_input("불량 수량", min_value=0.0,
+                    value=0.0, step=1.0, key="pb_defect")
+            with ic3:
+                pb_date = st.date_input("생산일", value=_pb_date.today(),
+                    key="pb_date")
+            with ic4:
+                pb_shift = st.selectbox("교대", ["주간", "야간"], key="pb_shift")
+            pb_remark = st.text_input("비고 (선택)",
+                placeholder="예: 설비 M03, LOT-2607-01",
+                key="pb_remark")
+
+            total_produced = pb_qty + pb_defect
+
+            # ── 3) BOM 자재 차감 미리보기 ──
+            try:
+                pb_bom = fetch("bom",
+                    "bom_id,material_id,raw_material_name,qty_per_pc,shared_factor",
+                    f"product_id=eq.{sel_prod['product_id']}"
+                    f"&process_type=eq.MATERIAL", limit=20)
+            except Exception:
+                pb_bom = []
+            pb_mat_rows = [b for b in pb_bom if b.get("material_id")]
+
+            consumption = []   # (material_id, 자재명, 소요량, 현재고)
+            if pb_mat_rows and total_produced > 0:
+                mids = [b["material_id"] for b in pb_mat_rows]
+                mids_str = ",".join(f'"{m}"' for m in mids)
+                try:
+                    stock_rows = fetch("material_stock",
+                        "material_id,raw_name,current_stock",
+                        f"material_id=in.({mids_str})", limit=50)
+                    stock_map = {s["material_id"]: s for s in stock_rows}
+                except Exception:
+                    stock_map = {}
+                for b in pb_mat_rows:
+                    qpp = float(b.get("qty_per_pc") or 1)
+                    sf = float(b.get("shared_factor") or 1) or 1
+                    need = total_produced * qpp / sf
+                    stk = stock_map.get(b["material_id"], {})
+                    consumption.append({
+                        "material_id": b["material_id"],
+                        "name": stk.get("raw_name") or b.get("raw_material_name") or "-",
+                        "need": need,
+                        "stock": float(stk.get("current_stock") or 0),
+                    })
+
+            st.markdown("##### 📦 자재 차감 미리보기")
+            if not pb_mat_rows:
+                st.warning(
+                    "⚠️ 이 제품의 BOM 자재행이 없거나 material_id 미매핑 — "
+                    "**자재 차감 없이** 생산 기록만 저장됩니다. "
+                    "(마스터 관리 → BOM 편집에서 보완 가능)")
+            elif total_produced <= 0:
+                st.caption("생산/불량 수량 입력 시 차감량이 계산됩니다.")
+            else:
+                cdf = pd.DataFrame([{
+                    "자재ID": c["material_id"],
+                    "자재명": c["name"],
+                    "차감량": round(c["need"], 2),
+                    "현재고": round(c["stock"], 2),
+                    "차감 후": round(c["stock"] - c["need"], 2),
+                } for c in consumption])
+                st.dataframe(cdf, use_container_width=True, hide_index=True)
+                short = [c for c in consumption if c["stock"] < c["need"]]
+                if short:
+                    st.warning(
+                        f"⚠️ 재고 부족 자재 {len(short)}건 — 차감 시 음수 재고 발생. "
+                        "그래도 기록은 가능 (실사 후 ADJUSTMENT 로 보정).")
+
+            # ── 4) 저장 ──
+            st.divider()
+            sc1, sc2 = st.columns([1, 3])
+            with sc1:
+                do_report = st.button(
+                    f"🏭 생산 보고 저장 ({total_produced:,.0f})",
+                    type="primary",
+                    disabled=total_produced <= 0,
+                    key="pb_submit")
+            with sc2:
+                st.caption(
+                    "production_log 기록 + 자재 PROD_INPUT 차감 + "
+                    "제품 PROD_OUTPUT 재고 (모두 원장)")
+
+            if do_report and total_produced > 0:
+                try:
+                    # 1) 생산 이력
+                    _db.insert("production_log", [{
+                        "log_date": pb_date.isoformat(),
+                        "shift": pb_shift,
+                        "pn": sel_prod["pn"],
+                        "product_id": sel_prod["product_id"],
+                        "total_qty": total_produced,
+                        "defect_qty": pb_defect,
+                        "remark": pb_remark or None,
+                    }])
+                    # 2) 자재 차감 (BOM 기준)
+                    txns = []
+                    for c in consumption:
+                        txns.append({
+                            "material_id": c["material_id"],
+                            "txn_type": "PROD_INPUT",
+                            "qty": -c["need"],
+                            "unit": "EA",
+                            "ref_table": "production_log",
+                            "product_id": sel_prod["product_id"],
+                            "txn_date": pb_date.isoformat(),
+                            "remark": f"생산 투입: {sel_prod['pn']} {total_produced:,.0f}EA",
+                            "created_by": "김민수",
+                        })
+                    # 3) 제품 완성 재고 (양품만)
+                    if pb_qty > 0:
+                        txns.append({
+                            "material_id": None,
+                            "txn_type": "PROD_OUTPUT",
+                            "qty": pb_qty,
+                            "unit": "EA",
+                            "ref_table": "production_log",
+                            "product_id": sel_prod["product_id"],
+                            "txn_date": pb_date.isoformat(),
+                            "remark": f"생산 완성: {sel_prod['pn']}",
+                            "created_by": "김민수",
+                        })
+                    if txns:
+                        _db.insert("inventory_transactions", txns)
+                    st.success(
+                        f"✅ 생산 보고 저장: {sel_prod['pn']} "
+                        f"양품 {pb_qty:,.0f} / 불량 {pb_defect:,.0f}"
+                        + (f" · 자재 {len(consumption)}종 차감" if consumption else
+                           " · 자재 차감 없음 (BOM 미매핑)")
+                    )
+                except Exception as e:
+                    st.error(f"저장 실패: {e}")
+
+    # ════════ TAB 2: 생산 이력 ════════
+    with tab_history:
+        hc1, hc2 = st.columns([3, 1])
+        with hc1:
+            h_q = st.text_input("품번 검색", placeholder="예: 8HFDV",
+                key="pb_hist_q")
+        with hc2:
+            h_limit = st.number_input("표시", 10, 200, 30, 10, key="pb_hist_limit")
+
+        h_filter = ["order=log_date.desc,log_id.desc"]
+        if h_q:
+            h_filter.append(f"pn=ilike.*{h_q.strip()}*")
+        try:
+            logs = fetch("production_log",
+                "log_id,log_date,shift,pn,product_id,total_qty,defect_qty,remark",
+                "&".join(h_filter), limit=int(h_limit))
+        except Exception as e:
+            st.error(f"이력 조회 실패: {e}"); logs = []
+
+        if not logs:
+            st.info("생산 이력 없음.")
+        else:
+            total_q = sum(float(l.get("total_qty") or 0) for l in logs)
+            total_d = sum(float(l.get("defect_qty") or 0) for l in logs)
+            hm1, hm2, hm3 = st.columns(3)
+            hm1.metric("보고 건수", len(logs))
+            hm2.metric("총 생산량", f"{total_q:,.0f}")
+            hm3.metric("총 불량", f"{total_d:,.0f}",
+                       f"{total_d/total_q*100:.1f}%" if total_q else None,
+                       delta_color="inverse")
+
+            ldf = pd.DataFrame([{
+                "일자": l.get("log_date"),
+                "교대": l.get("shift") or "-",
+                "품번": l.get("pn"),
+                "생산(불량포함)": float(l.get("total_qty") or 0),
+                "불량": float(l.get("defect_qty") or 0),
+                "비고": l.get("remark") or "-",
+            } for l in logs])
+            st.dataframe(ldf, use_container_width=True, hide_index=True,
+                         height=400)
+
+        # 제품 완성 재고 현황
+        st.divider()
+        st.markdown("##### 📦 제품 완성 재고 (product_stock_v)")
+        try:
+            pstock = fetch("product_stock_v",
+                "pn,customer,produced_qty,issued_qty,current_stock,last_txn_date",
+                "order=current_stock.desc", limit=50)
+        except Exception as e:
+            st.caption(f"조회 실패 (Migration 018 필요): {e}"); pstock = []
+        if pstock:
+            psdf = pd.DataFrame(pstock).rename(columns={
+                "pn": "품번", "customer": "고객사",
+                "produced_qty": "생산 누적", "issued_qty": "출고 누적",
+                "current_stock": "현재고", "last_txn_date": "최근 거래"})
+            st.dataframe(psdf, use_container_width=True, hide_index=True)
+        else:
+            st.caption("제품 재고 거래 없음 (생산 보고 저장 시 자동 생성).")
 
 
 elif page == "💰 원가 확인":

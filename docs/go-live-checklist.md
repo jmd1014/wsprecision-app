@@ -64,12 +64,14 @@ DELETE FROM sales_orders WHERE so_id <= 29;
 - `material_stock` = 기초재고(import 스냅샷) + 원장 누적 → 생산 준비 실재고 연동됨
 - 입고 현황은 `po_item_receipt_v` (원장 집계 — 저장 컬럼 없음)
 
-### Phase B — 생산 보고 (Phase A 다음, 소재 재고가 쌓이기 시작하면)
-- 🏭 생산 보고 화면 (모바일 입력 우선)
-- 생산 완료 보고: 제품/수량/일자 → `production_log` INSERT
-- 동시에 BOM 기반 자재 차감: `inventory_transactions` 에 PROD_INPUT (−) / PROD_OUTPUT (+)
-- 효과: 소재 재고 자동 차감 + 제품 재고 형성 + 실생산 이력
-- **의존성**: Phase A (차감할 재고가 있어야 의미). 작업량: 화면 1개 + 차감 로직.
+### Phase B — 생산 보고 ✅ **완료 (2026-07-03, Migration 018)**
+- 🏭 생산 보고 페이지 (사이드바 메인 그룹)
+- 생산 보고 입력: 제품 검색 → 양품/불량/일자/교대/비고
+  → `production_log` INSERT (product_id 포함)
+- BOM 기준 자재 자동 차감: PROD_INPUT (음수) — 차감 미리보기 + 재고 부족 경고
+- 제품 완성 재고: PROD_OUTPUT (양품만) → `product_stock_v` view
+- BOM 미매핑 제품은 차감 없이 기록만 (경고 표시)
+- 생산 이력 탭: 보고 목록 + 불량률 + 제품 재고 현황
 
 ### Phase C — 납품-생산 연결 (Phase B 다음)
 - 납품 등록 시 제품 재고 차감 (PROD_OUTPUT 재고에서 ISSUE)

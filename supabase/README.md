@@ -73,3 +73,4 @@ migrations/
 | 015 | recent_price_basis.sql | 2026-05-21 | 최근 거래가 기준 + 사급 BOM_FULL 인정 |
 | 016 | po_source_tracking.sql | 2026-06-11 | purchase_orders.remark (수주 출처 추적) |
 | 017 | material_receiving.sql | 2026-07-03 | Phase A 소재 입고 — poi.material_id + po_item_receipt_v + material_stock 기초재고 반영 |
+| 018 | production_report.sql | 2026-07-03 | Phase B 생산 보고 — material_id 선택화 + 제품 재고 view (product_stock_v) |
