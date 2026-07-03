@@ -1,8 +1,9 @@
 [theme]
-primaryColor = "#305496"
-backgroundColor = "#FFFFFF"
-secondaryBackgroundColor = "#F0F4F9"
-textColor = "#1A1A1A"
+# 우성정밀 하우스 스타일 (재무/생산 대시보드 팔레트 통일)
+primaryColor = "#2E5496"          # --blue
+backgroundColor = "#eef1f6"       # --bg
+secondaryBackgroundColor = "#ffffff"  # --card
+textColor = "#1c2433"             # --ink
 font = "sans serif"
 
 [server]

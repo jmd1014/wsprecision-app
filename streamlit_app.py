@@ -20,16 +20,92 @@ except Exception as e:
     DB_ERROR = str(e)
 
 
-# ─── 헤더 ───
-col1, col2 = st.columns([3, 1])
-with col1:
-    st.title("🏭 우성정밀 업무관리 시스템")
-    st.caption("v0.2 · Stage 1 (마스터 import 단계)")
-with col2:
-    if DB_AVAILABLE:
-        st.success("✅ 시스템 활성")
-    else:
-        st.error("❌ DB 연결 대기")
+# ─── 우성정밀 하우스 스타일 (재무/생산 대시보드 디자인 통일) ───
+st.markdown("""
+<style>
+:root{
+  --navy:#1F3864;--blue:#2E5496;--blue2:#4472C4;--bg:#eef1f6;--card:#fff;
+  --line:#e3e8f0;--line2:#d4dbe8;--red:#e15759;--org:#f0a04b;--amber:#e8943b;
+  --green:#3aa76d;--cyan:#2f9bb0;--violet:#7c6fce;
+  --ink:#1c2433;--dim:#5a6577;--faint:#8b94a4;--panel2:#f4f7fb;
+}
+
+/* ── KPI 메트릭 → 대시보드 카드 스타일 ── */
+div[data-testid="stMetric"]{
+  background:var(--card);border:1px solid var(--line);border-radius:12px;
+  padding:14px 16px;box-shadow:0 1px 3px rgba(20,30,60,.05);
+}
+div[data-testid="stMetricLabel"] p{
+  font-size:11.5px !important;font-weight:700 !important;
+  color:var(--faint) !important;letter-spacing:.2px;
+}
+div[data-testid="stMetricValue"]{
+  font-size:24px !important;font-weight:800 !important;
+  color:var(--navy) !important;letter-spacing:-.5px;
+}
+div[data-testid="stMetricDelta"]{font-size:12px !important;}
+
+/* ── 탭 → 세그먼트 스타일 ── */
+div[data-testid="stTabs"] button[data-baseweb="tab"]{
+  font-weight:700;color:var(--dim);
+}
+div[data-testid="stTabs"] button[aria-selected="true"]{
+  color:var(--blue);
+}
+
+/* ── 제목 위계 ── */
+h1{color:var(--navy) !important;font-weight:800 !important;letter-spacing:-.3px;}
+h2,h3{color:var(--navy) !important;font-weight:700 !important;}
+
+/* ── expander → 카드화 ── */
+div[data-testid="stExpander"]{
+  background:var(--card);border:1px solid var(--line) !important;
+  border-radius:10px;box-shadow:0 1px 3px rgba(20,30,60,.05);
+}
+
+/* ── 버튼 ── */
+div[data-testid="stButton"] button{
+  border-radius:8px;font-weight:700;
+}
+div[data-testid="stButton"] button[kind="primary"]{
+  background:var(--blue);border-color:var(--blue);
+}
+
+/* ── 사이드바 ── */
+section[data-testid="stSidebar"]{
+  background:var(--card);border-right:1px solid var(--line);
+}
+
+/* ── info/success/warning 박스 → 인사이트 패널 스타일 ── */
+div[data-testid="stAlert"]{
+  border-radius:10px;border-left-width:4px !important;
+}
+
+/* ── 헤더 chip ── */
+.ws-hdr{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:4px}
+.ws-hdr .t{font-size:24px;color:var(--navy);font-weight:800;letter-spacing:-.3px}
+.ws-hdr .t .co{color:var(--blue2)}
+.ws-hdr .sub{color:var(--faint);font-size:13px}
+.ws-hdr-meta{margin-left:auto;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.ws-chip{background:var(--card);border:1px solid var(--line);border-radius:8px;
+  padding:6px 12px;font-size:12px;color:var(--dim);
+  box-shadow:0 1px 3px rgba(20,30,60,.05);display:inline-flex;gap:6px;align-items:center}
+.ws-chip b{font-weight:700}
+.ws-chip.ok b{color:var(--green)}
+.ws-chip.err b{color:var(--red)}
+</style>
+""", unsafe_allow_html=True)
+
+# ─── 헤더 (대시보드 스타일: 회사명 강조 + 상태 chip) ───
+_db_chip = ('<span class="ws-chip ok">연동 <b>LIVE</b></span>' if DB_AVAILABLE
+            else '<span class="ws-chip err">연동 <b>연결 대기</b></span>')
+st.markdown(f"""
+<div class="ws-hdr">
+  <span class="t"><span class="co">우성정밀</span> 업무관리 시스템</span>
+  <span class="sub">수주 · 발주 · 원가 · 생산 준비 — Supabase 실시간 연동</span>
+  <div class="ws-hdr-meta">{_db_chip}</div>
+</div>
+""", unsafe_allow_html=True)
 
 st.divider()
 
