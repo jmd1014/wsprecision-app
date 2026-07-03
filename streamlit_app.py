@@ -2536,6 +2536,12 @@ elif page == "📥 수주 관리":
                         st.caption(f"미납 **{pending:,.0f}**")
                     with lc[3]:
                         if pending > 0:
+                            # '전량' 버튼이 예약한 값을 위젯 생성 전에 적용
+                            # (렌더된 위젯 키 직접 수정은 StreamlitAPIException)
+                            _pend_key = f"dlv_pend_{it['soi_id']}"
+                            if _pend_key in st.session_state:
+                                st.session_state[f"dlv_{it['soi_id']}"] = \
+                                    st.session_state.pop(_pend_key)
                             deliver_inputs[it["soi_id"]] = st.number_input(
                                 "납품", min_value=0.0, max_value=float(pending),
                                 value=0.0, step=1.0,
@@ -2549,7 +2555,7 @@ elif page == "📥 수주 관리":
                             if st.button(f"전량 ({pending:,.0f})",
                                           key=f"dlv_full_{it['soi_id']}",
                                           help="미납 전량 납품 처리"):
-                                st.session_state[f"dlv_{it['soi_id']}"] = float(pending)
+                                st.session_state[f"dlv_pend_{it['soi_id']}"] = float(pending)
                                 st.rerun()
 
                 st.divider()
@@ -3567,6 +3573,11 @@ elif page == "📋 구매/발주":
                                     else:
                                         st.caption("일치 자재 없음 — 마스터 관리 → 자재 편집에서 등록")
                         with rl2:
+                            # '전량' 버튼 예약값을 위젯 생성 전에 적용
+                            _rcv_pend_key = f"rcv_pend_{poi_id}"
+                            if _rcv_pend_key in st.session_state:
+                                st.session_state[f"rcv_q_{poi_id}"] = \
+                                    st.session_state.pop(_rcv_pend_key)
                             rcv_qty = st.number_input(
                                 "입고 수량", min_value=0.0,
                                 max_value=float(pending), value=0.0, step=1.0,
@@ -3576,7 +3587,7 @@ elif page == "📋 구매/발주":
                         with rl3:
                             if st.button(f"전량 ({pending:,.0f})",
                                           key=f"rcv_full_{poi_id}"):
-                                st.session_state[f"rcv_q_{poi_id}"] = float(pending)
+                                st.session_state[f"rcv_pend_{poi_id}"] = float(pending)
                                 st.rerun()
                         if rcv_qty > 0:
                             receive_inputs[poi_id] = (rcv_qty, sel_mid, r)
