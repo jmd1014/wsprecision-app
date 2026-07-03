@@ -3338,7 +3338,7 @@ elif page == "📋 구매/발주":
     with tab_hist:
         c1, c2, c3 = st.columns(3)
         with c1:
-            period = st.selectbox("기간", ["이번달", "최근 3개월", "올해", "전체"], index=0)
+            period = st.selectbox("기간", ["이번달", "최근 3개월", "올해", "전체"], index=1)
         with c2:
             status_f = st.selectbox("상태", ["전체", "DRAFT", "SENT", "RECEIVED", "CANCELLED"])
         with c3:
@@ -3415,7 +3415,13 @@ elif page == "📋 구매/발주":
             st.markdown("##### 🔍 발주서 상세 / 재발급")
             opts = {f"{r['po_number']} | {r['_vname']} | ₩{int(r.get('total_amount') or 0):,}": r
                     for r in history}
-            sel_po = st.selectbox("선택", list(opts.keys()))
+            # 입고 처리 후 rerun 되어도 같은 발주 유지 (예약 키 복원)
+            _po_opts = list(opts.keys())
+            if "po_hist_keep" in st.session_state:
+                _keep = st.session_state.pop("po_hist_keep")
+                if _keep in _po_opts:
+                    st.session_state["po_hist_sel"] = _keep
+            sel_po = st.selectbox("선택", _po_opts, key="po_hist_sel")
             if sel_po:
                 po = opts[sel_po]
                 items = fetch("purchase_order_items", "*",
@@ -3517,6 +3523,16 @@ elif page == "📋 구매/발주":
                     rm2.metric("✅ 입고 완료", n_done)
                     rm3.metric("🟡 부분 입고", n_partial)
 
+                    # 발주 라인 비고(재질) — 자재 자동 추천 키워드로 사용
+                    try:
+                        _poi_rm_rows = fetch("purchase_order_items",
+                            "poi_id,remark",
+                            f"po_id=eq.{po['po_id']}", limit=50)
+                        poi_remarks = {x["poi_id"]: (x.get("remark") or "").strip()
+                                       for x in _poi_rm_rows}
+                    except Exception:
+                        poi_remarks = {}
+
                     receive_inputs = {}   # poi_id → (qty, material_id)
                     for r in receipt_rows:
                         poi_id = r["poi_id"]
@@ -3544,34 +3560,43 @@ elif page == "📋 구매/발주":
                                 )
                                 sel_mid = r["material_id"]
                             else:
+                                # 자동 추천 키워드: 발주 비고(재질) — 예: SUS304, AL6061
+                                _auto_kw = poi_remarks.get(poi_id, "")
                                 m_kw = st.text_input(
                                     "자재 검색 (최초 1회 매핑)",
-                                    placeholder="자재명/재질/규격",
+                                    placeholder=(
+                                        f"비우면 발주 비고 '{_auto_kw}' 자동 추천"
+                                        if _auto_kw else "자재명/재질/규격"),
                                     key=f"rcv_mq_{poi_id}")
                                 sel_mid = None
-                                if m_kw:
+                                # 수동 입력 우선, 없으면 비고 키워드 자동 검색
+                                _search_kw = m_kw.strip() if m_kw else _auto_kw
+                                if _search_kw:
                                     try:
                                         m_cands = fetch("materials",
                                             "material_id,raw_name,material_type,spec",
-                                            f"or=(raw_name.ilike.*{m_kw.strip()}*,"
-                                            f"material_type.ilike.*{m_kw.strip()}*,"
-                                            f"spec.ilike.*{m_kw.strip()}*)"
+                                            f"or=(raw_name.ilike.*{_search_kw}*,"
+                                            f"material_type.ilike.*{_search_kw}*,"
+                                            f"spec.ilike.*{_search_kw}*)"
                                             f"&order=raw_name.asc", limit=15)
                                     except Exception:
                                         m_cands = []
                                     if m_cands:
+                                        _src = "검색" if m_kw else "자동 추천 (비고)"
                                         m_labels = [
                                             f"{m['material_id']} | {m['raw_name']} "
                                             f"({m.get('spec') or '-'})"
                                             for m in m_cands]
                                         m_pick = st.selectbox(
-                                            f"자재 선택 ({len(m_cands)}건)",
+                                            f"자재 선택 — {_src} ({len(m_cands)}건)",
                                             m_labels, key=f"rcv_mp_{poi_id}")
                                         if m_pick:
                                             sel_mid = m_cands[
                                                 m_labels.index(m_pick)]["material_id"]
                                     else:
-                                        st.caption("일치 자재 없음 — 마스터 관리 → 자재 편집에서 등록")
+                                        st.caption(
+                                            f"'{_search_kw}' 일치 자재 없음 — "
+                                            "다른 키워드 입력 또는 마스터 관리 → 자재 편집에서 등록")
                         with rl2:
                             # '전량' 버튼 예약값을 위젯 생성 전에 적용
                             _rcv_pend_key = f"rcv_pend_{poi_id}"
@@ -3665,6 +3690,8 @@ elif page == "📋 구매/발주":
                                 f"✅ 입고 처리 완료: {ok_n}개 라인 "
                                 f"(실재고 자동 반영)"
                                 + (f" / 실패 {fail_n}" if fail_n else ""))
+                            # rerun 후에도 같은 발주 유지
+                            st.session_state["po_hist_keep"] = sel_po
                             st.rerun()
                         elif fail_n:
                             st.error(f"입고 처리 실패 ({fail_n}건)")
