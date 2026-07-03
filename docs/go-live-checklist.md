@@ -57,11 +57,12 @@ DELETE FROM sales_orders WHERE so_id <= 29;
 
 ## 추가 타이밍: 3단계 (의존성 순서)
 
-### Phase A — 소재 입고 (납품 등록 다음, **기능 테스트 통과 직후 권장**)
-- 구매/발주 → 발주 이력에 "입고 처리" 버튼
-- 입고 시: `inventory_transactions` 에 RECEIPT INSERT + PO 상태 RECEIVED/PARTIAL
-- 효과: `material_stock` view 가 실재고 반영 → 생산 준비의 부족분 계산이 정확해짐
-- **의존성**: 없음 (테이블 003 에서 이미 준비됨). 작업량: 화면 1개.
+### Phase A — 소재 입고 ✅ **완료 (2026-07-03, Migration 017)**
+- 구매/발주 → 발주 이력 → 발주 선택 → 📦 입고 처리 섹션
+- 입고 시: `inventory_transactions` RECEIPT INSERT + PO 상태 자동 (RECEIVED/PARTIAL)
+- 자재 매핑: 라인별 최초 1회 지정 → `purchase_order_items.material_id` 재사용
+- `material_stock` = 기초재고(import 스냅샷) + 원장 누적 → 생산 준비 실재고 연동됨
+- 입고 현황은 `po_item_receipt_v` (원장 집계 — 저장 컬럼 없음)
 
 ### Phase B — 생산 보고 (Phase A 다음, 소재 재고가 쌓이기 시작하면)
 - 🏭 생산 보고 화면 (모바일 입력 우선)

@@ -2668,12 +2668,20 @@ elif page == "📊 생산 준비":
     for b in bom_rows:
         bom_by_pid[b["product_id"]].append(b)
 
-    # ── 4) 자재 마스터 조회 ──
+    # ── 4) 자재 실재고 조회 (Phase A: material_stock = 기초 + 입고/차감 누적) ──
     mids = list({b["material_id"] for b in bom_rows if b.get("material_id")})
     if mids:
         mids_str = ",".join(f'"{m}"' for m in mids)
-        mat_rows = fetch("materials", "material_id,raw_name,material_type,spec,unit,stock_qty,main_supplier",
-                          f"material_id=in.({mids_str})", limit=500)
+        try:
+            # stock_qty:current_stock alias → 기존 코드 키 그대로 사용
+            mat_rows = fetch("material_stock",
+                "material_id,raw_name,material_type,spec,unit,stock_qty:current_stock,main_supplier",
+                f"material_id=in.({mids_str})", limit=500)
+        except Exception:
+            # 017 미적용 환경 fallback (정적 스냅샷)
+            mat_rows = fetch("materials",
+                "material_id,raw_name,material_type,spec,unit,stock_qty,main_supplier",
+                f"material_id=in.({mids_str})", limit=500)
         mat_map = {m["material_id"]: m for m in mat_rows}
     else:
         mat_map = {}
@@ -3470,6 +3478,185 @@ elif page == "📋 구매/발주":
                     if _db.update("purchase_orders", f"po_id=eq.{po['po_id']}",
                                   {"status": new_status}):
                         st.success(f"상태를 {new_status}로 변경"); st.rerun()
+
+                # ════════ 📦 입고 처리 (Phase A) ════════
+                st.divider()
+                st.markdown("##### 📦 입고 처리")
+                st.caption(
+                    "라인별 입고 수량 기록 → `inventory_transactions` (RECEIPT) 원장 저장 "
+                    "→ 실재고(material_stock) 자동 반영. "
+                    "자재 매핑은 최초 1회만 지정하면 재사용."
+                )
+
+                # 입고 현황 조회 (원장 집계 view)
+                try:
+                    receipt_rows = fetch("po_item_receipt_v",
+                        "poi_id,line_no,item_name,spec,ordered_qty,unit,"
+                        "material_id,material_name,received_qty,pending_qty,"
+                        "receipt_status,last_receipt_date",
+                        f"po_id=eq.{po['po_id']}&order=line_no.asc", limit=50)
+                except Exception as e:
+                    st.warning(f"입고 현황 조회 실패 (Migration 017 필요): {e}")
+                    receipt_rows = []
+
+                if receipt_rows:
+                    # 요약 메트릭
+                    n_total = len(receipt_rows)
+                    n_done = sum(1 for r in receipt_rows
+                                 if r["receipt_status"] == "RECEIVED")
+                    n_partial = sum(1 for r in receipt_rows
+                                    if r["receipt_status"] == "PARTIAL")
+                    rm1, rm2, rm3 = st.columns(3)
+                    rm1.metric("발주 라인", n_total)
+                    rm2.metric("✅ 입고 완료", n_done)
+                    rm3.metric("🟡 부분 입고", n_partial)
+
+                    receive_inputs = {}   # poi_id → (qty, material_id)
+                    for r in receipt_rows:
+                        poi_id = r["poi_id"]
+                        ordered = float(r.get("ordered_qty") or 0)
+                        received = float(r.get("received_qty") or 0)
+                        pending = float(r.get("pending_qty") or 0)
+                        st.markdown(
+                            f"**L{r.get('line_no','-')} {r.get('item_name','-')}** "
+                            f"({r.get('spec') or '-'}) — "
+                            f"발주 {ordered:,.0f} / 기입고 {received:,.0f} / "
+                            f"미입고 **{pending:,.0f}** {r.get('unit') or 'EA'}"
+                        )
+                        if pending <= 0:
+                            st.success(f"✅ 입고 완료 (최근 {r.get('last_receipt_date') or '-'})")
+                            st.divider()
+                            continue
+
+                        rl1, rl2, rl3 = st.columns([3, 1, 1])
+                        with rl1:
+                            # 자재 매핑 — 이미 매핑되어 있으면 표시만
+                            if r.get("material_id"):
+                                st.caption(
+                                    f"🔗 자재: **{r['material_id']}** "
+                                    f"({r.get('material_name') or '-'})"
+                                )
+                                sel_mid = r["material_id"]
+                            else:
+                                m_kw = st.text_input(
+                                    "자재 검색 (최초 1회 매핑)",
+                                    placeholder="자재명/재질/규격",
+                                    key=f"rcv_mq_{poi_id}")
+                                sel_mid = None
+                                if m_kw:
+                                    try:
+                                        m_cands = fetch("materials",
+                                            "material_id,raw_name,material_type,spec",
+                                            f"or=(raw_name.ilike.*{m_kw.strip()}*,"
+                                            f"material_type.ilike.*{m_kw.strip()}*,"
+                                            f"spec.ilike.*{m_kw.strip()}*)"
+                                            f"&order=raw_name.asc", limit=15)
+                                    except Exception:
+                                        m_cands = []
+                                    if m_cands:
+                                        m_labels = [
+                                            f"{m['material_id']} | {m['raw_name']} "
+                                            f"({m.get('spec') or '-'})"
+                                            for m in m_cands]
+                                        m_pick = st.selectbox(
+                                            f"자재 선택 ({len(m_cands)}건)",
+                                            m_labels, key=f"rcv_mp_{poi_id}")
+                                        if m_pick:
+                                            sel_mid = m_cands[
+                                                m_labels.index(m_pick)]["material_id"]
+                                    else:
+                                        st.caption("일치 자재 없음 — 마스터 관리 → 자재 편집에서 등록")
+                        with rl2:
+                            rcv_qty = st.number_input(
+                                "입고 수량", min_value=0.0,
+                                max_value=float(pending), value=0.0, step=1.0,
+                                key=f"rcv_q_{poi_id}",
+                                label_visibility="collapsed",
+                                help="이번 입고 수량")
+                        with rl3:
+                            if st.button(f"전량 ({pending:,.0f})",
+                                          key=f"rcv_full_{poi_id}"):
+                                st.session_state[f"rcv_q_{poi_id}"] = float(pending)
+                                st.rerun()
+                        if rcv_qty > 0:
+                            receive_inputs[poi_id] = (rcv_qty, sel_mid, r)
+                        st.divider()
+
+                    total_rcv = sum(v[0] for v in receive_inputs.values())
+                    missing_map = [
+                        r_[2].get("item_name") for r_ in receive_inputs.values()
+                        if not r_[1]
+                    ]
+                    bc1, bc2 = st.columns([1, 3])
+                    with bc1:
+                        do_receive = st.button(
+                            f"📦 입고 처리 ({total_rcv:,.0f})",
+                            type="primary",
+                            disabled=(total_rcv <= 0 or bool(missing_map)),
+                            key=f"rcv_submit_{po['po_id']}")
+                    with bc2:
+                        if missing_map:
+                            st.warning(
+                                f"⚠️ 자재 미매핑 라인: {', '.join(missing_map[:3])} "
+                                "— 자재 선택 후 입고 가능")
+                        else:
+                            st.caption(
+                                "RECEIPT 원장 기록 + PO 상태 자동 갱신 "
+                                "(전 라인 완입고 → RECEIVED)")
+
+                    if do_receive and total_rcv > 0 and not missing_map:
+                        from datetime import date as _rcv_date
+                        ok_n, fail_n = 0, 0
+                        for poi_id, (rq, mid, r) in receive_inputs.items():
+                            try:
+                                # 1) 원장 기록
+                                _db.insert("inventory_transactions", [{
+                                    "material_id": mid,
+                                    "txn_type": "RECEIPT",
+                                    "qty": rq,
+                                    "unit": r.get("unit") or "EA",
+                                    "ref_table": "purchase_order_items",
+                                    "ref_id": poi_id,
+                                    "txn_date": _rcv_date.today().isoformat(),
+                                    "remark": f"발주 입고: {po['po_number']}",
+                                    "created_by": "김민수",
+                                }])
+                                # 2) 최초 매핑 저장 (재사용)
+                                if not r.get("material_id"):
+                                    _db.update("purchase_order_items",
+                                        f"poi_id=eq.{poi_id}",
+                                        {"material_id": mid})
+                                ok_n += 1
+                            except Exception as e:
+                                fail_n += 1
+                                st.warning(f"라인 {poi_id} 입고 실패: {e}")
+
+                        # 3) PO 헤더 상태 자동 갱신
+                        if ok_n:
+                            try:
+                                fresh = fetch("po_item_receipt_v",
+                                    "receipt_status",
+                                    f"po_id=eq.{po['po_id']}", limit=50)
+                                statuses = [f["receipt_status"] for f in fresh]
+                                if statuses and all(s == "RECEIVED" for s in statuses):
+                                    hdr = "RECEIVED"
+                                elif any(s in ("PARTIAL", "RECEIVED") for s in statuses):
+                                    hdr = "PARTIAL"
+                                else:
+                                    hdr = po["status"]
+                                if hdr != po["status"]:
+                                    _db.update("purchase_orders",
+                                        f"po_id=eq.{po['po_id']}",
+                                        {"status": hdr})
+                            except Exception:
+                                pass
+                            st.success(
+                                f"✅ 입고 처리 완료: {ok_n}개 라인 "
+                                f"(실재고 자동 반영)"
+                                + (f" / 실패 {fail_n}" if fail_n else ""))
+                            st.rerun()
+                        elif fail_n:
+                            st.error(f"입고 처리 실패 ({fail_n}건)")
 
 
 elif page == "💰 원가 확인":

@@ -71,4 +71,5 @@ migrations/
 | 013 | active_master_views.sql | 2026-05-21 | 활성 기준 정비 view + 매칭 view 6종 |
 | 014 | material_price_status.sql | 2026-05-21 | 자재 가격 출처 view (매입/legacy/없음) |
 | 015 | recent_price_basis.sql | 2026-05-21 | 최근 거래가 기준 + 사급 BOM_FULL 인정 |
-| 016 | po_source_tracking.sql | (미적용 — SQL Editor 수동 적용 필요) | purchase_orders.remark (수주 출처 추적) |
+| 016 | po_source_tracking.sql | 2026-06-11 | purchase_orders.remark (수주 출처 추적) |
+| 017 | material_receiving.sql | 2026-07-03 | Phase A 소재 입고 — poi.material_id + po_item_receipt_v + material_stock 기초재고 반영 |
