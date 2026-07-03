@@ -73,11 +73,15 @@ DELETE FROM sales_orders WHERE so_id <= 29;
 - BOM 미매핑 제품은 차감 없이 기록만 (경고 표시)
 - 생산 이력 탭: 보고 목록 + 불량률 + 제품 재고 현황
 
-### Phase C — 납품-생산 연결 (Phase B 다음)
-- 납품 등록 시 제품 재고 차감 (PROD_OUTPUT 재고에서 ISSUE)
-- 생산 LOT ↔ 수주 LOT 연결 (customer_lot, mes_work_order 활용)
-- 실원가 활성화 (`product_actual_cost_v` — 이미 view 준비됨)
-- **의존성**: Phase B. 이 단계가 끝나면 LOT genealogy 기반 마련.
+### Phase C — 납품-생산 연결 ✅ **완료 (2026-07-03, Migration 019)**
+- 납품 등록 시 제품 재고 차감 (ISSUE 원장, product_id 매핑 라인)
+- LOT 추적: 생산 보고 LOT 자동 제안 (`LOT-YYMMDD-품번`)
+  → PROD_INPUT/OUTPUT 원장에 기록 → 납품 출고 LOT 로 연결
+- 역추적 화면: 생산 보고 → 🔎 역추적 탭
+  · LOT 기준: 자재 투입 → 생산 완성 → 납품 출고 타임라인 + LOT 잔량
+  · 제품 기준: 전체 원장 이력 (LOT 유무 무관)
+- view: `lot_trace_v` / `product_trace_v`
+- 실원가 (`product_actual_cost_v`) 는 production_log 누적과 함께 자동 활성
 
 ## 전환 시점과의 관계
 

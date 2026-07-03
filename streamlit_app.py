@@ -2561,6 +2561,15 @@ elif page == "📥 수주 관리":
 
                 st.divider()
                 total_to_deliver = sum(v for v in deliver_inputs.values() if v > 0)
+
+                # Phase C — 출고 LOT (역추적 연결, 선택)
+                dlv_lot = st.text_input(
+                    "출고 LOT (선택 — 생산 LOT 와 연결하면 역추적 가능)",
+                    placeholder="예: LOT-260703-8HFDV-VM-0",
+                    key="deliver_lot",
+                    help="생산 보고에 기록한 LOT 번호를 입력하면 "
+                         "자재 입고→생산→납품 전 과정 역추적이 연결됩니다.")
+
                 bc1, bc2 = st.columns([1, 3])
                 with bc1:
                     do_deliver = st.button(
@@ -2570,12 +2579,14 @@ elif page == "📥 수주 관리":
                         key="deliver_submit")
                 with bc2:
                     st.caption(
-                        "입력된 수량만큼 received_qty 누적. "
-                        "라인 상태 자동 전환 + 수주 헤더 상태 자동 갱신."
+                        "received_qty 누적 + 상태 자동 전환 + "
+                        "제품 재고 차감 (ISSUE 원장, product_id 매핑 라인)."
                     )
 
                 if do_deliver and total_to_deliver > 0:
+                    from datetime import date as _dlv_date
                     ok_n, fail_n = 0, 0
+                    issue_txns = []
                     for soi_id, dlv_qty in deliver_inputs.items():
                         if dlv_qty <= 0:
                             continue
@@ -2593,11 +2604,33 @@ elif page == "📥 수주 관리":
                                  "pending_qty": new_pending,
                                  "status": new_status}):
                                 ok_n += 1
+                                # Phase C: 제품 재고 차감 (product_id 매핑 라인만)
+                                if it.get("product_id"):
+                                    issue_txns.append({
+                                        "material_id": None,
+                                        "txn_type": "ISSUE",
+                                        "qty": -dlv_qty,
+                                        "unit": it.get("unit") or "EA",
+                                        "ref_table": "sales_order_items",
+                                        "ref_id": soi_id,
+                                        "product_id": it["product_id"],
+                                        "lot_number": (dlv_lot or "").strip() or None,
+                                        "txn_date": _dlv_date.today().isoformat(),
+                                        "remark": f"납품 출고: {d_so['so_number']}",
+                                        "created_by": "김민수",
+                                    })
                             else:
                                 fail_n += 1
                         except Exception as e:
                             fail_n += 1
                             st.warning(f"라인 {soi_id} 실패: {e}")
+
+                    # 제품 재고 차감 원장 (실패해도 납품 자체는 유지)
+                    if issue_txns:
+                        try:
+                            _db.insert("inventory_transactions", issue_txns)
+                        except Exception as e:
+                            st.warning(f"⚠️ 제품 재고 차감 기록 실패 (납품은 정상): {e}")
 
                     # 수주 헤더 상태 자동 갱신
                     if ok_n:
@@ -3715,7 +3748,8 @@ elif page == "🏭 생산 보고":
     import pandas as pd
     from datetime import date as _pb_date
 
-    tab_report, tab_history = st.tabs(["📝 생산 보고 입력", "📜 생산 이력"])
+    tab_report, tab_history, tab_trace = st.tabs(
+        ["📝 생산 보고 입력", "📜 생산 이력", "🔎 역추적 (LOT/제품)"])
 
     # ════════ TAB 1: 생산 보고 입력 ════════
     with tab_report:
@@ -3767,9 +3801,17 @@ elif page == "🏭 생산 보고":
                     key="pb_date")
             with ic4:
                 pb_shift = st.selectbox("교대", ["주간", "야간"], key="pb_shift")
-            pb_remark = st.text_input("비고 (선택)",
-                placeholder="예: 설비 M03, LOT-2607-01",
-                key="pb_remark")
+            lc1, lc2 = st.columns(2)
+            with lc1:
+                # LOT 번호 — 역추적 키 (기본 자동 제안)
+                _lot_default = f"LOT-{pb_date.strftime('%y%m%d')}-{sel_prod['pn'][:10]}"
+                pb_lot = st.text_input("생산 LOT 번호",
+                    value=_lot_default, key="pb_lot",
+                    help="자재 투입~완성~납품까지 역추적하는 키. 자동 제안값 수정 가능.")
+            with lc2:
+                pb_remark = st.text_input("비고 (선택)",
+                    placeholder="예: 설비 M03",
+                    key="pb_remark")
 
             total_produced = pb_qty + pb_defect
 
@@ -3845,6 +3887,7 @@ elif page == "🏭 생산 보고":
 
             if do_report and total_produced > 0:
                 try:
+                    _lot = (pb_lot or "").strip() or None
                     # 1) 생산 이력
                     _db.insert("production_log", [{
                         "log_date": pb_date.isoformat(),
@@ -3853,9 +3896,10 @@ elif page == "🏭 생산 보고":
                         "product_id": sel_prod["product_id"],
                         "total_qty": total_produced,
                         "defect_qty": pb_defect,
+                        "lot_number": _lot,
                         "remark": pb_remark or None,
                     }])
-                    # 2) 자재 차감 (BOM 기준)
+                    # 2) 자재 차감 (BOM 기준) — LOT 연결
                     txns = []
                     for c in consumption:
                         txns.append({
@@ -3865,11 +3909,12 @@ elif page == "🏭 생산 보고":
                             "unit": "EA",
                             "ref_table": "production_log",
                             "product_id": sel_prod["product_id"],
+                            "lot_number": _lot,
                             "txn_date": pb_date.isoformat(),
                             "remark": f"생산 투입: {sel_prod['pn']} {total_produced:,.0f}EA",
                             "created_by": "김민수",
                         })
-                    # 3) 제품 완성 재고 (양품만)
+                    # 3) 제품 완성 재고 (양품만) — LOT 연결
                     if pb_qty > 0:
                         txns.append({
                             "material_id": None,
@@ -3878,6 +3923,7 @@ elif page == "🏭 생산 보고":
                             "unit": "EA",
                             "ref_table": "production_log",
                             "product_id": sel_prod["product_id"],
+                            "lot_number": _lot,
                             "txn_date": pb_date.isoformat(),
                             "remark": f"생산 완성: {sel_prod['pn']}",
                             "created_by": "김민수",
@@ -3952,6 +3998,100 @@ elif page == "🏭 생산 보고":
             st.dataframe(psdf, use_container_width=True, hide_index=True)
         else:
             st.caption("제품 재고 거래 없음 (생산 보고 저장 시 자동 생성).")
+
+    # ════════ TAB 3: 역추적 (LOT/제품) ════════
+    with tab_trace:
+        st.caption(
+            "LOT 번호 또는 제품으로 **자재 입고 → 생산 투입 → 생산 완성 → 납품 출고** "
+            "전 과정을 원장 기준으로 역추적합니다."
+        )
+
+        trace_mode = st.radio("추적 기준",
+            ["LOT 번호", "제품 (품번)"],
+            horizontal=True, key="trace_mode")
+
+        if trace_mode == "LOT 번호":
+            # LOT 목록 자동 제안
+            try:
+                lot_list = fetch("lot_trace_v", "lot_number",
+                    "order=created_at.desc", limit=200)
+                lots = sorted({l["lot_number"] for l in lot_list
+                               if l.get("lot_number")}, reverse=True)
+            except Exception as e:
+                st.error(f"LOT 조회 실패 (Migration 019 필요): {e}"); lots = []
+
+            if not lots:
+                st.info("기록된 LOT 없음. 생산 보고 시 LOT 번호가 자동 기록됩니다.")
+            else:
+                sel_lot = st.selectbox(f"LOT 선택 ({len(lots)}개)",
+                    lots, key="trace_lot_pick")
+                if sel_lot:
+                    try:
+                        trace_rows = fetch("lot_trace_v",
+                            "txn_date,step_label,txn_type,material_id,"
+                            "material_name,pn,qty,unit,ref_table,ref_id,"
+                            "remark,created_at",
+                            f"lot_number=eq.{sel_lot}"
+                            f"&order=created_at.asc", limit=100)
+                    except Exception as e:
+                        st.error(f"추적 실패: {e}"); trace_rows = []
+
+                    if trace_rows:
+                        st.markdown(f"##### 🔎 {sel_lot} — {len(trace_rows)}건")
+                        tdf = pd.DataFrame([{
+                            "일자": t.get("txn_date"),
+                            "단계": t.get("step_label"),
+                            "자재/제품": t.get("material_name") or t.get("pn") or "-",
+                            "수량": float(t.get("qty") or 0),
+                            "참조": f"{t.get('ref_table') or '-'}#{t.get('ref_id') or ''}",
+                            "비고": t.get("remark") or "-",
+                        } for t in trace_rows])
+                        st.dataframe(tdf, use_container_width=True,
+                                     hide_index=True)
+                        # 요약: 투입/완성/출고 밸런스
+                        t_in = sum(-float(t["qty"]) for t in trace_rows
+                                   if t["txn_type"] == "PROD_INPUT")
+                        t_out = sum(float(t["qty"]) for t in trace_rows
+                                    if t["txn_type"] == "PROD_OUTPUT")
+                        t_issue = sum(-float(t["qty"]) for t in trace_rows
+                                      if t["txn_type"] == "ISSUE")
+                        tm1, tm2, tm3, tm4 = st.columns(4)
+                        tm1.metric("자재 투입", f"{t_in:,.0f}")
+                        tm2.metric("생산 완성", f"{t_out:,.0f}")
+                        tm3.metric("납품 출고", f"{t_issue:,.0f}")
+                        tm4.metric("LOT 잔량", f"{t_out - t_issue:,.0f}")
+
+        else:  # 제품 기준
+            tp_q = st.text_input("제품 검색 (품번)",
+                placeholder="예: 8HFDV-VM-05",
+                key="trace_prod_q")
+            if tp_q:
+                qq = tp_q.strip()
+                try:
+                    trace_rows = fetch("product_trace_v",
+                        "pn,txn_date,step_label,txn_type,material_id,"
+                        "material_name,qty,unit,lot_number,ref_table,ref_id,"
+                        "remark,created_at",
+                        f"pn=ilike.*{qq}*&order=created_at.asc", limit=200)
+                except Exception as e:
+                    st.error(f"추적 실패: {e}"); trace_rows = []
+
+                if not trace_rows:
+                    st.info("해당 제품의 원장 거래 없음.")
+                else:
+                    st.markdown(f"##### 🔎 제품 이력 — {len(trace_rows)}건")
+                    tdf = pd.DataFrame([{
+                        "일자": t.get("txn_date"),
+                        "품번": t.get("pn"),
+                        "단계": t.get("step_label"),
+                        "자재": t.get("material_name") or "-",
+                        "수량": float(t.get("qty") or 0),
+                        "LOT": t.get("lot_number") or "-",
+                        "참조": f"{t.get('ref_table') or '-'}#{t.get('ref_id') or ''}",
+                        "비고": t.get("remark") or "-",
+                    } for t in trace_rows])
+                    st.dataframe(tdf, use_container_width=True,
+                                 hide_index=True, height=400)
 
 
 elif page == "💰 원가 확인":
