@@ -143,3 +143,19 @@ def update(table: str, filter_query: str, fields: dict) -> bool:
         data=json.dumps(fields, ensure_ascii=False, default=str),
     )
     return r.status_code in (200, 204)
+
+
+def delete(table: str, filter_query: str) -> int:
+    """DELETE — 필터 없는 전체 삭제 금지. 삭제된 행 수 반환."""
+    if not filter_query or not filter_query.strip():
+        raise ValueError("delete: filter_query 필수 (전체 삭제 방지)")
+    r = requests.delete(
+        f"{_url()}/rest/v1/{table}?{filter_query}",
+        headers={**_headers(), "Prefer": "return=representation"},
+    )
+    if r.status_code not in (200, 204):
+        raise RuntimeError(f"{table} delete {r.status_code}: {r.text[:200]}")
+    try:
+        return len(r.json())
+    except Exception:
+        return 0
