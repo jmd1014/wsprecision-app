@@ -3968,6 +3968,12 @@ elif page == "🏭 생산 보고":
             if mes_rows:
                 # ── 1) 생산일 (교대는 행 단위 자동 분류) ──
                 f_date = parse_date_from_filename(mes_file.name)
+                # 다른 파일로 바뀌면 날짜를 파일명 기준으로 리셋
+                # (session_state 가 이전 파일 날짜를 유지하는 것 방지)
+                if st.session_state.get("mes_file_seen") != mes_file.name:
+                    st.session_state["mes_file_seen"] = mes_file.name
+                    if f_date:
+                        st.session_state["mes_date"] = f_date
                 mc1, mc2 = st.columns([1, 3])
                 with mc1:
                     mes_date = st.date_input(
