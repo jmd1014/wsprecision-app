@@ -44,6 +44,15 @@ def _num(v):
         return 0.0
 
 
+def _clean(v) -> str:
+    """텍스트 정규화 — &nbsp;(\xa0) → 공백, 연속 공백 1개로.
+    작업지시서는 수주 연결 키 후보라 공백 통일 필수."""
+    s = str(v if v is not None else "")
+    if s.lower() == 'nan':
+        return ""
+    return re.sub(r'\s+', ' ', s.replace('\xa0', ' ')).strip()
+
+
 def _is_subtotal(text: str) -> bool:
     t = str(text or "").strip()
     return any(tok in t for tok in SUBTOTAL_TOKENS)
@@ -75,10 +84,10 @@ def parse_mes_daily_report(content: bytes) -> list:
 
     rows = []
     for _, r in df.iterrows():
-        equip = str(r['설비명'] or "").strip()
-        wt = str(r['작업시간'] or "").strip()
+        equip = _clean(r['설비명'])
+        wt = _clean(r['작업시간'])
         # 소계/합계/빈 행 제외
-        if not equip or equip.lower() == 'nan' or _is_subtotal(equip) or _is_subtotal(wt):
+        if not equip or _is_subtotal(equip) or _is_subtotal(wt):
             continue
 
         ws = we = None
@@ -86,7 +95,7 @@ def parse_mes_daily_report(content: bytes) -> list:
         if m:
             ws, we = m.group(1), m.group(2)
 
-        proc = str(r['공정명'] or "").strip()
+        proc = _clean(r['공정명'])
         step = None
         ms = PROCESS_STEP_RE.search(proc)
         if ms:
@@ -94,13 +103,13 @@ def parse_mes_daily_report(content: bytes) -> list:
 
         rows.append({
             "equipment": equip,
-            "item_name": str(r['제품명'] or "").strip(),
+            "item_name": _clean(r['제품명']),
             "process": proc,
             "process_step": step,
             "work_start": ws,
             "work_end": we,
-            "worker": str(r['작업자'] or "").strip(),
-            "work_order": str(r['작업지시서'] or "").strip(),
+            "worker": _clean(r['작업자']),
+            "work_order": _clean(r['작업지시서']),
             "qty": _num(r['생산수량']),
             "defect": _num(r['불량수량']),
         })

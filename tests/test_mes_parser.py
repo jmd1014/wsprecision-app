@@ -10,7 +10,7 @@ from app.services.mes_parser import (
 FIXTURE = """
 <table border="1">
 <tr><td>설비명</td><td>제품명</td><td>공정명</td><td>작업시간</td><td>작업자</td><td>작업지시서</td><td>생산수량</td><td>불량수량</td></tr>
-<tr><td>CNC01</td><td>4HDV-VM-04</td><td>CNC#10</td><td>09:27 ~ 12:28</td><td>유근식</td><td>20260702-002 [001]</td><td>70</td><td>0</td></tr>
+<tr><td>CNC01</td><td>4HDV-VM-04</td><td>CNC#10</td><td>09:27  ~  12:28</td><td>유근식</td><td>20260702-002&nbsp;&nbsp;&nbsp;[001]</td><td>70</td><td>0</td></tr>
 <tr><td>CNC01</td><td>4HDV-VM-04</td><td>CNC#10</td><td>12:28 ~ 17:28</td><td>유근식</td><td>20260702-002 [001]</td><td>79</td><td>1</td></tr>
 <tr><td>CNC01</td><td>4HDV-VM-04</td><td>CNC#10</td><td>소 계</td><td>소 계</td><td>소 계</td><td>149</td><td>1</td></tr>
 <tr><td>MCT13</td><td>HA30-60251/SB</td><td>MCT#20</td><td>16:22 ~ 17:25</td><td>첸드수렌</td><td>20260630-003 [012]</td><td>62</td><td>0</td></tr>
@@ -36,6 +36,7 @@ def test_parse_fields():
     assert r0["work_start"] == "09:27"
     assert r0["work_end"] == "12:28"
     assert r0["worker"] == "유근식"
+    # &nbsp; 3개 → 공백 1개 정규화 (작업지시서 = 수주 연결 키 후보)
     assert r0["work_order"] == "20260702-002 [001]"
     assert r0["qty"] == 70.0
     assert r0["defect"] == 0.0
