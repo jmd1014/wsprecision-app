@@ -3951,7 +3951,7 @@ elif page == "🏭 생산 보고":
 
         from app.services.mes_parser import (
             parse_mes_daily_report, parse_date_from_filename,
-            match_product_pn, PROCESS_STEP_RE)
+            match_product_pn, guess_shift, PROCESS_STEP_RE)
 
         mes_file = st.file_uploader(
             "MES 일간 생산보고서 (.xls)", type=["xls", "html", "htm"],
@@ -3966,20 +3966,21 @@ elif page == "🏭 생산 보고":
                 st.error(f"파싱 실패: {e}"); mes_rows = []
 
             if mes_rows:
-                # ── 1) 생산일/교대 ──
+                # ── 1) 생산일 (교대는 행 단위 자동 분류) ──
                 f_date = parse_date_from_filename(mes_file.name)
-                mc1, mc2, mc3 = st.columns([1, 1, 2])
+                mc1, mc2 = st.columns([1, 3])
                 with mc1:
                     mes_date = st.date_input(
                         "생산일", value=f_date or _pb_date.today(),
                         key="mes_date",
                         help="파일명의 날짜를 자동 인식. 필요 시 수정.")
                 with mc2:
-                    mes_shift = st.selectbox("교대", ["주간", "야간"],
-                        key="mes_shift")
-                with mc3:
                     if f_date is None:
                         st.warning("파일명에서 날짜 인식 실패 — 직접 확인하세요.")
+                    st.caption(
+                        "교대는 작업 **시작시각** 기준 자동 분류 "
+                        "(06:00~17:30 주간 / 그 외 야간) — 그리드에서 수정 가능. "
+                        "MES 파일이 교대별이든 하루 통합이든 그대로 업로드하면 됩니다.")
 
                 # ── 2) 제품 마스터 매칭 ──
                 try:
@@ -3990,11 +3991,36 @@ elif page == "🏭 생산 보고":
                 pn_map = {p["pn"]: p["product_id"] for p in all_prods}
                 pn_set = set(pn_map)
 
+                # ── 3) 기존 저장분과 행 단위 중복 감지 ──
+                # 같은 날짜의 MES 행과 (설비/공정/지시서/시간/수량) 동일하면 중복.
+                # 교대별 파일을 나눠 올려도, 하루 통합 파일을 다시 올려도 안전.
+                try:
+                    exist = fetch("production_log",
+                        "log_id,shift,machine,process,work_order,"
+                        "work_start,work_end,total_qty,defect_qty",
+                        f"log_date=eq.{mes_date.isoformat()}"
+                        f"&source=eq.MES_UPLOAD", limit=2000)
+                except Exception:
+                    exist = []
+                exist_keys = {
+                    (e.get("machine") or "", e.get("process") or "",
+                     e.get("work_order") or "", e.get("work_start") or "",
+                     e.get("work_end") or "",
+                     float(e.get("total_qty") or 0),
+                     float(e.get("defect_qty") or 0))
+                    for e in exist}
+
                 review = []
                 for r in mes_rows:
                     mpn = match_product_pn(r["item_name"], pn_set)
+                    is_dup = (
+                        (r["equipment"], r["process"], r["work_order"],
+                         r["work_start"] or "", r["work_end"] or "",
+                         float(r["qty"]), float(r["defect"])) in exist_keys)
                     review.append({
-                        "포함": True,
+                        "포함": not is_dup,
+                        "교대": guess_shift(r["work_start"]),
+                        "상태": "🔁 기존" if is_dup else "신규",
                         "설비": r["equipment"],
                         "MES 품명": r["item_name"],
                         "매칭 품번": mpn or "",
@@ -4006,33 +4032,43 @@ elif page == "🏭 생산 보고":
                         "불량": r["defect"],
                     })
                 n_matched = sum(1 for v in review if v["매칭 품번"])
+                n_dup = sum(1 for v in review if v["상태"] == "🔁 기존")
+                n_day = sum(1 for v in review if v["교대"] == "주간")
 
-                mm1, mm2, mm3, mm4 = st.columns(4)
+                mm1, mm2, mm3, mm4, mm5 = st.columns(5)
                 mm1.metric("상세 행", len(review))
                 mm2.metric("총 생산",
                     f"{sum(v['생산'] for v in review):,.0f}")
                 mm3.metric("총 불량",
                     f"{sum(v['불량'] for v in review):,.0f}")
-                mm4.metric("품번 매칭", f"{n_matched}/{len(review)}",
+                mm4.metric("주간/야간", f"{n_day}/{len(review) - n_day}")
+                mm5.metric("품번 매칭", f"{n_matched}/{len(review)}",
                     "미매칭 있음" if n_matched < len(review) else None,
                     delta_color="inverse" if n_matched < len(review) else "off")
                 if n_matched < len(review):
                     st.warning(
                         "⚠️ 미매칭 행은 품번 없이(raw 품명 그대로) 저장됩니다. "
                         "'매칭 품번' 칸에 직접 입력하거나, 제외하려면 '포함' 해제.")
+                if n_dup:
+                    st.info(
+                        f"🔁 이미 저장된 것과 동일한 행 **{n_dup}건**은 "
+                        "'포함'이 자동 해제되어 있습니다 (이중 등록 방지).")
 
-                # ── 3) 검수 그리드 ──
-                st.markdown("##### 🔍 검수 (수정 가능: 포함 / 매칭 품번 / 생산 / 불량)")
+                # ── 4) 검수 그리드 ──
+                st.markdown("##### 🔍 검수 (수정 가능: 포함 / 교대 / 매칭 품번 / 생산 / 불량)")
                 edited = st.data_editor(
                     pd.DataFrame(review),
                     use_container_width=True, hide_index=True, height=420,
                     key="mes_editor",
                     column_config={
                         "포함": st.column_config.CheckboxColumn("포함", width="small"),
+                        "교대": st.column_config.SelectboxColumn("교대",
+                            options=["주간", "야간"], required=True,
+                            width="small"),
                         "생산": st.column_config.NumberColumn("생산", min_value=0),
                         "불량": st.column_config.NumberColumn("불량", min_value=0),
                     },
-                    disabled=["설비", "MES 품명", "공정", "작업시간",
+                    disabled=["상태", "설비", "MES 품명", "공정", "작업시간",
                               "작업자", "작업지시서"])
 
                 inc = edited[edited["포함"]].copy()
@@ -4040,6 +4076,7 @@ elif page == "🏭 생산 보고":
                 inc["매칭 품번"] = (inc["매칭 품번"].fillna("")
                                   .astype(str).str.strip()
                                   .replace("nan", ""))
+                inc["교대"] = inc["교대"].fillna("주간")
                 inc["생산"] = pd.to_numeric(inc["생산"], errors="coerce").fillna(0)
                 inc["불량"] = pd.to_numeric(inc["불량"], errors="coerce").fillna(0)
                 bad_pn = [p for p in inc["매칭 품번"].tolist()
@@ -4049,22 +4086,26 @@ elif page == "🏭 생산 보고":
                         f"❌ 마스터에 없는 품번 {len(bad_pn)}건: "
                         f"{', '.join(sorted(set(bad_pn))[:5])} — 수정 후 저장하세요.")
 
-                # ── 4) 중복 확인 (같은 날짜+교대+MES_UPLOAD) ──
-                try:
-                    dup_rows = fetch("production_log", "log_id",
-                        f"log_date=eq.{mes_date.isoformat()}"
-                        f"&shift=eq.{mes_shift}&source=eq.MES_UPLOAD",
-                        limit=1000)
-                except Exception:
-                    dup_rows = []
+                # ── 5) 저장 방식 (기존 행이 있을 때만) ──
                 dup_mode = "추가"
-                if dup_rows:
+                if exist:
+                    ex_day = sum(1 for e in exist if e.get("shift") == "주간")
+                    ex_night = len(exist) - ex_day
                     st.warning(
-                        f"⚠️ {mes_date} {mes_shift} MES 실적이 이미 "
-                        f"**{len(dup_rows)}행** 있습니다.")
-                    dup_mode = st.radio("중복 처리",
-                        ["교체 (기존 삭제 후 저장 · 권장)", "추가 (중복 감수)"],
+                        f"⚠️ {mes_date} MES 실적이 이미 있습니다 — "
+                        f"주간 {ex_day}행 / 야간 {ex_night}행.")
+                    up_shifts = sorted(set(inc["교대"])) if len(inc) else []
+                    del_cnt = sum(1 for e in exist
+                                  if e.get("shift") in up_shifts)
+                    dup_mode = st.radio("저장 방식",
+                        ["추가 (권장 — 동일 행은 위에서 자동 제외됨)",
+                         f"교체 (이번 업로드의 교대 {'/'.join(up_shifts) or '-'} "
+                         f"기존 {del_cnt}행 삭제 후 저장)"],
                         horizontal=True, key="mes_dup_mode")
+                    if dup_mode.startswith("교체"):
+                        st.caption(
+                            "수정된 파일을 다시 올릴 때 사용하세요. "
+                            "업로드에 없는 교대의 기존 행은 유지됩니다.")
 
                 # ── 5) 저장 ──
                 st.divider()
@@ -4082,11 +4123,13 @@ elif page == "🏭 생산 보고":
 
                 if do_mes_save and len(inc) > 0 and not bad_pn:
                     try:
-                        if dup_rows and dup_mode.startswith("교체"):
-                            n_del = _db.delete("production_log",
-                                f"log_date=eq.{mes_date.isoformat()}"
-                                f"&shift=eq.{mes_shift}&source=eq.MES_UPLOAD")
-                            st.info(f"기존 {n_del}행 삭제 (교체)")
+                        if exist and dup_mode.startswith("교체"):
+                            for _sh in sorted(set(inc["교대"])):
+                                n_del = _db.delete("production_log",
+                                    f"log_date=eq.{mes_date.isoformat()}"
+                                    f"&shift=eq.{_sh}&source=eq.MES_UPLOAD")
+                                if n_del:
+                                    st.info(f"기존 {_sh} {n_del}행 삭제 (교체)")
                         recs = []
                         for _, v in inc.iterrows():
                             mpn = v["매칭 품번"] or None
@@ -4094,7 +4137,7 @@ elif page == "🏭 생산 보고":
                             _step_m = PROCESS_STEP_RE.search(v["공정"] or "")
                             recs.append({
                                 "log_date": mes_date.isoformat(),
-                                "shift": mes_shift,
+                                "shift": v["교대"],
                                 "machine": v["설비"],
                                 "worker": v["작업자"] or None,
                                 "process": v["공정"] or None,
@@ -4112,9 +4155,10 @@ elif page == "🏭 생산 보고":
                                            f"품번 미매칭 (MES 품명: {v['MES 품명']})"),
                             })
                         _db.insert("production_log", recs)
+                        _d = sum(1 for r in recs if r["shift"] == "주간")
                         st.success(
-                            f"✅ MES 실적 {len(recs)}행 저장 — "
-                            f"{mes_date} {mes_shift} · "
+                            f"✅ MES 실적 {len(recs)}행 저장 — {mes_date} · "
+                            f"주간 {_d} / 야간 {len(recs) - _d} · "
                             f"생산 {sum(r['total_qty'] for r in recs):,.0f} / "
                             f"불량 {sum(r['defect_qty'] for r in recs):,.0f} "
                             f"(재고 미반영)")

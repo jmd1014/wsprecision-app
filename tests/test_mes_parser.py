@@ -4,7 +4,8 @@ from datetime import date
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from app.services.mes_parser import (
-    parse_mes_daily_report, parse_date_from_filename, match_product_pn)
+    parse_mes_daily_report, parse_date_from_filename, match_product_pn,
+    guess_shift)
 
 # 실제 MES export 구조 축소 재현 (HTML table, .xls 위장)
 FIXTURE = """
@@ -55,6 +56,21 @@ def test_date_from_filename():
     assert parse_date_from_filename("일간생산보고서_20260703.xls") == date(2026, 7, 3)
     assert parse_date_from_filename("일간생산보고서_20261231.xls") == date(2026, 12, 31)
     assert parse_date_from_filename("보고서.xls") is None
+
+
+def test_guess_shift():
+    # 실데이터 경계: 주간 08:37~17:28 / 야간 17:31~익일 01:50
+    assert guess_shift("08:37") == "주간"
+    assert guess_shift("17:28") == "주간"   # 주간 마지막 시작
+    assert guess_shift("17:29") == "주간"   # 경계 직전
+    assert guess_shift("17:31") == "야간"   # 야간 첫 시작
+    assert guess_shift("19:45") == "야간"
+    assert guess_shift("00:18") == "야간"   # 자정 넘긴 야간 연속
+    assert guess_shift("01:50") == "야간"
+    assert guess_shift("05:59") == "야간"
+    assert guess_shift("06:00") == "주간"
+    assert guess_shift(None) == "주간"      # 시간 미상 → 기본 주간
+    assert guess_shift("") == "주간"
 
 
 def test_match_product_pn():

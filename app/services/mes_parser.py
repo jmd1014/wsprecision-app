@@ -116,6 +116,23 @@ def parse_mes_daily_report(content: bytes) -> list:
     return rows
 
 
+def guess_shift(work_start: str) -> str:
+    """작업 시작시각 → 교대 추정.
+
+    06:00~17:29 시작 → 주간, 그 외(저녁~새벽) → 야간.
+    실데이터 근거: 주간 보고서 시작 08:37~17:28 / 야간 17:31~익일 01:50.
+    경계 근처(교대 교차 작업 등)는 검수 그리드에서 수정.
+    """
+    if not work_start:
+        return "주간"
+    try:
+        h, m = work_start.split(':')
+        t = int(h) * 60 + int(m)
+    except ValueError:
+        return "주간"
+    return "주간" if 6 * 60 <= t < 17 * 60 + 30 else "야간"
+
+
 def match_product_pn(item_name: str, pn_set: set) -> str:
     """MES 제품명 → 제품 마스터 pn 매칭.
 
