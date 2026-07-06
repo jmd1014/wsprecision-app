@@ -3748,9 +3748,188 @@ elif page == "🏭 생산 보고":
     import pandas as pd
     from datetime import date as _pb_date
 
-    tab_report, tab_mes, tab_history, tab_trace = st.tabs(
-        ["📝 생산 보고 입력", "📥 MES 업로드", "📜 생산 이력",
-         "🔎 역추적 (LOT/제품)"])
+    tab_dash, tab_report, tab_mes, tab_history, tab_trace = st.tabs(
+        ["📊 대시보드", "📝 생산 보고 입력", "📥 MES 업로드",
+         "📜 생산 이력", "🔎 역추적 (LOT/제품)"])
+
+    # ════════ TAB 0: 생산 대시보드 (시트 웹앱 대시보드 이관 1차) ════════
+    with tab_dash:
+        import altair as alt
+        from datetime import timedelta as _td
+
+        fc1, fc2, fc3 = st.columns([1.4, 1, 1])
+        with fc1:
+            d_preset = st.selectbox("기간",
+                ["최근 7일", "오늘", "이번 달", "직접 지정"],
+                key="dash_preset")
+        with fc2:
+            d_shift = st.selectbox("교대", ["전체", "주간", "야간"],
+                key="dash_shift")
+        with fc3:
+            d_src = st.selectbox("소스", ["전체", "📥 MES", "📝 수기"],
+                key="dash_src")
+
+        _today = _pb_date.today()
+        if d_preset == "오늘":
+            d_from, d_to = _today, _today
+        elif d_preset == "이번 달":
+            d_from, d_to = _today.replace(day=1), _today
+        elif d_preset == "직접 지정":
+            dr1, dr2 = st.columns(2)
+            with dr1:
+                d_from = st.date_input("시작일", _today - _td(days=7),
+                    key="dash_from")
+            with dr2:
+                d_to = st.date_input("종료일", _today, key="dash_to")
+        else:
+            d_from, d_to = _today - _td(days=6), _today
+
+        q = [f"log_date=gte.{d_from.isoformat()}",
+             f"log_date=lte.{d_to.isoformat()}"]
+        if d_shift != "전체":
+            q.append(f"shift=eq.{d_shift}")
+        if d_src == "📥 MES":
+            q.append("source=eq.MES_UPLOAD")
+        elif d_src == "📝 수기":
+            q.append("source=eq.MANUAL")
+        try:
+            d_rows = fetch("production_log",
+                "log_date,shift,machine,worker,process,process_step,pn,"
+                "total_qty,defect_qty,work_order,source",
+                "&".join(q) + "&order=log_date.asc", limit=5000)
+        except Exception as e:
+            st.error(f"대시보드 조회 실패: {e}"); d_rows = []
+
+        if not d_rows:
+            st.info(f"{d_from} ~ {d_to} 생산 실적 없음. "
+                    "MES 업로드 또는 생산 보고 입력 후 표시됩니다.")
+        else:
+            ddf = pd.DataFrame(d_rows)
+            ddf["total_qty"] = pd.to_numeric(ddf["total_qty"],
+                errors="coerce").fillna(0)
+            ddf["defect_qty"] = pd.to_numeric(ddf["defect_qty"],
+                errors="coerce").fillna(0)
+            ddf["shift"] = ddf["shift"].fillna("-")
+            ddf["machine"] = ddf["machine"].fillna("-")
+            ddf["worker"] = ddf["worker"].fillna("-")
+            ddf["process"] = ddf["process"].fillna("-")
+            # 작업지시 번호 (식별표 제외 앞부분)
+            ddf["wo"] = (ddf["work_order"].fillna("")
+                         .astype(str).str.split(" ").str[0])
+
+            t_qty = ddf["total_qty"].sum()
+            t_def = ddf["defect_qty"].sum()
+            k1, k2, k3, k4, k5 = st.columns(5)
+            k1.metric("총 생산량", f"{t_qty:,.0f}")
+            k2.metric("총 불량", f"{t_def:,.0f}")
+            k3.metric("불량률",
+                f"{t_def / t_qty * 100:.2f}%" if t_qty else "-")
+            k4.metric("가동 설비",
+                f"{ddf.loc[ddf['machine'] != '-', 'machine'].nunique()}대")
+            k5.metric("작업지시",
+                f"{ddf.loc[ddf['wo'] != '', 'wo'].nunique()}건")
+
+            st.caption(
+                "ℹ️ 가동율·정지사유는 관리자 시트 입력 항목 — 이관 2차에서 통합 예정. "
+                "현재는 MES 실적(생산/불량) 기준.")
+
+            # ── 일자별 생산량 (주간/야간) ──
+            st.markdown("##### 📈 일자별 생산량 (교대별)")
+            daily = ddf.groupby(["log_date", "shift"],
+                as_index=False)["total_qty"].sum()
+            ch_daily = alt.Chart(daily).mark_bar().encode(
+                x=alt.X("log_date:N", title=None,
+                        axis=alt.Axis(labelAngle=0)),
+                y=alt.Y("total_qty:Q", title="생산량 (EA)"),
+                color=alt.Color("shift:N", title="교대",
+                    scale=alt.Scale(domain=["주간", "야간"],
+                                    range=["#2E5496", "#e15759"])),
+                xOffset="shift:N",
+                tooltip=[alt.Tooltip("log_date:N", title="일자"),
+                         alt.Tooltip("shift:N", title="교대"),
+                         alt.Tooltip("total_qty:Q", title="생산량",
+                                     format=",.0f")],
+            ).properties(height=260)
+            st.altair_chart(ch_daily, use_container_width=True)
+
+            # ── 설비별 / 품번별 ──
+            cc1, cc2 = st.columns(2)
+            with cc1:
+                st.markdown("##### 🏭 설비별 생산량 (TOP 15)")
+                by_m = (ddf.groupby("machine", as_index=False)
+                        .agg(qty=("total_qty", "sum"),
+                             defect=("defect_qty", "sum"))
+                        .sort_values("qty", ascending=False).head(15))
+                ch_m = alt.Chart(by_m).mark_bar(color="#2E5496").encode(
+                    x=alt.X("qty:Q", title="생산량"),
+                    y=alt.Y("machine:N", sort="-x", title=None),
+                    tooltip=[alt.Tooltip("machine:N", title="설비"),
+                             alt.Tooltip("qty:Q", title="생산량", format=",.0f"),
+                             alt.Tooltip("defect:Q", title="불량", format=",.0f")],
+                ).properties(height=340)
+                st.altair_chart(ch_m, use_container_width=True)
+            with cc2:
+                st.markdown("##### 🔩 품번별 생산량 (TOP 10)")
+                by_p = (ddf.groupby("pn", as_index=False)
+                        .agg(qty=("total_qty", "sum"),
+                             defect=("defect_qty", "sum"))
+                        .sort_values("qty", ascending=False).head(10))
+                ch_p = alt.Chart(by_p).mark_bar(color="#1F3864").encode(
+                    x=alt.X("qty:Q", title="생산량"),
+                    y=alt.Y("pn:N", sort="-x", title=None),
+                    tooltip=[alt.Tooltip("pn:N", title="품번"),
+                             alt.Tooltip("qty:Q", title="생산량", format=",.0f"),
+                             alt.Tooltip("defect:Q", title="불량", format=",.0f")],
+                ).properties(height=340)
+                st.altair_chart(ch_p, use_container_width=True)
+
+            # ── 작업자별 / 공정별 ──
+            cc3, cc4 = st.columns(2)
+            with cc3:
+                st.markdown("##### 👷 작업자별 생산량")
+                by_w = (ddf.groupby("worker", as_index=False)
+                        .agg(qty=("total_qty", "sum"),
+                             defect=("defect_qty", "sum"))
+                        .sort_values("qty", ascending=False).head(15))
+                ch_w = alt.Chart(by_w).mark_bar(color="#4472C4").encode(
+                    x=alt.X("qty:Q", title="생산량"),
+                    y=alt.Y("worker:N", sort="-x", title=None),
+                    tooltip=[alt.Tooltip("worker:N", title="작업자"),
+                             alt.Tooltip("qty:Q", title="생산량", format=",.0f"),
+                             alt.Tooltip("defect:Q", title="불량", format=",.0f")],
+                ).properties(height=320)
+                st.altair_chart(ch_w, use_container_width=True)
+            with cc4:
+                st.markdown("##### ⚙️ 공정별 생산량")
+                by_pr = (ddf.groupby("process", as_index=False)
+                         .agg(qty=("total_qty", "sum"),
+                              defect=("defect_qty", "sum"))
+                         .sort_values("qty", ascending=False).head(15))
+                ch_pr = alt.Chart(by_pr).mark_bar(color="#6b8ac9").encode(
+                    x=alt.X("qty:Q", title="생산량"),
+                    y=alt.Y("process:N", sort="-x", title=None),
+                    tooltip=[alt.Tooltip("process:N", title="공정"),
+                             alt.Tooltip("qty:Q", title="생산량", format=",.0f"),
+                             alt.Tooltip("defect:Q", title="불량", format=",.0f")],
+                ).properties(height=320)
+                st.altair_chart(ch_pr, use_container_width=True)
+
+            # ── 불량 발생 상세 ──
+            def_rows = ddf[ddf["defect_qty"] > 0]
+            st.markdown(f"##### 🚨 불량 발생 상세 ({len(def_rows)}건)")
+            if def_rows.empty:
+                st.caption("기간 내 불량 없음 🎉")
+            else:
+                st.dataframe(
+                    def_rows[["log_date", "shift", "machine", "pn",
+                              "process", "worker", "total_qty",
+                              "defect_qty"]].rename(columns={
+                        "log_date": "일자", "shift": "교대",
+                        "machine": "설비", "pn": "품번",
+                        "process": "공정", "worker": "작업자",
+                        "total_qty": "생산", "defect_qty": "불량"}),
+                    use_container_width=True, hide_index=True,
+                    height=min(300, 60 + len(def_rows) * 35))
 
     # ════════ TAB 1: 생산 보고 입력 ════════
     with tab_report:
