@@ -3830,8 +3830,10 @@ elif page == "🏭 생산 보고":
                 f"{ddf.loc[ddf['wo'] != '', 'wo'].nunique()}건")
 
             st.caption(
-                "ℹ️ 가동율·정지사유는 관리자 시트 입력 항목 — 이관 2차에서 통합 예정. "
-                "현재는 MES 실적(생산/불량) 기준.")
+                "ℹ️ 가동률은 현재 작업시간 기반 근사 — 품번·공정 C.T./UPH 마스터 "
+                "도입 후 시트와 같은 UPH 기준으로 전환 예정 (이관 2차). "
+                "정지사유도 이관 2차에서 통합.")
+            st.divider()
 
             # ── 일자별 생산량 + 가동률 (시트 주간요약 2개 차트 이관) ──
             def _hhmm_min(t):
@@ -3882,7 +3884,8 @@ elif page == "🏭 생산 보고":
 
             _shift_scale = alt.Scale(domain=["주간", "야간"],
                                      range=["#2E5496", "#e15759"])
-            ch1, ch2 = st.columns(2)
+            _num_col = st.column_config.NumberColumn
+            ch1, ch2 = st.columns([2, 1])
             with ch1:
                 st.markdown("##### 📈 일자별 생산량 (교대별)")
                 daily = ddf.groupby(["log_date", "shift"],
@@ -3898,10 +3901,10 @@ elif page == "🏭 생산 보고":
                              alt.Tooltip("shift:N", title="교대"),
                              alt.Tooltip("total_qty:Q", title="생산량",
                                          format=",.0f")],
-                ).properties(height=280)
+                ).properties(height=300)
                 st.altair_chart(ch_daily, use_container_width=True)
             with ch2:
-                st.markdown("##### ⏱️ 일자별 가동률 추이")
+                st.markdown("##### ⏱️ 가동률 추이 (근사)")
                 util = _calc_daily_util(ddf)
                 if util.empty:
                     st.info("작업시간 구간 데이터가 없어 가동률을 계산할 수 "
@@ -3911,7 +3914,7 @@ elif page == "🏭 생산 보고":
                         point=True, strokeWidth=3).encode(
                         x=alt.X("log_date:N", title=None,
                                 axis=alt.Axis(labelAngle=0)),
-                        y=alt.Y("util:Q", title="가동률",
+                        y=alt.Y("util:Q", title=None,
                                 axis=alt.Axis(format=".0%"),
                                 scale=alt.Scale(domain=[0, 1])),
                         color=alt.Color("shift:N", title="교대",
@@ -3920,13 +3923,14 @@ elif page == "🏭 생산 보고":
                                  alt.Tooltip("shift:N", title="교대"),
                                  alt.Tooltip("util:Q", title="가동률",
                                              format=".1%")],
-                    ).properties(height=280)
+                    ).properties(height=300)
                     st.altair_chart(ch_util, use_container_width=True)
                 st.caption(
-                    "시간 가동률(근사): 설비별 MES 작업시간 구간을 병합해 "
-                    "교대 기준 9시간으로 나눈 값의 설비 평균. "
-                    "시작=종료로 찍힌 스캔형 실적은 계산에서 제외 — "
-                    "시트의 실가동율(UPH 기준)과 정의가 다를 수 있습니다.")
+                    "설비별 작업구간 병합 ÷ 교대 9h 의 설비 평균. "
+                    "스캔형(시작=종료) 실적 제외 — 시트 실가동율(UPH 기준)과 "
+                    "정의가 다름. C.T. 마스터 도입 시 UPH 기준으로 전환.")
+
+            st.divider()
 
             # ── 설비별 요약 (텍스트) ──
             st.markdown("##### 🏭 설비별 요약")
@@ -3939,22 +3943,40 @@ elif page == "🏭 생산 보고":
                 columns={"machine": "설비", "pn": "품번", "process": "공정"})
             st.dataframe(by_m[["설비", "품번", "공정", "생산", "불량", "작업자"]],
                          use_container_width=True, hide_index=True,
-                         height=min(420, 60 + len(by_m) * 35))
+                         height=min(420, 60 + len(by_m) * 35),
+                         column_config={
+                             "설비": st.column_config.TextColumn("설비", width="small"),
+                             "공정": st.column_config.TextColumn("공정", width="small"),
+                             "생산": _num_col("생산", format="localized", width="small"),
+                             "불량": _num_col("불량", format="localized", width="small"),
+                             "작업자": st.column_config.TextColumn("작업자", width="large"),
+                         })
+
+            st.divider()
 
             # ── 품번·공정별 / 작업자별 요약 ──
             tc1, tc2 = st.columns(2)
             with tc1:
                 st.markdown("##### 🔩 품번·공정별 생산량")
-                st.caption("품번↔공정 연결 방침 확정 전 — 공정별 분리 집계.")
+                st.caption("품번 순 정렬 · 품번↔공정 연결 방침 확정 전 — 공정별 분리 집계.")
                 by_p = (ddf.groupby(["pn", "process"], as_index=False)
                         .agg(생산=("total_qty", "sum"),
                              불량=("defect_qty", "sum"))
-                        .sort_values("생산", ascending=False)
+                        .sort_values(["pn", "process"])
                         .rename(columns={"pn": "품번", "process": "공정"}))
+                by_p["불량률"] = by_p.apply(
+                    lambda r: r["불량"] / r["생산"] if r["생산"] else None, axis=1)
                 st.dataframe(by_p, use_container_width=True, hide_index=True,
-                             height=min(380, 60 + len(by_p) * 35))
+                             height=min(420, 60 + len(by_p) * 35),
+                             column_config={
+                                 "공정": st.column_config.TextColumn("공정", width="small"),
+                                 "생산": _num_col("생산", format="localized", width="small"),
+                                 "불량": _num_col("불량", format="localized", width="small"),
+                                 "불량률": _num_col("불량률", format="percent", width="small"),
+                             })
             with tc2:
                 st.markdown("##### 👷 작업자별 요약")
+                st.caption("생산량 순 · 제품 특성이 달라 절대 비교보다 담당 현황 참고용.")
                 by_w = (ddf[ddf["worker"] != "-"]
                         .groupby("worker", as_index=False)
                         .agg(생산=("total_qty", "sum"),
@@ -3964,7 +3986,15 @@ elif page == "🏭 생산 보고":
                         .sort_values("생산", ascending=False)
                         .rename(columns={"worker": "작업자"}))
                 st.dataframe(by_w, use_container_width=True, hide_index=True,
-                             height=min(380, 60 + len(by_w) * 35))
+                             height=min(420, 60 + len(by_w) * 35),
+                             column_config={
+                                 "작업자": st.column_config.TextColumn("작업자", width="small"),
+                                 "생산": _num_col("생산", format="localized", width="small"),
+                                 "불량": _num_col("불량", format="localized", width="small"),
+                                 "설비": st.column_config.TextColumn("설비", width="large"),
+                             })
+
+            st.divider()
 
             # ── 작업지시서별 공정 진행 현황 ──
             st.markdown("##### 📋 작업지시서별 공정 진행 현황")
@@ -3989,6 +4019,8 @@ elif page == "🏭 생산 보고":
                 wo_p.columns.name = None
                 st.dataframe(wo_p, use_container_width=True, hide_index=True,
                              height=min(420, 60 + len(wo_p) * 35))
+
+            st.divider()
 
             # ── 불량 발생 상세 ──
             def_rows = ddf[ddf["defect_qty"] > 0]
