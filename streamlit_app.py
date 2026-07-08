@@ -3166,6 +3166,23 @@ elif page == "📋 구매/발주":
                                 f"or=(pn.ilike.*{search_q}*,alias_list.ilike.*{search_q}*,bom_material_name.ilike.*{search_q}*)&limit=20")
                 except Exception as e:
                     st.error(f"검색 실패: {e}"); res = []
+                if not res:
+                    # 활성 품목 0건 — 휴면 품목과 일치하면 원인 안내 (침묵 방지)
+                    try:
+                        arch = fetch("products", "pn",
+                            f"pn=ilike.*{search_q}*&archived_at=not.is.null",
+                            limit=5)
+                    except Exception:
+                        arch = []
+                    if arch:
+                        st.warning(
+                            f"⚠️ 활성 품목 중 검색 결과 없음 — **휴면 처리된 "
+                            f"품목 {len(arch)}건**이 일치합니다: "
+                            f"{', '.join(a['pn'] for a in arch)}. "
+                            "발주하려면 ⚙️ 마스터 관리에서 활성 복귀하세요.")
+                    else:
+                        st.info("일치하는 품목 없음 — 아래 '마스터에 없는 품목 "
+                                "즉석 추가'를 이용하세요.")
                 for p in res[:10]:
                     with st.container(border=True):
                         cols = st.columns([3, 2, 2, 2, 1])
