@@ -4109,7 +4109,12 @@ elif page == "🏭 생산 보고":
             lc1, lc2 = st.columns(2)
             with lc1:
                 # LOT 번호 — 역추적 키 (기본 자동 제안)
+                # 제품/생산일이 바뀌면 기본값 갱신 (session_state 가 이전
+                # 제품의 LOT 을 유지해 다른 제품에 저장되는 것 방지)
                 _lot_default = f"LOT-{pb_date.strftime('%y%m%d')}-{sel_prod['pn'][:10]}"
+                if st.session_state.get("pb_lot_seed") != _lot_default:
+                    st.session_state["pb_lot_seed"] = _lot_default
+                    st.session_state["pb_lot"] = _lot_default
                 pb_lot = st.text_input("생산 LOT 번호",
                     value=_lot_default, key="pb_lot",
                     help="자재 투입~완성~납품까지 역추적하는 키. 자동 제안값 수정 가능.")
