@@ -3380,8 +3380,11 @@ elif page == "📋 구매/발주":
                             st.info(f"💾 발주 이력 저장 (po_id={po_row['po_id']})")
                     except Exception as e:
                         st.warning(f"⚠️ DB 저장 실패 (xlsx는 정상): {e}")
-                    if st.button("🔄 새 발주서 시작"):
-                        st.session_state.po_items = []; st.rerun()
+                    # on_click 콜백 필수 — 이 버튼은 생성 직후 run 에만
+                    # 렌더되는 조건부 버튼이라 if st.button() 방식으로는
+                    # 클릭 처리가 실행되지 않음 (품목 표 리셋 누락 버그)
+                    st.button("🔄 새 발주서 시작",
+                        on_click=lambda: st.session_state.update(po_items=[]))
                 except Exception as e:
                     st.error(f"발주서 생성 실패: {e}")
 
@@ -3611,18 +3614,44 @@ elif page == "📋 구매/발주":
                                 )
                                 sel_mid = r["material_id"]
                             else:
-                                # 자동 추천 키워드: 발주 비고(재질) — 예: SUS304, AL6061
+                                # ① BOM 매핑 최우선 — 발주 품명이 제품 품번이면
+                                #    그 제품 BOM 의 자재가 정답 (재질+규격 일치).
+                                #    비고(재질) 검색은 규격이 다른 자재를 추천할
+                                #    수 있어 fallback 으로만 사용.
+                                _bom_mat = None
+                                try:
+                                    _p_hit = fetch("products", "product_id",
+                                        f"pn=eq.{r.get('item_name', '')}", limit=1)
+                                    if _p_hit:
+                                        _b_hit = fetch("bom", "material_id",
+                                            f"product_id=eq.{_p_hit[0]['product_id']}"
+                                            "&process_type=eq.MATERIAL"
+                                            "&material_id=not.is.null", limit=1)
+                                        if _b_hit:
+                                            _bom_mat = _b_hit[0]["material_id"]
+                                except Exception:
+                                    pass
                                 _auto_kw = poi_remarks.get(poi_id, "")
                                 m_kw = st.text_input(
                                     "자재 검색 (최초 1회 매핑)",
                                     placeholder=(
-                                        f"비우면 발주 비고 '{_auto_kw}' 자동 추천"
-                                        if _auto_kw else "자재명/재질/규격"),
+                                        "비우면 BOM 매핑 자재 자동 추천"
+                                        if _bom_mat else
+                                        (f"비우면 발주 비고 '{_auto_kw}' 자동 추천"
+                                         if _auto_kw else "자재명/재질/규격")),
                                     key=f"rcv_mq_{poi_id}")
                                 sel_mid = None
-                                # 수동 입력 우선, 없으면 비고 키워드 자동 검색
+                                # 수동 입력 > BOM 매핑 > 비고 키워드
                                 _search_kw = m_kw.strip() if m_kw else _auto_kw
-                                if _search_kw:
+                                m_cands = []
+                                if not m_kw and _bom_mat:
+                                    try:
+                                        m_cands = fetch("materials",
+                                            "material_id,raw_name,material_type,spec",
+                                            f"material_id=eq.{_bom_mat}", limit=1)
+                                    except Exception:
+                                        m_cands = []
+                                if not m_cands and _search_kw:
                                     try:
                                         m_cands = fetch("materials",
                                             "material_id,raw_name,material_type,spec",
@@ -3632,8 +3661,11 @@ elif page == "📋 구매/발주":
                                             f"&order=raw_name.asc", limit=15)
                                     except Exception:
                                         m_cands = []
+                                if True:
                                     if m_cands:
-                                        _src = "검색" if m_kw else "자동 추천 (비고)"
+                                        _src = ("검색" if m_kw else
+                                                ("BOM 매핑" if _bom_mat and not m_kw
+                                                 else "자동 추천 (비고)"))
                                         m_labels = [
                                             f"{m['material_id']} | {m['raw_name']} "
                                             f"({m.get('spec') or '-'})"
