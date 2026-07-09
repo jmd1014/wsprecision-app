@@ -1995,6 +1995,47 @@ elif page == "📥 수주 관리":
                         st.stop()
                     items = new_items  # 이후 매칭/저장은 신규만
 
+                    # ── 파일 내 중복 라인 감지 ──
+                    # 실사례: G264220260 에 동일 라인 4종이 이중 등록됨 (import 중복).
+                    # 수주번호+품번+수량+단가+납기가 완전히 같으면 중복으로 판단.
+                    from collections import Counter as _Counter
+                    def _line_key(it):
+                        return (it.get("so_number"),
+                                str(it.get("customer_part_no")
+                                    or it.get("canonical_pn_hint") or ""),
+                                str(it.get("qty")), str(it.get("unit_price")),
+                                str(it.get("due_date")))
+                    _key_counts = _Counter(_line_key(it) for it in items)
+                    _dup_keys = {k for k, c in _key_counts.items() if c > 1}
+                    if _dup_keys:
+                        n_extra = sum(_key_counts[k] - 1 for k in _dup_keys)
+                        st.warning(
+                            f"⚠️ **파일 내 동일 라인 중복 {len(_dup_keys)}종 "
+                            f"(초과 {n_extra}행)** — 수주번호·품번·수량·단가·납기가 "
+                            "완전히 같은 행입니다. 기본으로 1행만 저장합니다.")
+                        _dup_prev = [{"수주번호": k[0], "품번": k[1], "수량": k[2],
+                                      "단가": k[3], "납기": k[4],
+                                      "중복 행수": _key_counts[k]}
+                                     for k in sorted(_dup_keys)]
+                        st.dataframe(pd.DataFrame(_dup_prev),
+                                     use_container_width=True, hide_index=True)
+                        keep_dups = st.checkbox(
+                            "중복 행을 그대로 모두 저장 (실제로 같은 품목을 "
+                            "여러 라인으로 발주한 경우만 체크)",
+                            value=False, key="so_up_keep_dups")
+                        if not keep_dups:
+                            _seen_keys = set()
+                            _deduped = []
+                            for it in items:
+                                k = _line_key(it)
+                                if k in _dup_keys and k in _seen_keys:
+                                    continue
+                                _seen_keys.add(k)
+                                _deduped.append(it)
+                            items = _deduped
+                            st.caption(f"→ 중복 {n_extra}행 제외, "
+                                       f"**{len(items)}행** 저장 예정.")
+
                     # 우성정밀 품번 매칭
                     products = fetch("products", "product_id,pn,alias_list", limit=1500)
                     cm = {}
@@ -2726,7 +2767,18 @@ elif page == "📊 생산 준비":
     else:
         mat_map = {}
 
-    # ── 5) 자재 필요량 계산 ──
+    # ── 4.5) 제품 완성 재고 조회 (product_stock_v — 원장 누적) ──
+    # 완성 재고가 있으면 그만큼은 생산 없이 출고 가능 → 자재 필요량에서 제외
+    try:
+        _ps_rows = fetch("product_stock_v", "product_id,current_stock",
+            f"product_id=in.({pids_str})", limit=500)
+        prod_stock_left = {p["product_id"]: max(0.0, float(p.get("current_stock") or 0))
+                           for p in _ps_rows}
+    except Exception:
+        prod_stock_left = {}
+    total_prod_stock_used = 0.0
+
+    # ── 5) 자재 필요량 계산 (순생산필요 = 미납 − 제품 완성 재고) ──
     # material_id → {required, by_pid: {pid: req}, by_so: {so_id: req}}
     mat_req = _dd(lambda: {
         "required": 0.0, "by_pid": _dd(float), "by_so": _dd(float),
@@ -2738,6 +2790,14 @@ elif page == "📊 생산 준비":
     for soi in sois:
         pid = soi["product_id"]
         pending = float(soi.get("pending_qty") or 0)
+        # 제품 재고 선착순 배분 (수주 라인 순서대로 소진)
+        avail = prod_stock_left.get(pid, 0.0)
+        use = min(avail, pending)
+        prod_stock_left[pid] = avail - use
+        total_prod_stock_used += use
+        net = pending - use
+        soi["prod_stock_used"] = use
+        soi["net_pending"] = net
         boms = bom_by_pid.get(pid, [])
         if not boms:
             items_no_bom.append({
@@ -2747,25 +2807,34 @@ elif page == "📊 생산 준비":
             })
             continue
         items_with_bom += 1
+        if net <= 0:
+            continue   # 완성 재고로 전량 충당 — 자재 불필요
         for b in boms:
             mid = b.get("material_id")
             if not mid: continue
             qpp = float(b.get("qty_per_pc") or 1)
             sf = float(b.get("shared_factor") or 1) or 1
-            need = pending * qpp / sf
+            need = net * qpp / sf
             mat_req[mid]["required"] += need
             mat_req[mid]["by_pid"][pid] += need
             mat_req[mid]["by_so"][soi["so_id"]] += need
             mat_req[mid]["items_count"] += 1
 
     # ── 6) 상단 통계 ──
-    sc1, sc2, sc3, sc4 = st.columns(4)
+    sc1, sc2, sc3, sc4, sc5 = st.columns(5)
     sc1.metric("미납 수주 품목", len(sois))
     sc2.metric("BOM 매핑된 품목", items_with_bom)
-    sc3.metric("필요 자재 종류", len(mat_req))
+    sc3.metric("📦 완성 재고 충당",
+               f"{total_prod_stock_used:,.0f}",
+               help="제품 완성 재고(product_stock_v)로 생산 없이 출고 "
+                    "가능한 수량 — 자재 필요량 계산에서 제외됨")
+    sc4.metric("필요 자재 종류", len(mat_req))
     shortage_count = sum(1 for mid, info in mat_req.items()
                           if info["required"] - (mat_map.get(mid, {}).get("stock_qty") or 0) > 0)
-    sc4.metric("🔴 자재 부족", shortage_count, delta_color="inverse")
+    sc5.metric("🔴 자재 부족", shortage_count, delta_color="inverse")
+    st.caption(
+        "ℹ️ 필요량 = **순생산필요** (미납수량 − 제품 완성 재고) × BOM. "
+        "자재 재고는 원장 실재고(material_stock) 기준.")
 
     if items_no_bom:
         with st.expander(f"⚠️ BOM 미등록 품목 {len(items_no_bom)}건 — 마스터에서 BOM 등록 필요"):
@@ -2825,12 +2894,16 @@ elif page == "📊 생산 준비":
                 for soi in items:
                     pid = soi["product_id"]
                     pending = float(soi.get("pending_qty") or 0)
+                    ps_used = float(soi.get("prod_stock_used") or 0)
+                    net = float(soi.get("net_pending") if soi.get("net_pending") is not None else pending)
                     boms = bom_by_pid.get(pid, [])
                     if not boms:
                         so_rows.append({
                             "라인": soi["line_no"],
                             "품번": soi.get("canonical_pn"),
                             "미납수량": pending,
+                            "완성재고 충당": ps_used,
+                            "순생산필요": net,
                             "자재": "❌ BOM 미등록",
                             "필요량": 0, "단위": "-", "재고": 0, "부족분": 0,
                         })
@@ -2840,12 +2913,14 @@ elif page == "📊 생산 준비":
                         mat = mat_map.get(mid, {})
                         qpp = float(b.get("qty_per_pc") or 1)
                         sf = float(b.get("shared_factor") or 1) or 1
-                        need = pending * qpp / sf
+                        need = net * qpp / sf
                         stock = float(mat.get("stock_qty") or 0)
                         so_rows.append({
                             "라인": soi["line_no"],
                             "품번": soi.get("canonical_pn"),
                             "미납수량": pending,
+                            "완성재고 충당": ps_used,
+                            "순생산필요": net,
                             "자재": mat.get("raw_name") or "-",
                             "필요량": round(need, 2),
                             "단위": mat.get("unit") or "-",
