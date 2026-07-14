@@ -110,10 +110,27 @@ st.markdown(f"""
 st.divider()
 
 
+# ─── 상태 표기 (영문 코드 → 한글 배지) ───
+STATUS_KO = {
+    "PENDING": "⏳ 대기", "PARTIAL": "🟡 부분납품", "DELIVERED": "✅ 완납",
+    "DRAFT": "📝 작성", "CONFIRMED": "✔ 확정", "IN_PROD": "🔧 생산중",
+    "SENT": "📤 발송", "RECEIVED": "✅ 입고완료",
+    "CANCELED": "⛔ 취소", "CANCELLED": "⛔ 취소", "CLOSED": "✔ 종결",
+}
+def status_ko(s):
+    """DB 상태 코드 → 한글 배지 (미정의 코드는 원문 유지)"""
+    return STATUS_KO.get(str(s or "").upper(), s or "-")
+
+def n_fmt(v):
+    """KPI 숫자 천단위 콤마 (숫자가 아니면 그대로)"""
+    try:
+        return f"{int(v):,}" if float(v) == int(float(v)) else f"{float(v):,.1f}"
+    except (TypeError, ValueError):
+        return v if v is not None else "-"
+
+
 # ─── 사이드바 ───
 with st.sidebar:
-    st.header("📋 메뉴")
-    # ─── 메인 운영 6개 ───
     # 정비용 페이지 (TOP 정비 등 5종) 는 마스터 안정화 완료 후 코드 제거됨.
     # 필요 시 git 이력 (8421f1e 이전) 에서 복원 가능.
     MENU_MAIN = [
@@ -127,18 +144,14 @@ with st.sidebar:
     ]
     ALL_MENU = MENU_MAIN
 
-    st.markdown("**📋 메인 업무**")
-    st.caption("홈 / 수주 / 마스터 / 원가 / 발주 / 생산 준비 / 생산 보고")
-    st.divider()
+    st.header("메뉴")
     page = st.radio(
         "이동",
         ALL_MENU,
         label_visibility="collapsed",
     )
-    st.caption("ℹ️ 정비/진단 메뉴는 마스터 안정화 완료로 비활성. "
-               "Stage 4 (입출고/생산보고/매출재고) 는 다음 단계.")
     st.divider()
-    st.caption("🔧 시스템")
+    st.caption("시스템")
     if st.button("🔍 DB 상태 확인", use_container_width=True):
         if DB_AVAILABLE:
             with st.spinner("확인 중..."):
@@ -165,36 +178,36 @@ if page == "🏠 홈":
             hc = health_check()
             counts = hc.get("counts", {})
 
-            st.subheader("📊 마스터 데이터 현황")
+            st.subheader("마스터 데이터 현황")
             m1, m2, m3, m4, m5 = st.columns(5)
-            with m1: st.metric("제품 (전체)", counts.get("products", "-"))
-            with m2: st.metric("자재", counts.get("materials", "-"))
-            with m3: st.metric("BOM", counts.get("bom", "-"))
-            with m4: st.metric("거래처", counts.get("vendors", "-"))
-            with m5: st.metric("도면", counts.get("drawings", "-"))
+            with m1: st.metric("제품 (전체)", n_fmt(counts.get("products", "-")))
+            with m2: st.metric("자재", n_fmt(counts.get("materials", "-")))
+            with m3: st.metric("BOM", n_fmt(counts.get("bom", "-")))
+            with m4: st.metric("거래처", n_fmt(counts.get("vendors", "-")))
+            with m5: st.metric("도면", n_fmt(counts.get("drawings", "-")))
 
             st.divider()
-            st.subheader("🟢 활성 vs 🟡 휴면")
+            st.subheader("제품 활성 현황")
             a1, a2, a3 = st.columns(3)
-            with a1: st.metric("활성 제품 (12M)", counts.get("active_products", "-"))
-            with a2: st.metric("휴면 제품 (3년+)", counts.get("archived_products", "-"))
+            with a1: st.metric("활성 제품 (12M)", n_fmt(counts.get("active_products", "-")))
+            with a2: st.metric("휴면 제품 (3년+)", n_fmt(counts.get("archived_products", "-")))
             with a3:
                 # 매출 1억+ A등급 카운트
                 try:
                     a_grade = fetch("product_stats", "product_id",
                                     "abc_grade=eq.A", limit=200)
-                    st.metric("A등급 (매출 1억+)", len(a_grade))
+                    st.metric("A등급 (매출 1억+)", n_fmt(len(a_grade)))
                 except: st.metric("A등급", "-")
 
             st.divider()
-            st.subheader("📈 거래 데이터")
+            st.subheader("거래 데이터")
             l1, l2 = st.columns(2)
-            with l1: st.metric("매출 ledger", counts.get("sales_ledger", "-"))
-            with l2: st.metric("매입 ledger", counts.get("purchase_ledger", "-"))
+            with l1: st.metric("매출 ledger", n_fmt(counts.get("sales_ledger", "-")))
+            with l2: st.metric("매입 ledger", n_fmt(counts.get("purchase_ledger", "-")))
 
             # 매출 TOP 10
             st.divider()
-            st.subheader("🏆 활성 매출 TOP 10 (12개월)")
+            st.subheader("활성 매출 TOP 10 (12개월)")
             try:
                 top = fetch("product_stats",
                             "product_id,pn,sales_count_12m,total_sales_12m,abc_grade,activity_trend,margin_pct",
@@ -206,10 +219,19 @@ if page == "🏠 홈":
                     df = df.rename(columns={
                         'pn': '품번', 'sales_count_12m': '매출건수',
                         'total_sales_12m': '매출액', 'abc_grade': 'ABC',
-                        'activity_trend': '추세', 'margin_pct': '마진율%',
+                        'activity_trend': '추세', 'margin_pct': '마진율',
                     })
-                    df['매출액'] = df['매출액'].apply(lambda x: f'{int(x):,}')
-                    st.dataframe(df.drop(columns=['product_id']), use_container_width=True, hide_index=True)
+                    st.dataframe(
+                        df.drop(columns=['product_id']),
+                        use_container_width=True, hide_index=True,
+                        column_config={
+                            "매출건수": st.column_config.NumberColumn(
+                                "매출건수", format="localized", width="small"),
+                            "매출액": st.column_config.NumberColumn(
+                                "매출액 (원)", format="localized"),
+                            "마진율": st.column_config.NumberColumn(
+                                "마진율", format="%.1f%%", width="small"),
+                        })
             except Exception as e:
                 st.caption(f"TOP10 로드 실패: {e}")
 
@@ -228,15 +250,15 @@ if page == "🏠 홈":
 
     # 로드맵
     st.divider()
-    st.subheader("🛣 개발 로드맵")
+    st.subheader("개발 로드맵")
     roadmap = [
         ("Stage 0", "환경 구축", "🟢 완료", "GitHub + Streamlit Cloud + Supabase 세팅"),
         ("Stage 1", "마스터 import + DB 활성", "🟢 완료", "5개 마스터 + 11,307 매출 + 5,332 매입 ledger 적재, 99.9% 매칭"),
-        ("Stage 2", "Phase 1 발주 모듈 MVP", "🟡 진행 중", "거래처 선택 → 품목 선택 → PDF 생성 → 슬랙 알림"),
-        ("Stage 3", "시범 운영", "⚪ 대기", "김민수·염정원 2주 사용 + 피드백"),
-        ("Stage 4", "Phase 2 생산·재고 통합", "⚪ 대기", "BOM 차감, 일일 보고, 사급/도급 분기"),
-        ("Stage 5", "Phase 3 매출 대조", "⚪ 대기", "고객사 ERP 자동 파싱"),
-        ("Stage 6", "Phase 4 대시보드", "⚪ 대기", "마진율, 미수, ABC 등급, 이상 탐지"),
+        ("Stage 2", "발주 모듈", "🟢 완료", "거래처 선택 → 품목 선택 → 발주서 xlsx + 이력 저장"),
+        ("Stage 3", "기능 테스트 + E2E 검증", "🟢 완료", "수주→발주→입고→생산→납품 전 과정 3품목 검증"),
+        ("Stage 4", "생산·재고 통합", "🟢 완료", "소재 입고 / BOM 차감 / LOT 역추적 / MES 실적 업로드"),
+        ("Stage 5", "실무 운영 전환", "🟡 진행 중", "2026-07-09 전환 — 실데이터 운영 + MES 병행 테스트"),
+        ("Stage 6", "확장", "⚪ 대기", "C.T./UPH 마스터, 완성 확정 연결, 웹앱 대시보드 은퇴"),
     ]
     for stage, name, status, desc in roadmap:
         with st.expander(f"{status} **{stage}** — {name}"):
@@ -2301,13 +2323,18 @@ elif page == "📥 수주 관리":
                     "총수량": int(s.get("total_qty") or 0),
                     "납품": int(s.get("total_received_qty") or 0),
                     "미납": int(s.get("total_pending_qty") or 0),
-                    "납품상태": s.get("delivery_status"),
+                    "납품상태": status_ko(s.get("delivery_status")),
                     "총액": int(s.get("total_amount") or 0),
                     "매칭률": f"{s.get('match_rate_pct') or 0:.0f}%",
-                    "상태": s["status"],
+                    "상태": status_ko(s["status"]),
                 } for s in sos])
                 st.dataframe(df, use_container_width=True, hide_index=True,
-                    column_config={"총액": st.column_config.NumberColumn(format="₩%d")})
+                    column_config={
+                        "총수량": st.column_config.NumberColumn(format="localized"),
+                        "납품": st.column_config.NumberColumn(format="localized"),
+                        "미납": st.column_config.NumberColumn(format="localized"),
+                        "총액": st.column_config.NumberColumn("총액 (원)", format="localized"),
+                    })
 
                 st.divider()
                 st.markdown("##### 🔍 수주 상세")
@@ -2327,23 +2354,28 @@ elif page == "📥 수주 관리":
                         "단가": int(i.get("unit_price") or 0),
                         "금액": int(i.get("amount") or 0),
                         "납기": i.get("due_date"),
-                        "상태": i.get("status"),
+                        "상태": status_ko(i.get("status")),
                     } for i in sitems])
                     if not idf.empty:
                         st.dataframe(idf, use_container_width=True, hide_index=True,
                             column_config={
-                                "단가": st.column_config.NumberColumn(format="₩%d"),
-                                "금액": st.column_config.NumberColumn(format="₩%d"),
+                                "수량": st.column_config.NumberColumn(format="localized"),
+                                "납품": st.column_config.NumberColumn(format="localized"),
+                                "미납": st.column_config.NumberColumn(format="localized"),
+                                "단가": st.column_config.NumberColumn("단가 (원)", format="localized"),
+                                "금액": st.column_config.NumberColumn("금액 (원)", format="localized"),
                             })
                     rc1, rc2 = st.columns(2)
                     statuses = ["DRAFT","CONFIRMED","IN_PROD","PARTIAL","DELIVERED","CANCELLED"]
                     new_st = rc1.selectbox("상태 변경", statuses,
+                        format_func=status_ko,
                         index=statuses.index(so["status"]) if so["status"] in statuses else 0)
                     if rc2.button("💾 상태 저장"):
                         if _db.update("sales_orders", f"so_id=eq.{so['so_id']}", {"status": new_st}):
-                            st.success(f"상태 변경: {new_st}"); st.rerun()
+                            st.success(f"상태 변경: {status_ko(new_st)}"); st.rerun()
             else:
-                st.info("결과 없음")
+                st.info("조건에 맞는 수주가 없습니다 — 기간·상태 필터를 '전체'로 "
+                        "바꾸거나, 📤 새 수주 입력 탭에서 업로드하세요.")
 
         # ── 뷰 2: 품목별 ──
         elif view_mode == "📦 품목별":
@@ -2376,15 +2408,17 @@ elif page == "📥 수주 관리":
                         "단가": int(i.get("unit_price") or 0),
                         "금액": int(i.get("amount") or 0),
                         "납기": i.get("due_date"),
-                        "상태": i.get("status"),
+                        "상태": status_ko(i.get("status")),
                     } for i in sitems])
                     st.dataframe(df, use_container_width=True, hide_index=True,
                         column_config={
-                            "단가": st.column_config.NumberColumn(format="₩%d"),
-                            "금액": st.column_config.NumberColumn(format="₩%d"),
+                            "수량": st.column_config.NumberColumn(format="localized"),
+                            "미납": st.column_config.NumberColumn(format="localized"),
+                            "단가": st.column_config.NumberColumn("단가 (원)", format="localized"),
+                            "금액": st.column_config.NumberColumn("금액 (원)", format="localized"),
                         })
                 else:
-                    st.info("결과 없음")
+                    st.info("검색 결과 없음 — 검색어를 지우거나 필터를 넓혀보세요.")
             else:
                 st.info("수주 데이터 없음")
 
@@ -2533,7 +2567,7 @@ elif page == "📥 수주 관리":
         else:
             d_labels = [
                 f"{s['so_number']} | {s.get('customer','-')} | "
-                f"수주일 {s.get('so_date','-')} | {s.get('status','-')}"
+                f"수주일 {s.get('so_date','-')} | {status_ko(s.get('status'))}"
                 for s in d_sos
             ]
             d_pick = st.selectbox("수주 선택", d_labels, key="deliver_so_pick")
@@ -2872,8 +2906,18 @@ elif page == "📊 생산 준비":
         df = pd.DataFrame(rows)
 
         if not df.empty:
-            # 행별 색상 (부족분 > 0: 빨간 표시는 dataframe에서 직접 안 됨 → 정보로)
-            st.dataframe(df, use_container_width=True, hide_index=True)
+            # 예외 중심 강조 — 부족 행은 옅은 붉은 배경, 부족분 숫자는 진한 빨강
+            def _hl_short(row):
+                css = "background-color:#fff5f5" if row["부족분"] > 0 else ""
+                return [css] * len(row)
+            _styled = (df.style
+                       .apply(_hl_short, axis=1)
+                       .map(lambda v: "color:#c0392b;font-weight:700"
+                            if isinstance(v, (int, float)) and v > 0 else "color:#8b94a4",
+                            subset=["부족분"])
+                       .format({"필요량": "{:,.0f}", "현재재고": "{:,.0f}",
+                                "부족분": "{:,.0f}"}))
+            st.dataframe(_styled, use_container_width=True, hide_index=True)
 
             shortage_rows = [r for r in rows if r["부족분"] > 0]
             if shortage_rows:
@@ -3530,13 +3574,13 @@ elif page == "📋 구매/발주":
                 "납기": r.get("delivery_date") or "-",
                 "총액": int(r.get("total_amount") or 0),
                 "VAT": int(r.get("vat") or 0),
-                "상태": r["status"],
+                "상태": status_ko(r["status"]),
             } for r in history])
             st.dataframe(
                 df, use_container_width=True, hide_index=True,
                 column_config={
-                    "총액": st.column_config.NumberColumn(format="₩%d"),
-                    "VAT": st.column_config.NumberColumn(format="₩%d"),
+                    "총액": st.column_config.NumberColumn("총액 (원)", format="localized"),
+                    "VAT": st.column_config.NumberColumn("VAT (원)", format="localized"),
                 }
             )
 
@@ -3567,8 +3611,9 @@ elif page == "📋 구매/발주":
                 if not item_df.empty:
                     st.dataframe(item_df, use_container_width=True, hide_index=True,
                                  column_config={
-                                    "단가": st.column_config.NumberColumn(format="₩%d"),
-                                    "공급가액": st.column_config.NumberColumn(format="₩%d"),
+                                    "수량": st.column_config.NumberColumn(format="localized"),
+                                    "단가": st.column_config.NumberColumn("단가 (원)", format="localized"),
+                                    "공급가액": st.column_config.NumberColumn("공급가액 (원)", format="localized"),
                                  })
 
                 rc1, rc2 = st.columns(2)
@@ -3612,6 +3657,7 @@ elif page == "📋 구매/발주":
                 new_status = rc2.selectbox(
                     "상태 변경",
                     ["DRAFT", "SENT", "RECEIVED", "CANCELLED"],
+                    format_func=status_ko,
                     index=["DRAFT", "SENT", "RECEIVED", "CANCELLED"].index(po["status"])
                           if po["status"] in ["DRAFT","SENT","RECEIVED","CANCELLED"] else 0
                 )
@@ -3943,8 +3989,14 @@ elif page == "🏭 생산 보고":
 
             t_qty = ddf["total_qty"].sum()
             t_def = ddf["defect_qty"].sum()
+            # 전일 대비 추세 (기간 내 2일 이상일 때)
+            _day_tot = ddf.groupby("log_date")["total_qty"].sum().sort_index()
+            _delta = None
+            if len(_day_tot) >= 2 and _day_tot.iloc[-2] > 0:
+                _pct = (_day_tot.iloc[-1] - _day_tot.iloc[-2]) / _day_tot.iloc[-2] * 100
+                _delta = f"{_pct:+.1f}% 전일 대비"
             k1, k2, k3, k4, k5 = st.columns(5)
-            k1.metric("총 생산량", f"{t_qty:,.0f}")
+            k1.metric("총 생산량", f"{t_qty:,.0f}", _delta)
             k2.metric("총 불량", f"{t_def:,.0f}")
             k3.metric("불량률",
                 f"{t_def / t_qty * 100:.2f}%" if t_qty else "-")
