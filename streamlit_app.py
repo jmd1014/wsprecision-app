@@ -37,6 +37,11 @@ html, body, [class*="css"], font, div, span, p, label, input, textarea,
 button, select {
   font-family:'IBM Plex Sans KR',sans-serif !important;
 }
+/* Material 아이콘은 아이콘 폰트 유지 (전역 폰트 강제의 예외) */
+span[data-testid="stIconMaterial"],
+[class*="material-symbols"], [class*="material-icons"]{
+  font-family:'Material Symbols Rounded','Material Icons' !important;
+}
 
 /* ── 제목 위계 ── */
 h1{font-size:22px !important;font-weight:700 !important;
