@@ -99,15 +99,15 @@ def labels_html(labels: list, mode: str = "label",
 
 
 def receipt_labels(items: list, mode: str = "label") -> str:
-    """소재 입고 라벨. items: [{w_lot, pn, material_name, spec, qty,
-    po_number, vendor, date}]"""
+    """소재 입고 라벨 — 타이틀=품번 (2026-07-24 사용자 확정).
+    items: [{w_lot, pn, material_name, spec, qty, po_number, vendor, date}]"""
     labels = [{
         "title": "소재 입고",
-        "big": it.get("w_lot") or "-",
+        "big": it.get("pn") or "-",
         "rows": [
-            ("품번", it.get("pn")),
-            ("소재", it.get("material_name")),
-            ("규격", it.get("spec")),
+            ("소재 LOT", it.get("w_lot")),
+            ("재질", it.get("material_name")),
+            ("사이즈", it.get("spec")),
             ("수량", f"{it.get('qty', 0):,.0f} {it.get('unit', 'EA')}"),
             ("발주번호", it.get("po_number")),
             ("거래처", it.get("vendor")),

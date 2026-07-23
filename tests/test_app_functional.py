@@ -20,16 +20,30 @@ pytestmark = pytest.mark.skipif(
 APP_FILE = os.path.join(os.path.dirname(os.path.dirname(__file__)),
                         "streamlit_app.py")
 
-PAGES = [
+PAGES_FLOW = [
     "🏠 홈",
     "📥 수주 관리",
+    "📊 생산 준비",
+    "📋 발주/입고",
+    "🧾 공정 관리",
+    "🚚 출고 관리",
+]
+PAGES_ADMIN = [
     "⚙️ 마스터 관리",
     "💰 원가 확인",
-    "📋 구매/발주",
-    "📊 생산 준비",
-    "🧾 공정 관리",
     "🏭 생산 보고",
 ]
+PAGES = PAGES_FLOW + PAGES_ADMIN
+
+
+def _goto(at, page):
+    """2그룹 라디오 내비게이션 — 업무(0) / 관리자(1)."""
+    if page in PAGES_FLOW:
+        at.sidebar.radio[0].set_value(page)
+        at.sidebar.radio[1].set_value(None)
+    else:
+        at.sidebar.radio[1].set_value(page)
+    at.run()
 
 
 # ─── DB mock ───────────────────────────────────────────
@@ -113,25 +127,21 @@ def test_page_renders_without_exception(page, mocked_db):
     at.run()
     assert not at.exception, f"초기 로드 예외: {[str(e.value) for e in at.exception]}"
 
-    # 사이드바 radio 로 페이지 전환
-    radios = at.sidebar.radio
-    assert len(radios) > 0, "사이드바 radio 미발견"
-    radios[0].set_value(page)
-    at.run()
+    _goto(at, page)
     assert not at.exception, (
         f"페이지 '{page}' 렌더 예외: "
         f"{[str(e.value) for e in at.exception]}"
     )
 
 
-def test_sidebar_has_exactly_8_pages(mocked_db):
-    """사이드바 메뉴가 메인 8개만 노출되는지 (Phase E 공정 관리 추가)."""
+def test_sidebar_menu_groups(mocked_db):
+    """사이드바 2그룹 — 업무 진행 6개 + 관리자 3개 (2026-07-24 개편)."""
     at = _make_apptest()
     at.run()
     radios = at.sidebar.radio
-    assert len(radios) > 0
-    options = radios[0].options
-    assert options == PAGES, f"메뉴 불일치: {options}"
+    assert len(radios) >= 2, "사이드바 radio 2개(업무/관리자) 필요"
+    assert radios[0].options == PAGES_FLOW, f"업무 메뉴 불일치: {radios[0].options}"
+    assert radios[1].options == PAGES_ADMIN, f"관리자 메뉴 불일치: {radios[1].options}"
 
 
 # ─── 2. 수주→발주 prefill 흐름 테스트 ──────────────────
@@ -151,10 +161,9 @@ def test_po_prefill_flow(mocked_db):
     ]
     at.session_state["po_prefill_source_so"] = "SO-2026-001"
 
-    at.sidebar.radio[0].set_value("📋 구매/발주")
-    at.run()
+    _goto(at, "📋 발주/입고")
     assert not at.exception, (
-        f"구매/발주 prefill 렌더 예외: "
+        f"발주/입고 prefill 렌더 예외: "
         f"{[str(e.value) for e in at.exception]}"
     )
 
@@ -173,22 +182,22 @@ def test_po_prefill_flow(mocked_db):
 
 # ─── 3. 핵심 위젯 존재 검증 ───────────────────────────
 
-def test_home_shows_master_counts(mocked_db):
-    """홈에 마스터 카운트 metric 이 표시되는지."""
+def test_home_shows_progress_dashboard(mocked_db):
+    """홈이 업무 진행 대시보드(수주→출고 단계 metric)를 표시하는지."""
     at = _make_apptest()
     at.run()
     metrics = at.metric
     assert len(metrics) >= 5, f"홈 metric 부족: {len(metrics)}"
     labels = [m.label for m in metrics]
-    assert any("제품" in l for l in labels)
+    assert any("미납 수주" in l for l in labels)
+    assert any("완성 재고" in l for l in labels)
 
 
 def test_master_page_has_tabs(mocked_db):
     """마스터 관리에 7개 탭 존재."""
     at = _make_apptest()
     at.run()
-    at.sidebar.radio[0].set_value("⚙️ 마스터 관리")
-    at.run()
+    _goto(at, "⚙️ 마스터 관리")
     assert not at.exception
     assert len(at.tabs) >= 6, f"마스터 관리 탭 부족: {len(at.tabs)}"
 
@@ -197,7 +206,6 @@ def test_cost_page_renders_with_tabs(mocked_db):
     """원가 확인 페이지 — 탭 6개 + USE_V2 fallback 동작."""
     at = _make_apptest()
     at.run()
-    at.sidebar.radio[0].set_value("💰 원가 확인")
-    at.run()
+    _goto(at, "💰 원가 확인")
     assert not at.exception
     assert len(at.tabs) >= 5, f"원가 확인 탭 부족: {len(at.tabs)}"
