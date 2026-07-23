@@ -102,7 +102,7 @@ _db_chip = ('<span class="ws-chip ok">연동 <b>LIVE</b></span>' if DB_AVAILABLE
 st.markdown(f"""
 <div class="ws-hdr">
   <span class="t"><span class="co">우성정밀</span> 업무관리 시스템</span>
-  <span class="sub">수주 · 발주 · 원가 · 생산 준비 — Supabase 실시간 연동</span>
+  <span class="sub">수주 · 발주 · 원가 · 생산 계획 — Supabase 실시간 연동</span>
   <div class="ws-hdr-meta">{_db_chip}</div>
 </div>
 """, unsafe_allow_html=True)
@@ -159,7 +159,7 @@ with st.sidebar:
     MENU_FLOW = [
         "🏠 홈",
         "📥 수주 관리",
-        "📊 생산 준비",
+        "📊 생산 계획",
         "📋 발주/입고",
         "🧾 공정 관리",
         "🚚 출고 관리",
@@ -227,9 +227,9 @@ if page == "🏠 홈":
 
     try:
         _h_so = fetch("sales_order_stats",
-            "so_number,customer,so_date,total_qty,total_received_qty,"
-            "total_pending_qty,delivery_status",
-            "order=so_date.desc", limit=200)
+            "so_number,customer,so_date,due_date,total_qty,"
+            "total_received_qty,total_pending_qty,delivery_status",
+            "order=so_date.desc", limit=500)
     except Exception:
         _h_so = []
     try:
@@ -283,26 +283,64 @@ if page == "🏠 홈":
     hc1, hc2 = st.columns(2)
 
     with hc1:
-        st.markdown("##### 수주 진행 (미납)")
+        st.markdown("##### 수주 진행 (미납 · 납기순)")
         _open_so = [s for s in _h_so
-                    if float(s.get("total_pending_qty") or 0) > 0][:15]
+                    if float(s.get("total_pending_qty") or 0) > 0]
         if not _open_so:
             st.info("미납 수주 없음 — 📥 수주 관리에서 업로드하면 표시됩니다.")
         else:
-            st.dataframe(pd.DataFrame([{
+            # 납기 임박·지연이 항상 위로 — 수주 많아져도 볼 것부터 보이게
+            _open_so.sort(key=lambda s: s.get("due_date") or "9999-12-31")
+
+            def _h_dday(d):
+                if not d:
+                    return "-"
+                _dd = (_hd.fromisoformat(d) - _hd.today()).days
+                if _dd < 0:
+                    return f"⚠️ 지연 {-_dd}일"
+                return "오늘" if _dd == 0 else f"D-{_dd}"
+
+            _n_late = sum(1 for s in _open_so
+                          if s.get("due_date")
+                          and s["due_date"] < _hd.today().isoformat())
+            if len(_open_so) > 15:
+                _hc_opts = ["전체 거래처"] + sorted(
+                    {s["customer"] for s in _open_so if s.get("customer")})
+                _hcf = st.selectbox("거래처", _hc_opts, key="home_so_cust",
+                                    label_visibility="collapsed")
+                if _hcf != "전체 거래처":
+                    _open_so = [s for s in _open_so
+                                if s["customer"] == _hcf]
+            _so_cut = len(_open_so) - 15
+            _h_sodf = pd.DataFrame([{
                 "수주번호": s["so_number"], "거래처": s["customer"],
+                "납기": _h_dday(s.get("due_date")),
                 "미납": float(s.get("total_pending_qty") or 0),
                 "진행률": (float(s.get("total_received_qty") or 0)
                           / float(s.get("total_qty") or 1)),
                 "상태": status_ko(s.get("delivery_status")),
-            } for s in _open_so]), use_container_width=True, hide_index=True,
-                height=min(400, 60 + len(_open_so) * 35),
+            } for s in _open_so[:15]])
+            st.dataframe(
+                _h_sodf.style.apply(
+                    lambda row: ["color: #e15759; font-weight: 700"
+                                 if str(row["납기"]).startswith("⚠️")
+                                 else ""] * len(row), axis=1),
+                use_container_width=True, hide_index=True,
+                height=min(400, 60 + len(_h_sodf) * 35),
                 column_config={
                     "미납": st.column_config.NumberColumn(
                         format="localized", width="small"),
                     "진행률": st.column_config.ProgressColumn(
                         "진행률", min_value=0, max_value=1),
                 })
+            _so_cap = []
+            if _n_late:
+                _so_cap.append(f"⚠️ 납기 지연 {_n_late}건")
+            if _so_cut > 0:
+                _so_cap.append(f"납기순 15건 표시 — 외 {_so_cut:,}건은 "
+                               "📥 수주 관리에서 검색")
+            if _so_cap:
+                st.caption(" · ".join(_so_cap))
 
     with hc2:
         st.markdown("##### 공정 진행 (작업지시)")
@@ -324,6 +362,9 @@ if page == "🏠 홈":
                 column_config={c: st.column_config.NumberColumn(
                     format="localized", width="small")
                     for c in ["생산중", "외주중", "합격"]})
+            if len(_h_wo) > 15:
+                st.caption(f"최근 15건 표시 — 외 {len(_h_wo) - 15:,}건은 "
+                           "🧾 공정 관리 → 공정 현황판에서 확인")
 
     # 완성 재고 상위
     if _h_ps:
@@ -334,6 +375,9 @@ if page == "🏠 홈":
         } for p in _h_ps[:10]]), use_container_width=True, hide_index=True,
             column_config={"재고": st.column_config.NumberColumn(
                 format="localized", width="small")})
+        if len(_h_ps) > 10:
+            st.caption(f"재고 상위 10품목 표시 — 외 {len(_h_ps) - 10:,}품목은 "
+                       "🚚 출고 관리 → 납품 등록에서 검색")
 
 
 elif page == "⚙️ 마스터 관리":
@@ -2824,7 +2868,7 @@ elif page == "🚚 출고 관리":
             _ds = fetch("sales_order_stats",
                 "so_number,customer,so_date,total_qty,total_received_qty,"
                 "total_pending_qty,delivery_status",
-                "order=so_date.desc", limit=100)
+                "order=so_date.desc", limit=500)
         except Exception as e:
             st.error(f"납품 현황 조회 실패: {e}"); _ds = []
         if not _ds:
@@ -2839,25 +2883,51 @@ elif page == "🚚 출고 관리":
             dm3.metric("미납", f"{_t_pend:,.0f}")
             dm4.metric("납품률",
                 f"{_t_rcv / _t_qty * 100:.1f}%" if _t_qty else "-")
-            _ddf = pd.DataFrame([{
-                "수주번호": s["so_number"], "거래처": s["customer"],
-                "수주일": s.get("so_date"),
-                "수주": float(s.get("total_qty") or 0),
-                "납품": float(s.get("total_received_qty") or 0),
-                "미납": float(s.get("total_pending_qty") or 0),
-                "진행률": (float(s.get("total_received_qty") or 0)
-                          / float(s.get("total_qty") or 1)),
-                "상태": status_ko(s.get("delivery_status")),
-            } for s in _ds])
-            st.dataframe(_ddf, use_container_width=True, hide_index=True,
-                height=min(500, 60 + len(_ddf) * 35),
-                column_config={
-                    "수주": st.column_config.NumberColumn(format="localized"),
-                    "납품": st.column_config.NumberColumn(format="localized"),
-                    "미납": st.column_config.NumberColumn(format="localized"),
-                    "진행률": st.column_config.ProgressColumn(
-                        "진행률", min_value=0, max_value=1),
-                })
+            dsc1, dsc2 = st.columns([2, 1])
+            _ds_q = dsc1.text_input("검색", key="dstat_q",
+                placeholder="수주번호 / 거래처 검색",
+                label_visibility="collapsed")
+            _ds_open = dsc2.checkbox("미납만 보기", value=True,
+                                     key="dstat_open_only")
+            _ds_show = [s for s in _ds
+                        if (not _ds_open
+                            or float(s.get("total_pending_qty") or 0) > 0)
+                        and (not _ds_q
+                             or _ds_q.lower() in (s["so_number"] or "").lower()
+                             or _ds_q.lower() in (s["customer"] or "").lower())]
+            _ds_cut = len(_ds_show) - 50
+            _ds_show = _ds_show[:50]
+            if not _ds_show:
+                st.success("✅ 조건에 맞는 수주 없음 — 미납만 보기 상태면 "
+                           "전부 납품 완료입니다. 체크 해제로 전체 확인.")
+                _ddf = None
+            else:
+                _ddf = pd.DataFrame([{
+                    "수주번호": s["so_number"], "거래처": s["customer"],
+                    "수주일": s.get("so_date"),
+                    "수주": float(s.get("total_qty") or 0),
+                    "납품": float(s.get("total_received_qty") or 0),
+                    "미납": float(s.get("total_pending_qty") or 0),
+                    "진행률": (float(s.get("total_received_qty") or 0)
+                              / float(s.get("total_qty") or 1)),
+                    "상태": status_ko(s.get("delivery_status")),
+                } for s in _ds_show])
+            if _ddf is not None:
+                st.dataframe(_ddf, use_container_width=True, hide_index=True,
+                    height=min(500, 60 + len(_ddf) * 35),
+                    column_config={
+                        "수주": st.column_config.NumberColumn(
+                            format="localized"),
+                        "납품": st.column_config.NumberColumn(
+                            format="localized"),
+                        "미납": st.column_config.NumberColumn(
+                            format="localized"),
+                        "진행률": st.column_config.ProgressColumn(
+                            "진행률", min_value=0, max_value=1),
+                    })
+                if _ds_cut > 0:
+                    st.caption(f"최근 50건 표시 — 외 {_ds_cut:,}건은 "
+                               "검색으로 좁혀서 확인하세요.")
 
         # 최근 출고 이력 (ISSUE 원장)
         st.divider()
@@ -2882,7 +2952,7 @@ elif page == "🚚 출고 관리":
             st.caption("출고 이력 없음.")
 
 
-elif page == "📊 생산 준비":
+elif page == "📊 생산 계획":
     st.subheader("📊 생산 계획 — 자재 필요량 자동 산출")
     if not DB_AVAILABLE: st.error("DB 연결 필요"); st.stop()
 
@@ -3302,6 +3372,99 @@ elif page == "📋 발주/입고":
                 column_config={"잔여": st.column_config.NumberColumn(
                     format="localized", width="small")})
 
+        # ── 🏷️ 입고 라벨 재발행 (분실·훼손 대비) ──
+        st.divider()
+        st.markdown("##### 🏷️ 입고 라벨 재발행")
+        st.caption("입고 처리 때 발행한 소재 입고 라벨을 다시 출력합니다. "
+                   "W번호로 선택 — 여러 장 동시 출력 가능.")
+        try:
+            _rl = fetch("inventory_transactions",
+                "txn_id,lot_number,material_id,qty,unit,ref_id,txn_date",
+                "txn_type=eq.RECEIPT&lot_number=like.W*"
+                "&order=txn_date.desc,txn_id.desc", limit=300)
+        except Exception:
+            _rl = []
+        if not _rl:
+            st.caption("재발행할 입고 라벨 없음 — W번호 입고 이력이 "
+                       "생기면 여기서 재출력할 수 있습니다.")
+        else:
+            # 발주 라인→헤더→거래처, 자재명 역조인으로 라벨 데이터 재구성
+            _poi_map, _po_map, _v_map, _m_map = {}, {}, {}, {}
+            try:
+                _poi_ids = {r["ref_id"] for r in _rl if r.get("ref_id")}
+                if _poi_ids:
+                    _poi_map = {p["poi_id"]: p for p in fetch(
+                        "purchase_order_items", "poi_id,item_name,spec,po_id",
+                        f"poi_id=in.({','.join(str(i) for i in _poi_ids)})",
+                        limit=500)}
+                _po_ids = {p["po_id"] for p in _poi_map.values()}
+                if _po_ids:
+                    _po_map = {p["po_id"]: p for p in fetch(
+                        "purchase_orders", "po_id,po_number,vendor_id",
+                        f"po_id=in.({','.join(str(i) for i in _po_ids)})",
+                        limit=500)}
+                _v_ids = {p.get("vendor_id") for p in _po_map.values()
+                          if p.get("vendor_id")}
+                if _v_ids:
+                    _v_map = {v["vendor_id"]: v["name"] for v in fetch(
+                        "vendors", "vendor_id,name",
+                        f"vendor_id=in.({','.join(str(i) for i in _v_ids)})",
+                        limit=500)}
+                _m_ids = {r["material_id"] for r in _rl
+                          if r.get("material_id")}
+                if _m_ids:
+                    _m_map = {m["material_id"]: m.get("raw_name") for m in
+                        fetch("materials", "material_id,raw_name",
+                              f"material_id=in.({','.join(_m_ids)})",
+                              limit=500)}
+            except Exception as e:
+                st.warning(f"라벨 정보 일부 조회 실패: {e}")
+
+            def _relabel_item(r):
+                poi = _poi_map.get(r.get("ref_id"), {})
+                po = _po_map.get(poi.get("po_id"), {})
+                return {
+                    "w_lot": r.get("lot_number"),
+                    "pn": poi.get("item_name") or "-",
+                    "material_name": _m_map.get(r.get("material_id"))
+                                     or r.get("material_id") or "-",
+                    "spec": poi.get("spec") or "-",
+                    "qty": float(r.get("qty") or 0),
+                    "unit": r.get("unit") or "EA",
+                    "po_number": po.get("po_number") or "-",
+                    "vendor": _v_map.get(po.get("vendor_id")) or "-",
+                    "date": r.get("txn_date") or "",
+                }
+
+            _rl_opts = {}
+            for r in _rl:
+                _poi = _poi_map.get(r.get("ref_id"), {})
+                _key = (f"{r['lot_number']} | "
+                        f"{_poi.get('item_name') or r.get('material_id')} | "
+                        f"{r.get('txn_date')}")
+                _rl_opts.setdefault(_key, r)
+            _sel_rl = st.multiselect(
+                "재발행할 W번호 선택", list(_rl_opts.keys()),
+                key="rcv_relabel_sel",
+                placeholder="W번호 | 품명 | 입고일")
+            if _sel_rl:
+                from utils.label_generator import receipt_labels
+                _re_items = [_relabel_item(_rl_opts[k]) for k in _sel_rl]
+                rl1, rl2 = st.columns(2)
+                rl1.download_button(
+                    "🏷️ 라벨 프린터용 (단표)",
+                    data=receipt_labels(_re_items, mode="label"),
+                    file_name=f"입고라벨_재발행_{_re_items[0]['w_lot']}.html",
+                    mime="text/html", use_container_width=True,
+                    key="rcv_relabel_dl1")
+                rl2.download_button(
+                    "📄 A4 배치 (예비)",
+                    data=receipt_labels(_re_items, mode="a4"),
+                    file_name=(
+                        f"입고라벨_재발행_A4_{_re_items[0]['w_lot']}.html"),
+                    mime="text/html", use_container_width=True,
+                    key="rcv_relabel_dl2")
+
     # ════════════ TAB 1: 새 발주서 작성 ════════════
     with tab_new:
         # 생산 계획에서 prefill된 경우 안내
@@ -3421,7 +3584,7 @@ elif page == "📋 발주/입고":
         if vendors:
             vendor_options = {f"{v['name']} ({v.get('vendor_group') or '-'})": v for v in vendors}
             option_keys = list(vendor_options.keys())
-            # 생산 준비 prefill 거래처 자동 선택 (이름 부분 매칭)
+            # 생산 계획 prefill 거래처 자동 선택 (이름 부분 매칭)
             default_idx = 0
             pv_name = (st.session_state.get("po_prefill_vendor_name") or "").strip()
             if pv_name:
@@ -3685,7 +3848,7 @@ elif page == "📋 발주/입고":
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                         use_container_width=True)
                     try:
-                        # 수주 출처 추적 (생산 준비 → 발주 흐름인 경우)
+                        # 수주 출처 추적 (생산 계획 → 발주 흐름인 경우)
                         _src_so = st.session_state.get("po_prefill_source_so") or None
                         _po_record = {
                             "po_number": po_no, "vendor_id": vendor["vendor_id"],

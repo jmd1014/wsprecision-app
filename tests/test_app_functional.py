@@ -23,7 +23,7 @@ APP_FILE = os.path.join(os.path.dirname(os.path.dirname(__file__)),
 PAGES_FLOW = [
     "🏠 홈",
     "📥 수주 관리",
-    "📊 생산 준비",
+    "📊 생산 계획",
     "📋 발주/입고",
     "🧾 공정 관리",
     "🚚 출고 관리",
@@ -147,12 +147,12 @@ def test_sidebar_menu_groups(mocked_db):
 # ─── 2. 수주→발주 prefill 흐름 테스트 ──────────────────
 
 def test_po_prefill_flow(mocked_db):
-    """생산 준비에서 설정한 po_prefill_* 가 구매/발주 페이지에서 소비되는지."""
+    """생산 계획에서 설정한 po_prefill_* 가 구매/발주 페이지에서 소비되는지."""
     at = _make_apptest()
     at.run()
 
-    # 생산 준비 → 발주 prefill 을 session_state 에 직접 주입
-    # (빈 DB 라 생산 준비 페이지는 st.stop 되므로 흐름의 후반부만 검증)
+    # 생산 계획 → 발주 prefill 을 session_state 에 직접 주입
+    # (빈 DB 라 생산 계획 페이지는 st.stop 되므로 흐름의 후반부만 검증)
     at.session_state["po_prefill_vendor_name"] = "(주)명진메탈"
     at.session_state["po_prefill_items"] = [
         {"product_id": None, "item_name": "환봉 STS304 ⌀45",
