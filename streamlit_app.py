@@ -116,10 +116,76 @@ STATUS_KO = {
     "DRAFT": "📝 작성", "CONFIRMED": "✔ 확정", "IN_PROD": "🔧 생산중",
     "SENT": "📤 발송", "RECEIVED": "✅ 입고완료",
     "CANCELED": "⛔ 취소", "CANCELLED": "⛔ 취소", "CLOSED": "✔ 종결",
+    "OUTSOURCE": "🚚 외주중", "INSPECT": "🔍 검사 대기",
+    "REWORK": "🔁 재작업중", "READY": "📦 완성 대기",
 }
 def status_ko(s):
     """DB 상태 코드 → 한글 배지 (미정의 코드는 원문 유지)"""
     return STATUS_KO.get(str(s or "").upper(), s or "-")
+
+
+# 상태 색 규칙 (2026-07-23 디자인 통일) — 색 = 의미 고정:
+#   빨강 = 문제(지연·불합격·폐기·취소·부족) / 호박 = 진행 대기 /
+#   초록 = 완료·합격 — 전 페이지 동일 규칙.
+_ST_RED = ("지연", "불합", "폐기", "취소", "부족")
+_ST_GREEN = ("완납", "입고완료", "합격", "완료", "전량", "종결", "완성")
+_ST_AMBER = ("대기", "부분", "외주", "재작업", "작성", "미납", "생산중")
+
+
+def status_style(df, cols=("상태",)):
+    """상태 컬럼에 의미 색 적용한 Styler 반환 (색 규칙 참조)"""
+    def _c(v):
+        s = str(v)
+        if any(k in s for k in _ST_RED):
+            return "color:#e15759;font-weight:700"
+        if any(k in s for k in _ST_GREEN):
+            return "color:#1e7a45;font-weight:600"
+        if any(k in s for k in _ST_AMBER):
+            return "color:#b26a00;font-weight:600"
+        return ""
+    _sub = [c for c in cols if c in df.columns]
+    if not _sub:
+        return df
+    try:
+        return df.style.map(_c, subset=_sub)
+    except AttributeError:          # pandas < 2.1
+        return df.style.applymap(_c, subset=_sub)
+
+
+def wo_stage_qty(t):
+    """wo_tracking 행 → 단계별 수량. 상태는 행위의 부산물 원칙 —
+    모든 단계 수량은 누적 필드에서 유도 (직접 저장 없음)."""
+    def f(k):
+        return float(t.get(k) or 0)
+    rew = f("rework_qty") - f("rework_in_qty")
+    return {
+        "생산중": max(0.0, f("input_qty") - f("received_qty")),
+        "외주중": max(0.0, f("outsource_qty") - f("outsource_in_qty")),
+        "재작업중": max(0.0, rew),
+        "검사대기": max(0.0, f("received_qty") + f("outsource_in_qty")
+                     - f("outsource_qty") - f("pass_qty")
+                     - f("scrap_qty") - rew),
+        "완성대기": max(0.0, f("pass_qty") - f("output_qty")),
+        "완성": f("output_qty"),
+    }
+
+
+def wo_derive_status(t):
+    """단계 수량 → 상태 자동 유도 (앞 단계 우선)"""
+    q = wo_stage_qty(t)
+    if q["생산중"] > 0:
+        return "IN_PROD"
+    if q["외주중"] > 0:
+        return "OUTSOURCE"
+    if q["재작업중"] > 0:
+        return "REWORK"
+    if q["검사대기"] > 0:
+        return "INSPECT"
+    if q["완성대기"] > 0:
+        return "READY"
+    if q["완성"] > 0:
+        return "CLOSED"
+    return t.get("status") or "IN_PROD"
 
 def n_fmt(v):
     """KPI 숫자 천단위 콤마 (숫자가 아니면 그대로)"""
@@ -240,7 +306,8 @@ if page == "🏠 홈":
     try:
         _h_wo = fetch("wo_tracking",
             "wo_number,pn,w_lot,input_qty,received_qty,outsource_qty,"
-            "outsource_in_qty,pass_qty,status",
+            "outsource_in_qty,pass_qty,tokusai_qty,rework_qty,"
+            "rework_in_qty,scrap_qty,output_qty,status",
             "status=neq.CLOSED&order=created_at.desc", limit=300)
     except Exception:
         _h_wo = []
@@ -348,15 +415,15 @@ if page == "🏠 홈":
             st.info("진행 중인 작업지시 없음 — 🧾 공정 관리에서 투입 등록으로 "
                     "시작합니다.")
         else:
-            st.dataframe(pd.DataFrame([{
+            st.dataframe(status_style(pd.DataFrame([{
                 "작업지시": w["wo_number"], "품번": w.get("pn") or "-",
                 "생산중": max(0.0, float(w.get("input_qty") or 0)
                              - float(w.get("received_qty") or 0)),
                 "외주중": max(0.0, float(w.get("outsource_qty") or 0)
                              - float(w.get("outsource_in_qty") or 0)),
                 "합격": float(w.get("pass_qty") or 0),
-                "상태": status_ko(w.get("status")),
-            } for w in _h_wo[:15]]), use_container_width=True,
+                "상태": status_ko(wo_derive_status(w)),
+            } for w in _h_wo[:15]])), use_container_width=True,
                 hide_index=True,
                 height=min(400, 60 + min(len(_h_wo), 15) * 35),
                 column_config={c: st.column_config.NumberColumn(
@@ -2050,6 +2117,29 @@ elif page == "📥 수주 관리":
     import pandas as pd
     import re as _re
 
+    # 상단 KPI — 페이지 골격 통일 (요약 → 처리 → 현황)
+    try:
+        _so_kpi = fetch("sales_order_stats",
+            "total_pending_qty,due_date,so_date", "", limit=500)
+    except Exception:
+        _so_kpi = []
+    _sk_pend = sum(float(s.get("total_pending_qty") or 0) for s in _so_kpi)
+    _sk_open = sum(1 for s in _so_kpi
+                   if float(s.get("total_pending_qty") or 0) > 0)
+    _sk_late = sum(1 for s in _so_kpi
+                   if float(s.get("total_pending_qty") or 0) > 0
+                   and s.get("due_date")
+                   and s["due_date"] < _date.today().isoformat())
+    _sk_month = sum(1 for s in _so_kpi
+                    if str(s.get("so_date") or "")[:7]
+                    == _date.today().isoformat()[:7])
+    sk1, sk2, sk3, sk4 = st.columns(4)
+    sk1.metric("미납 수량", f"{_sk_pend:,.0f}")
+    sk2.metric("진행 수주", f"{_sk_open:,}건")
+    sk3.metric("⚠️ 납기 지연", f"{_sk_late:,}건")
+    sk4.metric("이번 달 수주", f"{_sk_month:,}건")
+    st.divider()
+
     tab_input, tab_list = st.tabs(
         ["📤 새 수주 입력", "📋 수주 목록"])
 
@@ -2913,7 +3003,8 @@ elif page == "🚚 출고 관리":
                     "상태": status_ko(s.get("delivery_status")),
                 } for s in _ds_show])
             if _ddf is not None:
-                st.dataframe(_ddf, use_container_width=True, hide_index=True,
+                st.dataframe(status_style(_ddf),
+                    use_container_width=True, hide_index=True,
                     height=min(500, 60 + len(_ddf) * 35),
                     column_config={
                         "수주": st.column_config.NumberColumn(
@@ -3327,7 +3418,7 @@ elif page == "📋 발주/입고":
                 st.success("✅ 입고 대기 라인 없음 — 전 라인 입고 완료. "
                            "전체 이력은 체크를 해제하세요.")
             else:
-                st.dataframe(pd.DataFrame([{
+                st.dataframe(status_style(pd.DataFrame([{
                     "PO": r.get("po_id"), "라인": r.get("line_no"),
                     "품명": r.get("item_name"), "규격": r.get("spec") or "-",
                     "자재": r.get("material_name") or r.get("material_id")
@@ -3337,7 +3428,7 @@ elif page == "📋 발주/입고":
                     "미입고": float(r.get("pending_qty") or 0),
                     "상태": status_ko(r.get("receipt_status")),
                     "최근 입고": r.get("last_receipt_date") or "-",
-                } for r in _rs_show]), use_container_width=True,
+                } for r in _rs_show])), use_container_width=True,
                     hide_index=True,
                     height=min(400, 60 + len(_rs_show) * 35),
                     column_config={c: st.column_config.NumberColumn(
@@ -3365,8 +3456,8 @@ elif page == "📋 발주/입고":
             _wb = _wb.sort_values("lot_number", ascending=False)
             _wb["상태"] = _wb["잔여"].apply(
                 lambda v: "📦 투입 대기" if v > 0 else "✅ 전량 투입")
-            st.dataframe(_wb.rename(columns={
-                "lot_number": "W번호", "material_id": "자재"}),
+            st.dataframe(status_style(_wb.rename(columns={
+                "lot_number": "W번호", "material_id": "자재"})),
                 use_container_width=True, hide_index=True,
                 height=min(350, 60 + len(_wb) * 35),
                 column_config={"잔여": st.column_config.NumberColumn(
@@ -4357,10 +4448,31 @@ elif page == "🧾 공정 관리":
     import db as _db
     import pandas as pd
     import re as _pe_re
-    from datetime import date as _pe_date
+    from datetime import date as _pe_date, datetime as _pe_dt
 
-    pe_tab_in, pe_tab_board, pe_tab_set = st.tabs(
-        ["📥 투입 등록", "📊 공정 현황판", "⚙️ 설정"])
+    # 진행 중 작업지시 1회 조회 — KPI/처리/현황판 공용
+    try:
+        _pe_all = fetch("wo_tracking", "*",
+            "status=neq.CLOSED&order=created_at.desc", limit=300)
+    except Exception as e:
+        st.error(f"작업지시 조회 실패: {e}"); _pe_all = []
+
+    _pe_sum = {"생산중": 0.0, "외주중": 0.0, "재작업중": 0.0,
+               "검사대기": 0.0, "완성대기": 0.0}
+    for _t0 in _pe_all:
+        _q0 = wo_stage_qty(_t0)
+        for _k0 in _pe_sum:
+            _pe_sum[_k0] += _q0[_k0]
+    pk1, pk2, pk3, pk4, pk5 = st.columns(5)
+    pk1.metric("🔧 생산중", f"{_pe_sum['생산중']:,.0f}")
+    pk2.metric("🚚 외주중", f"{_pe_sum['외주중']:,.0f}")
+    pk3.metric("🔁 재작업중", f"{_pe_sum['재작업중']:,.0f}")
+    pk4.metric("🔍 검사 대기", f"{_pe_sum['검사대기']:,.0f}")
+    pk5.metric("📦 완성 대기", f"{_pe_sum['완성대기']:,.0f}")
+    st.divider()
+
+    pe_tab_in, pe_tab_proc, pe_tab_board, pe_tab_set = st.tabs(
+        ["📥 투입 등록", "🔧 공정 처리", "📊 공정 현황판", "⚙️ 설정"])
 
     # ════════ TAB 1: 투입 등록 ════════
     with pe_tab_in:
@@ -4505,25 +4617,334 @@ elif page == "🧾 공정 관리":
         except Exception:
             _recent = []
         if _recent:
-            st.dataframe(pd.DataFrame([{
+            st.dataframe(status_style(pd.DataFrame([{
                 "작업지시": t["wo_number"], "품번": t.get("pn") or "-",
                 "소재 LOT": t.get("w_lot") or "-",
                 "투입": float(t.get("input_qty") or 0),
                 "상태": status_ko(t.get("status")),
                 "등록": str(t.get("created_at") or "")[:16].replace("T", " "),
-            } for t in _recent]), use_container_width=True, hide_index=True,
+            } for t in _recent])), use_container_width=True, hide_index=True,
                 column_config={"투입": st.column_config.NumberColumn(
                     format="localized")})
         else:
             st.caption("투입 등록 없음.")
 
-    # ════════ TAB 2: 공정 현황판 ════════
+    # ════════ TAB 2: 공정 처리 (Phase E-2) ════════
+    with pe_tab_proc:
+        st.caption(
+            "작업지시를 선택해 **완료 인수 → 외주 → 검사 → 완성 확정**을 "
+            "처리합니다. 수량은 부분 처리 가능 — 상태는 자동 전환. "
+            "검사 불합격은 재작업/폐기/특채로 구분.")
+
+        # ── 방금 발행한 문서 (라벨/의뢰서) — rerun 후 다운로드 유지 ──
+        if st.session_state.get("pe_docs"):
+            _pdoc = st.session_state["pe_docs"]
+            st.info(f"🖨️ {_pdoc['title']} — 다운로드 후 열면 인쇄 창이 "
+                    "자동으로 뜹니다.")
+            _dcols = st.columns(len(_pdoc["files"]) + 1)
+            for _di, (_dlabel, _dfn, _dhtml) in enumerate(_pdoc["files"]):
+                _dcols[_di].download_button(
+                    _dlabel, data=_dhtml, file_name=_dfn,
+                    mime="text/html", use_container_width=True,
+                    key=f"pe_doc_dl{_di}")
+            if _dcols[-1].button("닫기", use_container_width=True,
+                                 key="pe_docs_close"):
+                del st.session_state["pe_docs"]
+                st.rerun()
+            st.divider()
+
+        if not _pe_all:
+            st.info("진행 중인 작업지시가 없습니다 — 📥 투입 등록에서 "
+                    "시작합니다.")
+        else:
+            _p_opts = {}
+            for _t1 in _pe_all:
+                _p_opts[f"{_t1['wo_number']} | {_t1.get('pn') or '-'} | "
+                        f"{_t1.get('w_lot') or '-'} | "
+                        f"{status_ko(wo_derive_status(_t1))}"] = _t1
+            _p_key = st.selectbox(
+                f"작업지시 선택 ({len(_p_opts)}건 진행 중)",
+                list(_p_opts.keys()), key="pe_proc_pick")
+            _t = _p_opts[_p_key]
+            _q = wo_stage_qty(_t)
+
+            pm = st.columns(6)
+            for _pi, _pk in enumerate(
+                    ["생산중", "외주중", "재작업중", "검사대기",
+                     "완성대기", "완성"]):
+                pm[_pi].metric(_pk if _pk != "검사대기" else "검사 대기",
+                               f"{_q[_pk]:,.0f}")
+
+            def _wo_apply(fields, ledger=None, docs=None, msg=""):
+                """수량 누적 갱신 + 상태 자동 유도 + (선택) 원장/문서"""
+                fields["status"] = wo_derive_status({**_t, **fields})
+                fields["updated_at"] = _pe_dt.utcnow().isoformat()
+                _db.update("wo_tracking", f"wo_id=eq.{_t['wo_id']}", fields)
+                if ledger:
+                    _db.insert("inventory_transactions", [ledger])
+                if docs:
+                    st.session_state["pe_docs"] = docs
+                st.success(msg)
+                st.rerun()
+
+            _acts = []
+            if _q["생산중"] > 0:
+                _acts.append("✅ 완료 인수")
+            if _q["검사대기"] > 0:
+                _acts += ["🔍 검사", "🚚 외주 출고"]
+            if _q["외주중"] > 0:
+                _acts.append("📥 외주 입고")
+            if _q["재작업중"] > 0:
+                _acts.append("🔁 재작업 복귀")
+            if _q["완성대기"] > 0:
+                _acts.append("📦 완성 확정")
+
+            if not _acts:
+                st.success("✅ 이 작업지시는 모든 수량이 처리되었습니다.")
+            else:
+                st.divider()
+                _act = st.radio("처리 선택", _acts, horizontal=True,
+                                key=f"pe_act_{_t['wo_id']}")
+
+                # ── 1. 완료 인수 (생산분, 부분 가능) ──
+                if _act == "✅ 완료 인수":
+                    st.caption("MES 생산 완료분을 인수합니다 — 인수분은 "
+                               "검사 대기로 이동. 부분 인수 가능.")
+                    _rq = st.number_input("인수 수량", 0.0, _q["생산중"],
+                                          _q["생산중"], 1.0, key="pe_rq")
+                    if st.button(f"✅ 인수 등록 ({_rq:,.0f})",
+                                 type="primary", disabled=_rq <= 0,
+                                 key="pe_rq_btn"):
+                        _wo_apply(
+                            {"received_qty":
+                             float(_t.get("received_qty") or 0) + _rq},
+                            msg=f"✅ 인수 {_rq:,.0f} EA → 검사 대기")
+
+                # ── 2. 외주 출고 (+의뢰서) ──
+                elif _act == "🚚 외주 출고":
+                    st.caption("검사 대기 수량 중 외주 가공분을 출고합니다 "
+                               "— 외주 의뢰서가 발행됩니다.")
+                    try:
+                        _ov = fetch("vendors", "name",
+                            "in_use=eq.true&order=name", limit=300)
+                    except Exception:
+                        _ov = []
+                    oc1, oc2 = st.columns(2)
+                    with oc1:
+                        _o_vendor = st.selectbox("외주 거래처",
+                            [v["name"] for v in _ov] or ["(거래처 없음)"],
+                            key="pe_o_vendor")
+                        _o_proc = st.text_input("가공 공정",
+                            placeholder="예: 열처리, 도금, 연마",
+                            key="pe_o_proc")
+                    with oc2:
+                        _o_qty = st.number_input("출고 수량", 0.0,
+                            _q["검사대기"], _q["검사대기"], 1.0,
+                            key="pe_o_qty")
+                        _o_due = st.date_input("납기 요청일",
+                                               key="pe_o_due")
+                    _o_note = st.text_input("특기사항 (선택)",
+                                            key="pe_o_note")
+                    if st.button(f"🚚 외주 출고 ({_o_qty:,.0f}) + 의뢰서 발행",
+                                 type="primary",
+                                 disabled=not (_o_qty > 0 and _o_proc),
+                                 key="pe_o_btn"):
+                        from utils.label_generator import (
+                            outsource_request_html)
+                        _doc = outsource_request_html({
+                            "vendor": _o_vendor, "process": _o_proc,
+                            "due_date": str(_o_due),
+                            "issue_date": _pe_date.today().isoformat(),
+                            "items": [{"pn": _t.get("pn"),
+                                       "wo_number": _t["wo_number"],
+                                       "w_lot": _t.get("w_lot"),
+                                       "qty": _o_qty, "note": _o_proc}],
+                            "remark": _o_note,
+                        })
+                        _wo_apply(
+                            {"outsource_qty":
+                             float(_t.get("outsource_qty") or 0) + _o_qty},
+                            docs={"title": f"외주 의뢰서 — {_o_vendor} "
+                                           f"({_o_proc} {_o_qty:,.0f} EA)",
+                                  "files": [("📄 외주 의뢰서 (A4)",
+                                             f"외주의뢰서_{_t['wo_number']}"
+                                             f"_{_o_vendor}.html", _doc)]},
+                            msg=f"🚚 외주 출고 {_o_qty:,.0f} EA → "
+                                f"{_o_vendor} ({_o_proc})")
+
+                # ── 3. 외주 입고 ──
+                elif _act == "📥 외주 입고":
+                    st.caption("외주 가공 완료분 입고 — 입고분은 검사 "
+                               "대기로 복귀합니다.")
+                    _oi_qty = st.number_input("입고 수량", 0.0,
+                        _q["외주중"], _q["외주중"], 1.0, key="pe_oi_qty")
+                    if st.button(f"📥 외주 입고 ({_oi_qty:,.0f})",
+                                 type="primary", disabled=_oi_qty <= 0,
+                                 key="pe_oi_btn"):
+                        _wo_apply(
+                            {"outsource_in_qty":
+                             float(_t.get("outsource_in_qty") or 0)
+                             + _oi_qty},
+                            msg=f"📥 외주 입고 {_oi_qty:,.0f} EA → "
+                                "검사 대기")
+
+                # ── 4. 검사 (합격/재작업/폐기/특채 + 라벨) ──
+                elif _act == "🔍 검사":
+                    st.caption("검사 대기 수량을 판정합니다 — 합격은 완성 "
+                               "대기로, 재작업은 완료 후 복귀, 특채는 "
+                               "합격에 포함(표기 유지). 판정 라벨 발행.")
+                    qc1, qc2, qc3, qc4 = st.columns(4)
+                    _i_pass = qc1.number_input("합격", 0.0, _q["검사대기"],
+                        _q["검사대기"], 1.0, key="pe_i_pass")
+                    _i_rework = qc2.number_input("재작업", 0.0,
+                        _q["검사대기"], 0.0, 1.0, key="pe_i_rework")
+                    _i_scrap = qc3.number_input("폐기", 0.0,
+                        _q["검사대기"], 0.0, 1.0, key="pe_i_scrap")
+                    _i_tok = qc4.number_input("특채", 0.0, _q["검사대기"],
+                        0.0, 1.0, key="pe_i_tok")
+                    _i_sum = _i_pass + _i_rework + _i_scrap + _i_tok
+                    if _i_sum > _q["검사대기"]:
+                        st.error(f"판정 합계 {_i_sum:,.0f}가 검사 대기 "
+                                 f"{_q['검사대기']:,.0f}를 초과합니다.")
+                    if st.button(f"🔍 검사 등록 (판정 {_i_sum:,.0f})",
+                                 type="primary",
+                                 disabled=not (0 < _i_sum
+                                               <= _q["검사대기"]),
+                                 key="pe_i_btn"):
+                        from utils.label_generator import inspection_labels
+                        _today = _pe_date.today().isoformat()
+                        _items = []
+                        _base = {"pn": _t.get("pn"),
+                                 "wo_number": _t["wo_number"],
+                                 "w_lot": _t.get("w_lot"), "date": _today}
+                        if _i_pass:
+                            _items.append({**_base, "verdict": "합격",
+                                           "qty": _i_pass})
+                        if _i_tok:
+                            _items.append({**_base, "verdict": "특채",
+                                           "qty": _i_tok})
+                        if _i_rework:
+                            _items.append({**_base, "verdict": "불합격",
+                                           "qty": _i_rework,
+                                           "note": "재작업"})
+                        if _i_scrap:
+                            _items.append({**_base, "verdict": "불합격",
+                                           "qty": _i_scrap, "note": "폐기"})
+                        _wo_apply(
+                            {"pass_qty": float(_t.get("pass_qty") or 0)
+                                         + _i_pass + _i_tok,
+                             "tokusai_qty":
+                             float(_t.get("tokusai_qty") or 0) + _i_tok,
+                             "rework_qty":
+                             float(_t.get("rework_qty") or 0) + _i_rework,
+                             "scrap_qty":
+                             float(_t.get("scrap_qty") or 0) + _i_scrap},
+                            docs={"title": "검사 판정 라벨 "
+                                           f"({len(_items)}종)",
+                                  "files": [
+                                      ("🏷️ 판정 라벨 (단표)",
+                                       f"검사라벨_{_t['wo_number']}.html",
+                                       inspection_labels(_items,
+                                                         mode="label")),
+                                      ("📄 A4 배치 (예비)",
+                                       f"검사라벨_A4_{_t['wo_number']}"
+                                       ".html",
+                                       inspection_labels(_items,
+                                                         mode="a4"))]},
+                            msg=f"🔍 검사 등록 — 합격 {_i_pass:,.0f} · "
+                                f"특채 {_i_tok:,.0f} · 재작업 "
+                                f"{_i_rework:,.0f} · 폐기 {_i_scrap:,.0f}")
+
+                # ── 5. 재작업 복귀 ──
+                elif _act == "🔁 재작업 복귀":
+                    st.caption("재작업 완료분을 검사 대기로 되돌립니다 — "
+                               "재검사 후 다시 판정하세요.")
+                    _rw_qty = st.number_input("복귀 수량", 0.0,
+                        _q["재작업중"], _q["재작업중"], 1.0,
+                        key="pe_rw_qty")
+                    if st.button(f"🔁 재작업 복귀 ({_rw_qty:,.0f})",
+                                 type="primary", disabled=_rw_qty <= 0,
+                                 key="pe_rw_btn"):
+                        _wo_apply(
+                            {"rework_in_qty":
+                             float(_t.get("rework_in_qty") or 0)
+                             + _rw_qty},
+                            msg=f"🔁 재작업 복귀 {_rw_qty:,.0f} EA → "
+                                "검사 대기 (재검사)")
+
+                # ── 6. 완성 확정 (PROD_OUTPUT + 완성 라벨) ──
+                elif _act == "📦 완성 확정":
+                    st.caption("합격분(특채 포함)을 완성 재고로 확정합니다 "
+                               "— 제품 재고 증가 + 완성 라벨 발행. "
+                               "이후 🚚 출고 관리에서 납품.")
+                    _f_pid = _t.get("product_id")
+                    if not _f_pid and _t.get("pn"):
+                        try:
+                            _f_prod = _db.fetch_one("products",
+                                f"pn=eq.{_t['pn']}", "product_id")
+                            _f_pid = (_f_prod or {}).get("product_id")
+                        except Exception:
+                            pass
+                    if not _f_pid:
+                        st.error("품번이 제품 마스터와 연결되지 않아 완성 "
+                                 "재고를 등록할 수 없습니다 — ⚙️ 마스터 "
+                                 f"관리에서 품번 '{_t.get('pn') or '?'}' "
+                                 "확인 후 다시 시도하세요.")
+                    else:
+                        _f_qty = st.number_input("확정 수량", 0.0,
+                            _q["완성대기"], _q["완성대기"], 1.0,
+                            key="pe_f_qty")
+                        if st.button(f"📦 완성 확정 ({_f_qty:,.0f})",
+                                     type="primary",
+                                     disabled=_f_qty <= 0,
+                                     key="pe_f_btn"):
+                            from utils.label_generator import (
+                                finished_labels)
+                            _today = _pe_date.today().isoformat()
+                            _tok_left = float(_t.get("tokusai_qty") or 0)
+                            _f_items = [{
+                                "pn": _t.get("pn"),
+                                "wo_number": _t["wo_number"],
+                                "w_lot": _t.get("w_lot"),
+                                "qty": _f_qty, "date": _today,
+                                "tokusai": min(_tok_left, _f_qty)
+                                           if _tok_left else 0,
+                            }]
+                            _wo_apply(
+                                {"output_qty":
+                                 float(_t.get("output_qty") or 0)
+                                 + _f_qty},
+                                ledger={
+                                    "product_id": _f_pid,
+                                    "txn_type": "PROD_OUTPUT",
+                                    "qty": _f_qty, "unit": "EA",
+                                    "lot_number": _t["wo_number"],
+                                    "work_order": _t["wo_number"],
+                                    "txn_date": _today,
+                                    "remark": f"완성 확정: "
+                                              f"{_t.get('pn') or '-'} "
+                                              f"(소재 "
+                                              f"{_t.get('w_lot') or '-'})",
+                                    "created_by": "김민수",
+                                },
+                                docs={"title": "완성품 라벨",
+                                      "files": [
+                                          ("🏷️ 완성 라벨 (단표)",
+                                           f"완성라벨_{_t['wo_number']}"
+                                           ".html",
+                                           finished_labels(_f_items,
+                                                           mode="label")),
+                                          ("📄 A4 배치 (예비)",
+                                           f"완성라벨_A4_"
+                                           f"{_t['wo_number']}.html",
+                                           finished_labels(_f_items,
+                                                           mode="a4"))]},
+                                msg=f"📦 완성 확정 {_f_qty:,.0f} EA → "
+                                    "완성 재고 반영 (출고 관리에서 납품)")
+
+    # ════════ TAB 3: 공정 현황판 ════════
     with pe_tab_board:
-        try:
-            _wos = fetch("wo_tracking", "*",
-                "status=neq.CLOSED&order=created_at.desc", limit=300)
-        except Exception as e:
-            st.error(f"현황 조회 실패: {e}"); _wos = []
+        _wos = _pe_all
 
         if not _wos:
             st.info("진행 중인 작업지시가 없습니다 — 📥 투입 등록에서 시작합니다.")
@@ -4531,13 +4952,19 @@ elif page == "🧾 공정 관리":
             _bdf = pd.DataFrame(_wos)
             for c in ["input_qty", "received_qty", "outsource_qty",
                       "outsource_in_qty", "pass_qty", "tokusai_qty",
-                      "rework_qty", "scrap_qty"]:
+                      "rework_qty", "rework_in_qty", "scrap_qty",
+                      "output_qty"]:
+                if c not in _bdf.columns:
+                    _bdf[c] = 0
                 _bdf[c] = pd.to_numeric(_bdf[c], errors="coerce").fillna(0)
             _bdf["생산중"] = _bdf["input_qty"] - _bdf["received_qty"]
             _bdf["외주중"] = _bdf["outsource_qty"] - _bdf["outsource_in_qty"]
+            _bdf["재작업중"] = _bdf["rework_qty"] - _bdf["rework_in_qty"]
             _bdf["검사대기"] = (_bdf["received_qty"] + _bdf["outsource_in_qty"]
                               - _bdf["outsource_qty"] - _bdf["pass_qty"]
-                              - _bdf["rework_qty"] - _bdf["scrap_qty"])
+                              - _bdf["scrap_qty"] - _bdf["재작업중"])
+            _bdf["완성대기"] = _bdf["pass_qty"] - _bdf["output_qty"]
+            _bdf["상태"] = [status_ko(wo_derive_status(t)) for t in _wos]
 
             # MES 실적 연계 — 작업지시별 최종공정 누적 (참고)
             _wo_nums = list(_bdf["wo_number"].unique())
@@ -4568,9 +4995,9 @@ elif page == "🧾 공정 관리":
             b1.metric("진행 작업지시", f"{len(_bdf):,}건")
             b2.metric("🔧 생산중", f"{_bdf['생산중'].clip(lower=0).sum():,.0f}")
             b3.metric("🚚 외주중", f"{_bdf['외주중'].clip(lower=0).sum():,.0f}")
-            b4.metric("✅ 완성 (합격)", f"{_bdf['pass_qty'].sum():,.0f}")
+            b4.metric("📦 완성 확정", f"{_bdf['output_qty'].sum():,.0f}")
 
-            st.dataframe(pd.DataFrame({
+            _board_df = pd.DataFrame({
                 "작업지시": _bdf["wo_number"],
                 "품번": _bdf["pn"].fillna("-"),
                 "소재 LOT": _bdf["w_lot"].fillna("-"),
@@ -4578,21 +5005,26 @@ elif page == "🧾 공정 관리":
                 "생산중": _bdf["생산중"],
                 "MES 최종공정": _bdf["MES최종공정"],
                 "외주중": _bdf["외주중"],
+                "재작업중": _bdf["재작업중"],
                 "검사대기": _bdf["검사대기"].clip(lower=0),
                 "합격": _bdf["pass_qty"],
                 "특채": _bdf["tokusai_qty"],
-                "재작업": _bdf["rework_qty"],
                 "폐기": _bdf["scrap_qty"],
-            }), use_container_width=True, hide_index=True,
+                "완성": _bdf["output_qty"],
+                "상태": _bdf["상태"],
+            })
+            st.dataframe(status_style(_board_df),
+                use_container_width=True, hide_index=True,
                 height=min(500, 60 + len(_bdf) * 35),
                 column_config={c: st.column_config.NumberColumn(
                     format="localized", width="small")
                     for c in ["투입", "생산중", "MES 최종공정", "외주중",
-                              "검사대기", "합격", "특채", "재작업", "폐기"]})
+                              "재작업중", "검사대기", "합격", "특채",
+                              "폐기", "완성"]})
             st.caption(
                 "MES 최종공정 = 업로드된 MES 실적 중 해당 작업지시의 최대 "
                 "공정번호 누적 수량 (사내 공정 진행 참고). "
-                "인수·외주·검사 처리는 Phase E-2 에서 추가 예정.")
+                "처리(인수/외주/검사/완성)는 🔧 공정 처리 탭에서.")
 
     # ════════ TAB 3: 설정 ════════
     with pe_tab_set:

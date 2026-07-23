@@ -115,3 +115,114 @@ def receipt_labels(items: list, mode: str = "label") -> str:
         "footer": f"입고일 {it.get('date', '')}",
     } for it in items]
     return labels_html(labels, mode=mode)
+
+
+def inspection_labels(items: list, mode: str = "label") -> str:
+    """검사 판정 라벨 — 합격/불합격(재작업·폐기)/특채.
+    items: [{verdict("합격"/"불합격"/"특채"), pn, wo_number, w_lot, qty,
+             date, note(선택 — 재작업/폐기 등 처분)}]"""
+    labels = []
+    for it in items:
+        rows = [
+            ("작업지시", it.get("wo_number")),
+            ("소재 LOT", it.get("w_lot")),
+            ("수량", f"{it.get('qty', 0):,.0f} EA"),
+            ("검사일", it.get("date")),
+        ]
+        if it.get("note"):
+            rows.append(("처분", it["note"]))
+        labels.append({
+            "title": "검사 판정",
+            "big": it.get("pn") or "-",
+            "badge": it.get("verdict"),
+            "rows": rows,
+            "footer": f"검사일 {it.get('date', '')}",
+        })
+    return labels_html(labels, mode=mode)
+
+
+def finished_labels(items: list, mode: str = "label") -> str:
+    """완성품 라벨 — 완성 확정(합격분) 시 부착.
+    items: [{pn, wo_number, w_lot, qty, date, tokusai(선택 — 특채 포함 수량)}]"""
+    labels = []
+    for it in items:
+        rows = [
+            ("수량", f"{it.get('qty', 0):,.0f} EA"),
+            ("작업지시", it.get("wo_number")),
+            ("소재 LOT", it.get("w_lot")),
+            ("완성일", it.get("date")),
+        ]
+        if it.get("tokusai"):
+            rows.append(("특채 포함", f"{it['tokusai']:,.0f} EA"))
+        labels.append({
+            "title": "완성품",
+            "big": it.get("pn") or "-",
+            "rows": rows,
+            "footer": f"완성일 {it.get('date', '')}",
+        })
+    return labels_html(labels, mode=mode)
+
+
+_DOC_CSS = """
+@page { size: A4; margin: 15mm; }
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: 'Malgun Gothic', sans-serif; color: #1c2433;
+       font-size: 10.5pt; }
+h1 { font-size: 18pt; color: #1F3864; text-align: center;
+     letter-spacing: 6px; padding: 4mm 0 2mm;
+     border-bottom: 2pt solid #1F3864; margin-bottom: 6mm; }
+.meta { display: flex; justify-content: space-between;
+        margin-bottom: 5mm; font-size: 10pt; }
+.meta b { color: #1F3864; }
+table { width: 100%; border-collapse: collapse; margin-bottom: 6mm; }
+th, td { border: 0.5pt solid #5a6577; padding: 2.5mm 3mm;
+         text-align: center; }
+th { background: #eef1f6; color: #1F3864; font-size: 9.5pt; }
+td.l { text-align: left; }
+.note { border: 0.5pt solid #d4dbe8; min-height: 25mm; padding: 3mm;
+        margin-bottom: 8mm; font-size: 9.5pt; color: #5a6577; }
+.sign { display: flex; justify-content: flex-end; gap: 10mm;
+        margin-top: 10mm; }
+.sign .box { text-align: center; font-size: 9.5pt; }
+.sign .line { border-bottom: 0.7pt solid #1c2433; width: 40mm;
+              height: 12mm; margin-bottom: 1.5mm; }
+.ft { margin-top: 12mm; text-align: center; font-size: 8.5pt;
+      color: #8b94a4; }
+"""
+
+
+def outsource_request_html(data: dict) -> str:
+    """외주 가공 의뢰서 (A4) — 외주 출고 시 실물과 함께 전달.
+
+    data: {vendor, process, due_date, issue_date,
+           items: [{pn, wo_number, w_lot, qty, note}], remark}
+    """
+    rows = "".join(
+        f"<tr><td>{i + 1}</td><td class='l'>{it.get('pn') or '-'}</td>"
+        f"<td>{it.get('wo_number') or '-'}</td>"
+        f"<td>{it.get('w_lot') or '-'}</td>"
+        f"<td>{it.get('qty', 0):,.0f}</td>"
+        f"<td class='l'>{it.get('note') or ''}</td></tr>"
+        for i, it in enumerate(data.get("items", [])))
+    return f"""<!DOCTYPE html><html><head><meta charset='utf-8'>
+<title>외주 가공 의뢰서</title><style>{_DOC_CSS}</style></head>
+<body onload='window.print()'>
+<h1>외주 가공 의뢰서</h1>
+<div class="meta">
+  <span>의뢰처: <b>{data.get('vendor', '-')}</b></span>
+  <span>가공 공정: <b>{data.get('process', '-')}</b></span>
+  <span>납기 요청일: <b>{data.get('due_date', '-')}</b></span>
+  <span>발행일: {data.get('issue_date', '')}</span>
+</div>
+<table>
+<tr><th style="width:8mm">No</th><th>품번</th><th>작업지시</th>
+<th>소재 LOT</th><th style="width:22mm">수량 (EA)</th><th>비고</th></tr>
+{rows}
+</table>
+<div class="note">특기사항: {data.get('remark') or ''}</div>
+<div class="sign">
+  <div class="box"><div class="line"></div>발주: 우성정밀</div>
+  <div class="box"><div class="line"></div>인수: {data.get('vendor', '')}</div>
+</div>
+<div class="ft">우성정밀 · 부산광역시 기장군 산단4로 71 · WS-ERP</div>
+</body></html>"""
