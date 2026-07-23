@@ -1,9 +1,9 @@
 [theme]
-# 우성정밀 하우스 스타일 (재무/생산 대시보드 팔레트 통일)
-primaryColor = "#2E5496"          # --blue
-backgroundColor = "#eef1f6"       # --bg
-secondaryBackgroundColor = "#ffffff"  # --card
-textColor = "#1c2433"             # --ink
+# 2a 시안 — 정밀 라이트 × IBM Plex Sans KR (DESIGN_HANDOFF.md)
+primaryColor = "#24406b"
+backgroundColor = "#f4f5f7"
+secondaryBackgroundColor = "#ffffff"
+textColor = "#333a45"
 font = "sans serif"
 
 [server]

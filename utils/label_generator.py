@@ -12,7 +12,7 @@
 _LABEL_CSS = """
 @page {{ size: {page_size}; margin: {page_margin}; }}
 * {{ box-sizing: border-box; margin: 0; padding: 0; }}
-body {{ font-family: 'Malgun Gothic', sans-serif; color: #1c2433; }}
+body {{ font-family: 'Malgun Gothic', sans-serif; color: #1b2a41; }}
 .label {{
   width: {w}; height: {h}; padding: 4mm 5mm;
   border: {border}; border-radius: 2mm;
@@ -21,23 +21,23 @@ body {{ font-family: 'Malgun Gothic', sans-serif; color: #1c2433; }}
   overflow: hidden; background: #fff;
 }}
 .hdr {{ display: flex; justify-content: space-between; align-items: center;
-        border-bottom: 1.5pt solid #1F3864; padding-bottom: 1.5mm; }}
-.hdr .t {{ font-size: 11pt; font-weight: 800; color: #1F3864; }}
-.hdr .co {{ font-size: 8pt; color: #5a6577; }}
+        border-bottom: 1.5pt solid #24406b; padding-bottom: 1.5mm; }}
+.hdr .t {{ font-size: 11pt; font-weight: 800; color: #24406b; }}
+.hdr .co {{ font-size: 8pt; color: #7a828d; }}
 .big {{ font-size: 26pt; font-weight: 900; letter-spacing: 1px;
         text-align: center; padding: 2mm 0 1mm; color: #111; }}
 .badge {{ text-align: center; font-size: 10pt; font-weight: 800;
           padding: 0.5mm 0 1.5mm; }}
-.badge.ok {{ color: #1e7a45; }}
-.badge.ng {{ color: #c0392b; }}
-.badge.tk {{ color: #b26a00; }}
+.badge.ok {{ color: #2f9e44; }}
+.badge.ng {{ color: #d9480f; }}
+.badge.tk {{ color: #e8590c; }}
 .rows {{ flex: 1; display: table; width: 100%; }}
 .row {{ display: table-row; }}
-.row .k {{ display: table-cell; font-size: 8.5pt; color: #5a6577;
+.row .k {{ display: table-cell; font-size: 8.5pt; color: #7a828d;
            padding: 0.6mm 2mm 0.6mm 0; white-space: nowrap; width: 18mm; }}
 .row .v {{ display: table-cell; font-size: 10.5pt; font-weight: 700; }}
-.ft {{ border-top: 0.5pt solid #d4dbe8; padding-top: 1mm;
-       font-size: 7.5pt; color: #8b94a4; display: flex;
+.ft {{ border-top: 0.5pt solid #e2e5ea; padding-top: 1mm;
+       font-size: 7.5pt; color: #9aa1ab; display: flex;
        justify-content: space-between; }}
 .a4grid {{ display: flex; flex-wrap: wrap; gap: 6mm; padding: 8mm; }}
 """
@@ -166,28 +166,28 @@ def finished_labels(items: list, mode: str = "label") -> str:
 _DOC_CSS = """
 @page { size: A4; margin: 15mm; }
 * { box-sizing: border-box; margin: 0; padding: 0; }
-body { font-family: 'Malgun Gothic', sans-serif; color: #1c2433;
+body { font-family: 'Malgun Gothic', sans-serif; color: #1b2a41;
        font-size: 10.5pt; }
-h1 { font-size: 18pt; color: #1F3864; text-align: center;
+h1 { font-size: 18pt; color: #24406b; text-align: center;
      letter-spacing: 6px; padding: 4mm 0 2mm;
-     border-bottom: 2pt solid #1F3864; margin-bottom: 6mm; }
+     border-bottom: 2pt solid #24406b; margin-bottom: 6mm; }
 .meta { display: flex; justify-content: space-between;
         margin-bottom: 5mm; font-size: 10pt; }
-.meta b { color: #1F3864; }
+.meta b { color: #24406b; }
 table { width: 100%; border-collapse: collapse; margin-bottom: 6mm; }
-th, td { border: 0.5pt solid #5a6577; padding: 2.5mm 3mm;
+th, td { border: 0.5pt solid #7a828d; padding: 2.5mm 3mm;
          text-align: center; }
-th { background: #eef1f6; color: #1F3864; font-size: 9.5pt; }
+th { background: #f4f5f7; color: #24406b; font-size: 9.5pt; }
 td.l { text-align: left; }
-.note { border: 0.5pt solid #d4dbe8; min-height: 25mm; padding: 3mm;
-        margin-bottom: 8mm; font-size: 9.5pt; color: #5a6577; }
+.note { border: 0.5pt solid #e2e5ea; min-height: 25mm; padding: 3mm;
+        margin-bottom: 8mm; font-size: 9.5pt; color: #7a828d; }
 .sign { display: flex; justify-content: flex-end; gap: 10mm;
         margin-top: 10mm; }
 .sign .box { text-align: center; font-size: 9.5pt; }
-.sign .line { border-bottom: 0.7pt solid #1c2433; width: 40mm;
+.sign .line { border-bottom: 0.7pt solid #1b2a41; width: 40mm;
               height: 12mm; margin-bottom: 1.5mm; }
 .ft { margin-top: 12mm; text-align: center; font-size: 8.5pt;
-      color: #8b94a4; }
+      color: #9aa1ab; }
 """
 
 

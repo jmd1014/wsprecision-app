@@ -21,17 +21,17 @@ APP_FILE = os.path.join(os.path.dirname(os.path.dirname(__file__)),
                         "streamlit_app.py")
 
 PAGES_FLOW = [
-    "🏠 홈",
-    "📥 수주 관리",
-    "📊 생산 계획",
-    "📋 발주/입고",
-    "🧾 공정 관리",
-    "🚚 출고 관리",
+    "홈",
+    "수주 관리",
+    "생산 계획",
+    "발주/입고",
+    "공정 관리",
+    "출고 관리",
 ]
 PAGES_ADMIN = [
-    "⚙️ 마스터 관리",
-    "💰 원가 확인",
-    "🏭 생산 보고",
+    "마스터 관리",
+    "원가 확인",
+    "생산 보고",
 ]
 PAGES = PAGES_FLOW + PAGES_ADMIN
 
@@ -161,7 +161,7 @@ def test_po_prefill_flow(mocked_db):
     ]
     at.session_state["po_prefill_source_so"] = "SO-2026-001"
 
-    _goto(at, "📋 발주/입고")
+    _goto(at, "발주/입고")
     assert not at.exception, (
         f"발주/입고 prefill 렌더 예외: "
         f"{[str(e.value) for e in at.exception]}"
@@ -183,21 +183,21 @@ def test_po_prefill_flow(mocked_db):
 # ─── 3. 핵심 위젯 존재 검증 ───────────────────────────
 
 def test_home_shows_progress_dashboard(mocked_db):
-    """홈이 업무 진행 대시보드(수주→출고 단계 metric)를 표시하는지."""
+    """홈이 업무 진행 대시보드(수주→출고 KPI 카드)를 표시하는지.
+    2a 시안 이후 KPI 는 st.metric 이 아닌 HTML 카드(kpi-row)."""
     at = _make_apptest()
     at.run()
-    metrics = at.metric
-    assert len(metrics) >= 5, f"홈 metric 부족: {len(metrics)}"
-    labels = [m.label for m in metrics]
-    assert any("미납 수주" in l for l in labels)
-    assert any("완성 재고" in l for l in labels)
+    bodies = " ".join(str(m.value) for m in at.markdown)
+    assert "kpi-row" in bodies, "홈 KPI 카드(kpi-row) 미표시"
+    assert "미납 수주" in bodies
+    assert "완성 재고" in bodies
 
 
 def test_master_page_has_tabs(mocked_db):
     """마스터 관리에 7개 탭 존재."""
     at = _make_apptest()
     at.run()
-    _goto(at, "⚙️ 마스터 관리")
+    _goto(at, "마스터 관리")
     assert not at.exception
     assert len(at.tabs) >= 6, f"마스터 관리 탭 부족: {len(at.tabs)}"
 
@@ -206,6 +206,6 @@ def test_cost_page_renders_with_tabs(mocked_db):
     """원가 확인 페이지 — 탭 6개 + USE_V2 fallback 동작."""
     at = _make_apptest()
     at.run()
-    _goto(at, "💰 원가 확인")
+    _goto(at, "원가 확인")
     assert not at.exception
     assert len(at.tabs) >= 5, f"원가 확인 탭 부족: {len(at.tabs)}"
