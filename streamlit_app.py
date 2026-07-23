@@ -3253,20 +3253,26 @@ elif page == "📋 발주/입고":
             _rs_show = [r for r in _rs
                         if not _rs_only_wait
                         or r.get("receipt_status") != "RECEIVED"]
-            st.dataframe(pd.DataFrame([{
-                "PO": r.get("po_id"), "라인": r.get("line_no"),
-                "품명": r.get("item_name"), "규격": r.get("spec") or "-",
-                "자재": r.get("material_name") or r.get("material_id") or "미매핑",
-                "발주": float(r.get("ordered_qty") or 0),
-                "입고": float(r.get("received_qty") or 0),
-                "미입고": float(r.get("pending_qty") or 0),
-                "상태": status_ko(r.get("receipt_status")),
-                "최근 입고": r.get("last_receipt_date") or "-",
-            } for r in _rs_show]), use_container_width=True, hide_index=True,
-                height=min(400, 60 + len(_rs_show) * 35),
-                column_config={c: st.column_config.NumberColumn(
-                    format="localized", width="small")
-                    for c in ["발주", "입고", "미입고"]})
+            if not _rs_show:
+                st.success("✅ 입고 대기 라인 없음 — 전 라인 입고 완료. "
+                           "전체 이력은 체크를 해제하세요.")
+            else:
+                st.dataframe(pd.DataFrame([{
+                    "PO": r.get("po_id"), "라인": r.get("line_no"),
+                    "품명": r.get("item_name"), "규격": r.get("spec") or "-",
+                    "자재": r.get("material_name") or r.get("material_id")
+                            or "미매핑",
+                    "발주": float(r.get("ordered_qty") or 0),
+                    "입고": float(r.get("received_qty") or 0),
+                    "미입고": float(r.get("pending_qty") or 0),
+                    "상태": status_ko(r.get("receipt_status")),
+                    "최근 입고": r.get("last_receipt_date") or "-",
+                } for r in _rs_show]), use_container_width=True,
+                    hide_index=True,
+                    height=min(400, 60 + len(_rs_show) * 35),
+                    column_config={c: st.column_config.NumberColumn(
+                        format="localized", width="small")
+                        for c in ["발주", "입고", "미입고"]})
 
         # 소재 LOT (W번호) 잔여 현황
         st.divider()
