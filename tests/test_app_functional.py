@@ -27,6 +27,7 @@ PAGES = [
     "💰 원가 확인",
     "📋 구매/발주",
     "📊 생산 준비",
+    "🧾 공정 관리",
     "🏭 생산 보고",
 ]
 
@@ -123,8 +124,8 @@ def test_page_renders_without_exception(page, mocked_db):
     )
 
 
-def test_sidebar_has_exactly_7_pages(mocked_db):
-    """사이드바 메뉴가 메인 7개만 노출되는지 (정비 메뉴 제거 + 생산 보고 추가)."""
+def test_sidebar_has_exactly_8_pages(mocked_db):
+    """사이드바 메뉴가 메인 8개만 노출되는지 (Phase E 공정 관리 추가)."""
     at = _make_apptest()
     at.run()
     radios = at.sidebar.radio

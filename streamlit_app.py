@@ -129,6 +129,29 @@ def n_fmt(v):
         return v if v is not None else "-"
 
 
+def w_lot_next(count=1):
+    """소재 LOT (W번호) 채번 — app_settings.w_lot_counter 기반.
+
+    반환: ["W0905", ...] count개. 카운터 미설정 시 None (입고는 W번호
+    없이 진행 가능, 공정 관리 → 설정에서 시작 번호 등록 안내).
+    """
+    if count <= 0:
+        return []
+    try:
+        import db as _dbw
+        row = _dbw.fetch_one("app_settings", "key=eq.w_lot_counter", "value")
+        val = str((row or {}).get("value") or "").strip()
+        if not val.isdigit():
+            return None
+        cur = int(val)
+        nums = [cur + i + 1 for i in range(count)]
+        _dbw.update("app_settings", "key=eq.w_lot_counter",
+                    {"value": str(nums[-1])})
+        return [f"W{n:04d}" for n in nums]
+    except Exception:
+        return None
+
+
 # ─── 사이드바 ───
 with st.sidebar:
     # 정비용 페이지 (TOP 정비 등 5종) 는 마스터 안정화 완료 후 코드 제거됨.
@@ -140,6 +163,7 @@ with st.sidebar:
         "💰 원가 확인",
         "📋 구매/발주",
         "📊 생산 준비",
+        "🧾 공정 관리",
         "🏭 생산 보고",
     ]
     ALL_MENU = MENU_MAIN
@@ -3847,20 +3871,42 @@ elif page == "📋 구매/발주":
                     if do_receive and total_rcv > 0 and not missing_map:
                         from datetime import date as _rcv_date
                         ok_n, fail_n = 0, 0
-                        for poi_id, (rq, mid, r) in receive_inputs.items():
+                        # 소재 LOT (W번호) 라인별 채번 — Phase E
+                        _w_lots = w_lot_next(len(receive_inputs))
+                        if _w_lots is None:
+                            st.warning(
+                                "⚠️ W번호 카운터 미설정 — 이번 입고는 W번호 "
+                                "없이 기록됩니다. 🧾 공정 관리 → ⚙️ 설정에서 "
+                                "시작 번호를 등록하세요.")
+                        _label_items = []
+                        for _wi, (poi_id, (rq, mid, r)) in enumerate(
+                                receive_inputs.items()):
+                            _w = _w_lots[_wi] if _w_lots else None
                             try:
-                                # 1) 원장 기록
+                                # 1) 원장 기록 (lot_number = W번호)
                                 _db.insert("inventory_transactions", [{
                                     "material_id": mid,
                                     "txn_type": "RECEIPT",
                                     "qty": rq,
                                     "unit": r.get("unit") or "EA",
+                                    "lot_number": _w,
                                     "ref_table": "purchase_order_items",
                                     "ref_id": poi_id,
                                     "txn_date": _rcv_date.today().isoformat(),
                                     "remark": f"발주 입고: {po['po_number']}",
                                     "created_by": "김민수",
                                 }])
+                                _label_items.append({
+                                    "w_lot": _w or "(W번호 없음)",
+                                    "pn": r.get("item_name") or "-",
+                                    "material_name": r.get("material_name") or mid,
+                                    "spec": r.get("spec") or "-",
+                                    "qty": rq,
+                                    "unit": r.get("unit") or "EA",
+                                    "po_number": po["po_number"],
+                                    "vendor": po.get("_vname") or "-",
+                                    "date": _rcv_date.today().isoformat(),
+                                })
                                 # 2) 최초 매핑 저장 (재사용)
                                 if not r.get("material_id"):
                                     _db.update("purchase_order_items",
@@ -3894,11 +3940,336 @@ elif page == "📋 구매/발주":
                                 f"✅ 입고 처리 완료: {ok_n}개 라인 "
                                 f"(실재고 자동 반영)"
                                 + (f" / 실패 {fail_n}" if fail_n else ""))
+                            # 입고 라벨 데이터 보관 → rerun 후 다운로드 표시
+                            if _label_items:
+                                st.session_state["rcv_labels"] = _label_items
                             # rerun 후에도 같은 발주 유지
                             st.session_state["po_hist_keep"] = sel_po
                             st.rerun()
                         elif fail_n:
                             st.error(f"입고 처리 실패 ({fail_n}건)")
+
+                # ── 방금 입고분 라벨 출력 (Phase E — 소재 부착용) ──
+                if st.session_state.get("rcv_labels"):
+                    from utils.label_generator import receipt_labels
+                    _lbs = st.session_state["rcv_labels"]
+                    st.info(
+                        f"🏷️ 방금 입고한 {len(_lbs)}건의 소재 입고 라벨 — "
+                        "다운로드 후 열면 인쇄 창이 자동으로 뜹니다. "
+                        "라벨을 소재에 부착하고, MES 소재 등록 시 라벨의 "
+                        "W번호를 그대로 입력하세요.")
+                    lc1, lc2, lc3 = st.columns([1, 1, 1])
+                    with lc1:
+                        st.download_button(
+                            "🏷️ 라벨 프린터용 (단표)",
+                            data=receipt_labels(_lbs, mode="label"),
+                            file_name=f"입고라벨_{_lbs[0]['w_lot']}.html",
+                            mime="text/html", use_container_width=True)
+                    with lc2:
+                        st.download_button(
+                            "📄 A4 배치 (예비)",
+                            data=receipt_labels(_lbs, mode="a4"),
+                            file_name=f"입고라벨_A4_{_lbs[0]['w_lot']}.html",
+                            mime="text/html", use_container_width=True)
+                    with lc3:
+                        if st.button("닫기", use_container_width=True,
+                                     key="rcv_labels_close"):
+                            del st.session_state["rcv_labels"]
+                            st.rerun()
+
+
+# ════════════════════════════════════════════════════════════════
+# 🧾 공정 관리 — Phase E (투입→외주→검사→완성, 실물 라벨 연동)
+# ════════════════════════════════════════════════════════════════
+elif page == "🧾 공정 관리":
+    st.subheader("🧾 공정 관리")
+    st.caption(
+        "생산 앞뒤 실물 흐름 — **투입(작업지시) → 외주 → 검사 → 완성**. "
+        "상태는 행위의 부산물로 자동 전환 (직접 변경 없음). "
+        "공정별 생산 실적은 MES → 🏭 생산 보고에서 확인.")
+
+    if not DB_AVAILABLE:
+        st.error("DB 연결이 활성화되지 않았습니다."); st.stop()
+
+    import db as _db
+    import pandas as pd
+    import re as _pe_re
+    from datetime import date as _pe_date
+
+    pe_tab_in, pe_tab_board, pe_tab_set = st.tabs(
+        ["📥 투입 등록", "📊 공정 현황판", "⚙️ 설정"])
+
+    # ════════ TAB 1: 투입 등록 ════════
+    with pe_tab_in:
+        st.caption(
+            "MES 작업지시서 발행 직후, 지시서의 **작업지시 NO + 소재 W번호 + "
+            "투입 수량**을 등록합니다 → 소재 재고 차감 + '생산중' 진입. "
+            "(하루 발행분 기준 건당 30초)")
+
+        # ── 잔여 있는 소재 W번호 목록 (RECEIPT − PROD_INPUT) ──
+        try:
+            _wtx = fetch("inventory_transactions",
+                "lot_number,material_id,qty,txn_type,ref_id",
+                "lot_number=like.W*&txn_type=in.(RECEIPT,PROD_INPUT)",
+                limit=2000)
+        except Exception as e:
+            st.error(f"소재 LOT 조회 실패: {e}"); _wtx = []
+
+        if not _wtx:
+            st.info("잔여 소재 LOT(W번호)가 없습니다 — 구매/발주 → 발주 이력 "
+                    "→ 입고 처리에서 입고하면 W번호가 발급됩니다.")
+        else:
+            _wdf = pd.DataFrame(_wtx)
+            _wdf["qty"] = pd.to_numeric(_wdf["qty"], errors="coerce").fillna(0)
+            _bal = (_wdf.groupby(["lot_number", "material_id"], as_index=False)
+                    ["qty"].sum())
+            _bal = _bal[_bal["qty"] > 0].sort_values("lot_number",
+                                                     ascending=False)
+            if _bal.empty:
+                st.info("모든 소재 LOT 이 투입 완료 상태입니다.")
+            else:
+                # 자재명 매핑
+                _mids = list(_bal["material_id"].dropna().unique())
+                _mn_map = {}
+                if _mids:
+                    _mids_str = ",".join(f'"{m}"' for m in _mids)
+                    try:
+                        _mrows = fetch("materials", "material_id,raw_name",
+                            f"material_id=in.({_mids_str})", limit=200)
+                        _mn_map = {m["material_id"]: m["raw_name"]
+                                   for m in _mrows}
+                    except Exception:
+                        pass
+                # RECEIPT ref → 발주 라인 품번 제안
+                _rcpt = _wdf[_wdf["txn_type"] == "RECEIPT"]
+                _lot_ref = dict(zip(_rcpt["lot_number"], _rcpt["ref_id"]))
+
+                _w_labels = [
+                    f"{b.lot_number} | "
+                    f"{_mn_map.get(b.material_id, b.material_id)} | "
+                    f"잔여 {b.qty:,.0f}"
+                    for b in _bal.itertuples()]
+                iw1, iw2 = st.columns([2, 1])
+                with iw1:
+                    _w_pick = st.selectbox(
+                        f"소재 W번호 ({len(_w_labels)}건 잔여)",
+                        _w_labels, key="pe_w_pick")
+                _sel = _bal.iloc[_w_labels.index(_w_pick)]
+                _sel_lot, _sel_mid = _sel["lot_number"], _sel["material_id"]
+                _sel_bal = float(_sel["qty"])
+
+                # 품번 자동 제안 (발주 라인 item_name)
+                _pn_hint = ""
+                _ref_poi = _lot_ref.get(_sel_lot)
+                if _ref_poi:
+                    try:
+                        _poi_row = _db.fetch_one("purchase_order_items",
+                            f"poi_id=eq.{_ref_poi}", "item_name")
+                        _pn_hint = (_poi_row or {}).get("item_name") or ""
+                    except Exception:
+                        pass
+
+                ic1, ic2, ic3 = st.columns(3)
+                with ic1:
+                    _wo_no = st.text_input("작업지시 NO",
+                        placeholder="예: 20260723-001", key="pe_wo_no",
+                        help="MES 작업지시서의 번호 — MES 실적과 자동 연결되는 키")
+                with ic2:
+                    _in_qty = st.number_input("투입 수량",
+                        min_value=0.0, max_value=_sel_bal,
+                        value=_sel_bal, step=1.0, key="pe_in_qty")
+                with ic3:
+                    _in_pn = st.text_input("품번",
+                        value=_pn_hint, key="pe_in_pn",
+                        help="발주 라인에서 자동 제안 — 수정 가능")
+
+                _wo_ok = bool(_pe_re.fullmatch(r"\d{8}-\d{3}",
+                                              (_wo_no or "").strip()))
+                if _wo_no and not _wo_ok:
+                    st.error("작업지시 NO 형식이 다릅니다 — YYYYMMDD-NNN "
+                             "(예: 20260723-001)")
+
+                if st.button(
+                        f"📥 투입 등록 ({_in_qty:,.0f})", type="primary",
+                        disabled=not (_wo_ok and _in_qty > 0),
+                        key="pe_in_submit"):
+                    try:
+                        _wo = _wo_no.strip()
+                        _pn_clean = (_in_pn or "").strip()
+                        _prod = None
+                        if _pn_clean:
+                            _prod = _db.fetch_one("products",
+                                f"pn=eq.{_pn_clean}", "product_id")
+                        _db.insert("wo_tracking", [{
+                            "wo_number": _wo,
+                            "pn": _pn_clean or None,
+                            "product_id": (_prod or {}).get("product_id"),
+                            "material_id": _sel_mid,
+                            "w_lot": _sel_lot,
+                            "input_qty": _in_qty,
+                            "status": "IN_PROD",
+                            "created_by": "김민수",
+                        }])
+                        _db.insert("inventory_transactions", [{
+                            "material_id": _sel_mid,
+                            "txn_type": "PROD_INPUT",
+                            "qty": -_in_qty,
+                            "unit": "EA",
+                            "lot_number": _sel_lot,
+                            "work_order": _wo,
+                            "txn_date": _pe_date.today().isoformat(),
+                            "remark": f"생산 투입: {_pn_clean or '-'} ({_wo})",
+                            "created_by": "김민수",
+                        }])
+                        st.success(
+                            f"✅ 투입 등록: {_wo} · {_sel_lot} · "
+                            f"{_in_qty:,.0f}EA → 생산중")
+                        st.rerun()
+                    except Exception as e:
+                        if "duplicate" in str(e).lower() or "23505" in str(e):
+                            st.error(f"❌ 이미 등록된 조합입니다: {_wo_no} + "
+                                     f"{_sel_lot} — 공정 현황판에서 확인하세요.")
+                        else:
+                            st.error(f"등록 실패: {e}")
+
+        # 최근 투입 목록
+        st.divider()
+        st.markdown("##### 최근 투입 등록")
+        try:
+            _recent = fetch("wo_tracking",
+                "wo_number,pn,w_lot,input_qty,status,created_at",
+                "order=created_at.desc", limit=15)
+        except Exception:
+            _recent = []
+        if _recent:
+            st.dataframe(pd.DataFrame([{
+                "작업지시": t["wo_number"], "품번": t.get("pn") or "-",
+                "소재 LOT": t.get("w_lot") or "-",
+                "투입": float(t.get("input_qty") or 0),
+                "상태": status_ko(t.get("status")),
+                "등록": str(t.get("created_at") or "")[:16].replace("T", " "),
+            } for t in _recent]), use_container_width=True, hide_index=True,
+                column_config={"투입": st.column_config.NumberColumn(
+                    format="localized")})
+        else:
+            st.caption("투입 등록 없음.")
+
+    # ════════ TAB 2: 공정 현황판 ════════
+    with pe_tab_board:
+        try:
+            _wos = fetch("wo_tracking", "*",
+                "status=neq.CLOSED&order=created_at.desc", limit=300)
+        except Exception as e:
+            st.error(f"현황 조회 실패: {e}"); _wos = []
+
+        if not _wos:
+            st.info("진행 중인 작업지시가 없습니다 — 📥 투입 등록에서 시작합니다.")
+        else:
+            _bdf = pd.DataFrame(_wos)
+            for c in ["input_qty", "received_qty", "outsource_qty",
+                      "outsource_in_qty", "pass_qty", "tokusai_qty",
+                      "rework_qty", "scrap_qty"]:
+                _bdf[c] = pd.to_numeric(_bdf[c], errors="coerce").fillna(0)
+            _bdf["생산중"] = _bdf["input_qty"] - _bdf["received_qty"]
+            _bdf["외주중"] = _bdf["outsource_qty"] - _bdf["outsource_in_qty"]
+            _bdf["검사대기"] = (_bdf["received_qty"] + _bdf["outsource_in_qty"]
+                              - _bdf["outsource_qty"] - _bdf["pass_qty"]
+                              - _bdf["rework_qty"] - _bdf["scrap_qty"])
+
+            # MES 실적 연계 — 작업지시별 최종공정 누적 (참고)
+            _wo_nums = list(_bdf["wo_number"].unique())
+            _mes_map = {}
+            if _wo_nums:
+                try:
+                    _pl = fetch("production_log",
+                        "work_order,process_step,total_qty",
+                        "source=eq.MES_UPLOAD&work_order=not.is.null",
+                        limit=5000)
+                    if _pl:
+                        _pldf = pd.DataFrame(_pl)
+                        _pldf["wo"] = (_pldf["work_order"].astype(str)
+                                       .str.split(" ").str[0])
+                        _pldf = _pldf[_pldf["wo"].isin(_wo_nums)]
+                        _pldf["total_qty"] = pd.to_numeric(
+                            _pldf["total_qty"], errors="coerce").fillna(0)
+                        _pldf["process_step"] = pd.to_numeric(
+                            _pldf["process_step"], errors="coerce")
+                        for wo, g in _pldf.groupby("wo"):
+                            _last = g[g["process_step"] == g["process_step"].max()]
+                            _mes_map[wo] = float(_last["total_qty"].sum())
+                except Exception:
+                    pass
+            _bdf["MES최종공정"] = _bdf["wo_number"].map(_mes_map)
+
+            b1, b2, b3, b4 = st.columns(4)
+            b1.metric("진행 작업지시", f"{len(_bdf):,}건")
+            b2.metric("🔧 생산중", f"{_bdf['생산중'].clip(lower=0).sum():,.0f}")
+            b3.metric("🚚 외주중", f"{_bdf['외주중'].clip(lower=0).sum():,.0f}")
+            b4.metric("✅ 완성 (합격)", f"{_bdf['pass_qty'].sum():,.0f}")
+
+            st.dataframe(pd.DataFrame({
+                "작업지시": _bdf["wo_number"],
+                "품번": _bdf["pn"].fillna("-"),
+                "소재 LOT": _bdf["w_lot"].fillna("-"),
+                "투입": _bdf["input_qty"],
+                "생산중": _bdf["생산중"],
+                "MES 최종공정": _bdf["MES최종공정"],
+                "외주중": _bdf["외주중"],
+                "검사대기": _bdf["검사대기"].clip(lower=0),
+                "합격": _bdf["pass_qty"],
+                "특채": _bdf["tokusai_qty"],
+                "재작업": _bdf["rework_qty"],
+                "폐기": _bdf["scrap_qty"],
+            }), use_container_width=True, hide_index=True,
+                height=min(500, 60 + len(_bdf) * 35),
+                column_config={c: st.column_config.NumberColumn(
+                    format="localized", width="small")
+                    for c in ["투입", "생산중", "MES 최종공정", "외주중",
+                              "검사대기", "합격", "특채", "재작업", "폐기"]})
+            st.caption(
+                "MES 최종공정 = 업로드된 MES 실적 중 해당 작업지시의 최대 "
+                "공정번호 누적 수량 (사내 공정 진행 참고). "
+                "인수·외주·검사 처리는 Phase E-2 에서 추가 예정.")
+
+    # ════════ TAB 3: 설정 ════════
+    with pe_tab_set:
+        st.markdown("##### W번호 채번 설정")
+        st.caption(
+            "소재 입고 시 자동 발급되는 W번호(소재 LOT)의 카운터입니다. "
+            "**현장에서 마지막으로 사용한 번호**를 등록하면 다음 입고부터 "
+            "+1 로 채번됩니다. 예: 904 등록 → 다음 입고 W0905.")
+        try:
+            _wc_row = _db.fetch_one("app_settings",
+                "key=eq.w_lot_counter", "value,updated_at")
+        except Exception:
+            _wc_row = None
+        _wc_cur = (_wc_row or {}).get("value")
+        if _wc_cur:
+            st.info(f"현재 카운터: **W{int(_wc_cur):04d}** (다음 채번 "
+                    f"W{int(_wc_cur) + 1:04d})")
+        else:
+            st.warning("⚠️ 카운터 미설정 — 설정 전 입고는 W번호 없이 기록됩니다.")
+        sc1, sc2 = st.columns([1, 2])
+        with sc1:
+            _wc_new = st.number_input("마지막 사용 번호", min_value=0,
+                max_value=9999, value=int(_wc_cur) if _wc_cur else 904,
+                step=1, key="pe_wc_new")
+        with sc2:
+            st.write("")
+            st.write("")
+            if st.button("💾 카운터 저장", key="pe_wc_save"):
+                try:
+                    if _wc_row is not None:
+                        _db.update("app_settings", "key=eq.w_lot_counter",
+                                   {"value": str(int(_wc_new))})
+                    else:
+                        _db.insert("app_settings", [{
+                            "key": "w_lot_counter",
+                            "value": str(int(_wc_new))}])
+                    st.success(f"저장 — 다음 입고부터 W{int(_wc_new)+1:04d}")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"저장 실패: {e}")
 
 
 # ════════════════════════════════════════════════════════════════
