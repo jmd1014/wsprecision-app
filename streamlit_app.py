@@ -2821,7 +2821,8 @@ elif page == "수주 관리":
             if sos:
                 from collections import defaultdict as _dd
                 agg = _dd(lambda: {"수주건수": 0, "품목수": 0, "총수량": 0, "납품": 0,
-                                    "미납": 0, "총액": 0, "_ms": 0, "_mn": 0})
+                                    "미납": 0, "총액": 0, "_ms": 0, "_mn": 0,
+                                    "미납건": 0, "부분납건": 0, "완납건": 0})
                 for s in sos:
                     a = agg[s["customer"]]
                     a["수주건수"] += 1
@@ -2830,11 +2831,21 @@ elif page == "수주 관리":
                     a["납품"] += int(s.get("total_received_qty") or 0)
                     a["미납"] += int(s.get("total_pending_qty") or 0)
                     a["총액"] += int(s.get("total_amount") or 0)
+                    # 수주 상태 분포 (delivery_status 기준)
+                    _ds0 = s.get("delivery_status")
+                    if _ds0 == "미납":
+                        a["미납건"] += 1
+                    elif _ds0 == "부분납":
+                        a["부분납건"] += 1
+                    elif _ds0 == "완납":
+                        a["완납건"] += 1
                     if s.get("match_rate_pct") is not None:
                         a["_ms"] += s["match_rate_pct"]; a["_mn"] += 1
 
                 rows = [{
                     "거래처": cust, "수주건수": a["수주건수"], "품목수": a["품목수"],
+                    "상태 (미납/부분/완납)":
+                        f"{a['미납건']} / {a['부분납건']} / {a['완납건']}",
                     "총수량": a["총수량"], "납품": a["납품"], "미납": a["미납"],
                     "납품률": f"{100*a['납품']/a['총수량']:.1f}%" if a["총수량"] else "-",
                     "총액": a["총액"],
@@ -2884,9 +2895,11 @@ elif page == "수주 관리":
                             "우성 품번": i.get("canonical_pn") or "❌",
                             "수량": int(i.get("qty") or 0),
                             "미납": int(i.get("pending_qty") or 0),
+                            "상태": status_ko(i.get("status")),
                         })
                     df = pd.DataFrame(rows)
-                    st.dataframe(df, use_container_width=True, hide_index=True)
+                    st.dataframe(status_style(df),
+                                 use_container_width=True, hide_index=True)
                 else:
                     st.info("미납 품목 없음")
             else:
@@ -2895,7 +2908,7 @@ elif page == "수주 관리":
         # ── 뷰 5: 매칭 안된 품목 ──
         elif view_mode == "❌ 매칭 안된 품목":
             fq = ["order=so_date.desc"] + common_fq
-            try: sos = fetch("sales_orders", "so_id,so_number,customer,so_date",
+            try: sos = fetch("sales_orders", "so_id,so_number,customer,so_date,status",
                               "&".join(fq), limit=500)
             except Exception as e: st.error(e); sos = []
             so_map = {s["so_id"]: s for s in sos}
@@ -2915,8 +2928,11 @@ elif page == "수주 관리":
                         "거래처 품명": (i.get("customer_item_name") or "")[:40],
                         "수량": int(i.get("qty") or 0),
                         "수주일": so_map.get(i["so_id"], {}).get("so_date"),
+                        "수주 상태": status_ko(
+                            so_map.get(i["so_id"], {}).get("status")),
                     } for i in sitems])
-                    st.dataframe(df, use_container_width=True, hide_index=True)
+                    st.dataframe(status_style(df, cols=("수주 상태",)),
+                                 use_container_width=True, hide_index=True)
                     st.caption("💡 거래처 자재코드 → 우성정밀 품번 매핑은 마스터 관리에서 추가 가능 (다음 push)")
                 else:
                     st.success("✅ 모든 품목이 매칭되었습니다")
@@ -3415,20 +3431,28 @@ elif page == "생산 계획":
             mat_req[mid]["items_count"] += 1
 
     # ── 6) 상단 통계 ──
-    sc1, sc2, sc3, sc4, sc5 = st.columns(5)
+    total_mat_cover = sum(
+        min(info["required"],
+            float(mat_map.get(mid, {}).get("stock_qty") or 0))
+        for mid, info in mat_req.items())
+    shortage_count = sum(1 for mid, info in mat_req.items()
+                          if info["required"] - (mat_map.get(mid, {}).get("stock_qty") or 0) > 0)
+    sc1, sc2, sc3, sc4, sc5, sc6 = st.columns(6)
     sc1.metric("미납 수주 품목", len(sois))
     sc2.metric("BOM 매핑된 품목", items_with_bom)
-    sc3.metric("📦 완성 재고 충당",
+    sc3.metric("완성 재고 충당",
                f"{total_prod_stock_used:,.0f}",
                help="제품 완성 재고(product_stock_v)로 생산 없이 출고 "
                     "가능한 수량 — 자재 필요량 계산에서 제외됨")
-    sc4.metric("필요 자재 종류", len(mat_req))
-    shortage_count = sum(1 for mid, info in mat_req.items()
-                          if info["required"] - (mat_map.get(mid, {}).get("stock_qty") or 0) > 0)
-    sc5.metric("🔴 자재 부족", shortage_count, delta_color="inverse")
+    sc4.metric("소재 재고 충당", f"{total_mat_cover:,.0f}",
+               help="자재 실재고(material_stock)로 충당되는 필요량 — "
+                    "발주 필요량 = 총필요량 − 소재 재고")
+    sc5.metric("필요 자재 종류", len(mat_req))
+    sc6.metric("🔴 자재 부족", shortage_count, delta_color="inverse")
     st.caption(
-        "ℹ️ 필요량 = **순생산필요** (미납수량 − 제품 완성 재고) × BOM. "
-        "자재 재고는 원장 실재고(material_stock) 기준.")
+        "ℹ️ 총필요량 = **순생산필요** (미납수량 − 제품 완성 재고) × BOM → "
+        "**발주 필요량 = 총필요량 − 소재 실재고** (원장 material_stock). "
+        "완성 재고와 소재 재고가 모두 차감된 값이 발주 기준입니다.")
 
     if items_no_bom:
         with st.expander(f"⚠️ BOM 미등록 품목 {len(items_no_bom)}건 — 마스터에서 BOM 등록 필요"):
@@ -3454,34 +3478,40 @@ elif page == "생산 계획":
                 "재질": mat.get("material_type") or "-",
                 "규격": mat.get("spec") or "-",
                 "단위": mat.get("unit") or "-",
-                "필요량": round(req, 2),
-                "현재재고": round(stock, 2),
-                "부족분": round(shortage, 2),
+                "총필요량": round(req, 2),
+                "소재 재고": round(stock, 2),
+                "재고 충당": round(min(req, max(stock, 0)), 2),
+                "발주 필요량": round(shortage, 2),
                 "주공급사": (mat.get("main_supplier") or "-")[:30],
                 "사용 제품수": len(info["by_pid"]),
                 "수주 건수": len(info["by_so"]),
             })
-        # 부족분 큰 순
-        rows.sort(key=lambda x: -x["부족분"])
+        # 발주 필요량 큰 순
+        rows.sort(key=lambda x: -x["발주 필요량"])
         df = pd.DataFrame(rows)
 
         if not df.empty:
-            # 예외 중심 강조 — 부족 행은 옅은 붉은 배경, 부족분 숫자는 진한 빨강
+            # 예외 중심 강조 — 부족 행은 옅은 붉은 배경, 발주 필요량은 진한 빨강
             def _hl_short(row):
-                css = "background-color:#fff5f5" if row["부족분"] > 0 else ""
+                css = ("background-color:#fff8f6"
+                       if row["발주 필요량"] > 0 else "")
                 return [css] * len(row)
             _styled = (df.style
                        .apply(_hl_short, axis=1)
                        .map(lambda v: "color:#d9480f;font-weight:700"
                             if isinstance(v, (int, float)) and v > 0 else "color:#9aa1ab",
-                            subset=["부족분"])
-                       .format({"필요량": "{:,.0f}", "현재재고": "{:,.0f}",
-                                "부족분": "{:,.0f}"}))
+                            subset=["발주 필요량"])
+                       .format({"총필요량": "{:,.0f}", "소재 재고": "{:,.0f}",
+                                "재고 충당": "{:,.0f}",
+                                "발주 필요량": "{:,.0f}"}))
             st.dataframe(_styled, use_container_width=True, hide_index=True)
 
-            shortage_rows = [r for r in rows if r["부족분"] > 0]
+            shortage_rows = [r for r in rows if r["발주 필요량"] > 0]
             if shortage_rows:
                 st.warning(f"🔴 자재 부족 {len(shortage_rows)}건 — '발주 자동 제안' 탭에서 발주서 생성 가능")
+            else:
+                st.success("✅ 전 자재 소재 재고로 충당 가능 — 발주 필요 "
+                           "없음.")
 
     # ─── 탭 2: 수주별 BOM 전개 ───
     with tab_so:
