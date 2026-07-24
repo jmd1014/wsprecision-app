@@ -42,7 +42,7 @@ body {{ font-family: 'Malgun Gothic', sans-serif; color: #1b2a41; }}
 .a4grid {{ display: flex; flex-wrap: wrap; gap: 6mm; padding: 8mm; }}
 """
 
-_BADGE_CLASS = {"합격": "ok", "불합격": "ng", "특채": "tk"}
+_BADGE_CLASS = {"합격": "ok", "불합격": "ng", "특채": "tk", "반품": "ng"}
 
 
 def labels_html(labels: list, mode: str = "label",

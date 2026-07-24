@@ -144,6 +144,18 @@ div[data-testid="stDataFrame"]{
 .kpi.good{border-top-color:var(--good)}
 .kpi.zero{border-top-color:var(--line)}
 .kpi.zero .v{color:var(--mute)}
+
+/* ── 공정 스테퍼 (투입→생산→외주→검사→완성) ── */
+.stepper{display:flex;gap:6px;margin:6px 0 10px}
+.step{flex:1;text-align:center;font-size:12px;font-weight:600;
+  padding:7px 4px;border:1px solid var(--line);border-radius:4px;
+  color:var(--faint);background:var(--card)}
+.step.on{background:var(--blue-bg);color:var(--primary);
+  border-color:var(--primary)}
+.step.done{background:var(--good-bg);color:var(--good);
+  border-color:var(--good)}
+.step.warn{background:var(--warn-bg);color:var(--warn2);
+  border-color:var(--warn2)}
 </style>
 """, unsafe_allow_html=True)
 
@@ -219,9 +231,9 @@ def wo_stage_qty(t):
         "재작업중": max(0.0, rew),
         "검사대기": max(0.0, f("received_qty") + f("outsource_in_qty")
                      - f("outsource_qty") - f("pass_qty")
-                     - f("scrap_qty") - rew),
-        "완성대기": max(0.0, f("pass_qty") - f("output_qty")),
+                     - f("scrap_qty") - f("return_qty") - rew),
         "완성": f("output_qty"),
+        "반품": f("return_qty"),
     }
 
 
@@ -244,9 +256,8 @@ def wo_derive_status(t):
         return "REWORK"
     if q["검사대기"] > 0:
         return "INSPECT"
-    if q["완성대기"] > 0:
-        return "READY"
-    if q["완성"] > 0:
+    if (q["완성"] > 0 or q["반품"] > 0
+            or float(t.get("scrap_qty") or 0) > 0):
         return "CLOSED"
     return t.get("status") or "IN_PROD"
 
@@ -358,7 +369,8 @@ if page == "홈":
         _h_so = fetch("sales_order_stats",
             "so_number,customer,so_date,due_date,total_qty,"
             "total_received_qty,total_pending_qty,delivery_status",
-            "order=so_date.desc", limit=500)
+            'status=not.in.("CANCELLED","CANCELED")&order=so_date.desc',
+            limit=500)
     except Exception:
         _h_so = []
     try:
@@ -2191,7 +2203,8 @@ elif page == "수주 관리":
     # 상단 KPI — 페이지 골격 통일 (요약 → 처리 → 현황)
     try:
         _so_kpi = fetch("sales_order_stats",
-            "total_pending_qty,due_date,so_date", "", limit=500)
+            "total_pending_qty,due_date,so_date",
+            'status=not.in.("CANCELLED","CANCELED")', limit=500)
     except Exception:
         _so_kpi = []
     _sk_pend = sum(float(s.get("total_pending_qty") or 0) for s in _so_kpi)
@@ -2493,9 +2506,40 @@ elif page == "수주 관리":
             if "m_so_items" not in st.session_state:
                 st.session_state.m_so_items = []
 
-            with st.expander("➕ 품목 추가"):
+            with st.expander("➕ 품목 추가", expanded=True):
+                # 기존 품목 추천 — 마스터에서 검색해 선택하면 product_id
+                # 매핑까지 저장 (생산 계획 필요량·출고 재고 연동의 전제)
+                m_pn_q = st.text_input("품번 검색 (마스터)", key="m_pn_q",
+                    placeholder="품번 일부 입력 — 예: MRG4, 8HFDV")
+                _m_cands = []
+                if (m_pn_q or "").strip():
+                    try:
+                        _m_cands = fetch("products",
+                            "product_id,pn,alias_list",
+                            f"or=(pn.ilike.*{m_pn_q.strip()}*,"
+                            f"alias_list.ilike.*{m_pn_q.strip()}*)"
+                            "&archived_at=is.null&order=pn", limit=30)
+                    except Exception:
+                        _m_cands = []
+                _m_opts = (["(직접 입력 — 마스터 미등록 품번)"]
+                           + [p["pn"] for p in _m_cands])
+                m_pick = st.selectbox(
+                    f"품목 선택 ({len(_m_cands)}건 일치)", _m_opts,
+                    index=1 if _m_cands else 0, key="m_pn_pick")
+                _m_prod = next((p for p in _m_cands if p["pn"] == m_pick),
+                               None)
                 ic1, ic2, ic3, ic4 = st.columns(4)
-                m_pn = ic1.text_input("품번", key="m_pn")
+                if _m_prod:
+                    ic1.text_input("품번", value=_m_prod["pn"],
+                                   disabled=True, key="m_pn_ro")
+                    m_pn = _m_prod["pn"]
+                else:
+                    m_pn = ic1.text_input("품번 (직접 입력)", key="m_pn")
+                    if m_pn:
+                        st.warning("마스터 미등록 품번 — 생산 계획 자재 "
+                                   "산출·출고 재고 연동이 안 됩니다. "
+                                   "마스터 관리 → 제품 편집에서 등록 후 "
+                                   "검색 선택을 권장합니다.")
                 m_qty = ic2.number_input("수량", 0, step=10, key="m_qty")
                 m_up = ic3.number_input("단가", 0, step=100, key="m_up")
                 m_due_item = ic4.date_input("품목 납기", value=_date.today() + _td(days=14), key="m_due_item")
@@ -2505,6 +2549,8 @@ elif page == "수주 관리":
                         "customer_part_no": m_pn, "qty": m_qty,
                         "unit_price": m_up, "amount": m_qty * m_up,
                         "due_date": m_due_item,
+                        "product_id": (_m_prod or {}).get("product_id"),
+                        "canonical_pn": (_m_prod or {}).get("pn"),
                     })
                     st.rerun()
 
@@ -2541,7 +2587,11 @@ elif page == "수주 관리":
                             _db.insert("sales_order_items", [{
                                 "so_id": so_row["so_id"], "line_no": it["line_no"],
                                 "customer_part_no": it["customer_part_no"],
+                                "product_id": it.get("product_id"),
+                                "canonical_pn": it.get("canonical_pn"),
                                 "qty": it["qty"], "unit": "EA",
+                                "received_qty": 0,
+                                "pending_qty": it["qty"],
                                 "unit_price": it["unit_price"], "amount": it["amount"],
                                 "due_date": it["due_date"].isoformat() if it.get("due_date") else None,
                                 "status": "PENDING",
@@ -2558,14 +2608,22 @@ elif page == "수주 관리":
             ["📋 수주별 (헤더)", "📦 품목별", "🏢 거래처별", "📅 납기 임박순", "❌ 매칭 안된 품목"],
             horizontal=True)
 
-        fc1, fc2, fc3 = st.columns(3)
+        fc1, fc2 = st.columns(2)
         with fc1:
             sl_period = st.selectbox("기간", ["이번달", "최근 3개월", "올해", "전체"], index=2)
         with fc2:
             sl_cust = st.text_input("거래처", placeholder="예: HDX, 미진")
-        with fc3:
-            sl_status = st.selectbox("상태",
-                ["전체", "DRAFT", "CONFIRMED", "IN_PROD", "PARTIAL", "DELIVERED", "CANCELLED"])
+        # 상태 필터 칩 (2a 시안 — pills, 구버전은 radio 폴백)
+        _sl_opts = ["전체", "DRAFT", "CONFIRMED", "IN_PROD", "PARTIAL",
+                    "DELIVERED", "CANCELLED"]
+        _sl_fmt = lambda s: "전체" if s == "전체" else status_ko(s)
+        if hasattr(st, "pills"):
+            sl_status = st.pills("상태", _sl_opts, default="전체",
+                                 format_func=_sl_fmt,
+                                 key="so_status_pills") or "전체"
+        else:
+            sl_status = st.radio("상태", _sl_opts, format_func=_sl_fmt,
+                                 horizontal=True, key="so_status_radio")
 
         today = _date.today()
         common_fq = []
@@ -2836,7 +2894,7 @@ elif page == "출고 관리":
         with dc2:
             d_limit = st.number_input("표시", 5, 50, 10, 5, key="deliver_limit")
 
-        d_filter = ["status=not.in.(\"DELIVERED\",\"CANCELLED\")",
+        d_filter = ["status=not.in.(\"DELIVERED\",\"CANCELLED\",\"CANCELED\")",
                     "order=so_date.desc"]
         if dq:
             qq = dq.strip()
@@ -3089,7 +3147,8 @@ elif page == "출고 관리":
             _ds = fetch("sales_order_stats",
                 "so_number,customer,so_date,total_qty,total_received_qty,"
                 "total_pending_qty,delivery_status",
-                "order=so_date.desc", limit=500)
+                'status=not.in.("CANCELLED","CANCELED")&order=so_date.desc',
+            limit=500)
         except Exception as e:
             st.error(f"납품 현황 조회 실패: {e}"); _ds = []
         if not _ds:
@@ -3206,6 +3265,14 @@ elif page == "생산 계획":
     so_rows = fetch("sales_orders", "so_id,so_number,customer,so_date,due_date,status",
                      f"so_id=in.({ids_str})", limit=500)
     so_map = {s["so_id"]: s for s in so_rows}
+
+    # 취소 수주 제외 — 헤더 상태 기준 (라인 pending 은 남아있을 수 있음)
+    sois = [i for i in sois
+            if (so_map.get(i["so_id"], {}).get("status") or "")
+            not in ("CANCELLED", "CANCELED")]
+    if not sois:
+        st.info("미납 수주 품목이 없습니다 (취소 수주 제외).")
+        st.stop()
 
     # ── 3) BOM 조회 (제품별 자재 매핑) ──
     pids = list({i["product_id"] for i in sois if i.get("product_id")})
@@ -3513,14 +3580,14 @@ elif page == "발주/입고":
         "TOOL": "🟨 공구·소모품",
     }
 
-    tab_new, tab_hist, tab_rstat = st.tabs(
-        ["새 발주서 작성", "발주 이력", "입고 현황"])
+    tab_new, tab_hist, tab_rcv_proc, tab_rstat = st.tabs(
+        ["새 발주서 작성", "발주 이력", "입고 처리", "입고 현황"])
 
     # ════════════ TAB 3: 입고 현황 (소재 입고 상황) ════════════
     with tab_rstat:
         st.caption(
             "발주 라인별 입고 진행 + 소재 LOT(W번호) 잔여 현황 — "
-            "입고 처리는 📜 발주 이력에서, 투입은 공정 관리에서.")
+            "입고 처리는 [입고 처리] 탭에서, 투입은 공정 관리에서.")
         # 발주 라인 입고 상태 (미완료 우선)
         try:
             _rs = fetch("po_item_receipt_v",
@@ -3886,7 +3953,28 @@ elif page == "발주/입고":
             if "po_items" not in st.session_state:
                 st.session_state.po_items = []
 
-            search_q = st.text_input("품번 검색", placeholder="예: 8HFDV, 4PDVN")
+            # 검색 범위 — 기본은 이 거래처와 거래한 품번 (2026-07-24)
+            _vh_pns = set()
+            try:
+                _vh_pos = fetch("purchase_orders", "po_id",
+                    f"vendor_id=eq.{vendor['vendor_id']}", limit=300)
+                if _vh_pos:
+                    _vh_items = fetch("purchase_order_items", "item_name",
+                        "po_id=in.("
+                        + ",".join(str(p["po_id"]) for p in _vh_pos)
+                        + ")", limit=2000)
+                    _vh_pns = {i["item_name"] for i in _vh_items
+                               if i.get("item_name")}
+            except Exception:
+                pass
+            sq1, sq2 = st.columns([3, 1])
+            search_q = sq1.text_input("품번 검색",
+                                      placeholder="예: 8HFDV, 4PDVN")
+            _vh_only = sq2.checkbox(
+                f"이 거래처 이력만 ({len(_vh_pns)}종)",
+                value=bool(_vh_pns), key="po_vh_only",
+                help="이 거래처와 거래한 품번 안에서만 검색 — "
+                     "해제하면 전체 품목에서 검색")
             if search_q and len(search_q) >= 2:
                 try:
                     res = fetch("active_products",
@@ -3894,6 +3982,13 @@ elif page == "발주/입고":
                                 f"or=(pn.ilike.*{search_q}*,alias_list.ilike.*{search_q}*,bom_material_name.ilike.*{search_q}*)&limit=20")
                 except Exception as e:
                     st.error(f"검색 실패: {e}"); res = []
+                if _vh_only and _vh_pns:
+                    _res_all_n = len(res)
+                    res = [p for p in res if p["pn"] in _vh_pns]
+                    if not res and _res_all_n:
+                        st.info(f"이 거래처 이력에 없는 품번 — 전체 품목 "
+                                f"{_res_all_n}건 일치. '이 거래처 이력만' "
+                                "체크를 해제하면 표시됩니다.")
                 if not res:
                     # 활성 품목 0건 — 휴면 품목과 일치하면 원인 안내 (침묵 방지)
                     try:
@@ -4275,6 +4370,56 @@ elif page == "발주/입고":
                                   {"status": new_status}):
                         st.success(f"상태를 {new_status}로 변경"); st.rerun()
 
+                st.divider()
+                st.caption("입고 처리는 [입고 처리] 탭에서 진행합니다 (2026-07-23 분리).")
+
+
+# ════════════════════════════════════════════════════════════════
+# 공정 관리 — Phase E (투입→외주→검사→완성, 실물 라벨 연동)
+
+    # ════════════ TAB: 입고 처리 (발주 기반 + 직접 입고) ════════════
+    with tab_rcv_proc:
+        st.caption(
+            "소재 입고 전용 — 발주 기반 입고 + 발주 무관 직접 입고"
+            "(신규/사급자재). RECEIPT 원장 + W번호 채번 + 입고 라벨.")
+        st.markdown("##### 발주 기반 입고")
+        try:
+            _rp_pos = fetch("purchase_orders",
+                "po_id,po_number,vendor_id,po_date,status",
+                'status=not.in.("RECEIVED","CANCELLED")&order=po_date.desc',
+                limit=200)
+        except Exception as e:
+            st.error(f"발주 조회 실패: {e}"); _rp_pos = []
+        if not _rp_pos:
+            st.info("입고 대기 발주 없음 — 발주 없이 들어온 소재는 아래 "
+                    "직접 입고를 이용하세요.")
+        else:
+            _rp_vids = list({r["vendor_id"] for r in _rp_pos
+                             if r.get("vendor_id")})
+            _rp_vmap = {}
+            if _rp_vids:
+                try:
+                    _rp_vmap = {v["vendor_id"]: v["name"] for v in fetch(
+                        "vendors", "vendor_id,name",
+                        "vendor_id=in.("
+                        + ",".join(str(x) for x in _rp_vids) + ")",
+                        limit=300)}
+                except Exception:
+                    pass
+            for _r0 in _rp_pos:
+                _r0["_vname"] = _rp_vmap.get(_r0.get("vendor_id"), "?")
+            _rp_opts = {
+                f"{r['po_number']} | {r['_vname']} | {r.get('po_date')} | "
+                f"{status_ko(r['status'])}": r for r in _rp_pos}
+            _rp_keys = list(_rp_opts.keys())
+            if "po_rcv_keep" in st.session_state:
+                _rk = st.session_state.pop("po_rcv_keep")
+                if _rk in _rp_keys:
+                    st.session_state["po_rcv_sel"] = _rk
+            sel_rp = st.selectbox("입고할 발주 선택", _rp_keys,
+                                  key="po_rcv_sel")
+            if sel_rp:
+                po = _rp_opts[sel_rp]
                 # ════════ 📦 입고 처리 (Phase A) ════════
                 st.divider()
                 st.markdown("##### 📦 입고 처리")
@@ -4461,7 +4606,7 @@ elif page == "발주/입고":
                         if _w_lots is None:
                             st.warning(
                                 "⚠️ W번호 카운터 미설정 — 이번 입고는 W번호 "
-                                "없이 기록됩니다. 공정 관리 → 설정에서 "
+                                "없이 기록됩니다. 아래 채번 설정에서 "
                                 "시작 번호를 등록하세요.")
                         _label_items = []
                         for _wi, (poi_id, (rq, mid, r)) in enumerate(
@@ -4529,42 +4674,158 @@ elif page == "발주/입고":
                             if _label_items:
                                 st.session_state["rcv_labels"] = _label_items
                             # rerun 후에도 같은 발주 유지
-                            st.session_state["po_hist_keep"] = sel_po
+                            st.session_state["po_rcv_keep"] = sel_rp
                             st.rerun()
                         elif fail_n:
                             st.error(f"입고 처리 실패 ({fail_n}건)")
 
-                # ── 방금 입고분 라벨 출력 (Phase E — 소재 부착용) ──
-                if st.session_state.get("rcv_labels"):
-                    from utils.label_generator import receipt_labels
-                    _lbs = st.session_state["rcv_labels"]
-                    st.info(
-                        f"방금 입고한 {len(_lbs)}건의 소재 입고 라벨 — "
-                        "다운로드 후 열면 인쇄 창이 자동으로 뜹니다. "
-                        "라벨을 소재에 부착하고, MES 소재 등록 시 라벨의 "
-                        "W번호를 그대로 입력하세요.")
-                    lc1, lc2, lc3 = st.columns([1, 1, 1])
-                    with lc1:
-                        st.download_button(
-                            "라벨 프린터용 (단표)",
-                            data=receipt_labels(_lbs, mode="label"),
-                            file_name=f"입고라벨_{_lbs[0]['w_lot']}.html",
-                            mime="text/html", use_container_width=True)
-                    with lc2:
-                        st.download_button(
-                            "A4 배치 (예비)",
-                            data=receipt_labels(_lbs, mode="a4"),
-                            file_name=f"입고라벨_A4_{_lbs[0]['w_lot']}.html",
-                            mime="text/html", use_container_width=True)
-                    with lc3:
-                        if st.button("닫기", use_container_width=True,
-                                     key="rcv_labels_close"):
-                            del st.session_state["rcv_labels"]
-                            st.rerun()
 
+        # ── 방금 입고분 라벨 출력 (Phase E — 소재 부착용) ──
+        if st.session_state.get("rcv_labels"):
+            from utils.label_generator import receipt_labels
+            _lbs = st.session_state["rcv_labels"]
+            st.info(
+                f"방금 입고한 {len(_lbs)}건의 소재 입고 라벨 — "
+                "다운로드 후 열면 인쇄 창이 자동으로 뜹니다. "
+                "라벨을 소재에 부착하고, MES 소재 등록 시 라벨의 "
+                "W번호를 그대로 입력하세요.")
+            lc1, lc2, lc3 = st.columns([1, 1, 1])
+            with lc1:
+                st.download_button(
+                    "라벨 프린터용 (단표)",
+                    data=receipt_labels(_lbs, mode="label"),
+                    file_name=f"입고라벨_{_lbs[0]['w_lot']}.html",
+                    mime="text/html", use_container_width=True)
+            with lc2:
+                st.download_button(
+                    "A4 배치 (예비)",
+                    data=receipt_labels(_lbs, mode="a4"),
+                    file_name=f"입고라벨_A4_{_lbs[0]['w_lot']}.html",
+                    mime="text/html", use_container_width=True)
+            with lc3:
+                if st.button("닫기", use_container_width=True,
+                             key="rcv_labels_close"):
+                    del st.session_state["rcv_labels"]
+                    st.rerun()
 
-# ════════════════════════════════════════════════════════════════
-# 공정 관리 — Phase E (투입→외주→검사→완성, 실물 라벨 연동)
+        # ── 직접 입고 (발주 무관 — 신규 자재/사급자재) ──
+        st.divider()
+        st.markdown("##### 직접 입고 (발주 무관 — 신규/사급자재)")
+        st.caption("고객 사급자재나 발주 없이 들어온 소재를 입고합니다. "
+                   "발주 라인 연결 없이 RECEIPT 원장에 기록됩니다.")
+        dr1, dr2 = st.columns([2, 1])
+        with dr1:
+            _dr_kw = st.text_input("자재 검색", key="dr_mq",
+                placeholder="자재명 / 재질 / 규격 — 예: S45C, Ø25")
+            _dr_cands = []
+            if (_dr_kw or "").strip():
+                try:
+                    _dr_cands = fetch("materials",
+                        "material_id,raw_name,material_type,spec,unit",
+                        f"or=(raw_name.ilike.*{_dr_kw.strip()}*,"
+                        f"material_type.ilike.*{_dr_kw.strip()}*,"
+                        f"spec.ilike.*{_dr_kw.strip()}*)&order=raw_name",
+                        limit=15)
+                except Exception:
+                    _dr_cands = []
+            _dr_pick = None
+            if _dr_cands:
+                _dr_labels = [
+                    f"{m['material_id']} | {m['raw_name']} "
+                    f"({m.get('spec') or '-'})" for m in _dr_cands]
+                _dr_sel = st.selectbox(
+                    f"자재 선택 ({len(_dr_cands)}건)", _dr_labels,
+                    key="dr_mp")
+                _dr_pick = _dr_cands[_dr_labels.index(_dr_sel)]
+            elif (_dr_kw or "").strip():
+                st.warning("일치 자재 없음 — 신규 자재는 마스터 관리 → "
+                           "자재 편집에서 먼저 등록하세요.")
+        with dr2:
+            _dr_qty = st.number_input("입고 수량", min_value=0.0,
+                step=1.0, key="dr_qty")
+            _dr_sagup = st.checkbox("사급자재 (고객 지급 — 매입 아님)",
+                                    key="dr_sagup")
+        dc1, dc2 = st.columns(2)
+        _dr_pn = dc1.text_input("사용 품번 (선택 — 라벨 표기)",
+                                key="dr_pn")
+        _dr_src = dc2.text_input("공급처/출처 (선택)", key="dr_src",
+            placeholder="예: 미진정밀 사급, OO상사")
+        if st.button(f"직접 입고 ({_dr_qty:,.0f})", type="primary",
+                     disabled=not (_dr_pick and _dr_qty > 0),
+                     key="dr_submit"):
+            from datetime import date as _dr_date
+            _dw = (w_lot_next(1) or [None])[0]
+            try:
+                _db.insert("inventory_transactions", [{
+                    "material_id": _dr_pick["material_id"],
+                    "txn_type": "RECEIPT",
+                    "qty": _dr_qty,
+                    "unit": _dr_pick.get("unit") or "EA",
+                    "lot_number": _dw,
+                    "txn_date": _dr_date.today().isoformat(),
+                    "remark": ("사급 입고" if _dr_sagup else "직접 입고")
+                              + (f": {_dr_src}" if _dr_src else ""),
+                    "created_by": "김민수",
+                }])
+                st.session_state["rcv_labels"] = [{
+                    "w_lot": _dw or "(W번호 없음)",
+                    "pn": _dr_pn or "-",
+                    "material_name": _dr_pick.get("raw_name"),
+                    "spec": _dr_pick.get("spec") or "-",
+                    "qty": _dr_qty,
+                    "unit": _dr_pick.get("unit") or "EA",
+                    "po_number": "직접 입고"
+                                 + (" (사급)" if _dr_sagup else ""),
+                    "vendor": _dr_src or "-",
+                    "date": _dr_date.today().isoformat(),
+                }]
+                st.success(f"직접 입고 완료: "
+                           f"{_dr_pick['material_id']} {_dr_qty:,.0f} "
+                           + (f"(소재 LOT {_dw})" if _dw else "(W번호 없음)"))
+                st.rerun()
+            except Exception as e:
+                st.error(f"직접 입고 실패: {e}")
+
+        # ── W번호 채번 설정 (2026-07-23 공정 관리에서 이동) ──
+        st.divider()
+        st.markdown("##### W번호 채번 설정")
+        st.caption(
+            "소재 입고 시 자동 발급되는 W번호(소재 LOT)의 카운터입니다. "
+            "**현장에서 마지막으로 사용한 번호**를 등록하면 다음 입고부터 "
+            "+1 로 채번됩니다. 예: 904 등록 → 다음 입고 W0905.")
+        try:
+            _wc_row = _db.fetch_one("app_settings",
+                "key=eq.w_lot_counter", "value,updated_at")
+        except Exception:
+            _wc_row = None
+        _wc_cur = (_wc_row or {}).get("value")
+        if _wc_cur:
+            st.info(f"현재 카운터: **W{int(_wc_cur):04d}** (다음 채번 "
+                    f"W{int(_wc_cur) + 1:04d})")
+        else:
+            st.warning("⚠️ 카운터 미설정 — 설정 전 입고는 W번호 없이 기록됩니다.")
+        sc1, sc2 = st.columns([1, 2])
+        with sc1:
+            _wc_new = st.number_input("마지막 사용 번호", min_value=0,
+                max_value=9999, value=int(_wc_cur) if _wc_cur else 904,
+                step=1, key="pe_wc_new")
+        with sc2:
+            st.write("")
+            st.write("")
+            if st.button("💾 카운터 저장", key="pe_wc_save"):
+                try:
+                    if _wc_row is not None:
+                        _db.update("app_settings", "key=eq.w_lot_counter",
+                                   {"value": str(int(_wc_new))})
+                    else:
+                        _db.insert("app_settings", [{
+                            "key": "w_lot_counter",
+                            "value": str(int(_wc_new))}])
+                    st.success(f"저장 — 다음 입고부터 W{int(_wc_new)+1:04d}")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"저장 실패: {e}")
+
 # ════════════════════════════════════════════════════════════════
 elif page == "공정 관리":
     st.subheader("공정 관리")
@@ -4589,7 +4850,7 @@ elif page == "공정 관리":
         st.error(f"작업지시 조회 실패: {e}"); _pe_all = []
 
     _pe_sum = {"생산중": 0.0, "외주중": 0.0, "재작업중": 0.0,
-               "검사대기": 0.0, "완성대기": 0.0}
+               "검사대기": 0.0, "완성": 0.0}
     for _t0 in _pe_all:
         _q0 = wo_stage_qty(_t0)
         for _k0 in _pe_sum:
@@ -4599,11 +4860,11 @@ elif page == "공정 관리":
     pk2.metric("외주중", f"{_pe_sum['외주중']:,.0f}")
     pk3.metric("재작업중", f"{_pe_sum['재작업중']:,.0f}")
     pk4.metric("검사 대기", f"{_pe_sum['검사대기']:,.0f}")
-    pk5.metric("완성 대기", f"{_pe_sum['완성대기']:,.0f}")
+    pk5.metric("완성 (진행 작지)", f"{_pe_sum['완성']:,.0f}")
     st.divider()
 
-    pe_tab_in, pe_tab_proc, pe_tab_board, pe_tab_set = st.tabs(
-        ["투입 등록", "공정 처리", "공정 현황판", "설정"])
+    pe_tab_in, pe_tab_proc, pe_tab_board = st.tabs(
+        ["투입 등록", "공정 처리", "공정 현황판"])
 
     # ════════ TAB 1: 투입 등록 ════════
     with pe_tab_in:
@@ -4675,19 +4936,62 @@ elif page == "공정 관리":
                     except Exception:
                         pass
 
+                # 품번 자동 매핑 — 입고 근거(발주 라인)에서 결정.
+                # 발주 연결이 없는 소재(직접 입고)만 직접 입력.
+                if _pn_hint:
+                    _in_pn = _pn_hint
+                    st.caption(f"품번 **{_in_pn}** (발주 라인에서 자동 "
+                               "매핑)")
+                else:
+                    _in_pn = st.text_input(
+                        "품번 (발주 연결 없음 — 직접 입력)",
+                        key="pe_in_pn")
+
+                # BOM 분할 환산 — 소재 수량 → 예상 생산 수량 (제품 EA)
+                _prod0, _cvt = None, None
+                if (_in_pn or "").strip():
+                    try:
+                        _prod0 = _db.fetch_one("products",
+                            f"pn=eq.{_in_pn.strip()}", "product_id")
+                        if _prod0:
+                            _b0 = fetch("bom", "qty_per_pc,shared_factor",
+                                f"product_id=eq.{_prod0['product_id']}"
+                                f"&material_id=eq.{_sel_mid}", limit=1)
+                            if _b0:
+                                _qpp = float(_b0[0].get("qty_per_pc")
+                                             or 0)
+                                _sf = float(_b0[0].get("shared_factor")
+                                            or 1) or 1
+                                if _qpp > 0:
+                                    _cvt = _sf / _qpp
+                    except Exception:
+                        pass
+
                 ic1, ic2, ic3 = st.columns(3)
                 with ic1:
                     _wo_no = st.text_input("작업지시 NO",
                         placeholder="예: 20260723-001", key="pe_wo_no",
                         help="MES 작업지시서의 번호 — MES 실적과 자동 연결되는 키")
                 with ic2:
-                    _in_qty = st.number_input("투입 수량",
+                    _in_qty = st.number_input("소재 투입 수량",
                         min_value=0.0, max_value=_sel_bal,
                         value=_sel_bal, step=1.0, key="pe_in_qty")
                 with ic3:
-                    _in_pn = st.text_input("품번",
-                        value=_pn_hint, key="pe_in_pn",
-                        help="발주 라인에서 자동 제안 — 수정 가능")
+                    _exp_qty = float(round(_in_qty * _cvt)) \
+                        if _cvt else _in_qty
+                    _in_prod_qty = st.number_input(
+                        "예상 생산 수량 (제품)", min_value=0.0,
+                        value=_exp_qty, step=1.0,
+                        key=f"pe_in_pq_{_sel_lot}_{int(_in_qty)}",
+                        help="BOM 환산 자동 제안 — 수정 가능. 공정 "
+                             "현황판의 생산중 수량 기준.")
+                if _cvt:
+                    st.caption(f"BOM 환산: 소재 1EA → 제품 {_cvt:,.2f}개 "
+                               f"(소재 {_in_qty:,.0f} → 제품 "
+                               f"{_exp_qty:,.0f})")
+                elif (_in_pn or "").strip():
+                    st.caption("BOM 환산 정보 없음 — 소재:제품 1:1 로 "
+                               "제안. 다르면 예상 생산 수량을 수정하세요.")
 
                 _wo_ok = bool(_pe_re.fullmatch(r"\d{8}-\d{3}",
                                               (_wo_no or "").strip()))
@@ -4696,23 +5000,21 @@ elif page == "공정 관리":
                              "(예: 20260723-001)")
 
                 if st.button(
-                        f"투입 등록 ({_in_qty:,.0f})", type="primary",
-                        disabled=not (_wo_ok and _in_qty > 0),
+                        f"투입 등록 (소재 {_in_qty:,.0f} → 제품 "
+                        f"{_in_prod_qty:,.0f})", type="primary",
+                        disabled=not (_wo_ok and _in_qty > 0
+                                      and _in_prod_qty > 0),
                         key="pe_in_submit"):
                     try:
                         _wo = _wo_no.strip()
                         _pn_clean = (_in_pn or "").strip()
-                        _prod = None
-                        if _pn_clean:
-                            _prod = _db.fetch_one("products",
-                                f"pn=eq.{_pn_clean}", "product_id")
                         _db.insert("wo_tracking", [{
                             "wo_number": _wo,
                             "pn": _pn_clean or None,
-                            "product_id": (_prod or {}).get("product_id"),
+                            "product_id": (_prod0 or {}).get("product_id"),
                             "material_id": _sel_mid,
                             "w_lot": _sel_lot,
-                            "input_qty": _in_qty,
+                            "input_qty": _in_prod_qty,
                             "status": "IN_PROD",
                             "created_by": "김민수",
                         }])
@@ -4731,15 +5033,18 @@ elif page == "공정 관리":
                             _db.insert("wo_events", [{
                                 "wo_number": _wo, "w_lot": _sel_lot,
                                 "pn": _pn_clean or None,
-                                "event_type": "INPUT", "qty": _in_qty,
+                                "event_type": "INPUT",
+                                "qty": _in_prod_qty,
+                                "detail": {"material_qty": _in_qty},
                                 "event_date":
                                     _pe_date.today().isoformat(),
                                 "created_by": "김민수"}])
                         except Exception:
                             pass
                         st.success(
-                            f"✅ 투입 등록: {_wo} · {_sel_lot} · "
-                            f"{_in_qty:,.0f}EA → 생산중")
+                            f"✅ 투입 등록: {_wo} · {_sel_lot} · 소재 "
+                            f"{_in_qty:,.0f} → 제품 {_in_prod_qty:,.0f}"
+                            "EA → 생산중")
                         st.rerun()
                     except Exception as e:
                         if "duplicate" in str(e).lower() or "23505" in str(e):
@@ -4819,10 +5124,31 @@ elif page == "공정 관리":
             _t = _p_opts[_p_key]
             _q = wo_stage_qty(_t)
 
+            # 5칸 스테퍼 — 진행 칸만 상태색 (2a 시안)
+            def _step_cls(active, done):
+                return "on" if active else ("done" if done else "")
+            _stp = [
+                ("투입", _step_cls(False, float(_t.get("input_qty")
+                                                or 0) > 0)),
+                ("생산", _step_cls(_q["생산중"] > 0,
+                                  float(_t.get("received_qty") or 0) > 0)),
+                ("외주", _step_cls(_q["외주중"] > 0,
+                                  float(_t.get("outsource_in_qty")
+                                        or 0) > 0)),
+                ("검사", _step_cls(_q["검사대기"] > 0
+                                  or _q["재작업중"] > 0,
+                                  float(_t.get("pass_qty") or 0) > 0
+                                  or float(_t.get("scrap_qty") or 0) > 0)),
+                ("완성", _step_cls(False, _q["완성"] > 0)),
+            ]
+            st.markdown('<div class="stepper">' + "".join(
+                f'<div class="step {c}">{n}</div>' for n, c in _stp)
+                + "</div>", unsafe_allow_html=True)
+
             pm = st.columns(6)
             for _pi, _pk in enumerate(
                     ["생산중", "외주중", "재작업중", "검사대기",
-                     "완성대기", "완성"]):
+                     "완성", "반품"]):
                 pm[_pi].metric(_pk if _pk != "검사대기" else "검사 대기",
                                f"{_q[_pk]:,.0f}")
 
@@ -4859,8 +5185,6 @@ elif page == "공정 관리":
                 _acts.append("외주 입고")
             if _q["재작업중"] > 0:
                 _acts.append("재작업 복귀")
-            if _q["완성대기"] > 0:
-                _acts.append("완성 확정")
 
             if not _acts:
                 st.success("✅ 이 작업지시는 모든 수량이 처리되었습니다.")
@@ -4961,76 +5285,133 @@ elif page == "공정 관리":
 
                 # ── 4. 검사 (합격/재작업/폐기/특채 + 라벨) ──
                 elif _act == "검사":
-                    st.caption("검사 대기 수량을 판정합니다 — 합격은 완성 "
-                               "대기로, 재작업은 완료 후 복귀, 특채는 "
-                               "합격에 포함(표기 유지). 판정 라벨 발행.")
-                    qc1, qc2, qc3, qc4 = st.columns(4)
-                    _i_pass = qc1.number_input("합격", 0.0, _q["검사대기"],
-                        _q["검사대기"], 1.0, key="pe_i_pass")
+                    st.caption("검사 대기 수량을 판정합니다 — **완성(합격)"
+                               "은 즉시 완성 재고로 확정** + 완성 라벨. "
+                               "불합격은 재작업/폐기/특채/반품 구분 — "
+                               "재작업분만 작업지시에 남아 복귀 후 "
+                               "재검사합니다.")
+                    qc1, qc2, qc3, qc4, qc5 = st.columns(5)
+                    _i_pass = qc1.number_input("완성 (합격)", 0.0,
+                        _q["검사대기"], _q["검사대기"], 1.0,
+                        key="pe_i_pass")
                     _i_rework = qc2.number_input("재작업", 0.0,
                         _q["검사대기"], 0.0, 1.0, key="pe_i_rework")
                     _i_scrap = qc3.number_input("폐기", 0.0,
                         _q["검사대기"], 0.0, 1.0, key="pe_i_scrap")
-                    _i_tok = qc4.number_input("특채", 0.0, _q["검사대기"],
-                        0.0, 1.0, key="pe_i_tok")
-                    _i_sum = _i_pass + _i_rework + _i_scrap + _i_tok
+                    _i_tok = qc4.number_input("특채", 0.0,
+                        _q["검사대기"], 0.0, 1.0, key="pe_i_tok")
+                    _i_ret = qc5.number_input("반품", 0.0,
+                        _q["검사대기"], 0.0, 1.0, key="pe_i_ret")
+                    _i_done = _i_pass + _i_tok
+                    _i_sum = (_i_pass + _i_rework + _i_scrap
+                              + _i_tok + _i_ret)
                     if _i_sum > _q["검사대기"]:
                         st.error(f"판정 합계 {_i_sum:,.0f}가 검사 대기 "
                                  f"{_q['검사대기']:,.0f}를 초과합니다.")
-                    if st.button(f"검사 등록 (판정 {_i_sum:,.0f})",
+                    _f_pid = _t.get("product_id")
+                    if not _f_pid and _t.get("pn"):
+                        try:
+                            _f_pid = (_db.fetch_one("products",
+                                f"pn=eq.{_t['pn']}", "product_id")
+                                or {}).get("product_id")
+                        except Exception:
+                            pass
+                    if _i_done > 0 and not _f_pid:
+                        st.error("품번이 제품 마스터와 연결되지 않아 완성 "
+                                 "재고 등록이 불가합니다 — 마스터 관리에서 "
+                                 f"품번 '{_t.get('pn') or '?'}' 확인 후 "
+                                 "다시 시도하세요.")
+                    if st.button(f"검사 등록 (판정 {_i_sum:,.0f} · "
+                                 f"완성 {_i_done:,.0f})",
                                  type="primary",
-                                 disabled=not (0 < _i_sum
-                                               <= _q["검사대기"]),
+                                 disabled=not (
+                                     0 < _i_sum <= _q["검사대기"]
+                                     and (_i_done <= 0 or bool(_f_pid))),
                                  key="pe_i_btn"):
-                        from utils.label_generator import inspection_labels
+                        from utils.label_generator import (
+                            inspection_labels, finished_labels)
                         _today = _pe_date.today().isoformat()
-                        _items = []
                         _base = {"pn": _t.get("pn"),
                                  "wo_number": _t["wo_number"],
-                                 "w_lot": _t.get("w_lot"), "date": _today}
-                        if _i_pass:
-                            _items.append({**_base, "verdict": "합격",
-                                           "qty": _i_pass})
+                                 "w_lot": _t.get("w_lot"),
+                                 "date": _today}
+                        _ng_items = []
                         if _i_tok:
-                            _items.append({**_base, "verdict": "특채",
-                                           "qty": _i_tok})
+                            _ng_items.append({**_base, "verdict": "특채",
+                                              "qty": _i_tok})
                         if _i_rework:
-                            _items.append({**_base, "verdict": "불합격",
-                                           "qty": _i_rework,
-                                           "note": "재작업"})
+                            _ng_items.append({**_base,
+                                              "verdict": "불합격",
+                                              "qty": _i_rework,
+                                              "note": "재작업"})
                         if _i_scrap:
-                            _items.append({**_base, "verdict": "불합격",
-                                           "qty": _i_scrap, "note": "폐기"})
+                            _ng_items.append({**_base,
+                                              "verdict": "불합격",
+                                              "qty": _i_scrap,
+                                              "note": "폐기"})
+                        if _i_ret:
+                            _ng_items.append({**_base, "verdict": "반품",
+                                              "qty": _i_ret,
+                                              "note": "공급처 반품"})
+                        _files = []
+                        if _i_done > 0:
+                            _fin = [{**_base, "qty": _i_done,
+                                     "tokusai": _i_tok}]
+                            _files += [
+                                ("완성 라벨 (단표)",
+                                 f"완성라벨_{_t['wo_number']}.html",
+                                 finished_labels(_fin, mode="label")),
+                                ("완성 라벨 A4",
+                                 f"완성라벨_A4_{_t['wo_number']}.html",
+                                 finished_labels(_fin, mode="a4"))]
+                        if _ng_items:
+                            _files += [
+                                ("판정 라벨 (단표)",
+                                 f"검사라벨_{_t['wo_number']}.html",
+                                 inspection_labels(_ng_items,
+                                                   mode="label")),
+                                ("판정 라벨 A4",
+                                 f"검사라벨_A4_{_t['wo_number']}.html",
+                                 inspection_labels(_ng_items,
+                                                   mode="a4"))]
                         _wo_apply(
                             {"pass_qty": float(_t.get("pass_qty") or 0)
-                                         + _i_pass + _i_tok,
+                                         + _i_done,
                              "tokusai_qty":
                              float(_t.get("tokusai_qty") or 0) + _i_tok,
                              "rework_qty":
                              float(_t.get("rework_qty") or 0) + _i_rework,
                              "scrap_qty":
-                             float(_t.get("scrap_qty") or 0) + _i_scrap},
-                            event={"event_type": "INSPECT", "qty": _i_sum,
+                             float(_t.get("scrap_qty") or 0) + _i_scrap,
+                             "return_qty":
+                             float(_t.get("return_qty") or 0) + _i_ret,
+                             "output_qty":
+                             float(_t.get("output_qty") or 0) + _i_done},
+                            event={"event_type": "INSPECT",
+                                   "qty": _i_sum,
                                    "detail": {"pass": _i_pass,
                                               "rework": _i_rework,
                                               "scrap": _i_scrap,
-                                              "tokusai": _i_tok}},
-                            docs={"title": "검사 판정 라벨 "
-                                           f"({len(_items)}종)",
-                                  "files": [
-                                      ("판정 라벨 (단표)",
-                                       f"검사라벨_{_t['wo_number']}.html",
-                                       inspection_labels(_items,
-                                                         mode="label")),
-                                      ("A4 배치 (예비)",
-                                       f"검사라벨_A4_{_t['wo_number']}"
-                                       ".html",
-                                       inspection_labels(_items,
-                                                         mode="a4"))]},
-                            msg=f"검사 등록 — 합격 {_i_pass:,.0f} · "
-                                f"특채 {_i_tok:,.0f} · 재작업 "
-                                f"{_i_rework:,.0f} · 폐기 {_i_scrap:,.0f}")
-
+                                              "tokusai": _i_tok,
+                                              "return": _i_ret,
+                                              "output": _i_done}},
+                            ledger=({
+                                "product_id": _f_pid,
+                                "txn_type": "PROD_OUTPUT",
+                                "qty": _i_done, "unit": "EA",
+                                "lot_number": _t["wo_number"],
+                                "work_order": _t["wo_number"],
+                                "txn_date": _today,
+                                "remark": "검사 완성: "
+                                          f"{_t.get('pn') or '-'} (소재 "
+                                          f"{_t.get('w_lot') or '-'})",
+                                "created_by": "김민수",
+                            } if _i_done > 0 else None),
+                            docs=({"title": "검사 판정 문서",
+                                   "files": _files} if _files else None),
+                            msg=f"검사 등록 — 완성 {_i_done:,.0f} · "
+                                f"재작업 {_i_rework:,.0f} · 폐기 "
+                                f"{_i_scrap:,.0f} · 반품 {_i_ret:,.0f}")
                 # ── 5. 재작업 복귀 ──
                 elif _act == "재작업 복귀":
                     st.caption("재작업 완료분을 검사 대기로 되돌립니다 — "
@@ -5049,81 +5430,6 @@ elif page == "공정 관리":
                                    "qty": _rw_qty},
                             msg=f"재작업 복귀 {_rw_qty:,.0f} EA → "
                                 "검사 대기 (재검사)")
-
-                # ── 6. 완성 확정 (PROD_OUTPUT + 완성 라벨) ──
-                elif _act == "완성 확정":
-                    st.caption("합격분(특채 포함)을 완성 재고로 확정합니다 "
-                               "— 제품 재고 증가 + 완성 라벨 발행. "
-                               "이후 출고 관리에서 납품.")
-                    _f_pid = _t.get("product_id")
-                    if not _f_pid and _t.get("pn"):
-                        try:
-                            _f_prod = _db.fetch_one("products",
-                                f"pn=eq.{_t['pn']}", "product_id")
-                            _f_pid = (_f_prod or {}).get("product_id")
-                        except Exception:
-                            pass
-                    if not _f_pid:
-                        st.error("품번이 제품 마스터와 연결되지 않아 완성 "
-                                 "재고를 등록할 수 없습니다 — ⚙️ 마스터 "
-                                 f"관리에서 품번 '{_t.get('pn') or '?'}' "
-                                 "확인 후 다시 시도하세요.")
-                    else:
-                        _f_qty = st.number_input("확정 수량", 0.0,
-                            _q["완성대기"], _q["완성대기"], 1.0,
-                            key="pe_f_qty")
-                        if st.button(f"완성 확정 ({_f_qty:,.0f})",
-                                     type="primary",
-                                     disabled=_f_qty <= 0,
-                                     key="pe_f_btn"):
-                            from utils.label_generator import (
-                                finished_labels)
-                            _today = _pe_date.today().isoformat()
-                            _tok_left = float(_t.get("tokusai_qty") or 0)
-                            _f_items = [{
-                                "pn": _t.get("pn"),
-                                "wo_number": _t["wo_number"],
-                                "w_lot": _t.get("w_lot"),
-                                "qty": _f_qty, "date": _today,
-                                "tokusai": min(_tok_left, _f_qty)
-                                           if _tok_left else 0,
-                            }]
-                            _wo_apply(
-                                {"output_qty":
-                                 float(_t.get("output_qty") or 0)
-                                 + _f_qty},
-                                event={"event_type": "OUTPUT",
-                                       "qty": _f_qty,
-                                       "detail": {"tokusai":
-                                                  min(_tok_left, _f_qty)
-                                                  if _tok_left else 0}},
-                                ledger={
-                                    "product_id": _f_pid,
-                                    "txn_type": "PROD_OUTPUT",
-                                    "qty": _f_qty, "unit": "EA",
-                                    "lot_number": _t["wo_number"],
-                                    "work_order": _t["wo_number"],
-                                    "txn_date": _today,
-                                    "remark": f"완성 확정: "
-                                              f"{_t.get('pn') or '-'} "
-                                              f"(소재 "
-                                              f"{_t.get('w_lot') or '-'})",
-                                    "created_by": "김민수",
-                                },
-                                docs={"title": "완성품 라벨",
-                                      "files": [
-                                          ("완성 라벨 (단표)",
-                                           f"완성라벨_{_t['wo_number']}"
-                                           ".html",
-                                           finished_labels(_f_items,
-                                                           mode="label")),
-                                          ("A4 배치 (예비)",
-                                           f"완성라벨_A4_"
-                                           f"{_t['wo_number']}.html",
-                                           finished_labels(_f_items,
-                                                           mode="a4"))]},
-                                msg=f"완성 확정 {_f_qty:,.0f} EA → "
-                                    "완성 재고 반영 (출고 관리에서 납품)")
 
             # ── 공정 이력 (스텝별 타임라인) + 문서 재발행 ──
             st.divider()
@@ -5145,11 +5451,14 @@ elif page == "공정 관리":
                                 f"{d.get('process', '-')} · "
                                 f"납기 {d.get('due', '-')}")
                     if e["event_type"] == "INSPECT":
-                        return (f"합격 {float(d.get('pass') or 0):,.0f} · "
-                                f"재작업 {float(d.get('rework') or 0):,.0f}"
-                                f" · 폐기 {float(d.get('scrap') or 0):,.0f}"
-                                f" · 특채 "
-                                f"{float(d.get('tokusai') or 0):,.0f}")
+                        _s = (f"완성 {float(d.get('pass') or 0):,.0f} · "
+                              f"재작업 {float(d.get('rework') or 0):,.0f}"
+                              f" · 폐기 {float(d.get('scrap') or 0):,.0f}"
+                              f" · 특채 "
+                              f"{float(d.get('tokusai') or 0):,.0f}")
+                        if d.get("return"):
+                            _s += f" · 반품 {float(d['return']):,.0f}"
+                        return _s
                     if e["event_type"] == "OUTPUT" and d.get("tokusai"):
                         return f"특채 포함 {float(d['tokusai']):,.0f}"
                     return "-"
@@ -5227,8 +5536,22 @@ elif page == "공정 관리":
                             _items.append({**_base, "verdict": "불합격",
                                            "qty": float(_red["scrap"]),
                                            "note": "폐기"})
+                        if float(_red.get("return") or 0):
+                            _items.append({**_base, "verdict": "반품",
+                                           "qty": float(_red["return"]),
+                                           "note": "공급처 반품"})
+                        if float(_red.get("output") or 0):
+                            _re_files += [
+                                ("완성 라벨 (단표)",
+                                 f"완성라벨_재발행_{_t['wo_number']}"
+                                 ".html",
+                                 finished_labels([{**_base,
+                                     "qty": float(_red["output"]),
+                                     "tokusai":
+                                     float(_red.get("tokusai") or 0)}],
+                                     mode="label"))]
                         if _items:
-                            _re_files = [
+                            _re_files += [
                                 ("판정 라벨 (단표)",
                                  f"검사라벨_재발행_{_t['wo_number']}"
                                  ".html",
@@ -5279,7 +5602,7 @@ elif page == "공정 관리":
             for c in ["input_qty", "received_qty", "outsource_qty",
                       "outsource_in_qty", "pass_qty", "tokusai_qty",
                       "rework_qty", "rework_in_qty", "scrap_qty",
-                      "output_qty"]:
+                      "return_qty", "output_qty"]:
                 if c not in _bdf.columns:
                     _bdf[c] = 0
                 _bdf[c] = pd.to_numeric(_bdf[c], errors="coerce").fillna(0)
@@ -5288,8 +5611,8 @@ elif page == "공정 관리":
             _bdf["재작업중"] = _bdf["rework_qty"] - _bdf["rework_in_qty"]
             _bdf["검사대기"] = (_bdf["received_qty"] + _bdf["outsource_in_qty"]
                               - _bdf["outsource_qty"] - _bdf["pass_qty"]
-                              - _bdf["scrap_qty"] - _bdf["재작업중"])
-            _bdf["완성대기"] = _bdf["pass_qty"] - _bdf["output_qty"]
+                              - _bdf["scrap_qty"] - _bdf["return_qty"]
+                              - _bdf["재작업중"])
             _bdf["상태"] = [status_ko(wo_derive_status(t)) for t in _wos]
 
             # MES 실적 연계 — 작업지시별 최종공정 누적 (참고)
@@ -5333,9 +5656,9 @@ elif page == "공정 관리":
                 "외주중": _bdf["외주중"],
                 "재작업중": _bdf["재작업중"],
                 "검사대기": _bdf["검사대기"].clip(lower=0),
-                "합격": _bdf["pass_qty"],
                 "특채": _bdf["tokusai_qty"],
                 "폐기": _bdf["scrap_qty"],
+                "반품": _bdf["return_qty"],
                 "완성": _bdf["output_qty"],
                 "상태": _bdf["상태"],
             })
@@ -5345,52 +5668,13 @@ elif page == "공정 관리":
                 column_config={c: st.column_config.NumberColumn(
                     format="localized", width="small")
                     for c in ["투입", "생산중", "MES 최종공정", "외주중",
-                              "재작업중", "검사대기", "합격", "특채",
-                              "폐기", "완성"]})
+                              "재작업중", "검사대기", "특채",
+                              "폐기", "반품", "완성"]})
             st.caption(
                 "MES 최종공정 = 업로드된 MES 실적 중 해당 작업지시의 최대 "
                 "공정번호 누적 수량 (사내 공정 진행 참고). "
                 "처리(인수/외주/검사/완성)는 공정 처리 탭에서.")
 
-    # ════════ TAB 3: 설정 ════════
-    with pe_tab_set:
-        st.markdown("##### W번호 채번 설정")
-        st.caption(
-            "소재 입고 시 자동 발급되는 W번호(소재 LOT)의 카운터입니다. "
-            "**현장에서 마지막으로 사용한 번호**를 등록하면 다음 입고부터 "
-            "+1 로 채번됩니다. 예: 904 등록 → 다음 입고 W0905.")
-        try:
-            _wc_row = _db.fetch_one("app_settings",
-                "key=eq.w_lot_counter", "value,updated_at")
-        except Exception:
-            _wc_row = None
-        _wc_cur = (_wc_row or {}).get("value")
-        if _wc_cur:
-            st.info(f"현재 카운터: **W{int(_wc_cur):04d}** (다음 채번 "
-                    f"W{int(_wc_cur) + 1:04d})")
-        else:
-            st.warning("⚠️ 카운터 미설정 — 설정 전 입고는 W번호 없이 기록됩니다.")
-        sc1, sc2 = st.columns([1, 2])
-        with sc1:
-            _wc_new = st.number_input("마지막 사용 번호", min_value=0,
-                max_value=9999, value=int(_wc_cur) if _wc_cur else 904,
-                step=1, key="pe_wc_new")
-        with sc2:
-            st.write("")
-            st.write("")
-            if st.button("💾 카운터 저장", key="pe_wc_save"):
-                try:
-                    if _wc_row is not None:
-                        _db.update("app_settings", "key=eq.w_lot_counter",
-                                   {"value": str(int(_wc_new))})
-                    else:
-                        _db.insert("app_settings", [{
-                            "key": "w_lot_counter",
-                            "value": str(int(_wc_new))}])
-                    st.success(f"저장 — 다음 입고부터 W{int(_wc_new)+1:04d}")
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"저장 실패: {e}")
 
 
 # ════════════════════════════════════════════════════════════════
