@@ -2507,8 +2507,12 @@ elif page == "수주 관리":
                 st.session_state.m_so_items = []
 
             with st.expander("➕ 품목 추가", expanded=True):
-                # 기존 품목 추천 — 마스터에서 검색해 선택하면 product_id
-                # 매핑까지 저장 (생산 계획 필요량·출고 재고 연동의 전제)
+                # 수주는 등록된 품목만 가능 (2026-07-24 확정) — 오타
+                # 품번이 수주에 들어와 재고/산출 연동이 끊기는 것 방지.
+                # 미등록 품번은 아래 '신규 품목 등록'으로 먼저 추가.
+                _seed = st.session_state.pop("m_pn_q_seed", None)
+                if _seed is not None:
+                    st.session_state["m_pn_q"] = _seed
                 m_pn_q = st.text_input("품번 검색 (마스터)", key="m_pn_q",
                     placeholder="품번 일부 입력 — 예: MRG4, 8HFDV")
                 _m_cands = []
@@ -2521,38 +2525,90 @@ elif page == "수주 관리":
                             "&archived_at=is.null&order=pn", limit=30)
                     except Exception:
                         _m_cands = []
-                _m_opts = (["(직접 입력 — 마스터 미등록 품번)"]
-                           + [p["pn"] for p in _m_cands])
-                m_pick = st.selectbox(
-                    f"품목 선택 ({len(_m_cands)}건 일치)", _m_opts,
-                    index=1 if _m_cands else 0, key="m_pn_pick")
-                _m_prod = next((p for p in _m_cands if p["pn"] == m_pick),
-                               None)
-                ic1, ic2, ic3, ic4 = st.columns(4)
-                if _m_prod:
-                    ic1.text_input("품번", value=_m_prod["pn"],
-                                   disabled=True, key="m_pn_ro")
-                    m_pn = _m_prod["pn"]
-                else:
-                    m_pn = ic1.text_input("품번 (직접 입력)", key="m_pn")
-                    if m_pn:
-                        st.warning("마스터 미등록 품번 — 생산 계획 자재 "
-                                   "산출·출고 재고 연동이 안 됩니다. "
-                                   "마스터 관리 → 제품 편집에서 등록 후 "
-                                   "검색 선택을 권장합니다.")
+                _m_prod = None
+                if _m_cands:
+                    m_pick = st.selectbox(
+                        f"품목 선택 ({len(_m_cands)}건 일치)",
+                        [p["pn"] for p in _m_cands], key="m_pn_pick")
+                    _m_prod = next(
+                        (p for p in _m_cands if p["pn"] == m_pick), None)
+                elif (m_pn_q or "").strip():
+                    st.warning("일치하는 등록 품목 없음 — 수주는 등록된 "
+                               "품목만 입력할 수 있습니다. 아래 '신규 "
+                               "품목 등록'으로 마스터에 추가 후 "
+                               "선택하세요.")
+                ic2, ic3, ic4 = st.columns(3)
                 m_qty = ic2.number_input("수량", 0, step=10, key="m_qty")
                 m_up = ic3.number_input("단가", 0, step=100, key="m_up")
                 m_due_item = ic4.date_input("품목 납기", value=_date.today() + _td(days=14), key="m_due_item")
-                if st.button("➕ 추가", key="m_add_item") and m_pn and m_qty:
+                if st.button("➕ 추가", key="m_add_item",
+                             disabled=not (_m_prod and m_qty)):
                     st.session_state.m_so_items.append({
                         "line_no": len(st.session_state.m_so_items) + 1,
-                        "customer_part_no": m_pn, "qty": m_qty,
+                        "customer_part_no": _m_prod["pn"], "qty": m_qty,
                         "unit_price": m_up, "amount": m_qty * m_up,
                         "due_date": m_due_item,
-                        "product_id": (_m_prod or {}).get("product_id"),
-                        "canonical_pn": (_m_prod or {}).get("pn"),
+                        "product_id": _m_prod["product_id"],
+                        "canonical_pn": _m_prod["pn"],
                     })
                     st.rerun()
+
+            with st.expander("신규 품목 등록 (마스터 미등록 품번)"):
+                st.caption("여기서 마스터에 등록하면 위 검색에서 바로 "
+                           "선택할 수 있습니다. BOM·원가 등 상세는 "
+                           "마스터 관리 → 제품 편집에서 보완하세요.")
+                nq1, nq2 = st.columns(2)
+                mq_pn = nq1.text_input("품번 *", key="mq_pn",
+                    placeholder="예: 4PDVN-02")
+                mq_mat = nq2.text_input("재질", key="mq_mat",
+                    placeholder="예: STS630, SCM440")
+                nq3, nq4 = st.columns(2)
+                mq_spec = nq3.text_input("자재 규격", key="mq_spec",
+                    placeholder="예: ⌀25 × 400")
+                mq_cust2 = nq4.text_input("거래처", key="mq_cust2",
+                    placeholder="비우면 위 거래처명 사용")
+                if st.button("품목 등록", key="mq_add",
+                             disabled=not (mq_pn or "").strip()):
+                    _mq_pn = mq_pn.strip()
+                    try:
+                        _mq_dup = _db.fetch_one("products",
+                            f"pn=eq.{_mq_pn}", "product_id,archived_at")
+                    except Exception:
+                        _mq_dup = None
+                    if _mq_dup:
+                        st.error(f"품번 '{_mq_pn}' 이미 존재"
+                                 + (" (휴면 — 마스터 관리에서 활성 복귀)"
+                                    if _mq_dup.get("archived_at") else "")
+                                 + f" — product_id "
+                                 f"{_mq_dup['product_id']}")
+                    else:
+                        try:
+                            _mq_latest = fetch("products", "product_id",
+                                "product_id=like.P*"
+                                "&order=product_id.desc", limit=1)
+                            _mq_n = (int(_mq_latest[0]["product_id"][1:])
+                                     + 1) if _mq_latest else 1
+                        except Exception:
+                            _mq_n = 9000
+                        _mq_pid = f"P{_mq_n:04d}"
+                        try:
+                            _db.insert("products", [{
+                                "product_id": _mq_pid, "pn": _mq_pn,
+                                "customer": (mq_cust2 or m_cust
+                                             or "").strip() or None,
+                                "material": (mq_mat or "").strip()
+                                            or None,
+                                "raw_material_spec":
+                                    (mq_spec or "").strip() or None,
+                                "active": "1",
+                            }])
+                            st.session_state["m_pn_q_seed"] = _mq_pn
+                            st.success(f"✅ 품목 등록: {_mq_pid} | "
+                                       f"{_mq_pn} — 위 검색에서 "
+                                       "선택하세요.")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"등록 실패: {e}")
 
             if st.session_state.m_so_items:
                 df = pd.DataFrame(st.session_state.m_so_items)
