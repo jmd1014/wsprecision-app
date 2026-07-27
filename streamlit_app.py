@@ -5011,27 +5011,78 @@ elif page == "공정 관리":
                 _sel_lot, _sel_mid = _sel["lot_number"], _sel["material_id"]
                 _sel_bal = float(_sel["qty"])
 
-                # 품번 자동 제안 (발주 라인 item_name)
-                _pn_hint = ""
+                # 품번 자동 매핑 (2026-07-27 개선) —
+                #  ① 발주 라인명이 제품 품번이면 그대로 (품목 발주 경로)
+                #  ② 아니면 소재 → BOM 역조회로 이 소재를 쓰는 제품 후보
+                #     (자재 발주·사급·직접 입고 경로). 미납 수주 있는
+                #     제품을 우선 제시.
+                _pn_hint, _pn_src = "", ""
                 _ref_poi = _lot_ref.get(_sel_lot)
                 if _ref_poi:
                     try:
                         _poi_row = _db.fetch_one("purchase_order_items",
                             f"poi_id=eq.{_ref_poi}", "item_name")
-                        _pn_hint = (_poi_row or {}).get("item_name") or ""
+                        _cand_pn = (_poi_row or {}).get("item_name") or ""
+                        if _cand_pn and _db.fetch_one(
+                                "products", f"pn=eq.{_cand_pn}",
+                                "product_id"):
+                            _pn_hint, _pn_src = _cand_pn, "발주 라인"
                     except Exception:
                         pass
 
-                # 품번 자동 매핑 — 입고 근거(발주 라인)에서 결정.
-                # 발주 연결이 없는 소재(직접 입고)만 직접 입력.
+                _bom_pns = []
+                if not _pn_hint:
+                    try:
+                        _bp = fetch("bom", "product_id",
+                            f"material_id=eq.{_sel_mid}", limit=50)
+                        _bp_ids = list({b["product_id"] for b in _bp
+                                        if b.get("product_id")})
+                        if _bp_ids:
+                            _bp_str = ",".join(f'"{p}"' for p in _bp_ids)
+                            _bp_rows = fetch("products", "product_id,pn",
+                                f"product_id=in.({_bp_str})"
+                                "&archived_at=is.null&order=pn", limit=50)
+                            # 미납 수주가 있는 제품 우선 정렬
+                            _open_pids = set()
+                            try:
+                                _open_pids = {
+                                    s["product_id"] for s in fetch(
+                                        "sales_order_items", "product_id",
+                                        f"product_id=in.({_bp_str})"
+                                        "&pending_qty=gt.0", limit=200)
+                                    if s.get("product_id")}
+                            except Exception:
+                                pass
+                            _bom_pns = sorted(
+                                _bp_rows,
+                                key=lambda p: (
+                                    p["product_id"] not in _open_pids,
+                                    p["pn"]))
+                    except Exception:
+                        _bom_pns = []
+
                 if _pn_hint:
                     _in_pn = _pn_hint
-                    st.caption(f"품번 **{_in_pn}** (발주 라인에서 자동 "
+                    st.caption(f"품번 **{_in_pn}** ({_pn_src}에서 자동 "
                                "매핑)")
+                elif _bom_pns:
+                    _pn_labels = [
+                        (f"{p['pn']} ← 미납 수주 있음"
+                         if p["product_id"] in _open_pids else p["pn"])
+                        for p in _bom_pns]
+                    _pn_sel = st.selectbox(
+                        f"품번 (이 소재의 BOM 제품 {len(_bom_pns)}건)",
+                        _pn_labels, key=f"pe_in_pnsel_{_sel_lot}",
+                        help="소재→BOM 역조회 자동 후보. 미납 수주가 "
+                             "있는 제품이 위에 표시됩니다.")
+                    _in_pn = _bom_pns[_pn_labels.index(_pn_sel)]["pn"]
                 else:
                     _in_pn = st.text_input(
-                        "품번 (발주 연결 없음 — 직접 입력)",
-                        key="pe_in_pn")
+                        "품번 (BOM 연결 없음 — 직접 입력)",
+                        key="pe_in_pn",
+                        help="이 소재를 쓰는 제품이 BOM 에 없습니다. "
+                             "마스터 관리 → BOM 편집에서 등록하면 "
+                             "다음부터 자동 제안됩니다.")
 
                 # BOM 분할 환산 — 소재 수량 → 예상 생산 수량 (제품 EA)
                 _prod0, _cvt = None, None
