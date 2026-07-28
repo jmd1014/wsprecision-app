@@ -2953,8 +2953,9 @@ elif page == "출고 관리":
     with tab_deliver:
         st.caption(
             "수주 라인에 납품 수량을 기록합니다 — received_qty 누적 + "
-            "상태 자동 전환 + 제품 완성 재고 차감 (ISSUE 원장). "
-            "출고 LOT 를 입력하면 소재→생산→납품 역추적이 연결됩니다."
+            "상태 자동 전환 + 완성 재고 차감. **완성 LOT(작업지시)에서 "
+            "선입선출로 자동 배분**되어 소재→생산→납품 역추적이 "
+            "LOT 단위로 이어집니다."
         )
 
         # ── 1) 미납 수주 조회 ──
@@ -3004,13 +3005,13 @@ elif page == "출고 관리":
                 st.markdown(f"##### 📋 {d_so['so_number']} 라인 "
                             f"({len(d_items)}개)")
 
-                # 완성 재고 조회 — 출고는 재고 기반 (2026-07-23 확정)
+                # 완성 재고 조회 — LOT별 잔량 (2026-07-27 선입선출)
                 _pids = [it["product_id"] for it in d_items
                          if it.get("product_id")]
-                _stock_map = {}
+                _stock_map, _lot_map = {}, {}
                 if _pids:
+                    _pids_str = ",".join(f'"{p}"' for p in set(_pids))
                     try:
-                        _pids_str = ",".join(f'"{p}"' for p in set(_pids))
                         _stock_map = {
                             s["product_id"]:
                             float(s.get("current_stock") or 0)
@@ -3020,6 +3021,31 @@ elif page == "출고 관리":
                                 limit=200)}
                     except Exception as e:
                         st.warning(f"완성 재고 조회 실패: {e}")
+                    try:
+                        for _l in fetch("product_lot_stock_v",
+                            "product_id,lot_number,remain_qty,"
+                            "first_output_date,tokusai_qty,material_lot",
+                            f"product_id=in.({_pids_str})&remain_qty=gt.0"
+                            "&order=first_output_date.asc,lot_number.asc",
+                            limit=500):
+                            _lot_map.setdefault(
+                                _l["product_id"], []).append(_l)
+                    except Exception as e:
+                        st.warning(f"LOT 재고 조회 실패 (Migration 026 "
+                                   f"필요): {e}")
+
+                def _fifo_alloc(pid, qty):
+                    """완성 LOT 선입선출 배분 → [(lot, qty, tokusai), ...]"""
+                    out, left = [], float(qty)
+                    for _l in _lot_map.get(pid, []):
+                        if left <= 0:
+                            break
+                        _take = min(left, float(_l.get("remain_qty") or 0))
+                        if _take > 0:
+                            out.append((_l["lot_number"], _take,
+                                        float(_l.get("tokusai_qty") or 0)))
+                            left -= _take
+                    return out, left
                 _allow_over = st.checkbox(
                     "⚠️ 재고 없이 출고 허용 (ERP 이관 전 생산분 등 — "
                     "완성 재고와 무관하게 출고)",
@@ -3051,7 +3077,10 @@ elif page == "출고 관리":
                         st.caption(f"기납품 {rcv:,.0f}")
                         st.caption(f"미납 **{pending:,.0f}**")
                         if it.get("product_id"):
-                            st.caption(f"완성 재고 {_stock:,.0f}")
+                            _nlot = len(_lot_map.get(it["product_id"], []))
+                            st.caption(f"완성 재고 {_stock:,.0f}"
+                                       + (f" · LOT {_nlot}개"
+                                          if _nlot > 1 else ""))
                         else:
                             st.caption("재고 확인 불가 (품번 미매칭)")
                     with lc[3]:
@@ -3090,13 +3119,102 @@ elif page == "출고 관리":
                 st.divider()
                 total_to_deliver = sum(v for v in deliver_inputs.values() if v > 0)
 
-                # Phase C — 출고 LOT (역추적 연결, 선택)
-                dlv_lot = st.text_input(
-                    "출고 LOT (선택 — 생산 LOT 와 연결하면 역추적 가능)",
-                    placeholder="예: LOT-260703-8HFDV-VM-0",
-                    key="deliver_lot",
-                    help="생산 보고에 기록한 LOT 번호를 입력하면 "
-                         "자재 입고→생산→납품 전 과정 역추적이 연결됩니다.")
+                # ── 출고 LOT 배분 (선입선출, 2026-07-27) ──
+                # 완성 LOT(작업지시)별 잔량에서 오래된 순으로 자동 배분.
+                # 고객 LOT 지정·특채 분리가 필요하면 수동 지정으로 전환.
+                _alloc_plan = {}     # soi_id → [(lot, qty, tokusai)]
+                _alloc_short = {}    # soi_id → 미배분 수량
+                if total_to_deliver > 0:
+                    _manual_lot = st.checkbox(
+                        "LOT 직접 지정 (고객 LOT 지정·특채 분리 등 — "
+                        "기본은 선입선출 자동 배분)",
+                        value=False, key="dlv_manual_lot")
+                    for _sid, _q in deliver_inputs.items():
+                        if _q <= 0:
+                            continue
+                        _itx = next(x for x in d_items
+                                    if x["soi_id"] == _sid)
+                        _pid = _itx.get("product_id")
+                        _pl, _left = (_fifo_alloc(_pid, _q)
+                                      if _pid else ([], _q))
+                        _alloc_plan[_sid] = _pl
+                        if _left > 1e-9:
+                            _alloc_short[_sid] = _left
+
+                    if _manual_lot:
+                        st.caption("라인별로 출고할 완성 LOT 을 직접 "
+                                   "고릅니다 (한 라인 = 한 LOT).")
+                        for _sid, _q in deliver_inputs.items():
+                            if _q <= 0:
+                                continue
+                            _itx = next(x for x in d_items
+                                        if x["soi_id"] == _sid)
+                            _lots = _lot_map.get(_itx.get("product_id"),
+                                                 [])
+                            if not _lots:
+                                continue
+                            _opts = [
+                                f"{l['lot_number']} | 잔여 "
+                                f"{float(l.get('remain_qty') or 0):,.0f}"
+                                f" | 완성 {l.get('first_output_date')}"
+                                + (f" | 특채 "
+                                   f"{float(l['tokusai_qty']):,.0f}"
+                                   if float(l.get("tokusai_qty") or 0)
+                                   else "")
+                                for l in _lots]
+                            _pick = st.selectbox(
+                                f"L{_itx.get('line_no','-')} "
+                                f"{_itx.get('canonical_pn') or '-'} "
+                                f"— 출고 LOT ({_q:,.0f})",
+                                _opts, key=f"dlv_lotpick_{_sid}")
+                            _lsel = _lots[_opts.index(_pick)]
+                            _lrem = float(_lsel.get("remain_qty") or 0)
+                            _take = min(_q, _lrem)
+                            _alloc_plan[_sid] = [(
+                                _lsel["lot_number"], _take,
+                                float(_lsel.get("tokusai_qty") or 0))]
+                            _alloc_short[_sid] = _q - _take
+                            if _q > _lrem:
+                                st.warning(
+                                    f"선택 LOT 잔여 {_lrem:,.0f} < 출고 "
+                                    f"{_q:,.0f} — 부족분 "
+                                    f"{_q - _lrem:,.0f}은 LOT 없이 "
+                                    "기록됩니다.")
+
+                    _plan_rows = []
+                    for _sid, _pl in _alloc_plan.items():
+                        _itx = next(x for x in d_items
+                                    if x["soi_id"] == _sid)
+                        for _lot, _lq, _tok in _pl:
+                            _plan_rows.append({
+                                "라인": f"L{_itx.get('line_no','-')}",
+                                "품번": _itx.get("canonical_pn") or "-",
+                                "출고 LOT (작업지시)": _lot,
+                                "수량": _lq,
+                                "특채 포함": f"{_tok:,.0f}" if _tok else "-",
+                            })
+                        _sh = _alloc_short.get(_sid, 0)
+                        if _sh > 1e-9:
+                            _plan_rows.append({
+                                "라인": f"L{_itx.get('line_no','-')}",
+                                "품번": _itx.get("canonical_pn") or "-",
+                                "출고 LOT (작업지시)": "(LOT 미지정)",
+                                "수량": _sh, "특채 포함": "-",
+                            })
+                    if _plan_rows:
+                        st.markdown("##### 출고 LOT 배분"
+                                    + ("" if _manual_lot
+                                       else " (선입선출 자동)"))
+                        st.dataframe(pd.DataFrame(_plan_rows),
+                            use_container_width=True, hide_index=True,
+                            column_config={"수량":
+                                st.column_config.NumberColumn(
+                                    format="localized", width="small")})
+                        if any(v > 1e-9 for v in _alloc_short.values()):
+                            st.warning(
+                                "LOT 미지정 수량이 있습니다 — 완성 LOT "
+                                "잔량보다 많이 출고하는 경우입니다. "
+                                "이 수량은 역추적이 연결되지 않습니다.")
 
                 bc1, bc2 = st.columns([1, 3])
                 with bc1:
@@ -3155,21 +3273,42 @@ elif page == "출고 관리":
                                  "pending_qty": new_pending,
                                  "status": new_status}):
                                 ok_n += 1
-                                # Phase C: 제품 재고 차감 (product_id 매핑 라인만)
+                                # 제품 재고 차감 — 완성 LOT 별 분할 기록
+                                # (선입선출/수동 배분 결과 그대로).
+                                # LOT 미배분 잔량은 LOT 없이 1건.
                                 if it.get("product_id"):
-                                    issue_txns.append({
+                                    _base_txn = {
                                         "material_id": None,
                                         "txn_type": "ISSUE",
-                                        "qty": -dlv_qty,
                                         "unit": it.get("unit") or "EA",
                                         "ref_table": "sales_order_items",
                                         "ref_id": soi_id,
                                         "product_id": it["product_id"],
-                                        "lot_number": (dlv_lot or "").strip() or None,
-                                        "txn_date": _dlv_date.today().isoformat(),
-                                        "remark": f"납품 출고: {d_so['so_number']}",
+                                        "txn_date":
+                                            _dlv_date.today().isoformat(),
                                         "created_by": "김민수",
-                                    })
+                                    }
+                                    for _lot, _lq, _tok in _alloc_plan.get(
+                                            soi_id, []):
+                                        issue_txns.append({
+                                            **_base_txn, "qty": -_lq,
+                                            "lot_number": _lot,
+                                            "work_order": _lot,
+                                            "remark":
+                                                f"납품 출고: "
+                                                f"{d_so['so_number']} "
+                                                f"(LOT {_lot})",
+                                        })
+                                    _sh = _alloc_short.get(soi_id, 0)
+                                    if _sh > 1e-9:
+                                        issue_txns.append({
+                                            **_base_txn, "qty": -_sh,
+                                            "lot_number": None,
+                                            "remark":
+                                                f"납품 출고: "
+                                                f"{d_so['so_number']} "
+                                                "(LOT 미지정)",
+                                        })
                             else:
                                 fail_n += 1
                         except Exception as e:
@@ -3281,6 +3420,38 @@ elif page == "출고 관리":
                 if _ds_cut > 0:
                     st.caption(f"최근 50건 표시 — 외 {_ds_cut:,}건은 "
                                "검색으로 좁혀서 확인하세요.")
+
+        # 완성 LOT별 재고 (선입선출 순서)
+        st.divider()
+        st.markdown("##### 완성 LOT별 재고 (출고 순서)")
+        st.caption("출고는 완성일이 빠른 LOT부터 자동 배분됩니다. "
+                   "LOT = 작업지시 번호이며, 소재 LOT(W번호)까지 "
+                   "연결되어 클레임 시 역추적이 가능합니다.")
+        try:
+            _ls = fetch("product_lot_stock_v",
+                "pn,lot_number,produced_qty,issued_qty,remain_qty,"
+                "first_output_date,tokusai_qty,material_lot",
+                "remain_qty=gt.0&order=pn.asc,first_output_date.asc",
+                limit=300)
+        except Exception:
+            _ls = []
+        if not _ls:
+            st.caption("출고 가능한 완성 LOT 없음.")
+        else:
+            st.dataframe(pd.DataFrame([{
+                "품번": l["pn"],
+                "완성 LOT (작업지시)": l["lot_number"],
+                "소재 LOT": l.get("material_lot") or "-",
+                "완성일": l.get("first_output_date") or "-",
+                "완성": float(l.get("produced_qty") or 0),
+                "출고": float(l.get("issued_qty") or 0),
+                "잔여": float(l.get("remain_qty") or 0),
+                "특채": float(l.get("tokusai_qty") or 0),
+            } for l in _ls]), use_container_width=True, hide_index=True,
+                height=min(400, 60 + len(_ls) * 35),
+                column_config={c: st.column_config.NumberColumn(
+                    format="localized", width="small")
+                    for c in ["완성", "출고", "잔여", "특채"]})
 
         # 최근 출고 이력 (ISSUE 원장)
         st.divider()
