@@ -3767,10 +3767,57 @@ elif page == "생산 계획":
         if not shortage_list:
             st.success("✅ 자재 부족 없음 — 발주 제안 사항 없습니다.")
         else:
+            # 최근 발주 이력에서 자재별 실제 거래처 역산 (2026-07-28)
+            # — materials.main_supplier 는 대부분 비어 있어(308중 88)
+            #   자동 제안이 전부 '(미정)' 으로 뭉치는 문제가 있었다.
+            _mid_vendor = {}
+            try:
+                _po_hist = fetch("purchase_order_items",
+                    "material_id,po_id",
+                    "material_id=not.is.null&order=poi_id.desc", limit=1000)
+                _po_ids = list({x["po_id"] for x in _po_hist
+                                if x.get("po_id")})
+                if _po_ids:
+                    _pv = {p["po_id"]: p.get("vendor_id") for p in fetch(
+                        "purchase_orders", "po_id,vendor_id",
+                        "po_id=in.(" + ",".join(str(i) for i in _po_ids)
+                        + ")", limit=500)}
+                    _vids = list({v for v in _pv.values() if v})
+                    _vn = {}
+                    if _vids:
+                        _vn = {v["vendor_id"]: v["name"] for v in fetch(
+                            "vendors", "vendor_id,name",
+                            "vendor_id=in.("
+                            + ",".join(str(i) for i in _vids) + ")",
+                            limit=500)}
+                    for x in _po_hist:   # poi_id desc → 최신이 먼저
+                        m = x["material_id"]
+                        if m not in _mid_vendor:
+                            nm = _vn.get(_pv.get(x.get("po_id")))
+                            if nm:
+                                _mid_vendor[m] = nm
+            except Exception:
+                pass
+            for s in shortage_list:
+                if s["supplier"] in ("(미정)", ""):
+                    hit = _mid_vendor.get(s["material_id"])
+                    if hit:
+                        s["supplier"] = hit
+                        s["supplier_src"] = "발주 이력"
+
             # 거래처별 묶음
             by_supplier = _dd(list)
             for s in shortage_list:
                 by_supplier[s["supplier"]].append(s)
+
+            _n_undef = len(by_supplier.get("(미정)", []))
+            if _n_undef:
+                st.info(
+                    f"거래처 미지정 자재 {_n_undef}건 — 마스터에 주공급사가 "
+                    "없고 발주 이력도 없는 자재입니다. 아래에서 거래처를 "
+                    "직접 고르면 그대로 발주서에 담깁니다. (자주 쓰는 "
+                    "자재는 마스터 관리 → 자재 편집에서 주공급사를 "
+                    "등록해 두세요.)")
 
             for supplier, mats in sorted(by_supplier.items(), key=lambda x: -sum(m["shortage"] for m in x[1])):
                 total_short = sum(m["shortage"] for m in mats)
@@ -3787,10 +3834,33 @@ elif page == "생산 계획":
                     } for m in mats])
                     st.dataframe(pdf, use_container_width=True, hide_index=True)
 
+                    # 거래처 미지정이면 직접 고를 수 있게 (발주 불가 방지)
+                    _target = supplier
+                    if supplier == "(미정)":
+                        try:
+                            _vopts = [v["name"] for v in fetch(
+                                "vendors", "name",
+                                "in_use=eq.true&vendor_group=like.MAT*"
+                                "&order=name", limit=300)]
+                        except Exception:
+                            _vopts = []
+                        if not _vopts:
+                            try:
+                                _vopts = [v["name"] for v in fetch(
+                                    "vendors", "name",
+                                    "in_use=eq.true&order=name", limit=300)]
+                            except Exception:
+                                _vopts = []
+                        _target = st.selectbox(
+                            "발주할 거래처 선택", ["(선택하세요)"] + _vopts,
+                            key=f"po_vsel_{supplier}")
+
                     if st.button(f"➕ 발주서 작성 화면으로 (이 {len(mats)}건)",
-                                 key=f"go_po_{supplier}"):
+                                 key=f"go_po_{supplier}",
+                                 disabled=_target in ("(선택하세요)",
+                                                      "(미정)")):
                         # session_state로 발주 화면에 미리 채울 데이터 전달
-                        st.session_state["po_prefill_vendor_name"] = supplier
+                        st.session_state["po_prefill_vendor_name"] = _target
                         st.session_state["po_prefill_items"] = [{
                             "product_id": None,  # 자재 행이므로 product_id 없음
                             "item_name": m["name"],
@@ -3809,7 +3879,7 @@ elif page == "생산 계획":
                             for sid in src_so_ids
                         })
                         st.session_state["po_prefill_source_so"] = ", ".join(src_so_numbers[:10])
-                        st.success(f"✅ '{supplier}'의 {len(mats)}개 품목이 발주서 작성에 임시 저장됨. "
+                        st.success(f"✅ '{_target}'의 {len(mats)}개 품목이 발주서 작성에 임시 저장됨. "
                                    f"좌측 **발주/입고** 메뉴로 이동해서 검토하세요. "
                                    f"(출처 수주: {len(src_so_numbers)}건)")
 
