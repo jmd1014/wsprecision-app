@@ -3111,20 +3111,30 @@ elif page == "수주 관리":
                 st.caption("행을 직접 수정하거나, 표 아래 ＋ 로 회차를 "
                            "추가하고 휴지통으로 삭제할 수 있습니다. "
                            "납품 완료 수량은 출고 등록 시 자동 반영됩니다.")
-                _base = pd.DataFrame(_rows) if _rows else pd.DataFrame(
-                    columns=["sched_id", "seq", "due_date", "qty",
-                             "delivered_qty", "note"])
-                _ed_src = pd.DataFrame({
-                    "회차": _base["seq"] if len(_base) else [],
-                    "납기": pd.to_datetime(
-                        _base["due_date"]).dt.date if len(_base) else [],
-                    "수량": pd.to_numeric(
-                        _base["qty"], errors="coerce") if len(_base) else [],
-                    "납품완료": pd.to_numeric(
-                        _base["delivered_qty"],
-                        errors="coerce") if len(_base) else [],
-                    "비고": _base["note"] if len(_base) else [],
-                })
+                # 빈 표에서도 컬럼 타입이 정해져야 data_editor 가
+                # column_config 와 충돌하지 않는다 (astype 필수)
+                if _rows:
+                    _b = pd.DataFrame(_rows)
+                    _ed_src = pd.DataFrame({
+                        "회차": pd.to_numeric(_b["seq"],
+                                             errors="coerce").astype("int64"),
+                        "납기": pd.to_datetime(_b["due_date"],
+                                              errors="coerce"),
+                        "수량": pd.to_numeric(_b["qty"],
+                                             errors="coerce").astype(float),
+                        "납품완료": pd.to_numeric(
+                            _b["delivered_qty"],
+                            errors="coerce").fillna(0).astype(float),
+                        "비고": _b["note"].astype("string"),
+                    })
+                else:
+                    _ed_src = pd.DataFrame({
+                        "회차": pd.Series([], dtype="int64"),
+                        "납기": pd.Series([], dtype="datetime64[ns]"),
+                        "수량": pd.Series([], dtype="float64"),
+                        "납품완료": pd.Series([], dtype="float64"),
+                        "비고": pd.Series([], dtype="string"),
+                    })
                 _ed = st.data_editor(
                     _ed_src, num_rows="dynamic", use_container_width=True,
                     hide_index=True, key=f"sch_ed_{_li['soi_id']}",
