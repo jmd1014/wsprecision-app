@@ -367,12 +367,41 @@ if page == "홈":
 
     try:
         _h_so = fetch("sales_order_stats",
-            "so_number,customer,so_date,due_date,total_qty,"
+            "so_id,so_number,customer,so_date,due_date,total_qty,"
             "total_received_qty,total_pending_qty,delivery_status",
             'status=not.in.("CANCELLED","CANCELED")&order=so_date.desc',
             limit=500)
     except Exception:
         _h_so = []
+    # 수주별 대표 품번 + 분납 스케줄 납기 (미납 라인 기준)
+    _h_pn, _h_sched = {}, {}
+    _open_ids = [s["so_id"] for s in _h_so
+                 if float(s.get("total_pending_qty") or 0) > 0][:120]
+    if _open_ids:
+        _ids = ",".join(str(i) for i in _open_ids)
+        try:
+            _h_lines = fetch("sales_order_items",
+                "so_id,soi_id,canonical_pn,customer_part_no,pending_qty",
+                f"so_id=in.({_ids})&pending_qty=gt.0"
+                "&order=pending_qty.desc", limit=800)
+            for _l in _h_lines:      # pending desc → 첫 라인이 대표
+                _e = _h_pn.setdefault(_l["so_id"],
+                                      {"top": None, "n": 0})
+                if _e["top"] is None:
+                    _e["top"] = (_l.get("canonical_pn")
+                                 or _l.get("customer_part_no") or "-")
+                _e["n"] += 1
+        except Exception:
+            _h_lines = []
+        try:
+            for _sc in fetch("so_delivery_schedule",
+                "so_id,due_date,qty,delivered_qty",
+                f"so_id=in.({_ids})&order=due_date.asc", limit=800):
+                if (float(_sc.get("qty") or 0)
+                        - float(_sc.get("delivered_qty") or 0)) > 0:
+                    _h_sched.setdefault(_sc["so_id"], _sc["due_date"])
+        except Exception:
+            pass
     try:
         _h_rcv = fetch("po_item_receipt_v",
             "pending_qty,receipt_status", "", limit=300)
@@ -439,8 +468,13 @@ if page == "홈":
         if not _open_so:
             st.info("미납 수주 없음 — 수주 관리에서 업로드하면 표시됩니다.")
         else:
+            # 납기 = 분납 스케줄의 가장 빠른 미완료 회차 > 수주 납기
+            for _s in _open_so:
+                _s["_due"] = (_h_sched.get(_s.get("so_id"))
+                              or _s.get("due_date"))
+                _s["_sched"] = bool(_h_sched.get(_s.get("so_id")))
             # 납기 임박·지연이 항상 위로 — 수주 많아져도 볼 것부터 보이게
-            _open_so.sort(key=lambda s: s.get("due_date") or "9999-12-31")
+            _open_so.sort(key=lambda s: s.get("_due") or "9999-12-31")
 
             def _h_dday(d):
                 if not d:
@@ -451,8 +485,8 @@ if page == "홈":
                 return "오늘" if _dd == 0 else f"D-{_dd}"
 
             _n_late = sum(1 for s in _open_so
-                          if s.get("due_date")
-                          and s["due_date"] < _hd.today().isoformat())
+                          if s.get("_due")
+                          and s["_due"] < _hd.today().isoformat())
             if len(_open_so) > 15:
                 _hc_opts = ["전체 거래처"] + sorted(
                     {s["customer"] for s in _open_so if s.get("customer")})
@@ -462,9 +496,18 @@ if page == "홈":
                     _open_so = [s for s in _open_so
                                 if s["customer"] == _hcf]
             _so_cut = len(_open_so) - 15
+
+            def _h_item(s):
+                e = _h_pn.get(s.get("so_id")) or {}
+                pn = e.get("top") or "-"
+                return (f"{pn} 외 {e['n'] - 1}종" if e.get("n", 0) > 1
+                        else pn)
+
             _h_sodf = pd.DataFrame([{
                 "수주번호": s["so_number"], "거래처": s["customer"],
-                "납기": _h_dday(s.get("due_date")),
+                "품번": _h_item(s),
+                "납기": (_h_dday(s.get("_due"))
+                        + (" ⟳" if s.get("_sched") else "")),
                 "미납": float(s.get("total_pending_qty") or 0),
                 "진행률": (float(s.get("total_received_qty") or 0)
                           / float(s.get("total_qty") or 1)),
@@ -2224,8 +2267,8 @@ elif page == "수주 관리":
     sk4.metric("이번 달 수주", f"{_sk_month:,}건")
     st.divider()
 
-    tab_input, tab_list = st.tabs(
-        ["새 수주 입력", "수주 목록"])
+    tab_input, tab_list, tab_sched = st.tabs(
+        ["새 수주 입력", "수주 목록", "분납 스케줄"])
 
     # ════════ TAB 1: 새 수주 입력 ════════
     with tab_input:
@@ -2939,6 +2982,280 @@ elif page == "수주 관리":
             else:
                 st.info("결과 없음")
 
+    # ════════ TAB 3: 분납 스케줄 (2026-07-28) ════════
+    with tab_sched:
+        st.caption(
+            "주당 납품처럼 여러 회차로 나눠 납품하는 수주의 계획을 "
+            "관리합니다. 회차는 **자유롭게 추가·수정·삭제** 가능하고, "
+            "화면의 납기는 **가장 빠른 미완료 회차**로 표시됩니다. "
+            "스케줄이 없는 수주는 기존처럼 수주 납기로 동작합니다.")
+
+        # ── 수주 라인 선택 ──
+        sc1, sc2 = st.columns([3, 1])
+        _sq = sc1.text_input("수주번호 / 거래처 / 품번 검색",
+                             key="sch_q", placeholder="예: 202607, 미진, MRG")
+        _sc_only_open = sc2.checkbox("미납만", value=True,
+                                     key="sch_open_only")
+        _sf = ['status=not.in.("CANCELLED","CANCELED")',
+               "order=so_date.desc"]
+        if _sq:
+            _sf.append(f"or=(so_number.ilike.*{_sq.strip()}*,"
+                       f"customer.ilike.*{_sq.strip()}*)")
+        try:
+            _s_sos = fetch("sales_orders",
+                "so_id,so_number,customer,so_date,due_date",
+                "&".join(_sf), limit=100)
+        except Exception as e:
+            st.error(f"수주 조회 실패: {e}"); _s_sos = []
+
+        if not _s_sos:
+            st.info("수주 없음 — 검색어를 바꾸거나 수주를 먼저 등록하세요.")
+        else:
+            _s_map = {f"{s['so_number']} | {s.get('customer','-')} | "
+                      f"{s.get('so_date','-')}": s for s in _s_sos}
+            _s_pick = st.selectbox("수주 선택", list(_s_map.keys()),
+                                   key="sch_so_pick")
+            _s_so = _s_map[_s_pick]
+            try:
+                _s_items = fetch("sales_order_items",
+                    "soi_id,line_no,canonical_pn,customer_part_no,qty,"
+                    "received_qty,pending_qty,due_date",
+                    f"so_id=eq.{_s_so['so_id']}&order=line_no.asc",
+                    limit=100)
+            except Exception as e:
+                st.error(f"라인 조회 실패: {e}"); _s_items = []
+            if _sc_only_open:
+                _s_items = [i for i in _s_items
+                            if float(i.get("pending_qty") or 0) > 0]
+            if not _s_items:
+                st.info("표시할 라인 없음 (미납만 보기 해제 시 전체 표시).")
+            else:
+                _li_map = {
+                    f"L{i.get('line_no')} {i.get('canonical_pn') or i.get('customer_part_no') or '-'}"
+                    f" | 수주 {float(i.get('qty') or 0):,.0f}"
+                    f" · 미납 {float(i.get('pending_qty') or 0):,.0f}": i
+                    for i in _s_items}
+                _li_pick = st.selectbox("라인 선택", list(_li_map.keys()),
+                                        key="sch_line_pick")
+                _li = _li_map[_li_pick]
+                _li_qty = float(_li.get("qty") or 0)
+                _li_pend = float(_li.get("pending_qty") or 0)
+
+                # ── 기존 스케줄 조회 ──
+                try:
+                    _rows = fetch("so_delivery_schedule",
+                        "sched_id,seq,due_date,qty,delivered_qty,note",
+                        f"soi_id=eq.{_li['soi_id']}&order=seq.asc",
+                        limit=200)
+                except Exception as e:
+                    st.error(f"스케줄 조회 실패 (Migration 027 필요): {e}")
+                    _rows = []
+
+                # ── 일괄 생성 (스케줄이 없을 때) ──
+                if not _rows:
+                    st.info("이 라인에는 분납 스케줄이 없습니다 — 아래에서 "
+                            "일괄 생성하거나, 표에 직접 회차를 추가하세요.")
+                    with st.expander("회차 일괄 생성", expanded=True):
+                        g1, g2, g3, g4 = st.columns(4)
+                        _g_start = g1.date_input(
+                            "첫 납기", value=_date.today() + _td(days=7),
+                            key="sch_g_start")
+                        _g_every = g2.number_input(
+                            "주기(일)", 1, 90, 7, 1, key="sch_g_every",
+                            help="7 = 주 1회, 14 = 격주")
+                        _g_n = g3.number_input("회차 수", 1, 52, 4, 1,
+                                               key="sch_g_n")
+                        _g_qty = g4.number_input(
+                            "회차당 수량", 0.0, value=float(
+                                round(_li_pend / max(int(_g_n or 1), 1)))
+                            if _li_pend else 0.0, step=1.0,
+                            key="sch_g_qty")
+                        _g_tot = float(_g_qty) * int(_g_n)
+                        st.caption(
+                            f"생성 합계 {_g_tot:,.0f} / 미납 "
+                            f"{_li_pend:,.0f}"
+                            + ("  — 마지막 회차에서 잔량을 조정합니다."
+                               if abs(_g_tot - _li_pend) > 0.5 else ""))
+                        if st.button("회차 생성", type="primary",
+                                     disabled=_g_qty <= 0,
+                                     key="sch_g_make"):
+                            from datetime import timedelta as _td2
+                            _new = []
+                            _left = _li_pend
+                            for _k in range(int(_g_n)):
+                                _q = (min(_g_qty, _left)
+                                      if _k < int(_g_n) - 1 else _left)
+                                if _q <= 0:
+                                    break
+                                _new.append({
+                                    "so_id": _s_so["so_id"],
+                                    "soi_id": _li["soi_id"],
+                                    "seq": _k + 1,
+                                    "due_date": (_g_start + _td2(
+                                        days=int(_g_every) * _k)
+                                    ).isoformat(),
+                                    "qty": float(_q),
+                                    "delivered_qty": 0,
+                                    "created_by": "김민수",
+                                })
+                                _left -= _q
+                            try:
+                                _db.insert("so_delivery_schedule", _new)
+                                st.success(f"{len(_new)}개 회차 생성")
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"생성 실패: {e}")
+
+                # ── 자유 편집 (data_editor) ──
+                st.markdown("##### 회차 편집")
+                st.caption("행을 직접 수정하거나, 표 아래 ＋ 로 회차를 "
+                           "추가하고 휴지통으로 삭제할 수 있습니다. "
+                           "납품 완료 수량은 출고 등록 시 자동 반영됩니다.")
+                _base = pd.DataFrame(_rows) if _rows else pd.DataFrame(
+                    columns=["sched_id", "seq", "due_date", "qty",
+                             "delivered_qty", "note"])
+                _ed_src = pd.DataFrame({
+                    "회차": _base["seq"] if len(_base) else [],
+                    "납기": pd.to_datetime(
+                        _base["due_date"]).dt.date if len(_base) else [],
+                    "수량": pd.to_numeric(
+                        _base["qty"], errors="coerce") if len(_base) else [],
+                    "납품완료": pd.to_numeric(
+                        _base["delivered_qty"],
+                        errors="coerce") if len(_base) else [],
+                    "비고": _base["note"] if len(_base) else [],
+                })
+                _ed = st.data_editor(
+                    _ed_src, num_rows="dynamic", use_container_width=True,
+                    hide_index=True, key=f"sch_ed_{_li['soi_id']}",
+                    column_config={
+                        "회차": st.column_config.NumberColumn(
+                            width="small", step=1),
+                        "납기": st.column_config.DateColumn(
+                            format="YYYY-MM-DD"),
+                        "수량": st.column_config.NumberColumn(
+                            format="localized", step=1),
+                        "납품완료": st.column_config.NumberColumn(
+                            format="localized", disabled=True),
+                    })
+                _plan = float(pd.to_numeric(
+                    _ed["수량"], errors="coerce").fillna(0).sum())
+                _done = float(pd.to_numeric(
+                    _ed["납품완료"], errors="coerce").fillna(0).sum())
+                m1, m2, m3, m4 = st.columns(4)
+                m1.metric("라인 수주", f"{_li_qty:,.0f}")
+                m2.metric("계획 합계", f"{_plan:,.0f}")
+                m3.metric("납품 완료", f"{_done:,.0f}")
+                m4.metric("계획 잔량", f"{_plan - _done:,.0f}")
+                if abs(_plan - _li_pend) > 0.5 and _rows:
+                    st.warning(
+                        f"계획 합계 {_plan:,.0f} 가 라인 미납 "
+                        f"{_li_pend:,.0f} 와 다릅니다 — 협의 변경이면 "
+                        "그대로 두셔도 되고, 맞추려면 수량을 조정하세요.")
+
+                if st.button("스케줄 저장", type="primary",
+                             key=f"sch_save_{_li['soi_id']}"):
+                    try:
+                        _keep = []
+                        for _k, _r in _ed.iterrows():
+                            _due = _r.get("납기")
+                            _q = float(pd.to_numeric(_r.get("수량"),
+                                                     errors="coerce") or 0)
+                            if pd.isna(_due) or _q <= 0:
+                                continue
+                            _keep.append({
+                                "seq": int(pd.to_numeric(
+                                    _r.get("회차"), errors="coerce")
+                                    or (_k + 1)),
+                                "due_date": str(_due)[:10],
+                                "qty": _q,
+                                "note": (None if pd.isna(_r.get("비고"))
+                                         else str(_r.get("비고") or "")
+                                         or None),
+                            })
+                        # 회차 번호 재정렬 (납기순) — 중복/공백 방지
+                        _keep.sort(key=lambda x: (x["due_date"], x["seq"]))
+                        for _i2, _r2 in enumerate(_keep, 1):
+                            _r2["seq"] = _i2
+                        # 기존 납품완료 수량은 회차 순서대로 승계
+                        _old_done = [float(r.get("delivered_qty") or 0)
+                                     for r in sorted(
+                                         _rows, key=lambda x: x["seq"])]
+                        for _i3, _r3 in enumerate(_keep):
+                            _r3["delivered_qty"] = (
+                                _old_done[_i3] if _i3 < len(_old_done)
+                                else 0)
+                            _r3["so_id"] = _s_so["so_id"]
+                            _r3["soi_id"] = _li["soi_id"]
+                            _r3["created_by"] = "김민수"
+                        _db.delete("so_delivery_schedule",
+                                   f"soi_id=eq.{_li['soi_id']}")
+                        if _keep:
+                            _db.insert("so_delivery_schedule", _keep)
+                        st.success(f"저장 완료 — {len(_keep)}개 회차")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"저장 실패: {e}")
+
+        # ── 전체 스케줄 현황 (임박순) ──
+        st.divider()
+        st.markdown("##### 다가오는 납품 예정 (미완료 회차)")
+        try:
+            _up = fetch("so_delivery_schedule",
+                "so_id,soi_id,seq,due_date,qty,delivered_qty,note",
+                "order=due_date.asc", limit=300)
+        except Exception:
+            _up = []
+        _up = [u for u in _up
+               if float(u.get("qty") or 0) - float(u.get("delivered_qty")
+                                                   or 0) > 0][:40]
+        if not _up:
+            st.caption("등록된 분납 스케줄이 없습니다.")
+        else:
+            _so_ids = ",".join(str(i) for i in {u["so_id"] for u in _up})
+            _soi_ids = ",".join(str(i) for i in {u["soi_id"] for u in _up})
+            try:
+                _sm = {s["so_id"]: s for s in fetch("sales_orders",
+                    "so_id,so_number,customer",
+                    f"so_id=in.({_so_ids})", limit=200)}
+                _im = {i["soi_id"]: i for i in fetch("sales_order_items",
+                    "soi_id,canonical_pn,customer_part_no",
+                    f"soi_id=in.({_soi_ids})", limit=400)}
+            except Exception:
+                _sm, _im = {}, {}
+            _today = _date.today().isoformat()
+
+            def _dd2(d):
+                if not d:
+                    return "-"
+                n = (_date.fromisoformat(str(d)[:10]) - _date.today()).days
+                return (f"지연 {-n}일" if n < 0
+                        else "오늘" if n == 0 else f"D-{n}")
+            _updf = pd.DataFrame([{
+                "납기": u["due_date"],
+                "D-day": _dd2(u["due_date"]),
+                "수주번호": _sm.get(u["so_id"], {}).get("so_number", "-"),
+                "거래처": _sm.get(u["so_id"], {}).get("customer", "-"),
+                "품번": (_im.get(u["soi_id"], {}).get("canonical_pn")
+                        or _im.get(u["soi_id"], {}).get("customer_part_no")
+                        or "-"),
+                "회차": u["seq"],
+                "예정": float(u.get("qty") or 0),
+                "완료": float(u.get("delivered_qty") or 0),
+                "잔량": float(u.get("qty") or 0) - float(
+                    u.get("delivered_qty") or 0),
+            } for u in _up])
+            st.dataframe(
+                _updf.style.apply(
+                    lambda r: ["color:#d9480f;font-weight:700"
+                               if str(r["D-day"]).startswith("지연")
+                               else ""] * len(r), axis=1),
+                use_container_width=True, hide_index=True,
+                height=min(420, 60 + len(_updf) * 35),
+                column_config={c: st.column_config.NumberColumn(
+                    format="localized", width="small")
+                    for c in ["예정", "완료", "잔량"]})
+
 elif page == "출고 관리":
     st.subheader("출고 관리")
     if not DB_AVAILABLE:
@@ -3321,6 +3638,36 @@ elif page == "출고 관리":
                             _db.insert("inventory_transactions", issue_txns)
                         except Exception as e:
                             st.warning(f"⚠️ 제품 재고 차감 기록 실패 (납품은 정상): {e}")
+
+                    # 분납 스케줄 회차 충당 (오래된 회차부터)
+                    for soi_id, dlv_qty in deliver_inputs.items():
+                        if dlv_qty <= 0:
+                            continue
+                        try:
+                            _scs = fetch("so_delivery_schedule",
+                                "sched_id,qty,delivered_qty",
+                                f"soi_id=eq.{soi_id}"
+                                "&order=due_date.asc,seq.asc", limit=100)
+                        except Exception:
+                            continue
+                        _left = float(dlv_qty)
+                        for _sc in _scs:
+                            if _left <= 0:
+                                break
+                            _room = (float(_sc.get("qty") or 0)
+                                     - float(_sc.get("delivered_qty") or 0))
+                            if _room <= 0:
+                                continue
+                            _take = min(_room, _left)
+                            try:
+                                _db.update("so_delivery_schedule",
+                                    f"sched_id=eq.{_sc['sched_id']}",
+                                    {"delivered_qty":
+                                     float(_sc.get("delivered_qty") or 0)
+                                     + _take})
+                                _left -= _take
+                            except Exception:
+                                break
 
                     # 수주 헤더 상태 자동 갱신
                     if ok_n:
