@@ -2936,7 +2936,13 @@ elif page == "수주 관리":
                 except Exception as e: st.error(e); sitems = []
 
                 if sitems:
-                    st.metric("품목 건수", len(sitems))
+                    _pm1, _pm2 = st.columns([1, 3])
+                    _pm1.metric("품목 건수", len(sitems))
+                    _edit_due = _pm2.checkbox(
+                        "납기 직접 수정", value=False, key="pitem_edit_due",
+                        help="단발성 수주의 납기를 이 표에서 바로 "
+                             "입력합니다 (저장 시 납품 스케줄 1회차로도 "
+                             "반영)")
                     df = pd.DataFrame([{
                         "수주번호": so_map.get(i["so_id"], {}).get("so_number"),
                         "거래처": so_map.get(i["so_id"], {}).get("customer"),
@@ -2951,13 +2957,74 @@ elif page == "수주 관리":
                         "납기": i.get("due_date"),
                         "상태": status_ko(i.get("status")),
                     } for i in sitems])
-                    st.dataframe(df, use_container_width=True, hide_index=True,
-                        column_config={
-                            "수량": st.column_config.NumberColumn(format="localized"),
-                            "미납": st.column_config.NumberColumn(format="localized"),
-                            "단가": st.column_config.NumberColumn("단가 (원)", format="localized"),
-                            "금액": st.column_config.NumberColumn("금액 (원)", format="localized"),
-                        })
+                    if _edit_due:
+                        _ed_df = df[["수주번호", "우성 품번", "미납",
+                                     "납기"]].copy()
+                        _ed_df["납기"] = pd.to_datetime(_ed_df["납기"],
+                                                       errors="coerce")
+                        _pe = st.data_editor(
+                            _ed_df, use_container_width=True,
+                            hide_index=True, num_rows="fixed",
+                            key="pitem_due_ed",
+                            column_config={
+                                "수주번호": st.column_config.TextColumn(
+                                    disabled=True),
+                                "우성 품번": st.column_config.TextColumn(
+                                    disabled=True),
+                                "미납": st.column_config.NumberColumn(
+                                    format="localized", disabled=True),
+                                "납기": st.column_config.DateColumn(
+                                    "납기 (입력)", format="YYYY-MM-DD"),
+                            })
+                        if st.button("납기 저장", type="primary",
+                                     key="pitem_due_save"):
+                            _ok = 0
+                            try:
+                                for _ix, _rw in _pe.iterrows():
+                                    _d = _rw.get("납기")
+                                    _it = sitems[_ix]
+                                    _new = ("" if pd.isna(_d)
+                                            else str(_d)[:10])
+                                    _old = str(_it.get("due_date")
+                                               or "")[:10]
+                                    if _new == _old:
+                                        continue
+                                    _db.update("sales_order_items",
+                                        f"soi_id=eq.{_it['soi_id']}",
+                                        {"due_date": _new or None})
+                                    # 단발 납기는 1회차 스케줄로도 반영
+                                    _has = fetch("so_delivery_schedule",
+                                        "sched_id",
+                                        f"soi_id=eq.{_it['soi_id']}",
+                                        limit=2)
+                                    if _new and len(_has) <= 1:
+                                        _db.delete(
+                                            "so_delivery_schedule",
+                                            f"soi_id=eq.{_it['soi_id']}")
+                                        _db.insert(
+                                            "so_delivery_schedule", [{
+                                                "so_id": _it["so_id"],
+                                                "soi_id": _it["soi_id"],
+                                                "seq": 1,
+                                                "due_date": _new,
+                                                "qty": float(_it.get(
+                                                    "pending_qty") or 0),
+                                                "delivered_qty": 0,
+                                                "note": "단발 납기",
+                                                "created_by": "김민수"}])
+                                    _ok += 1
+                                st.success(f"납기 {_ok}건 저장")
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"저장 실패: {e}")
+                    else:
+                        st.dataframe(df, use_container_width=True, hide_index=True,
+                            column_config={
+                                "수량": st.column_config.NumberColumn(format="localized"),
+                                "미납": st.column_config.NumberColumn(format="localized"),
+                                "단가": st.column_config.NumberColumn("단가 (원)", format="localized"),
+                                "금액": st.column_config.NumberColumn("금액 (원)", format="localized"),
+                            })
                 else:
                     st.info("검색 결과 없음 — 검색어를 지우거나 필터를 넓혀보세요.")
             else:
@@ -3107,25 +3174,46 @@ elif page == "수주 관리":
             st.error(f"스케줄 조회 실패 (Migration 027 필요): {e}")
             _all_sc = []
 
-        if _all_sc:
-            _sc_so_ids = ",".join(str(i) for i in
-                                  {r["so_id"] for r in _all_sc})
+        # 단발성 납기(스케줄 없이 라인 납기만 있는 건)도 함께 표시
+        # — 일정이 잡힌 모든 아이템이 한 화면에 보이도록 (2026-07-28)
+        try:
+            _one_lines = fetch("sales_order_items",
+                "soi_id,so_id,canonical_pn,customer_part_no,qty,"
+                "received_qty,pending_qty,due_date",
+                "pending_qty=gt.0&due_date=not.is.null"
+                "&order=due_date.asc", limit=800)
+        except Exception:
+            _one_lines = []
+        _sched_soi = {r["soi_id"] for r in _all_sc}
+        _one_lines = [l for l in _one_lines
+                      if l["soi_id"] not in _sched_soi]
+
+        if _all_sc or _one_lines:
+            _sc_so_ids = ",".join(str(i) for i in (
+                {r["so_id"] for r in _all_sc}
+                | {l["so_id"] for l in _one_lines})) or "0"
             _sc_soi_ids = ",".join(str(i) for i in
-                                   {r["soi_id"] for r in _all_sc})
+                                   {r["soi_id"] for r in _all_sc}) or "0"
             try:
                 _sc_som = {s["so_id"]: s for s in fetch("sales_orders",
-                    "so_id,so_number,customer",
-                    f"so_id=in.({_sc_so_ids})", limit=300)}
+                    "so_id,so_number,customer,status",
+                    f"so_id=in.({_sc_so_ids})", limit=400)}
                 _sc_im = {i["soi_id"]: i for i in fetch(
                     "sales_order_items",
                     "soi_id,canonical_pn,customer_part_no",
                     f"soi_id=in.({_sc_soi_ids})", limit=600)}
             except Exception:
                 _sc_som, _sc_im = {}, {}
+            # 취소 수주 제외
+            _dead = {k for k, v in _sc_som.items()
+                     if (v.get("status") or "") in ("CANCELLED",
+                                                    "CANCELED")}
 
             _today_s = _date.today()
             _g = []
             for r in _all_sc:
+                if r["so_id"] in _dead:
+                    continue
                 _q = float(r.get("qty") or 0)
                 _dq = float(r.get("delivered_qty") or 0)
                 _rem = _q - _dq
@@ -3138,7 +3226,29 @@ elif page == "수주 관리":
                                                             "-"),
                     "수주번호": _sc_som.get(r["so_id"], {}).get("so_number",
                                                              "-"),
+                    "구분": "분납",
                     "회차": int(r.get("seq") or 0),
+                    "납기": _due,
+                    "수량": _q, "완료": _dq, "잔량": max(_rem, 0.0),
+                    "상태": ("완료" if _rem <= 0 else
+                            "지연" if _due < _today_s else "예정"),
+                })
+            for l in _one_lines:
+                if l["so_id"] in _dead:
+                    continue
+                _q = float(l.get("qty") or 0)
+                _dq = float(l.get("received_qty") or 0)
+                _rem = float(l.get("pending_qty") or 0)
+                _due = _date.fromisoformat(str(l["due_date"])[:10])
+                _g.append({
+                    "품번": (l.get("canonical_pn")
+                            or l.get("customer_part_no") or "-"),
+                    "거래처": _sc_som.get(l["so_id"], {}).get("customer",
+                                                            "-"),
+                    "수주번호": _sc_som.get(l["so_id"], {}).get("so_number",
+                                                             "-"),
+                    "구분": "단발",
+                    "회차": 1,
                     "납기": _due,
                     "수량": _q, "완료": _dq, "잔량": max(_rem, 0.0),
                     "상태": ("완료" if _rem <= 0 else
@@ -3191,9 +3301,9 @@ elif page == "수주 관리":
                     _cd["납기"] = pd.to_datetime(_cd["납기"])
                     _order = (_cd.groupby("품번")["납기"].min()
                               .sort_values().index.tolist())
-                    _chart = alt.Chart(_cd).mark_circle(
-                        opacity=0.85, stroke="white", strokeWidth=1
-                    ).encode(
+                    _chart = alt.Chart(_cd).mark_point(
+                        filled=True, opacity=0.85, stroke="white",
+                        strokeWidth=1).encode(
                         x=alt.X("납기:T", title=None,
                                 axis=alt.Axis(format="%m-%d",
                                               labelAngle=-40,
@@ -3208,7 +3318,12 @@ elif page == "수주 관리":
                                 domain=["예정", "지연", "완료"],
                                 range=["#24406b", "#d9480f", "#2f9e44"]),
                             legend=alt.Legend(orient="top")),
-                        tooltip=["품번", "거래처", "수주번호", "회차",
+                        shape=alt.Shape("구분:N", title=None,
+                            scale=alt.Scale(domain=["분납", "단발"],
+                                            range=["circle", "square"]),
+                            legend=alt.Legend(orient="top")),
+                        tooltip=["품번", "거래처", "수주번호", "구분",
+                                 "회차",
                                  alt.Tooltip("납기:T", format="%Y-%m-%d"),
                                  alt.Tooltip("수량:Q", format=","),
                                  alt.Tooltip("잔량:Q", format=","),
@@ -3267,57 +3382,184 @@ elif page == "수주 관리":
                     "골라 회차를 만들면 여기에 일정이 표시됩니다.")
 
         st.divider()
-        st.markdown("#### 회차 편집")
+        st.markdown("#### 납기 입력")
+        st.caption(
+            "품번 또는 수주번호로 찾아 **단발 납기는 표에서 바로 입력**, "
+            "반복 납품은 아래 회차 생성으로 만듭니다. 단발 납기도 "
+            "1회차로 저장되어 위 일정에 함께 표시됩니다.")
 
-        # ── 수주 라인 선택 ──
+        # ── 통합 검색 (품번 / 수주번호 / 거래처) ──
         sc1, sc2 = st.columns([3, 1])
-        _sq = sc1.text_input("수주번호 / 거래처 / 품번 검색",
-                             key="sch_q", placeholder="예: 202607, 미진, MRG")
+        _sq = sc1.text_input("품번 · 수주번호 · 거래처 검색",
+                             key="sch_q",
+                             placeholder="예: 4PDVN, 202607, 미진")
         _sc_only_open = sc2.checkbox("미납만", value=True,
                                      key="sch_open_only")
+
+        # 품번 검색은 라인에서, 수주번호·거래처는 헤더에서 → so_id 합집합
+        _hit_soi, _hit_so = None, None
+        if _sq:
+            _q = _sq.strip()
+            try:
+                _by_pn = fetch("sales_order_items", "soi_id,so_id",
+                    f"or=(canonical_pn.ilike.*{_q}*,"
+                    f"customer_part_no.ilike.*{_q}*)", limit=500)
+                _hit_soi = {r["soi_id"] for r in _by_pn}
+                _hit_so = {r["so_id"] for r in _by_pn}
+            except Exception:
+                _hit_soi, _hit_so = set(), set()
+            try:
+                _by_so = fetch("sales_orders", "so_id",
+                    f"or=(so_number.ilike.*{_q}*,customer.ilike.*{_q}*)",
+                    limit=300)
+                _hit_so |= {r["so_id"] for r in _by_so}
+            except Exception:
+                pass
+
         _sf = ['status=not.in.("CANCELLED","CANCELED")',
                "order=so_date.desc"]
         if _sq:
-            _sf.append(f"or=(so_number.ilike.*{_sq.strip()}*,"
-                       f"customer.ilike.*{_sq.strip()}*)")
+            if not _hit_so:
+                _sf.append("so_id=eq.-1")     # 결과 없음
+            else:
+                _sf.append("so_id=in.("
+                           + ",".join(str(i) for i in _hit_so) + ")")
         try:
             _s_sos = fetch("sales_orders",
                 "so_id,so_number,customer,so_date,due_date",
-                "&".join(_sf), limit=100)
+                "&".join(_sf), limit=200)
         except Exception as e:
             st.error(f"수주 조회 실패: {e}"); _s_sos = []
 
         if not _s_sos:
-            st.info("수주 없음 — 검색어를 바꾸거나 수주를 먼저 등록하세요.")
+            st.info("검색 결과 없음 — 품번 일부(예: 4PDVN)나 수주번호로 "
+                    "다시 찾아보세요.")
         else:
-            _s_map = {f"{s['so_number']} | {s.get('customer','-')} | "
-                      f"{s.get('so_date','-')}": s for s in _s_sos}
-            _s_pick = st.selectbox("수주 선택", list(_s_map.keys()),
-                                   key="sch_so_pick")
-            _s_so = _s_map[_s_pick]
+            _so_ids_f = ",".join(str(s["so_id"]) for s in _s_sos)
             try:
-                _s_items = fetch("sales_order_items",
-                    "soi_id,line_no,product_id,canonical_pn,"
+                _all_items = fetch("sales_order_items",
+                    "soi_id,so_id,line_no,product_id,canonical_pn,"
                     "customer_part_no,qty,received_qty,pending_qty,"
                     "due_date",
-                    f"so_id=eq.{_s_so['so_id']}&order=line_no.asc",
-                    limit=100)
+                    f"so_id=in.({_so_ids_f})"
+                    + ("&pending_qty=gt.0" if _sc_only_open else "")
+                    + "&order=due_date.asc.nullslast,soi_id.asc",
+                    limit=500)
             except Exception as e:
-                st.error(f"라인 조회 실패: {e}"); _s_items = []
-            if _sc_only_open:
-                _s_items = [i for i in _s_items
-                            if float(i.get("pending_qty") or 0) > 0]
-            if not _s_items:
+                st.error(f"라인 조회 실패: {e}"); _all_items = []
+            if _sq and _hit_soi:
+                # 품번으로 찾은 경우 그 품번 라인만 (수주번호 검색은 전체)
+                _pn_only = [i for i in _all_items
+                            if i["soi_id"] in _hit_soi]
+                if _pn_only:
+                    _all_items = _pn_only
+
+            if not _all_items:
                 st.info("표시할 라인 없음 (미납만 보기 해제 시 전체 표시).")
             else:
-                _li_map = {
-                    f"L{i.get('line_no')} {i.get('canonical_pn') or i.get('customer_part_no') or '-'}"
-                    f" | 수주 {float(i.get('qty') or 0):,.0f}"
-                    f" · 미납 {float(i.get('pending_qty') or 0):,.0f}": i
-                    for i in _s_items}
-                _li_pick = st.selectbox("라인 선택", list(_li_map.keys()),
-                                        key="sch_line_pick")
+                _so_lbl = {s["so_id"]: s for s in _s_sos}
+                _sc_cnt = {}
+                try:
+                    for _r in fetch("so_delivery_schedule",
+                        "soi_id,qty,delivered_qty",
+                        "soi_id=in.("
+                        + ",".join(str(i["soi_id"]) for i in _all_items)
+                        + ")", limit=1000):
+                        _e = _sc_cnt.setdefault(_r["soi_id"],
+                                                {"n": 0, "q": 0.0})
+                        _e["n"] += 1
+                        _e["q"] += float(_r.get("qty") or 0)
+                except Exception:
+                    pass
+
+                # ── 납기 일괄 입력 (단발성) ──
+                st.markdown("##### 라인별 납기 (단발성)")
+                st.caption("납기만 넣으면 1회차 스케줄로 저장됩니다. "
+                           "회차가 이미 있는 라인은 분납으로 관리 중이라 "
+                           "여기서 수정하지 않습니다.")
+                _one = [i for i in _all_items
+                        if _sc_cnt.get(i["soi_id"], {}).get("n", 0) == 0]
+                if not _one:
+                    st.caption("이 조건의 라인은 모두 분납 회차가 "
+                               "등록되어 있습니다.")
+                else:
+                    _due_src = pd.DataFrame({
+                        "수주번호": [_so_lbl.get(i["so_id"], {})
+                                   .get("so_number", "-") for i in _one],
+                        "품번": [(i.get("canonical_pn")
+                                or i.get("customer_part_no") or "-")
+                               for i in _one],
+                        "미납": [float(i.get("pending_qty") or 0)
+                               for i in _one],
+                        "납기": pd.to_datetime(
+                            [i.get("due_date") for i in _one],
+                            errors="coerce"),
+                    })
+                    _due_ed = st.data_editor(
+                        _due_src, use_container_width=True,
+                        hide_index=True, num_rows="fixed",
+                        key=f"sch_due_ed_{hash(_so_ids_f) % 99999}",
+                        column_config={
+                            "수주번호": st.column_config.TextColumn(
+                                disabled=True),
+                            "품번": st.column_config.TextColumn(
+                                disabled=True),
+                            "미납": st.column_config.NumberColumn(
+                                format="localized", disabled=True),
+                            "납기": st.column_config.DateColumn(
+                                "납기 (입력)", format="YYYY-MM-DD"),
+                        })
+                    if st.button("납기 저장 (1회차 생성)", type="primary",
+                                 key="sch_due_save"):
+                        _n_ok = 0
+                        try:
+                            for _idx, _row in _due_ed.iterrows():
+                                _d = _row.get("납기")
+                                if pd.isna(_d):
+                                    continue
+                                _it = _one[_idx]
+                                _ds = str(_d)[:10]
+                                if str(_it.get("due_date") or "")[:10] \
+                                        == _ds:
+                                    continue
+                                _db.update("sales_order_items",
+                                    f"soi_id=eq.{_it['soi_id']}",
+                                    {"due_date": _ds})
+                                _db.delete("so_delivery_schedule",
+                                    f"soi_id=eq.{_it['soi_id']}")
+                                _db.insert("so_delivery_schedule", [{
+                                    "so_id": _it["so_id"],
+                                    "soi_id": _it["soi_id"],
+                                    "seq": 1, "due_date": _ds,
+                                    "qty": float(
+                                        _it.get("pending_qty") or 0),
+                                    "delivered_qty": 0,
+                                    "note": "단발 납기",
+                                    "created_by": "김민수"}])
+                                _n_ok += 1
+                            st.success(f"납기 저장 {_n_ok}건 — 위 일정에 "
+                                       "반영됩니다.")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"저장 실패: {e}")
+
+                # ── 분납 회차 대상 라인 선택 ──
+                st.divider()
+                st.markdown("##### 반복 납품 (분납 회차)")
+                _li_map = {}
+                for i in _all_items:
+                    _c = _sc_cnt.get(i["soi_id"], {})
+                    _li_map[
+                        f"{_so_lbl.get(i['so_id'], {}).get('so_number','-')}"
+                        f" · {i.get('canonical_pn') or i.get('customer_part_no') or '-'}"
+                        f" | 미납 {float(i.get('pending_qty') or 0):,.0f}"
+                        + (f" · 회차 {_c['n']}개" if _c.get("n")
+                           else " · 회차 없음")] = i
+                _li_pick = st.selectbox(
+                    f"대상 라인 ({len(_li_map)}건)", list(_li_map.keys()),
+                    key="sch_line_pick")
                 _li = _li_map[_li_pick]
+                _s_so = _so_lbl.get(_li["so_id"], {"so_id": _li["so_id"]})
                 _li_qty = float(_li.get("qty") or 0)
                 _li_pend = float(_li.get("pending_qty") or 0)
 
