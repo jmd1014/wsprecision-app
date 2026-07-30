@@ -3657,7 +3657,11 @@ elif page == "수주 관리":
                         help="기본값 = 아직 납기가 입력되지 않은 미납 "
                              "수량. 이 수량이 소진될 때까지 회차를 "
                              "만듭니다.")
-                    if _week_sum > 0 and _g_target > 0 and _g_wd:
+                    if _g_target <= 0:
+                        st.info("이 라인은 미납 전량이 이미 계획되어 "
+                                "있습니다 — 추가로 넣으려면 총 배분 "
+                                "수량을 직접 입력하세요.")
+                    elif _week_sum > 0 and _g_wd:
                         _wks = _g_target / _week_sum
                         st.caption(
                             f"주당 {_week_sum:,.0f} "
