@@ -3238,10 +3238,26 @@ elif page == "수주 관리":
                 _piv = _piv.reindex(
                     [p for p in _order if p in _piv.index])
                 _piv["합계"] = _piv.sum(axis=1)
+                # 히트맵 — matplotlib(background_gradient) 없이 직접 계산
+                _wk_cols = [c for c in _piv.columns if c != "합계"]
+                _vmax = float(_piv[_wk_cols].to_numpy().max() or 0)
+
+                def _heat(v):
+                    try:
+                        v = float(v)
+                    except (TypeError, ValueError):
+                        return ""
+                    if v <= 0 or _vmax <= 0:
+                        return "color:#b6bcc4"
+                    _t = min(v / _vmax, 1.0)
+                    # 2a 주색 #24406b 계열 농도 (연한 → 진한)
+                    _bg = (f"background-color: rgba(36,64,107,"
+                           f"{0.06 + 0.5 * _t:.2f})")
+                    return (_bg + ";color:#fff;font-weight:600"
+                            if _t > 0.55 else _bg)
                 st.dataframe(
-                    _piv.style.format("{:,.0f}").background_gradient(
-                        cmap="Blues", subset=[c for c in _piv.columns
-                                              if c != "합계"]),
+                    _piv.style.format("{:,.0f}").map(
+                        _heat, subset=_wk_cols),
                     use_container_width=True,
                     height=min(420, 60 + len(_piv) * 35))
                 st.caption("열 = 주 시작일(월요일) · 값 = 그 주 납품 예정 "
