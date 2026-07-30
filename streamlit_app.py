@@ -690,10 +690,12 @@ elif page == "마스터 관리":
     import db as _db
     import pandas as pd
 
-    tab1, tab_prod, tab_mat, tab_bom, tab_excl, tab_map, tab2 = st.tabs([
+    (tab1, tab_prod, tab_mat, tab_bom, tab_excl, tab_map, tab2,
+     tab_dsn) = st.tabs([
         "거래처 편집", "제품 편집", "자재 편집", "BOM 편집",
         "데이터 제외 규칙",
-        "매입↔자재 매핑 (레거시)", "마스터/연결 점검"
+        "매입↔자재 매핑 (레거시)", "마스터/연결 점검",
+        "디자인 데이터 내보내기"
     ])
 
     # ─── Tab 1: 거래처 편집 ───
@@ -2338,6 +2340,95 @@ elif page == "마스터 관리":
                     st.dataframe(pdf, use_container_width=True, hide_index=True)
                 else:
                     st.info("정비 우선 항목이 없습니다. (이상적 상태 또는 진단 데이터 부족)")
+
+    # ─── Tab: 디자인 데이터 내보내기 ───
+    with tab_dsn:
+        st.markdown("**화면 설계용 실데이터 스냅샷**")
+        st.caption(
+            "클로드 디자인 등 외부 도구는 Supabase 에 직접 접근할 수 없습니다. "
+            "지금 DB 에 들어있는 실제 값을 JSON 한 장으로 받아서 첨부하세요. "
+            "단가·금액 항목은 자동으로 제외됩니다.")
+
+        # 단가/금액 계열 컬럼은 외부 도구로 나가지 않도록 제거
+        _PRICE_HINT = ("price", "amount", "cost", "margin", "vat",
+                       "단가", "금액", "원가")
+
+        def _dsn_clean(rows):
+            out = []
+            for r in (rows or []):
+                out.append({k: v for k, v in r.items()
+                            if not any(h in k.lower() for h in _PRICE_HINT)})
+            return out
+
+        # (라벨, 테이블/뷰, 정렬, 건수)
+        _DSN_SRC = [
+            ("제품", "products", "order=pn", 60),
+            ("자재", "materials", "order=material_id", 60),
+            ("BOM", "bom", "", 80),
+            ("수주", "sales_orders", "order=order_date.desc", 40),
+            ("수주 라인", "sales_order_items", "", 120),
+            ("납품 스케줄", "so_delivery_schedule", "order=due_date", 200),
+            ("스케줄 요약", "so_schedule_summary_v", "", 120),
+            ("소재 재고", "material_stock", "", 60),
+            ("완성 재고", "product_stock_v", "", 60),
+            ("완성 LOT 재고", "product_lot_stock_v", "", 60),
+            ("작업지시", "wo_tracking", "order=wo_id.desc", 40),
+            ("발주", "purchase_orders", "order=po_date.desc", 30),
+            ("발주 라인", "purchase_order_items", "", 60),
+            ("재고 원장", "inventory_transactions", "order=txn_id.desc", 120),
+        ]
+
+        _dsn_n = st.columns(2)
+        with _dsn_n[0]:
+            _dsn_go = st.button("스냅샷 만들기", type="primary",
+                                use_container_width=True)
+        if _dsn_go:
+            import json as _json
+            from datetime import date as _dt_date
+            snap = {
+                "_meta": {
+                    "생성일": str(_dt_date.today()),
+                    "출처": "우성정밀 업무관리 시스템 — Supabase 운영 데이터",
+                    "용도": "화면 디자인 참고용 실데이터. 단가·금액 제외.",
+                    "업무 흐름": "수주 → 소재 → 생산 → 외주 → 완성 → 출고",
+                    "메뉴": ["홈", "수주 관리", "생산 계획", "발주/입고",
+                             "공정 관리", "출고 관리", "마스터 관리",
+                             "원가 확인", "생산 보고"],
+                    "디자인 토큰": {
+                        "font": "IBM Plex Sans KR",
+                        "primary": "#24406b", "bg": "#f4f5f7",
+                        "card": "#ffffff", "line": "#e2e5ea",
+                        "ink": "#1b2a41", "dim": "#7a828d",
+                        "warn": "#e8590c", "danger": "#d9480f",
+                        "good": "#2f9e44",
+                        "규칙": "이모지 미사용. 상태는 색으로만 구분 — "
+                                "문제=danger, 대기=warn, 완료=good, 진행=primary.",
+                    },
+                },
+            }
+            _bar = st.progress(0.0)
+            _fail = []
+            for _i, (_label, _tbl, _ord, _lim) in enumerate(_DSN_SRC):
+                try:
+                    _rows = _db.fetch(_tbl, "*", _ord, limit=_lim)
+                    snap[_label] = _dsn_clean(_rows)
+                except Exception as e:  # 뷰 미존재 등은 건너뜀
+                    _fail.append(f"{_label}({type(e).__name__})")
+                _bar.progress((_i + 1) / len(_DSN_SRC))
+            _bar.empty()
+
+            _txt = _json.dumps(snap, ensure_ascii=False, indent=1, default=str)
+            _cnt = sum(len(v) for k, v in snap.items() if k != "_meta")
+            st.success(f"{len(_DSN_SRC) - len(_fail)}개 영역 · {_cnt:,}행 · "
+                       f"{len(_txt)/1024:,.0f}KB")
+            if _fail:
+                st.caption("건너뜀: " + ", ".join(_fail))
+            st.download_button(
+                "design-data.json 내려받기", _txt,
+                file_name=f"design-data_{_dt_date.today():%Y%m%d}.json",
+                mime="application/json", use_container_width=True)
+            with st.expander("미리보기 (앞부분)"):
+                st.code(_txt[:2000], language="json")
 
 
 elif page == "수주 관리":
