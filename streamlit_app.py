@@ -3721,6 +3721,8 @@ elif page == "수주 관리":
                                 "created_by": "김민수",
                             })
                             _left -= _cq
+                        # PostgREST 는 배열 insert 시 모든 객체의 키가
+                        # 같아야 한다 (PGRST102) → note 키를 통일
                         while _left > 0.5 and _guard < 500:
                             _guard += 1
                             _wq = _wd_amt.get(_cur.weekday())
@@ -3734,6 +3736,7 @@ elif page == "수주 관리":
                                     "due_date": _cur.isoformat(),
                                     "qty": float(_q),
                                     "delivered_qty": 0,
+                                    "note": None,
                                     "created_by": "김민수",
                                 })
                                 _left -= _q
@@ -3968,6 +3971,9 @@ elif page == "수주 관리":
                             _r3["so_id"] = _s_so["so_id"]
                             _r3["soi_id"] = _li["soi_id"]
                             _r3["created_by"] = "김민수"
+                            # PostgREST 배열 insert 는 키가 모두 같아야
+                            # 한다 (PGRST102 All object keys must match)
+                            _r3.setdefault("note", None)
                         _db.delete("so_delivery_schedule",
                                    f"soi_id=eq.{_li['soi_id']}")
                         if _keep:
