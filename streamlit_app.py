@@ -3126,8 +3126,9 @@ elif page == "수주 관리":
             _s_so = _s_map[_s_pick]
             try:
                 _s_items = fetch("sales_order_items",
-                    "soi_id,line_no,canonical_pn,customer_part_no,qty,"
-                    "received_qty,pending_qty,due_date",
+                    "soi_id,line_no,product_id,canonical_pn,"
+                    "customer_part_no,qty,received_qty,pending_qty,"
+                    "due_date",
                     f"so_id=eq.{_s_so['so_id']}&order=line_no.asc",
                     limit=100)
             except Exception as e:
