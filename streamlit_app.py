@@ -374,14 +374,15 @@ if page == "홈":
     except Exception:
         _h_so = []
     # 수주별 대표 품번 + 분납 스케줄 납기 (미납 라인 기준)
-    _h_pn, _h_sched = {}, {}
+    _h_pn, _h_sched, _h_lines = {}, {}, []
     _open_ids = [s["so_id"] for s in _h_so
                  if float(s.get("total_pending_qty") or 0) > 0][:120]
     if _open_ids:
         _ids = ",".join(str(i) for i in _open_ids)
         try:
             _h_lines = fetch("sales_order_items",
-                "so_id,soi_id,canonical_pn,customer_part_no,pending_qty",
+                "so_id,soi_id,product_id,canonical_pn,customer_part_no,"
+                "qty,received_qty,pending_qty,due_date",
                 f"so_id=in.({_ids})&pending_qty=gt.0"
                 "&order=pending_qty.desc", limit=800)
             for _l in _h_lines:      # pending desc → 첫 라인이 대표
@@ -393,15 +394,18 @@ if page == "홈":
                 _e["n"] += 1
         except Exception:
             _h_lines = []
+        _h_sched_line = {}
         try:
             for _sc in fetch("so_delivery_schedule",
-                "so_id,due_date,qty,delivered_qty",
+                "so_id,soi_id,due_date,qty,delivered_qty",
                 f"so_id=in.({_ids})&order=due_date.asc", limit=800):
                 if (float(_sc.get("qty") or 0)
                         - float(_sc.get("delivered_qty") or 0)) > 0:
                     _h_sched.setdefault(_sc["so_id"], _sc["due_date"])
+                    _h_sched_line.setdefault(_sc["soi_id"],
+                                             _sc["due_date"])
         except Exception:
-            pass
+            _h_sched_line = {}
     try:
         _h_rcv = fetch("po_item_receipt_v",
             "pending_qty,receipt_status", "", limit=300)
@@ -462,10 +466,114 @@ if page == "홈":
     hc1, hc2 = st.columns(2)
 
     with hc1:
-        st.markdown("##### 수주 진행 (미납 · 납기순)")
+        # 품번별 = 생산 일정 관리 단위 (같은 품번에 수주가 계속
+        # 추가되므로 실무 기본값). 수주별은 문서 단위 확인용.
+        _h_view = st.radio("수주 진행 보기", ["품번별", "수주별"],
+                           horizontal=True, key="home_so_view",
+                           label_visibility="collapsed")
+        st.markdown(f"##### 수주 진행 ({_h_view} · 미납 · 납기순)")
+
+    if _h_view == "품번별":
+        with hc1:
+            if not _h_lines:
+                st.info("미납 수주 없음 — 수주 관리에서 업로드하면 "
+                        "표시됩니다.")
+            else:
+                _so_cust = {s["so_id"]: s.get("customer")
+                            for s in _h_so}
+                _stock_map = {p["pn"]: float(p.get("current_stock") or 0)
+                              for p in _h_ps}
+                _wip_map = {}
+                for _w in _h_wo:
+                    _q = wo_stage_qty(_w)
+                    _k = _w.get("pn")
+                    if _k:
+                        _wip_map[_k] = (_wip_map.get(_k, 0)
+                                        + _q["생산중"] + _q["외주중"]
+                                        + _q["재작업중"] + _q["검사대기"])
+                _agg = {}
+                for _l in _h_lines:
+                    _pn = (_l.get("canonical_pn")
+                           or _l.get("customer_part_no") or "-")
+                    _a = _agg.setdefault(_pn, {
+                        "pn": _pn, "pend": 0.0, "qty": 0.0, "rcv": 0.0,
+                        "n_so": set(), "custs": set(), "due": None})
+                    _a["pend"] += float(_l.get("pending_qty") or 0)
+                    _a["qty"] += float(_l.get("qty") or 0)
+                    _a["rcv"] += float(_l.get("received_qty") or 0)
+                    _a["n_so"].add(_l["so_id"])
+                    _c = _so_cust.get(_l["so_id"])
+                    if _c:
+                        _a["custs"].add(_c)
+                    _d = (_h_sched_line.get(_l["soi_id"])
+                          or _l.get("due_date")
+                          or _h_sched.get(_l["so_id"]))
+                    if _d and (_a["due"] is None or _d < _a["due"]):
+                        _a["due"] = _d
+                _rows_pn = sorted(_agg.values(),
+                                  key=lambda a: (a["due"] or "9999-12-31",
+                                                 -a["pend"]))
+                _n_late_pn = sum(1 for a in _rows_pn if a["due"]
+                                 and a["due"] < _hd.today().isoformat())
+
+                def _dd_pn(d):
+                    if not d:
+                        return "-"
+                    n = (_hd.fromisoformat(d) - _hd.today()).days
+                    return (f"지연 {-n}일" if n < 0
+                            else "오늘" if n == 0 else f"D-{n}")
+
+                if len(_rows_pn) > 15:
+                    _cu = ["전체 거래처"] + sorted(
+                        {c for a in _rows_pn for c in a["custs"]})
+                    _cf = st.selectbox("거래처", _cu, key="home_pn_cust",
+                                       label_visibility="collapsed")
+                    if _cf != "전체 거래처":
+                        _rows_pn = [a for a in _rows_pn
+                                    if _cf in a["custs"]]
+                _cut_pn = len(_rows_pn) - 15
+                _pndf = pd.DataFrame([{
+                    "품번": a["pn"],
+                    "거래처": (next(iter(a["custs"])) if len(a["custs"]) == 1
+                             else f"{len(a['custs'])}개사"),
+                    "납기": _dd_pn(a["due"]),
+                    "수주": a["n_so"].__len__(),
+                    "미납": a["pend"],
+                    "완성재고": _stock_map.get(a["pn"], 0.0),
+                    "생산중": _wip_map.get(a["pn"], 0.0),
+                    "부족": max(0.0, a["pend"] - _stock_map.get(a["pn"], 0.0)
+                               - _wip_map.get(a["pn"], 0.0)),
+                } for a in _rows_pn[:15]])
+                st.dataframe(
+                    _pndf.style.apply(
+                        lambda r: ["color:#d9480f;font-weight:700"
+                                   if str(r["납기"]).startswith("지연")
+                                   else ""] * len(r), axis=1),
+                    use_container_width=True, hide_index=True,
+                    height=min(430, 60 + len(_pndf) * 35),
+                    column_config={
+                        "수주": st.column_config.NumberColumn(
+                            "수주건", width="small"),
+                        **{c: st.column_config.NumberColumn(
+                            format="localized", width="small")
+                           for c in ["미납", "완성재고", "생산중", "부족"]},
+                    })
+                _cap_pn = [f"품목 {len(_agg)}종"]
+                if _n_late_pn:
+                    _cap_pn.append(f"납기 지연 {_n_late_pn}종")
+                if _cut_pn > 0:
+                    _cap_pn.append(f"외 {_cut_pn:,}종은 수주 관리 → "
+                                   "품목별에서 확인")
+                st.caption(" · ".join(_cap_pn)
+                           + " — 부족 = 미납 − 완성재고 − 생산중(진행 "
+                             "작업지시)")
+
+    with hc1:
         _open_so = [s for s in _h_so
                     if float(s.get("total_pending_qty") or 0) > 0]
-        if not _open_so:
+        if _h_view != "수주별":
+            pass
+        elif not _open_so:
             st.info("미납 수주 없음 — 수주 관리에서 업로드하면 표시됩니다.")
         else:
             # 납기 = 분납 스케줄의 가장 빠른 미완료 회차 > 수주 납기
