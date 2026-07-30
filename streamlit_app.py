@@ -3559,14 +3559,12 @@ elif page == "수주 관리":
 
                 _exp_label = ("납기 추가 (이어서)" if _rows
                               else "납기 입력")
-                with st.expander(_exp_label, expanded=not _rows):
-                    # 단발 / 반복을 한 곳에서 — 방식만 고르면 된다
-                    _mode = st.radio(
-                        "납기 방식", ["한 번에 (단발)", "나눠서 (반복)"],
-                        horizontal=True,
-                        index=1 if (_rows or _li_unplan > 3000) else 0,
-                        key=f"sch_mode_{_li['soi_id']}",
-                        label_visibility="collapsed")
+                # 단발 / 반복을 한 곳에서 — 방식만 고르면 된다
+                _mode = st.radio(
+                    "납기 방식", ["한 번에 (단발)", "나눠서 (반복)"],
+                    horizontal=True,
+                    index=1 if (_rows or _li_unplan > 3000) else 0,
+                    key=f"sch_mode_{_li['soi_id']}")
 
                 if _mode == "한 번에 (단발)":
                     with st.expander(_exp_label, expanded=True):
