@@ -3592,9 +3592,21 @@ elif page == "수주 관리":
                             _wq.setdefault(_w, []).append(float(r["qty"]))
                         _wd_qty = {w: max(set(v), key=v.count)
                                    for w, v in _wq.items()}
+                        # 마지막 회차가 그 요일 정상 수량보다 적으면
+                        # 부족분을 다음 스케줄 첫 회차로 승계 (연속성)
+                        _lastr = _sr[-1]
+                        _lw = _date.fromisoformat(
+                            _lastr["due_date"]).weekday()
+                        _lnorm = _wd_qty.get(_lw)
+                        _carry = 0.0
+                        if _lnorm and float(_lastr["qty"]) < _lnorm:
+                            _carry = _lnorm - float(_lastr["qty"])
                         _prev = {"wd": sorted(_wd_qty.keys()),
                                  "wd_qty": _wd_qty,
                                  "last": max(_ds),
+                                 "last_qty": float(_lastr["qty"]),
+                                 "last_norm": _lnorm,
+                                 "carry": _carry,
                                  "src": ("이 라인" if _rows
                                          else "같은 품번 이전 수주")}
                 except Exception:
@@ -3657,6 +3669,19 @@ elif page == "수주 관리":
                         help="기본값 = 아직 납기가 입력되지 않은 미납 "
                              "수량. 이 수량이 소진될 때까지 회차를 "
                              "만듭니다.")
+                    # 이전 마지막 회차가 정상 수량에 못 미치면 그 부족분을
+                    # 첫 회차에 얹어 리듬을 잇는다 (사용자 요청 2026-07-28)
+                    _carry0 = float(_prev.get("carry") or 0)
+                    _use_carry = False
+                    if _carry0 > 0:
+                        _use_carry = st.checkbox(
+                            f"이전 마지막 회차 부족분 {_carry0:,.0f} 이어서 "
+                            f"채우기 (이전 {_prev['last']} "
+                            f"{_prev['last_qty']:,.0f} / 정상 "
+                            f"{_prev['last_norm']:,.0f})",
+                            value=True, key=f"sch_cr_{_li['soi_id']}",
+                            help="체크하면 첫 회차를 그 요일 정상 수량 "
+                                 "대신 부족분만큼 먼저 채웁니다.")
                     if _g_target <= 0:
                         st.info("이 라인은 미납 전량이 이미 계획되어 "
                                 "있습니다 — 추가로 넣으려면 총 배분 "
@@ -3678,11 +3703,14 @@ elif page == "수주 관리":
                         _left = float(_g_target)
                         _seq0 = (max((int(r["seq"]) for r in _rows),
                                      default=0))
+                        _first = _use_carry and _carry0 > 0
                         _new, _guard = [], 0
                         while _left > 0.5 and _guard < 500:
                             _guard += 1
                             _wq = _wd_amt.get(_cur.weekday())
                             if _wq and _wq > 0:
+                                if _first:      # 부족분 먼저 채우기
+                                    _wq, _first = _carry0, False
                                 _q = min(_wq, _left)
                                 _seq0 += 1
                                 _new.append({
@@ -3706,6 +3734,102 @@ elif page == "수주 관리":
                                 st.rerun()
                         except Exception as e:
                             st.error(f"생성 실패: {e}")
+
+                # ── 일괄 조정 (협의 변경 대응) ──
+                if _rows:
+                    _cur_plan = sum(float(r.get("qty") or 0)
+                                    for r in _rows)
+                    _cur_done = sum(float(r.get("delivered_qty") or 0)
+                                    for r in _rows)
+                    with st.expander("일괄 조정 (총량 변경·날짜 이동)"):
+                        st.caption(
+                            "고객사 협의로 물량이나 일정이 통째로 바뀔 때 "
+                            "사용합니다. 이미 납품된 회차는 건드리지 "
+                            "않습니다.")
+                        b1, b2 = st.columns(2)
+                        with b1:
+                            st.markdown("**총량 재배분**")
+                            _new_tot = st.number_input(
+                                "새 총 계획 수량", min_value=0.0,
+                                value=float(_cur_plan), step=1.0,
+                                key=f"sch_bt_{_li['soi_id']}",
+                                help="기존 회차 비율을 유지하며 수량을 "
+                                     "다시 나눕니다 (납품 완료분 이상은 "
+                                     "유지)")
+                            if st.button("총량 적용", type="primary",
+                                         use_container_width=True,
+                                         disabled=_new_tot <= 0,
+                                         key=f"sch_bta_{_li['soi_id']}"):
+                                try:
+                                    _open = [r for r in _rows
+                                             if float(r.get("qty") or 0)
+                                             > float(r.get(
+                                                 "delivered_qty") or 0)]
+                                    _open_now = sum(
+                                        float(r["qty"]) for r in _open)
+                                    _tgt = _new_tot - _cur_done
+                                    if _open_now <= 0 or _tgt <= 0:
+                                        st.warning("조정할 미납 회차가 "
+                                                   "없습니다.")
+                                    else:
+                                        _ratio = _tgt / _open_now
+                                        _acc = 0.0
+                                        for _k, _r in enumerate(_open):
+                                            _q = (round(float(_r["qty"])
+                                                        * _ratio)
+                                                  if _k < len(_open) - 1
+                                                  else _tgt - _acc)
+                                            _q = max(
+                                                float(_r.get(
+                                                    "delivered_qty")
+                                                    or 0), _q)
+                                            _acc += _q
+                                            _db.update(
+                                                "so_delivery_schedule",
+                                                f"sched_id=eq.{_r['sched_id']}",
+                                                {"qty": float(_q)})
+                                        st.success(
+                                            f"총량 {_new_tot:,.0f} 로 "
+                                            "재배분 완료")
+                                        st.rerun()
+                                except Exception as e:
+                                    st.error(f"조정 실패: {e}")
+                        with b2:
+                            st.markdown("**납기 일괄 이동**")
+                            _shift = st.number_input(
+                                "이동 일수 (+뒤로 / −앞으로)",
+                                value=0, step=1,
+                                key=f"sch_bs_{_li['soi_id']}")
+                            _shift_open = st.checkbox(
+                                "미납 회차만 이동", value=True,
+                                key=f"sch_bso_{_li['soi_id']}")
+                            if st.button("날짜 적용",
+                                         use_container_width=True,
+                                         disabled=_shift == 0,
+                                         key=f"sch_bsa_{_li['soi_id']}"):
+                                try:
+                                    _n = 0
+                                    for _r in _rows:
+                                        if _shift_open and float(
+                                                _r.get("qty") or 0) <= \
+                                                float(_r.get(
+                                                    "delivered_qty")
+                                                    or 0):
+                                            continue
+                                        _nd = (_date.fromisoformat(
+                                            str(_r["due_date"])[:10])
+                                            + _td(days=int(_shift)))
+                                        _db.update(
+                                            "so_delivery_schedule",
+                                            f"sched_id=eq.{_r['sched_id']}",
+                                            {"due_date":
+                                             _nd.isoformat()})
+                                        _n += 1
+                                    st.success(f"{_n}개 회차 "
+                                               f"{_shift:+d}일 이동")
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"이동 실패: {e}")
 
                 # ── 자유 편집 (data_editor) ──
                 # 회차 번호는 저장 시 납기순 자동 부여 → 표에서 제외
@@ -3735,9 +3859,14 @@ elif page == "수주 관리":
                         "납품완료": pd.Series([], dtype="float64"),
                         "비고": pd.Series([], dtype="string"),
                     })
+                # key 에 데이터 시그니처를 포함 — 같은 key 면 Streamlit 이
+                # 이전 위젯 상태(편집 전 표)를 재사용해 회차 생성 직후
+                # 표가 갱신되지 않는다 (2026-07-28 사용자 보고)
+                _ed_sig = f"{len(_rows)}_{hash(tuple(sorted((str(r['due_date']), float(r['qty'])) for r in _rows))) % 99999}"
                 _ed = st.data_editor(
                     _ed_src, num_rows="dynamic", use_container_width=True,
-                    hide_index=True, key=f"sch_ed_{_li['soi_id']}",
+                    hide_index=True,
+                    key=f"sch_ed_{_li['soi_id']}_{_ed_sig}",
                     column_config={
                         "납기": st.column_config.DateColumn(
                             format="YYYY-MM-DD"),
