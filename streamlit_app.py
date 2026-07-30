@@ -2376,7 +2376,7 @@ elif page == "수주 관리":
     st.divider()
 
     tab_input, tab_list, tab_sched = st.tabs(
-        ["새 수주 입력", "수주 목록", "분납 스케줄"])
+        ["새 수주 입력", "수주 목록", "납품 스케줄"])
 
     # ════════ TAB 1: 새 수주 입력 ════════
     with tab_input:
@@ -3090,13 +3090,168 @@ elif page == "수주 관리":
             else:
                 st.info("결과 없음")
 
-    # ════════ TAB 3: 분납 스케줄 (2026-07-28) ════════
+    # ════════ TAB 3: 납품 스케줄 (2026-07-28, 간트 개편) ════════
     with tab_sched:
         st.caption(
-            "주당 납품처럼 여러 회차로 나눠 납품하는 수주의 계획을 "
-            "관리합니다. 회차는 **자유롭게 추가·수정·삭제** 가능하고, "
-            "화면의 납기는 **가장 빠른 미완료 회차**로 표시됩니다. "
-            "스케줄이 없는 수주는 기존처럼 수주 납기로 동작합니다.")
+            "품목별 납품 일정을 한눈에 보고 관리합니다. 회차는 "
+            "**자유롭게 추가·수정·삭제** 가능하고, 화면의 납기는 "
+            "**가장 빠른 미완료 회차**로 표시됩니다. 스케줄이 없는 "
+            "수주는 기존처럼 수주 납기로 동작합니다.")
+
+        # ── 전체 일정 (간트 + 주차별 물량) ──
+        try:
+            _all_sc = fetch("so_delivery_schedule",
+                "sched_id,so_id,soi_id,seq,due_date,qty,delivered_qty,note",
+                "order=due_date.asc", limit=2000)
+        except Exception as e:
+            st.error(f"스케줄 조회 실패 (Migration 027 필요): {e}")
+            _all_sc = []
+
+        if _all_sc:
+            _sc_so_ids = ",".join(str(i) for i in
+                                  {r["so_id"] for r in _all_sc})
+            _sc_soi_ids = ",".join(str(i) for i in
+                                   {r["soi_id"] for r in _all_sc})
+            try:
+                _sc_som = {s["so_id"]: s for s in fetch("sales_orders",
+                    "so_id,so_number,customer",
+                    f"so_id=in.({_sc_so_ids})", limit=300)}
+                _sc_im = {i["soi_id"]: i for i in fetch(
+                    "sales_order_items",
+                    "soi_id,canonical_pn,customer_part_no",
+                    f"soi_id=in.({_sc_soi_ids})", limit=600)}
+            except Exception:
+                _sc_som, _sc_im = {}, {}
+
+            _today_s = _date.today()
+            _g = []
+            for r in _all_sc:
+                _q = float(r.get("qty") or 0)
+                _dq = float(r.get("delivered_qty") or 0)
+                _rem = _q - _dq
+                _due = _date.fromisoformat(str(r["due_date"])[:10])
+                _g.append({
+                    "품번": (_sc_im.get(r["soi_id"], {}).get("canonical_pn")
+                            or _sc_im.get(r["soi_id"], {})
+                            .get("customer_part_no") or "-"),
+                    "거래처": _sc_som.get(r["so_id"], {}).get("customer",
+                                                            "-"),
+                    "수주번호": _sc_som.get(r["so_id"], {}).get("so_number",
+                                                             "-"),
+                    "회차": int(r.get("seq") or 0),
+                    "납기": _due,
+                    "수량": _q, "완료": _dq, "잔량": max(_rem, 0.0),
+                    "상태": ("완료" if _rem <= 0 else
+                            "지연" if _due < _today_s else "예정"),
+                })
+            _gdf = pd.DataFrame(_g)
+
+            # 상단 요약 — 이번 주 / 다음 주 / 지연
+            _wk0 = _today_s - _td(days=_today_s.weekday())
+            _wk1, _wk2 = _wk0 + _td(days=7), _wk0 + _td(days=14)
+            _this = _gdf[(_gdf["납기"] >= _wk0) & (_gdf["납기"] < _wk1)
+                         & (_gdf["상태"] != "완료")]["잔량"].sum()
+            _next = _gdf[(_gdf["납기"] >= _wk1) & (_gdf["납기"] < _wk2)
+                         & (_gdf["상태"] != "완료")]["잔량"].sum()
+            _late = _gdf[_gdf["상태"] == "지연"]["잔량"].sum()
+            _rest = _gdf[_gdf["상태"] != "완료"]["잔량"].sum()
+            gk1, gk2, gk3, gk4 = st.columns(4)
+            gk1.metric("이번 주 납품", f"{_this:,.0f}")
+            gk2.metric("다음 주", f"{_next:,.0f}")
+            gk3.metric("지연", f"{_late:,.0f}")
+            gk4.metric("전체 잔여 계획", f"{_rest:,.0f}")
+
+            # 필터
+            fg1, fg2, fg3 = st.columns([1, 1, 1])
+            _f_cust = fg1.selectbox(
+                "거래처", ["전체"] + sorted(_gdf["거래처"].unique().tolist()),
+                key="gantt_cust")
+            _f_weeks = fg2.slider("표시 기간 (주)", 2, 26, 8,
+                                  key="gantt_weeks")
+            _f_hide_done = fg3.checkbox("완료 회차 숨기기", value=True,
+                                        key="gantt_hide_done")
+            _view = _gdf.copy()
+            if _f_cust != "전체":
+                _view = _view[_view["거래처"] == _f_cust]
+            if _f_hide_done:
+                _view = _view[_view["상태"] != "완료"]
+            _from = _wk0
+            _to = _wk0 + _td(days=7 * int(_f_weeks))
+            _view = _view[(_view["납기"] >= _from - _td(days=28))
+                          & (_view["납기"] < _to)]
+
+            if _view.empty:
+                st.info("표시할 납품 회차가 없습니다 — 기간·필터를 "
+                        "조정하세요.")
+            else:
+                st.markdown("##### 품목별 납품 일정")
+                try:
+                    import altair as alt
+                    _cd = _view.copy()
+                    _cd["납기"] = pd.to_datetime(_cd["납기"])
+                    _order = (_cd.groupby("품번")["납기"].min()
+                              .sort_values().index.tolist())
+                    _chart = alt.Chart(_cd).mark_circle(
+                        opacity=0.85, stroke="white", strokeWidth=1
+                    ).encode(
+                        x=alt.X("납기:T", title=None,
+                                axis=alt.Axis(format="%m-%d",
+                                              labelAngle=-40,
+                                              tickCount="week")),
+                        y=alt.Y("품번:N", title=None, sort=_order,
+                                axis=alt.Axis(labelLimit=180)),
+                        size=alt.Size("잔량:Q", title="수량",
+                                      scale=alt.Scale(range=[60, 600]),
+                                      legend=None),
+                        color=alt.Color("상태:N", title=None,
+                            scale=alt.Scale(
+                                domain=["예정", "지연", "완료"],
+                                range=["#24406b", "#d9480f", "#2f9e44"]),
+                            legend=alt.Legend(orient="top")),
+                        tooltip=["품번", "거래처", "수주번호", "회차",
+                                 alt.Tooltip("납기:T", format="%Y-%m-%d"),
+                                 alt.Tooltip("수량:Q", format=","),
+                                 alt.Tooltip("잔량:Q", format=","),
+                                 "상태"],
+                    ).properties(
+                        height=max(220, 26 * _cd["품번"].nunique()))
+                    _rule = alt.Chart(pd.DataFrame({
+                        "오늘": [pd.Timestamp(_today_s)]})).mark_rule(
+                        color="#e8590c", strokeDash=[4, 3]).encode(
+                        x="오늘:T")
+                    st.altair_chart(_chart + _rule,
+                                    use_container_width=True)
+                    st.caption("원 크기 = 납품 예정 수량 · 주황 점선 = "
+                               "오늘 · 품번은 최초 납기순 정렬")
+                except Exception as e:
+                    st.warning(f"차트 표시 실패: {e}")
+
+                # 주차별 물량표 (생산 계획 수립용)
+                st.markdown("##### 주차별 납품 물량")
+                _pv = _view.copy()
+                _pv["주"] = pd.to_datetime(_pv["납기"]).dt.to_period(
+                    "W-SUN").apply(lambda p: p.start_time.strftime(
+                        "%m/%d"))
+                _piv = _pv.pivot_table(index="품번", columns="주",
+                                       values="잔량", aggfunc="sum",
+                                       fill_value=0)
+                _piv = _piv.reindex(
+                    [p for p in _order if p in _piv.index])
+                _piv["합계"] = _piv.sum(axis=1)
+                st.dataframe(
+                    _piv.style.format("{:,.0f}").background_gradient(
+                        cmap="Blues", subset=[c for c in _piv.columns
+                                              if c != "합계"]),
+                    use_container_width=True,
+                    height=min(420, 60 + len(_piv) * 35))
+                st.caption("열 = 주 시작일(월요일) · 값 = 그 주 납품 예정 "
+                           "잔량 · 생산 계획 수립에 사용하세요.")
+        else:
+            st.info("등록된 납품 스케줄이 없습니다 — 아래에서 수주 라인을 "
+                    "골라 회차를 만들면 여기에 일정이 표시됩니다.")
+
+        st.divider()
+        st.markdown("#### 회차 편집")
 
         # ── 수주 라인 선택 ──
         sc1, sc2 = st.columns([3, 1])
@@ -3418,64 +3573,6 @@ elif page == "수주 관리":
                     except Exception as e:
                         st.error(f"저장 실패: {e}")
 
-        # ── 전체 스케줄 현황 (임박순) ──
-        st.divider()
-        st.markdown("##### 다가오는 납품 예정 (미완료 회차)")
-        try:
-            _up = fetch("so_delivery_schedule",
-                "so_id,soi_id,seq,due_date,qty,delivered_qty,note",
-                "order=due_date.asc", limit=300)
-        except Exception:
-            _up = []
-        _up = [u for u in _up
-               if float(u.get("qty") or 0) - float(u.get("delivered_qty")
-                                                   or 0) > 0][:40]
-        if not _up:
-            st.caption("등록된 분납 스케줄이 없습니다.")
-        else:
-            _so_ids = ",".join(str(i) for i in {u["so_id"] for u in _up})
-            _soi_ids = ",".join(str(i) for i in {u["soi_id"] for u in _up})
-            try:
-                _sm = {s["so_id"]: s for s in fetch("sales_orders",
-                    "so_id,so_number,customer",
-                    f"so_id=in.({_so_ids})", limit=200)}
-                _im = {i["soi_id"]: i for i in fetch("sales_order_items",
-                    "soi_id,canonical_pn,customer_part_no",
-                    f"soi_id=in.({_soi_ids})", limit=400)}
-            except Exception:
-                _sm, _im = {}, {}
-            _today = _date.today().isoformat()
-
-            def _dd2(d):
-                if not d:
-                    return "-"
-                n = (_date.fromisoformat(str(d)[:10]) - _date.today()).days
-                return (f"지연 {-n}일" if n < 0
-                        else "오늘" if n == 0 else f"D-{n}")
-            _updf = pd.DataFrame([{
-                "납기": u["due_date"],
-                "D-day": _dd2(u["due_date"]),
-                "수주번호": _sm.get(u["so_id"], {}).get("so_number", "-"),
-                "거래처": _sm.get(u["so_id"], {}).get("customer", "-"),
-                "품번": (_im.get(u["soi_id"], {}).get("canonical_pn")
-                        or _im.get(u["soi_id"], {}).get("customer_part_no")
-                        or "-"),
-                "회차": u["seq"],
-                "예정": float(u.get("qty") or 0),
-                "완료": float(u.get("delivered_qty") or 0),
-                "잔량": float(u.get("qty") or 0) - float(
-                    u.get("delivered_qty") or 0),
-            } for u in _up])
-            st.dataframe(
-                _updf.style.apply(
-                    lambda r: ["color:#d9480f;font-weight:700"
-                               if str(r["D-day"]).startswith("지연")
-                               else ""] * len(r), axis=1),
-                use_container_width=True, hide_index=True,
-                height=min(420, 60 + len(_updf) * 35),
-                column_config={c: st.column_config.NumberColumn(
-                    format="localized", width="small")
-                    for c in ["예정", "완료", "잔량"]})
 
 elif page == "출고 관리":
     st.subheader("출고 관리")
