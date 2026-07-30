@@ -3675,13 +3675,14 @@ elif page == "수주 관리":
                     _use_carry = False
                     if _carry0 > 0:
                         _use_carry = st.checkbox(
-                            f"이전 마지막 회차 부족분 {_carry0:,.0f} 이어서 "
-                            f"채우기 (이전 {_prev['last']} "
-                            f"{_prev['last_qty']:,.0f} / 정상 "
-                            f"{_prev['last_norm']:,.0f})",
+                            f"{_prev['last']} 잔여 {_carry0:,.0f} 먼저 "
+                            f"채우기 (그날 {_prev['last_qty']:,.0f} / "
+                            f"정상 {_prev['last_norm']:,.0f})",
                             value=True, key=f"sch_cr_{_li['soi_id']}",
-                            help="체크하면 첫 회차를 그 요일 정상 수량 "
-                                 "대신 부족분만큼 먼저 채웁니다.")
+                            help="이전 스케줄 마지막 날이 정상 수량에 "
+                                 "못 미쳤다면, 그 날짜에 부족분을 먼저 "
+                                 "얹어 그날 물량을 맞춘 뒤 다음 회차를 "
+                                 "이어갑니다.")
                     if _g_target <= 0:
                         st.info("이 라인은 미납 전량이 이미 계획되어 "
                                 "있습니다 — 추가로 넣으려면 총 배분 "
@@ -3703,14 +3704,27 @@ elif page == "수주 관리":
                         _left = float(_g_target)
                         _seq0 = (max((int(r["seq"]) for r in _rows),
                                      default=0))
-                        _first = _use_carry and _carry0 > 0
                         _new, _guard = [], 0
+                        # 부족분은 이전 마지막 '그 날짜'에 얹어 그날
+                        # 물량을 맞춘다 (다음 요일로 미루지 않음)
+                        if _use_carry and _carry0 > 0:
+                            _cq = min(_carry0, _left)
+                            _seq0 += 1
+                            _new.append({
+                                "so_id": _s_so["so_id"],
+                                "soi_id": _li["soi_id"],
+                                "seq": _seq0,
+                                "due_date": _prev["last"],
+                                "qty": float(_cq),
+                                "delivered_qty": 0,
+                                "note": "이전 회차 잔여 보충",
+                                "created_by": "김민수",
+                            })
+                            _left -= _cq
                         while _left > 0.5 and _guard < 500:
                             _guard += 1
                             _wq = _wd_amt.get(_cur.weekday())
                             if _wq and _wq > 0:
-                                if _first:      # 부족분 먼저 채우기
-                                    _wq, _first = _carry0, False
                                 _q = min(_wq, _left)
                                 _seq0 += 1
                                 _new.append({
