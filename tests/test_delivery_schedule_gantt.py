@@ -37,7 +37,7 @@ def _d(offset_days):
 # (soi_id, so_id, 품번, 미납, 라인 납기)
 LINES = [
     (1, 10, "4PDVN-02", 91648, None),      # 분납 · 계획률 낮음
-    (2, 11, "4PDVN-03", 7600, None),       # 분납 · 계획률 100%
+    (2, 11, "4PDVN-03", 9800, None),       # 분납 · 계획률 100% · 장기
     (3, 12, "8HFDV-VM-05", 8500, None),    # 분납 · 완료 회차 포함
     (4, 13, "8PDVN-02", 3000, None),       # 분납 · 지연(지난 주)
     (5, 14, "8HFDV-15PIF-01", 10, _d(9)),  # 단발 · 예정
@@ -52,6 +52,8 @@ SCHED = [
     (104, 2, 11, 1, _d(2), 1400, 0),
     (105, 2, 11, 2, _d(30), 1400, 0),
     (106, 2, 11, 3, _d(60), 4800, 0),      # '이후' 열 (6주 밖)
+    (111, 2, 11, 4, _d(67), 1400, 0),      # '이후' — 요약 1칩으로 접힘
+    (112, 2, 11, 5, _d(74), 800, 0),       # '이후'
     (107, 3, 12, 1, _d(-5), 300, 300),     # 완료
     (108, 3, 12, 2, _d(9), 500, 0),
     (109, 4, 13, 1, _d(-5), 1500, 0),      # 지난 주 → 지연, 이번 주 칸
@@ -209,9 +211,18 @@ def test_week_totals_match_chip_sums(sched_db):
     assert sums[0] == 4995, sums
     # 2주 뒤: 1008+500+10(단발) = 1518
     assert sums[1] == 1518, sums
-    # '이후' 열: 4800
-    assert sums[-1] == 4800, sums
-    assert sum(sums) == 4995 + 1518 + 3516 + 1400 + 4800
+    # '이후' 열: 4800+1400+800 = 7000 — 요약 칩이어도 합계는 전량
+    assert sums[-1] == 7000, sums
+    assert sum(sums) == 4995 + 1518 + 3516 + 1400 + 7000
+
+
+def test_after_column_is_summarised(sched_db):
+    """6주 밖 회차는 나열하지 않고 요약 1칩 — 행 높이 늘어짐 방지."""
+    html = _gantt_html(_open_schedule_tab(sched_db))
+    assert html.count('class="gc after"') == 1, "요약 칩은 품번당 1개"
+    # 4PDVN-03 은 '이후'에 3회차가 있지만 칩은 1개 · 총량 7,000 표기
+    assert '<span class="gq">7,000</span>' in html
+    assert "3회 ·" in html
 
 
 def test_unplanned_banner_and_metrics(sched_db):

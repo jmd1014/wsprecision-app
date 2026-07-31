@@ -198,6 +198,13 @@ div[data-testid="stDataFrame"]{
 .gc.one .gd{color:#444b56;font-weight:600}
 .gc.one.late{border-left-color:var(--warn2)}
 .gc.one.late .gd{color:var(--warn2);font-weight:700}
+/* '이후' 열 — 회차 나열 대신 총량 요약 (행 높이 고정) */
+.gc.after{display:block;text-align:right;padding:5px 9px;
+  background:var(--card);border:1px dashed #c9d6e8;
+  border-left:3px solid var(--link);border-radius:12px}
+.gc.after .gq{display:block;font-size:12.5px}
+.gc.after .gd{display:block;color:var(--dim);font-weight:600;
+  margin-top:1px}
 
 /* ── 미계획 물량 경고 카드 ── */
 .unplan{background:var(--warn-bg);border:1px solid #f5c396;
@@ -3463,30 +3470,48 @@ elif page == "수주 관리":
                                   p=_p, c=_cust_pn.get(_p, "-"),
                                   q=_pd0, r=_rtxt))
                     for _b in range(_WEEKS + 1):
-                        _inner = []
-                        for c in sorted(_cellmap.get((_p, _b), []),
-                                        key=lambda x: x["납기"]):
-                            _cls = ("done" if c["상태"] == "완료" else
-                                    "one late" if c["구분"] == "단발"
-                                    and c["상태"] == "지연" else
-                                    "one" if c["구분"] == "단발" else
-                                    "late" if c["상태"] == "지연" else "plan")
-                            if c["상태"] != "완료":
-                                _sums[_b] += c["잔량"]
-                            _inner.append(
-                                '<div class="gc {cl}" title="{t}">'
-                                '<span class="gd">{d}</span>'
-                                '<span class="gq">{q:,.0f}</span></div>'
-                                .format(
-                                    cl=_cls,
-                                    q=(c["잔량"] if c["상태"] != "완료"
-                                       else c["수량"]),
-                                    d="{} {}".format(
-                                        _WD[c["납기"].weekday()],
-                                        c["납기"].day),
-                                    t="{} {}회차 · {:%Y-%m-%d} · {}".format(
-                                        c["수주번호"], c["회차"],
-                                        c["납기"], c["상태"])))
+                        _cs = sorted(_cellmap.get((_p, _b), []),
+                                     key=lambda x: x["납기"])
+                        _sums[_b] += sum(c["잔량"] for c in _cs
+                                         if c["상태"] != "완료")
+                        if _b == _WEEKS and _cs:
+                            # '이후' 열은 회차를 나열하지 않고 총량만 —
+                            # 장기 스케줄이 행 높이를 늘리는 것을 막는다
+                            _inner = ['<div class="gc after" title="{t}">'
+                                      '<span class="gq">{q:,.0f}</span>'
+                                      '<span class="gd">{n}회 · {f:%m/%d}{e}'
+                                      '</span></div>'.format(
+                                          q=sum(c["잔량"] for c in _cs
+                                                if c["상태"] != "완료"),
+                                          n=len(_cs), f=_cs[0]["납기"],
+                                          e="~" if len(_cs) > 1 else "",
+                                          t="{:%Y-%m-%d} ~ {:%Y-%m-%d} · "
+                                            "{}회차".format(
+                                                _cs[0]["납기"],
+                                                _cs[-1]["납기"], len(_cs)))]
+                        else:
+                            _inner = []
+                            for c in _cs:
+                                _cls = ("done" if c["상태"] == "완료" else
+                                        "one late" if c["구분"] == "단발"
+                                        and c["상태"] == "지연" else
+                                        "one" if c["구분"] == "단발" else
+                                        "late" if c["상태"] == "지연"
+                                        else "plan")
+                                _inner.append(
+                                    '<div class="gc {cl}" title="{t}">'
+                                    '<span class="gd">{d}</span>'
+                                    '<span class="gq">{q:,.0f}</span></div>'
+                                    .format(
+                                        cl=_cls,
+                                        q=(c["잔량"] if c["상태"] != "완료"
+                                           else c["수량"]),
+                                        d="{} {}".format(
+                                            _WD[c["납기"].weekday()],
+                                            c["납기"].day),
+                                        t="{} {}회차 · {:%Y-%m-%d} · {}"
+                                        .format(c["수주번호"], c["회차"],
+                                                c["납기"], c["상태"])))
                         _h.append('<div class="cell{n}">{v}</div>'.format(
                             n=" now" if _b == 0 else "", v="".join(_inner)))
                 _h.append('<div class="gsum l">주 합계</div>')
@@ -3499,7 +3524,9 @@ elif page == "수주 관리":
                 st.caption(
                     "표시 품번 {n}종 합계 **{s:,.0f}** · 전 품목 계획 합계 "
                     "**{t:,.0f}** — 지연 회차는 이번 주 칸에 붉은 칩으로 "
-                    "모읍니다. 둥근 칩 = 반복(분납) · 각진 칩 = 단발.".format(
+                    "모으고, **6주 밖 회차는 '이후' 열에 총량으로만** "
+                    "표시합니다(칩에 마우스를 올리면 기간). 둥근 칩 = "
+                    "반복(분납) · 각진 칩 = 단발.".format(
                         n=len(_pns), s=sum(_sums),
                         t=sum(c["잔량"] for c in _live)))
 
