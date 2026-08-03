@@ -748,13 +748,412 @@ elif page == "마스터 관리":
     import db as _db
     import pandas as pd
 
-    (tab1, tab_prod, tab_mat, tab_bom, tab_excl, tab_map, tab2,
+    (tab_fit, tab1, tab_prod, tab_mat, tab_bom, tab_excl, tab_map, tab2,
      tab_dsn) = st.tabs([
+        "품번별 맞추기",
         "거래처 편집", "제품 편집", "자재 편집", "BOM 편집",
         "데이터 제외 규칙",
         "매입↔자재 매핑 (레거시)", "마스터/연결 점검",
         "디자인 데이터 내보내기"
     ])
+
+    # ─── Tab: 품번별 맞추기 (2026-07-31) ───
+    # 발주서 없이 소재를 먼저 입고하고, 완성재고를 출하 시점에 실사로
+    # 맞춰가는 도구. 과거 매입내역을 일괄 매핑하는 대신 실제 물건이
+    # 움직일 때마다 표본을 쌓아 정합을 올리는 방식.
+    with tab_fit:
+        from datetime import date as _ft_date
+        st.markdown("**품번 하나를 골라 소재·완성재고·BOM 을 그 자리에서 맞춥니다**")
+        st.caption(
+            "발주서 없이 소재를 먼저 입고하고, 출하 시점에 완성재고를 "
+            "실사 수량으로 맞출 수 있습니다. 모든 기록은 재고 원장에 "
+            "남아 LOT 추적이 이어집니다.")
+
+        # ── 품번 선택 ──
+        _ft_q = st.text_input("품번 검색", key="ft_q",
+                              placeholder="예: 4PDVN, MRG6, 8HFDV")
+        try:
+            _ft_flt = ["archived_at=is.null", "order=pn"]
+            if _ft_q.strip():
+                _qq = _ft_q.strip()
+                _ft_flt.append(f"pn=ilike.*{_qq}*")
+            _ft_prods = _db.fetch("products", "product_id,pn,customer,unit",
+                                  "&".join(_ft_flt), limit=300)
+        except Exception as e:
+            st.error(f"제품 조회 실패: {e}"); _ft_prods = []
+
+        if not _ft_prods:
+            st.info("검색 결과가 없습니다 — 품번 일부만 입력해 보세요.")
+            _ft_p = None
+        else:
+            if len(_ft_prods) > 200:
+                st.caption(f"{len(_ft_prods)}건 — 검색어로 좁히면 찾기 쉽습니다.")
+            _ft_p = st.selectbox(
+                "품번", _ft_prods,
+                format_func=lambda r: "{} · {}".format(
+                    r["pn"], r.get("customer") or "-"),
+                key="ft_pick")
+
+        if _ft_p:
+            _pid = _ft_p["product_id"]
+            _pn = _ft_p["pn"]
+            _unit = _ft_p.get("unit") or "EA"
+
+            # ── 현황 집계 ──
+            def _ft_load():
+                out = {"pend": 0.0, "so_n": 0, "stock": 0.0, "wip": 0.0,
+                       "lots": [], "bom": [], "txns": []}
+                try:
+                    _lis = _db.fetch("sales_order_items",
+                        "soi_id,so_id,pending_qty,due_date",
+                        f"product_id=eq.{_pid}&pending_qty=gt.0", limit=200)
+                    _sids = {l["so_id"] for l in _lis}
+                    _dead = set()
+                    if _sids:
+                        _dead = {s["so_id"] for s in _db.fetch(
+                            "sales_orders", "so_id,status",
+                            "so_id=in.({})".format(
+                                ",".join(map(str, _sids))), limit=300)
+                            if (s.get("status") or "") in
+                            ("CANCELLED", "CANCELED")}
+                    _lis = [l for l in _lis if l["so_id"] not in _dead]
+                    out["pend"] = sum(float(l.get("pending_qty") or 0)
+                                      for l in _lis)
+                    out["so_n"] = len(_lis)
+                except Exception:
+                    pass
+                try:
+                    _ps = _db.fetch_one("product_stock_v",
+                                        f"product_id=eq.{_pid}",
+                                        "current_stock")
+                    out["stock"] = float((_ps or {}).get("current_stock") or 0)
+                except Exception:
+                    pass
+                try:
+                    out["lots"] = [l for l in _db.fetch(
+                        "product_lot_stock_v",
+                        "lot_number,produced_qty,adjust_qty,issued_qty,"
+                        "remain_qty,first_output_date,material_lot",
+                        f"product_id=eq.{_pid}&order=first_output_date",
+                        limit=100) if float(l.get("remain_qty") or 0) != 0]
+                except Exception:
+                    pass
+                try:
+                    out["wip"] = sum(
+                        max(float(t.get("input_qty") or 0)
+                            - float(t.get("output_qty") or 0), 0)
+                        for t in _db.fetch("wo_tracking",
+                            "wo_number,input_qty,output_qty,status",
+                            f"product_id=eq.{_pid}&status=neq.CLOSED",
+                            limit=100))
+                except Exception:
+                    pass
+                try:
+                    _bl = _db.fetch("bom",
+                        "bom_id,material_id,raw_material_name,qty_per_pc,"
+                        "shared_factor,process_type",
+                        f"product_id=eq.{_pid}&material_id=not.is.null",
+                        limit=50)
+                    _mids = [b["material_id"] for b in _bl]
+                    _mm = {}
+                    if _mids:
+                        _mm = {m["material_id"]: m for m in _db.fetch(
+                            "material_stock",
+                            "material_id,raw_name,material_type,spec,unit,"
+                            "current_stock,main_supplier",
+                            "material_id=in.({})".format(
+                                ",".join(_mids)), limit=100)}
+                    for b in _bl:
+                        b["_m"] = _mm.get(b["material_id"], {})
+                    out["bom"] = _bl
+                except Exception:
+                    pass
+                try:
+                    out["txns"] = _db.fetch("inventory_transactions",
+                        "txn_id,txn_type,qty,unit,lot_number,txn_date,remark,"
+                        "material_id,product_id",
+                        f"product_id=eq.{_pid}&order=txn_id.desc", limit=15)
+                except Exception:
+                    pass
+                return out
+
+            _ft = _ft_load()
+            _short = max(_ft["pend"] - _ft["stock"] - _ft["wip"], 0)
+            st.markdown(
+                '<div class="kpi-row">'
+                '<div class="kpi {c1}"><div class="k">미납 수주</div>'
+                '<div class="v">{p:,.0f}</div><div class="s">{n}개 라인</div></div>'
+                '<div class="kpi {c2}"><div class="k">완성 재고</div>'
+                '<div class="v">{s:,.0f}</div><div class="s">LOT {l}개</div></div>'
+                '<div class="kpi {c3}"><div class="k">생산중</div>'
+                '<div class="v">{w:,.0f}</div><div class="s">진행 작업지시</div></div>'
+                '<div class="kpi {c4}"><div class="k">부족</div>'
+                '<div class="v">{d:,.0f}</div>'
+                '<div class="s">미납 − 완성 − 생산중</div></div>'
+                '</div>'.format(
+                    p=_ft["pend"], n=_ft["so_n"], s=_ft["stock"],
+                    l=len(_ft["lots"]), w=_ft["wip"], d=_short,
+                    c1="warn" if _ft["pend"] else "zero",
+                    c2="good" if _ft["stock"] else "zero",
+                    c3="" if _ft["wip"] else "zero",
+                    c4="danger" if _short else "good"),
+                unsafe_allow_html=True)
+
+            st.divider()
+
+            # ══ 1) BOM & 소재 ══
+            st.markdown("##### 1. 소재 (BOM)")
+            if not _ft["bom"]:
+                st.warning(
+                    "이 품번에 BOM 이 없습니다 — 소재를 연결해야 필요량 "
+                    "산출과 투입 자동 매핑이 동작합니다. 아래에서 등록하세요.")
+            else:
+                _brows = []
+                for b in _ft["bom"]:
+                    _m = b["_m"]
+                    _per = (float(b.get("qty_per_pc") or 1)
+                            / max(float(b.get("shared_factor") or 1), 1))
+                    _need = _ft["pend"] * _per
+                    _have = float(_m.get("current_stock") or 0)
+                    _brows.append({
+                        "자재": _m.get("raw_name") or b["material_id"],
+                        "재질": _m.get("material_type") or "-",
+                        "규격": _m.get("spec") or "-",
+                        "공급사": _m.get("main_supplier") or "-",
+                        "1개당": _per,
+                        "필요량": _need,
+                        "현재고": _have,
+                        "부족": max(_need - _have, 0),
+                    })
+                _bdf = pd.DataFrame(_brows)
+                st.dataframe(
+                    _bdf.style.format({
+                        "1개당": "{:,.3f}", "필요량": "{:,.0f}",
+                        "현재고": "{:,.0f}", "부족": "{:,.0f}"}).map(
+                        lambda v: ("color:#d9480f;font-weight:600"
+                                   if isinstance(v, (int, float)) and v > 0
+                                   else "color:#b6bcc4"), subset=["부족"]),
+                    use_container_width=True, hide_index=True)
+
+            with st.expander("BOM 소재 추가 / 수정", expanded=not _ft["bom"]):
+                _mq = st.text_input("자재 검색", key="ft_mq",
+                                    placeholder="예: S304, Ø45, 명진")
+                _mcand = []
+                if _mq.strip():
+                    try:
+                        _s = _mq.strip()
+                        _mcand = _db.fetch("materials",
+                            "material_id,raw_name,material_type,spec,"
+                            "main_supplier,procurement_type",
+                            f"archived_at=is.null&or=(raw_name.ilike.*{_s}*,"
+                            f"spec.ilike.*{_s}*,material_type.ilike.*{_s}*,"
+                            f"main_supplier.ilike.*{_s}*)&order=raw_name",
+                            limit=40)
+                    except Exception as e:
+                        st.error(f"자재 조회 실패: {e}")
+                if _mcand:
+                    _mpick = st.selectbox(
+                        "자재", _mcand,
+                        format_func=lambda m: "{} · {} · {}".format(
+                            m["raw_name"], m.get("spec") or "-",
+                            m.get("main_supplier") or "공급사 미정"),
+                        key="ft_mpick")
+                    bc1, bc2, bc3 = st.columns([1, 1, 1])
+                    _qpp = bc1.number_input("제품 1개당 소요", 0.0, 100.0,
+                                            1.0, 0.1, key="ft_qpp")
+                    _shf = bc2.number_input("분할 계수 (1소재 n제품)", 1, 50,
+                                            1, 1, key="ft_shf",
+                                            help="소재 1개로 제품 n개를 뽑으면 n")
+                    _ptp = bc3.text_input("공정 구분 (선택)", key="ft_ptp",
+                                          placeholder="예: 선삭, 밀링")
+                    if st.button("BOM 저장", type="primary", key="ft_bom_save"):
+                        try:
+                            _ex = _db.fetch_one("bom",
+                                f"product_id=eq.{_pid}&material_id=eq."
+                                f"{_mpick['material_id']}", "bom_id")
+                            _pay = {"qty_per_pc": float(_qpp),
+                                    "shared_factor": int(_shf),
+                                    "raw_material_name": _mpick["raw_name"],
+                                    "process_type": _ptp or None,
+                                    "source": "품번별 맞추기",
+                                    "verification_status": "CONFIRMED"}
+                            if _ex:
+                                _db.update("bom", f"bom_id=eq.{_ex['bom_id']}",
+                                           _pay)
+                                st.success("BOM 수정 완료")
+                            else:
+                                _db.insert("bom", [{
+                                    **_pay, "product_id": _pid,
+                                    "material_id": _mpick["material_id"]}])
+                                st.success("BOM 등록 완료")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"저장 실패: {e}")
+                elif _mq.strip():
+                    st.caption("일치하는 자재가 없습니다 — 자재 편집에서 "
+                               "먼저 등록하세요.")
+
+            st.divider()
+
+            # ══ 2) 소재 즉시 입고 (발주 없이) ══
+            st.markdown("##### 2. 소재 입고 (발주서 없이)")
+            st.caption(
+                "실물이 들어온 시점에 바로 기록합니다. W번호가 부여되어 "
+                "투입·완성·출고까지 LOT 이 이어집니다.")
+            _rcv_opts = [{"material_id": b["material_id"],
+                          "raw_name": (b["_m"].get("raw_name")
+                                       or b["material_id"]),
+                          "spec": b["_m"].get("spec"),
+                          "material_type": b["_m"].get("material_type"),
+                          "unit": b["_m"].get("unit") or "EA",
+                          "main_supplier": b["_m"].get("main_supplier")}
+                         for b in _ft["bom"]]
+            if not _rcv_opts:
+                st.info("BOM 소재를 먼저 등록하면 여기서 바로 입고할 수 "
+                        "있습니다. (발주/입고 → 직접 입고 도 사용 가능)")
+            else:
+                rc1, rc2, rc3 = st.columns([2, 1, 1])
+                _rpick = rc1.selectbox(
+                    "입고 자재", _rcv_opts,
+                    format_func=lambda m: "{} · {}".format(
+                        m["raw_name"], m.get("spec") or "-"),
+                    key="ft_rpick")
+                _rqty = rc2.number_input("수량", 0.0, 1_000_000.0, 0.0, 10.0,
+                                         key="ft_rqty")
+                _rdate = rc3.date_input("입고일", _ft_date.today(),
+                                        key="ft_rdate")
+                rc4, rc5 = st.columns([2, 1])
+                _rsrc = rc4.text_input(
+                    "공급처", key="ft_rsrc",
+                    value=_rpick.get("main_supplier") or "",
+                    placeholder="예: (주)명진메탈, 미진정밀 사급")
+                _rfree = rc5.checkbox("사급 (무상 지급)", key="ft_rfree")
+                if st.button(f"입고 등록 ({_rqty:,.0f})", type="primary",
+                             disabled=_rqty <= 0, key="ft_rcv_go"):
+                    _w = (w_lot_next(1) or [None])[0]
+                    try:
+                        _db.insert("inventory_transactions", [{
+                            "material_id": _rpick["material_id"],
+                            "txn_type": "RECEIPT",
+                            "qty": float(_rqty),
+                            "unit": _rpick.get("unit") or "EA",
+                            "lot_number": _w,
+                            "ref_table": None, "ref_id": None,
+                            "txn_date": _rdate.isoformat(),
+                            "remark": "발주 없이 직접 입고 · {}{} · {}".format(
+                                _pn, " · 사급" if _rfree else "",
+                                _rsrc or "출처 미기재"),
+                            "created_by": "김민수",
+                        }])
+                        st.session_state["ft_label"] = {
+                            "w_lot": _w or "(W번호 없음)", "pn": _pn,
+                            "material_name": _rpick.get("material_type")
+                            or _rpick["raw_name"],
+                            "spec": _rpick.get("spec") or "-",
+                            "qty": float(_rqty),
+                            "unit": _rpick.get("unit") or "EA",
+                            "po_number": "직접 입고",
+                            "vendor": _rsrc or "-",
+                            "date": _rdate.isoformat()}
+                        st.success(
+                            "입고 완료 — {} {:,.0f}{}".format(
+                                _rpick["raw_name"], _rqty,
+                                f" · 소재 LOT {_w}" if _w else
+                                " (W번호 카운터 미설정)"))
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"입고 실패: {e}")
+                if st.session_state.get("ft_label"):
+                    try:
+                        from utils.label_generator import receipt_labels
+                        st.download_button(
+                            "방금 입고 라벨 내려받기",
+                            receipt_labels([st.session_state["ft_label"]]),
+                            file_name="소재입고라벨_{}.html".format(
+                                st.session_state["ft_label"]["w_lot"]),
+                            mime="text/html", key="ft_label_dl")
+                    except Exception:
+                        pass
+
+            st.divider()
+
+            # ══ 3) 완성재고 맞추기 ══
+            st.markdown("##### 3. 완성 재고 맞추기 (출하 시점 실사)")
+            st.caption(
+                "장부 재고와 실제 창고 수량이 다를 때 실사 수량을 넣으면 "
+                "차이만큼 조정 기록이 남습니다. 조정분에도 LOT 이 붙어 "
+                "출고 선입선출에 그대로 쓰입니다.")
+            if _ft["lots"]:
+                st.dataframe(
+                    pd.DataFrame([{
+                        "완성 LOT": l["lot_number"],
+                        "소재 LOT": l.get("material_lot") or "-",
+                        "생산": float(l.get("produced_qty") or 0),
+                        "조정": float(l.get("adjust_qty") or 0),
+                        "출고": float(l.get("issued_qty") or 0),
+                        "잔여": float(l.get("remain_qty") or 0),
+                        "완성일": l.get("first_output_date") or "-",
+                    } for l in _ft["lots"]]),
+                    use_container_width=True, hide_index=True)
+
+            ac1, ac2, ac3 = st.columns([1, 1, 1])
+            ac1.metric("장부 완성재고", f"{_ft['stock']:,.0f}")
+            _real = ac2.number_input("실사 수량", 0.0, 1_000_000.0,
+                                     float(_ft["stock"]), 1.0, key="ft_real")
+            _diff = float(_real) - _ft["stock"]
+            ac3.metric("조정될 차이", f"{_diff:+,.0f}",
+                       delta=None if _diff == 0 else
+                       ("과잉 — 재고를 늘립니다" if _diff > 0
+                        else "부족 — 재고를 줄입니다"),
+                       delta_color="off")
+            _amemo = st.text_input(
+                "조정 사유", key="ft_amemo",
+                placeholder="예: 8/1 창고 실사, 미기록 완성분 반영")
+            if st.button("완성재고 조정", type="primary",
+                         disabled=(_diff == 0), key="ft_adj_go"):
+                if not _amemo.strip():
+                    st.error("조정 사유는 반드시 남겨야 합니다 — 나중에 "
+                             "왜 숫자가 바뀌었는지 추적할 수 없습니다.")
+                else:
+                    _alot = "ADJ-{:%Y%m%d}".format(_ft_date.today())
+                    try:
+                        _db.insert("inventory_transactions", [{
+                            "material_id": None,
+                            "product_id": _pid,
+                            "txn_type": "ADJUSTMENT",
+                            "qty": float(_diff),
+                            "unit": _unit,
+                            "lot_number": _alot if _diff > 0 else None,
+                            "ref_table": None, "ref_id": None,
+                            "txn_date": _ft_date.today().isoformat(),
+                            "remark": f"실사 조정 · {_amemo.strip()}",
+                            "created_by": "김민수",
+                        }])
+                        st.success(
+                            "조정 완료 — {:+,.0f} (완성재고 {:,.0f} → "
+                            "{:,.0f})".format(_diff, _ft["stock"], _real))
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"조정 실패: {e}")
+            if _diff < 0 and _ft["lots"]:
+                st.caption(
+                    "감소 조정은 LOT 없이 기록되어 전체 재고에서만 "
+                    "빠집니다. 특정 LOT 을 줄여야 하면 사유에 LOT 번호를 "
+                    "적어 두세요.")
+
+            # ══ 4) 최근 원장 ══
+            with st.expander("이 품번의 최근 재고 원장 15건"):
+                if _ft["txns"]:
+                    st.dataframe(pd.DataFrame([{
+                        "일자": t.get("txn_date"),
+                        "유형": t.get("txn_type"),
+                        "수량": float(t.get("qty") or 0),
+                        "LOT": t.get("lot_number") or "-",
+                        "비고": t.get("remark") or "-",
+                    } for t in _ft["txns"]]),
+                        use_container_width=True, hide_index=True)
+                else:
+                    st.caption("아직 원장 기록이 없습니다.")
 
     # ─── Tab 1: 거래처 편집 ───
     with tab1:
@@ -2398,6 +2797,146 @@ elif page == "마스터 관리":
                     st.dataframe(pdf, use_container_width=True, hide_index=True)
                 else:
                     st.info("정비 우선 항목이 없습니다. (이상적 상태 또는 진단 데이터 부족)")
+
+        # ── 중복 자재 병합 (2026-07-31) ──
+        st.divider()
+        st.markdown("##### 중복 자재 병합")
+        st.caption(
+            "같은 소재가 표기만 달라 두 번 등록된 경우 — 예: "
+            "`S304 Ø45*16` 과 `STS304환봉 45￠16ℓ`. BOM·재고 원장·매입 "
+            "매핑을 남길 자재로 옮기고, 흡수된 쪽은 휴면 처리합니다.")
+
+        def _mkey(m):
+            """규격·재질 정규화 키 — 표기 차이를 흡수 (φØ￠Φ, *xL, 316L→316)"""
+            import re as _re
+            s = _re.sub(r"[ *xXL×ℓ]", "",
+                        _re.sub(r"[φØ￠Φ]", "D", (m.get("spec") or "").upper()))
+            t = _re.sub(r"(L|H)$", "",
+                        _re.sub(r"^STS", "SUS", (m.get("material_type")
+                                                 or "").upper()))
+            return (s, t) if s and t else None
+
+        if st.button("중복 후보 찾기", key="mg_scan"):
+            st.session_state["mg_scan_on"] = True
+        if st.session_state.get("mg_scan_on"):
+            try:
+                _all_m = _db.fetch("materials",
+                    "material_id,raw_name,material_type,spec,stock_qty,"
+                    "main_supplier,procurement_type",
+                    "archived_at=is.null&order=material_id", limit=1000)
+            except Exception as e:
+                st.error(f"자재 조회 실패: {e}"); _all_m = []
+            _grp = {}
+            for m in _all_m:
+                k = _mkey(m)
+                if k:
+                    _grp.setdefault(k, []).append(m)
+            _dups = {k: v for k, v in _grp.items() if len(v) > 1}
+            if not _dups:
+                st.success("동일 규격·재질의 중복 자재가 없습니다.")
+            else:
+                # 참조 건수 — 어느 쪽을 남길지 판단 근거
+                _ids = [m["material_id"] for v in _dups.values() for m in v]
+                _bcnt, _tcnt = {}, {}
+                try:
+                    for b in _db.fetch("bom", "material_id",
+                            "material_id=in.({})".format(",".join(_ids)),
+                            limit=2000):
+                        _bcnt[b["material_id"]] = _bcnt.get(
+                            b["material_id"], 0) + 1
+                    for t in _db.fetch("inventory_transactions", "material_id",
+                            "material_id=in.({})".format(",".join(_ids)),
+                            limit=2000):
+                        _tcnt[t["material_id"]] = _tcnt.get(
+                            t["material_id"], 0) + 1
+                except Exception:
+                    pass
+                st.caption(f"중복 후보 {len(_dups)}쌍 — 한 쌍씩 확인하고 "
+                           "병합하세요.")
+                for _k, _v in sorted(_dups.items()):
+                    _lab = "{} · {}".format(_k[1], _k[0])
+                    with st.expander("{}  ({}건)".format(_lab, len(_v))):
+                        st.dataframe(pd.DataFrame([{
+                            "ID": m["material_id"], "자재명": m["raw_name"],
+                            "재질": m.get("material_type") or "-",
+                            "규격": m.get("spec") or "-",
+                            "공급사": m.get("main_supplier") or "-",
+                            "재고": float(m.get("stock_qty") or 0),
+                            "BOM": _bcnt.get(m["material_id"], 0),
+                            "원장": _tcnt.get(m["material_id"], 0),
+                        } for m in _v]), use_container_width=True,
+                            hide_index=True)
+                        _kk = "_".join(_k)
+                        _keep = st.selectbox(
+                            "남길 자재", _v, key=f"mg_keep_{_kk}",
+                            format_func=lambda m: "{} ({})".format(
+                                m["raw_name"], m["material_id"]))
+                        _drop = [m for m in _v
+                                 if m["material_id"] != _keep["material_id"]]
+                        st.caption("흡수될 자재: " + ", ".join(
+                            "{} ({})".format(m["raw_name"], m["material_id"])
+                            for m in _drop))
+                        if st.button("병합 실행", type="primary",
+                                     key=f"mg_go_{_kk}"):
+                            from datetime import date as _mg_date
+                            _kid = _keep["material_id"]
+                            _today = _mg_date.today().isoformat()
+                            _nbom = 0
+                            try:
+                                for m in _drop:
+                                    _did = m["material_id"]
+                                    # BOM — 남길 자재에 이미 있는 제품이면
+                                    # 중복이 되므로 옮기지 않고 지운다
+                                    _keep_pids = {b["product_id"] for b in
+                                        _db.fetch("bom", "product_id",
+                                            f"material_id=eq.{_kid}",
+                                            limit=500)}
+                                    for b in _db.fetch("bom",
+                                            "bom_id,product_id",
+                                            f"material_id=eq.{_did}",
+                                            limit=500):
+                                        if b["product_id"] in _keep_pids:
+                                            _db.delete(
+                                                "bom",
+                                                f"bom_id=eq.{b['bom_id']}")
+                                        else:
+                                            _db.update(
+                                                "bom",
+                                                f"bom_id=eq.{b['bom_id']}",
+                                                {"material_id": _kid,
+                                                 "raw_material_name":
+                                                 _keep["raw_name"]})
+                                            _nbom += 1
+                                    # 원장·발주라인·매입매핑을 남길 자재로
+                                    _db.update("inventory_transactions",
+                                               f"material_id=eq.{_did}",
+                                               {"material_id": _kid})
+                                    _db.update("purchase_order_items",
+                                               f"material_id=eq.{_did}",
+                                               {"material_id": _kid})
+                                    _db.update("purchase_ledger",
+                                               f"matched_material_id=eq.{_did}",
+                                               {"matched_material_id": _kid})
+                                    # 재고 baseline 합산 후 원본은 휴면
+                                    _ds = float(m.get("stock_qty") or 0)
+                                    if _ds:
+                                        _ks = float(_keep.get("stock_qty") or 0)
+                                        _db.update(
+                                            "materials",
+                                            f"material_id=eq.{_kid}",
+                                            {"stock_qty": _ks + _ds})
+                                        _keep["stock_qty"] = _ks + _ds
+                                    _db.update(
+                                        "materials", f"material_id=eq.{_did}",
+                                        {"archived_at": _today,
+                                         "stock_qty": 0, "in_use": False,
+                                         "remark": f"{_kid} 로 병합 ({_today})"})
+                                st.success(
+                                    "병합 완료 — {} 로 통합 · BOM {}건 이동"
+                                    .format(_kid, _nbom))
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"병합 실패: {e}")
 
     # ─── Tab: 디자인 데이터 내보내기 ───
     with tab_dsn:

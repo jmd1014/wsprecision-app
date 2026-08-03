@@ -31,7 +31,13 @@ _W0 = _TODAY - timedelta(days=_TODAY.weekday())   # 이번 주 월요일
 
 
 def _d(offset_days):
+    """이번 주 월요일 기준 오프셋 — 주차 버킷을 고정하기 위해"""
     return (_W0 + timedelta(days=offset_days)).isoformat()
+
+
+def _o(offset_days):
+    """오늘 기준 오프셋 — 지연/예정 판정을 요일과 무관하게 고정하기 위해"""
+    return (_TODAY + timedelta(days=offset_days)).isoformat()
 
 
 # (soi_id, so_id, 품번, 미납, 라인 납기)
@@ -41,7 +47,7 @@ LINES = [
     (3, 12, "8HFDV-VM-05", 8500, None),    # 분납 · 완료 회차 포함
     (4, 13, "8PDVN-02", 3000, None),       # 분납 · 지연(지난 주)
     (5, 14, "8HFDV-15PIF-01", 10, _d(9)),  # 단발 · 예정
-    (6, 15, "839-339939-001-A02", 79, _d(1)),   # 단발 · 지연
+    (6, 15, "839-339939-001-A02", 79, _o(-1)),  # 단발 · 지연 (어제 납기)
     (7, 16, "4S20AHYBV-03-X1413", 54288, None),  # 납기 미협의 (미계획)
 ]
 # (sched_id, soi_id, so_id, seq, 납기, 수량, 납품완료)
