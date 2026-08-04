@@ -231,6 +231,103 @@ st.markdown(f"""
 st.divider()
 
 
+# ─── 로그인 (계정별 접근 · 2026-08-04) ───────────────────
+from utils import auth as _auth  # noqa: E402
+
+
+def current_user() -> dict:
+    return st.session_state.get("auth_user") or {}
+
+
+def current_user_name() -> str:
+    """원장·이력의 created_by — 로그인 사용자 실명"""
+    return current_user().get("name") or "시스템"
+
+
+def _cookie_mgr():
+    """쿠키 컴포넌트 — 미설치·헤드리스 환경에서는 None"""
+    try:
+        import extra_streamlit_components as _stx
+        return _stx.CookieManager(key="ws_cookie_mgr")
+    except Exception:
+        return None
+
+
+# 테스트 하네스(AppTest)는 secrets 로 로그인을 끈다 — 운영 배포에는
+# 이 키가 없으므로 항상 로그인 필요
+try:
+    _AUTH_OFF = bool(st.secrets.get("auth", {}).get("disabled"))
+except Exception:
+    _AUTH_OFF = False
+if _AUTH_OFF and not st.session_state.get("auth_user"):
+    st.session_state["auth_user"] = {
+        "username": "test", "name": "테스트", "role": "admin"}
+
+if DB_AVAILABLE and not st.session_state.get("auth_user"):
+    import db as _adb
+
+    _users = _auth.load_users(_adb)
+    _secret = _auth.load_secret(_adb)
+
+    # 1) 쿠키 자동 로그인 (로그아웃 직후에는 건너뜀)
+    _cm = None
+    if _users and _secret and not st.session_state.get("auth_skip_cookie"):
+        _cm = _cookie_mgr()
+        if _cm is not None:
+            try:
+                _tok = _cm.get("ws_auth")
+            except Exception:
+                _tok = None
+            _uid = _auth.parse_token(_tok, _secret) if _tok else None
+            if _uid and _uid in _users:
+                st.session_state["auth_user"] = {
+                    "username": _uid,
+                    "name": _users[_uid].get("name") or _uid,
+                    "role": _users[_uid].get("role") or "worker"}
+                st.rerun()
+
+    # 2) 로그인 폼
+    if not st.session_state.get("auth_user"):
+        _lc1, _lc2, _lc3 = st.columns([1, 1.2, 1])
+        with _lc2:
+            if not _users:
+                st.error("계정 정보가 없습니다 — 관리자에게 문의하세요. "
+                         "(app_settings.auth_users 미설정)")
+                st.stop()
+            with st.form("ws_login"):
+                st.markdown("#### 로그인")
+                _li_id = st.text_input("아이디")
+                _li_pw = st.text_input("비밀번호", type="password")
+                _li_keep = st.checkbox("이 기기에서 자동 로그인 (14일)",
+                                       value=True)
+                _li_go = st.form_submit_button("로그인", type="primary",
+                                               use_container_width=True)
+            if _li_go:
+                _u = _users.get((_li_id or "").strip())
+                if _u and _auth.verify_pw(_li_pw, _u.get("pw", "")):
+                    st.session_state["auth_user"] = {
+                        "username": (_li_id or "").strip(),
+                        "name": _u.get("name") or _li_id,
+                        "role": _u.get("role") or "worker"}
+                    st.session_state.pop("auth_skip_cookie", None)
+                    if _li_keep and _secret:
+                        _cm2 = _cm or _cookie_mgr()
+                        if _cm2 is not None:
+                            try:
+                                from datetime import datetime as _dt_a
+                                from datetime import timedelta as _td_a
+                                _cm2.set("ws_auth", _auth.make_token(
+                                    st.session_state["auth_user"]["username"],
+                                    _secret),
+                                    expires_at=_dt_a.now() + _td_a(days=14))
+                            except Exception:
+                                pass
+                    st.rerun()
+                else:
+                    st.error("아이디 또는 비밀번호가 맞지 않습니다.")
+            st.stop()
+
+
 # ─── 상태 표기 (영문 코드 → 한글 배지) ───
 STATUS_KO = {
     "PENDING": "대기", "PARTIAL": "부분 진행", "DELIVERED": "완납",
@@ -376,16 +473,70 @@ with st.sidebar:
     def _nav_pick_admin():
         st.session_state["nav_flow"] = None
 
+    _is_admin = current_user().get("role", "admin") == "admin"
+
     st.header("업무 진행")
     nav_flow = st.radio("업무", MENU_FLOW, key="nav_flow",
                         on_change=_nav_pick_flow,
                         label_visibility="collapsed")
-    st.divider()
-    st.caption("관리자")
-    nav_admin = st.radio("관리자", MENU_ADMIN, key="nav_admin",
-                         index=None, on_change=_nav_pick_admin,
-                         label_visibility="collapsed")
+    if _is_admin:
+        st.divider()
+        st.caption("관리자")
+        nav_admin = st.radio("관리자", MENU_ADMIN, key="nav_admin",
+                             index=None, on_change=_nav_pick_admin,
+                             label_visibility="collapsed")
+    else:
+        # 작업자 계정 — 관리자 메뉴(마스터·원가·생산 보고) 숨김
+        nav_admin = None
     page = nav_admin or nav_flow or "홈"
+    if not _is_admin and page in MENU_ADMIN:
+        page = "홈"
+
+    # ── 계정 ──
+    if current_user():
+        st.divider()
+        st.caption("계정")
+        st.markdown(
+            '<span class="ws-chip"><b>{}</b> · {}</span>'.format(
+                current_user_name(),
+                "관리자" if _is_admin else "작업자"),
+            unsafe_allow_html=True)
+        if st.button("로그아웃", use_container_width=True, key="auth_out"):
+            _cmo = _cookie_mgr()
+            if _cmo is not None:
+                try:
+                    _cmo.delete("ws_auth")
+                except Exception:
+                    pass
+            st.session_state.pop("auth_user", None)
+            # 쿠키 삭제가 반영되기 전 자동 로그인으로 되돌아가는 것 방지
+            st.session_state["auth_skip_cookie"] = True
+            st.rerun()
+        with st.expander("비밀번호 변경"):
+            _pc_old = st.text_input("현재 비밀번호", type="password",
+                                    key="pc_old")
+            _pc_new = st.text_input("새 비밀번호 (6자 이상)",
+                                    type="password", key="pc_new")
+            _pc_new2 = st.text_input("새 비밀번호 확인", type="password",
+                                     key="pc_new2")
+            if st.button("변경", key="pc_go", use_container_width=True):
+                import db as _pdb
+                _pu = _auth.load_users(_pdb)
+                _me = current_user().get("username")
+                if _me not in _pu or not _auth.verify_pw(
+                        _pc_old, _pu[_me].get("pw", "")):
+                    st.error("현재 비밀번호가 맞지 않습니다.")
+                elif len(_pc_new or "") < 6:
+                    st.error("새 비밀번호는 6자 이상이어야 합니다.")
+                elif _pc_new != _pc_new2:
+                    st.error("새 비밀번호가 서로 다릅니다.")
+                else:
+                    _pu[_me]["pw"] = _auth.hash_pw(_pc_new)
+                    if _auth.save_users(_pdb, _pu):
+                        st.success("변경 완료 — 다음 로그인부터 적용")
+                    else:
+                        st.error("저장 실패 — 다시 시도하세요.")
+
     st.divider()
     st.caption("시스템")
     if st.button("DB 상태 확인", use_container_width=True):
@@ -1086,7 +1237,7 @@ elif page == "마스터 관리":
                             "remark": "발주 없이 직접 입고 · {}{} · {}".format(
                                 _pn, " · 사급" if _rfree else "",
                                 _rsrc or "출처 미기재"),
-                            "created_by": "김민수",
+                            "created_by": current_user_name(),
                         }])
                         st.session_state["ft_label"] = {
                             "w_lot": _w or "(W번호 없음)", "pn": _pn,
@@ -1170,7 +1321,7 @@ elif page == "마스터 관리":
                             "ref_table": None, "ref_id": None,
                             "txn_date": _ft_date.today().isoformat(),
                             "remark": f"실사 조정 · {_amemo.strip()}",
-                            "created_by": "김민수",
+                            "created_by": current_user_name(),
                         }])
                         st.success(
                             "조정 완료 — {:+,.0f} (완성재고 {:,.0f} → "
@@ -2850,14 +3001,19 @@ elif page == "마스터 관리":
             "매핑을 남길 자재로 옮기고, 흡수된 쪽은 휴면 처리합니다.")
 
         def _mkey(m):
-            """규격·재질 정규화 키 — 표기 차이를 흡수 (φØ￠Φ, *xL, 316L→316)"""
+            """규격·재질 정규화 키 — 표기 차이를 흡수 (φØ￠Φ, *xL, 316L→316).
+
+            형상은 흡수하지 않는다: 육각(H)과 환봉(Ø)은 다른 소재
+            (2026-08-04 사용자 확정) — 자재명에서 형상을 읽어 키에 포함."""
             import re as _re
             s = _re.sub(r"[ *xXL×ℓ]", "",
                         _re.sub(r"[φØ￠Φ]", "D", (m.get("spec") or "").upper()))
             t = _re.sub(r"(L|H)$", "",
                         _re.sub(r"^STS", "SUS", (m.get("material_type")
                                                  or "").upper()))
-            return (s, t) if s and t else None
+            _nm = m.get("raw_name") or ""
+            shape = "HEX" if _re.search(r"\bH\d|육각", _nm) else "RND"
+            return (s, t, shape) if s and t else None
 
         if st.button("중복 후보 찾기", key="mg_scan"):
             st.session_state["mg_scan_on"] = True
@@ -2897,7 +3053,8 @@ elif page == "마스터 관리":
                 st.caption(f"중복 후보 {len(_dups)}쌍 — 한 쌍씩 확인하고 "
                            "병합하세요.")
                 for _k, _v in sorted(_dups.items()):
-                    _lab = "{} · {}".format(_k[1], _k[0])
+                    _lab = "{} · {} · {}".format(
+                        _k[1], _k[0], "육각" if _k[2] == "HEX" else "환봉")
                     with st.expander("{}  ({}건)".format(_lab, len(_v))):
                         st.dataframe(pd.DataFrame([{
                             "ID": m["material_id"], "자재명": m["raw_name"],
@@ -3334,7 +3491,7 @@ elif page == "수주 관리":
                                     "source_file": header["source_file"],
                                     "delivery_address": header.get("delivery_address"),
                                     "status": "DRAFT",
-                                    "created_by": "김민수",
+                                    "created_by": current_user_name(),
                                 }
                                 _db.insert("sales_orders", [header_payload])
                                 so_row = _db.fetch_one("sales_orders",
@@ -3516,7 +3673,7 @@ elif page == "수주 관리":
                         "so_date": m_so_date.isoformat(), "due_date": m_due.isoformat(),
                         "total_amount": total, "vat": int(total * 0.1),
                         "source": "MANUAL", "delivery_address": m_addr,
-                        "status": "DRAFT", "created_by": "김민수",
+                        "status": "DRAFT", "created_by": current_user_name(),
                     }])
                     so_row = _db.fetch_one("sales_orders",
                         f"so_number=eq.{m_so_no}&customer=eq.{m_cust}", "so_id")
@@ -4461,7 +4618,7 @@ elif page == "수주 관리":
                                         "qty": float(_o_qty),
                                         "delivered_qty": 0,
                                         "note": None,
-                                        "created_by": "김민수"}])
+                                        "created_by": current_user_name()}])
                                     if not _rows:
                                         _db.update("sales_order_items",
                                             f"soi_id=eq.{_li['soi_id']}",
@@ -4577,7 +4734,7 @@ elif page == "수주 관리":
                                       "qty": float(_cq),
                                       "delivered_qty": 0,
                                       "note": "이전 회차 잔여 보충",
-                                      "created_by": "김민수",
+                                      "created_by": current_user_name(),
                                   })
                                   _left -= _cq
                               # PostgREST 는 배열 insert 시 모든 객체의 키가
@@ -4596,7 +4753,7 @@ elif page == "수주 관리":
                                           "qty": float(_q),
                                           "delivered_qty": 0,
                                           "note": None,
-                                          "created_by": "김민수",
+                                          "created_by": current_user_name(),
                                       })
                                       _left -= _q
                                   _cur += _td2(days=1)
@@ -4829,7 +4986,7 @@ elif page == "수주 관리":
                                     else 0)
                                 _r3["so_id"] = _s_so["so_id"]
                                 _r3["soi_id"] = _li["soi_id"]
-                                _r3["created_by"] = "김민수"
+                                _r3["created_by"] = current_user_name()
                                 # PostgREST 배열 insert 는 키가 모두 같아야
                                 # 한다 (PGRST102 All object keys must match)
                                 _r3.setdefault("note", None)
@@ -5190,7 +5347,7 @@ elif page == "출고 관리":
                                         "product_id": it["product_id"],
                                         "txn_date":
                                             _dlv_date.today().isoformat(),
-                                        "created_by": "김민수",
+                                        "created_by": current_user_name(),
                                     }
                                     for _lot, _lq, _tok in _alloc_plan.get(
                                             soi_id, []):
@@ -6436,7 +6593,7 @@ elif page == "발주/입고":
                             "payment_terms": payment_terms,
                             "delivery_address": delivery_address,
                             "contact_person": contact_person,
-                            "status": "DRAFT", "created_by": "김민수",
+                            "status": "DRAFT", "created_by": current_user_name(),
                         }
                         if _src_so:
                             _po_record["remark"] = f"출처 수주: {_src_so}"
@@ -6885,7 +7042,7 @@ elif page == "발주/입고":
                                     "ref_id": poi_id,
                                     "txn_date": _rcv_date.today().isoformat(),
                                     "remark": f"발주 입고: {po['po_number']}",
-                                    "created_by": "김민수",
+                                    "created_by": current_user_name(),
                                 }])
                                 _label_items.append({
                                     "w_lot": _w or "(W번호 없음)",
@@ -7026,7 +7183,7 @@ elif page == "발주/입고":
                     "txn_date": _dr_date.today().isoformat(),
                     "remark": ("사급 입고" if _dr_sagup else "직접 입고")
                               + (f": {_dr_src}" if _dr_src else ""),
-                    "created_by": "김민수",
+                    "created_by": current_user_name(),
                 }])
                 st.session_state["rcv_labels"] = [{
                     "w_lot": _dw or "(W번호 없음)",
@@ -7328,7 +7485,7 @@ elif page == "공정 관리":
                             "w_lot": _sel_lot,
                             "input_qty": _in_prod_qty,
                             "status": "IN_PROD",
-                            "created_by": "김민수",
+                            "created_by": current_user_name(),
                         }])
                         _db.insert("inventory_transactions", [{
                             "material_id": _sel_mid,
@@ -7339,7 +7496,7 @@ elif page == "공정 관리":
                             "work_order": _wo,
                             "txn_date": _pe_date.today().isoformat(),
                             "remark": f"생산 투입: {_pn_clean or '-'} ({_wo})",
-                            "created_by": "김민수",
+                            "created_by": current_user_name(),
                         }])
                         try:
                             _db.insert("wo_events", [{
@@ -7350,7 +7507,7 @@ elif page == "공정 관리":
                                 "detail": {"material_qty": _in_qty},
                                 "event_date":
                                     _pe_date.today().isoformat(),
-                                "created_by": "김민수"}])
+                                "created_by": current_user_name()}])
                         except Exception:
                             pass
                         st.success(
@@ -7480,7 +7637,7 @@ elif page == "공정 관리":
                             "w_lot": _t.get("w_lot"),
                             "pn": _t.get("pn"),
                             "event_date": _pe_date.today().isoformat(),
-                            "created_by": "김민수", **event}])
+                            "created_by": current_user_name(), **event}])
                     except Exception as e:
                         st.warning(f"⚠️ 이력 기록 실패 (처리는 정상): {e}")
                 if docs:
@@ -7717,7 +7874,7 @@ elif page == "공정 관리":
                                 "remark": "검사 완성: "
                                           f"{_t.get('pn') or '-'} (소재 "
                                           f"{_t.get('w_lot') or '-'})",
-                                "created_by": "김민수",
+                                "created_by": current_user_name(),
                             } if _i_done > 0 else None),
                             docs=({"title": "검사 판정 문서",
                                    "files": _files} if _files else None),
@@ -8469,7 +8626,7 @@ elif page == "생산 보고":
                             "lot_number": _lot,
                             "txn_date": pb_date.isoformat(),
                             "remark": f"생산 투입: {sel_prod['pn']} {total_produced:,.0f}EA",
-                            "created_by": "김민수",
+                            "created_by": current_user_name(),
                         })
                     # 3) 제품 완성 재고 (양품만) — LOT 연결
                     if pb_qty > 0:
@@ -8483,7 +8640,7 @@ elif page == "생산 보고":
                             "lot_number": _lot,
                             "txn_date": pb_date.isoformat(),
                             "remark": f"생산 완성: {sel_prod['pn']}",
-                            "created_by": "김민수",
+                            "created_by": current_user_name(),
                         })
                     if txns:
                         _db.insert("inventory_transactions", txns)

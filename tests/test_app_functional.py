@@ -115,6 +115,7 @@ def _make_apptest():
         "anon_key": "mock_anon",
         "service_role_key": "mock_service",
     }
+    at.secrets["auth"] = {"disabled": True}   # 테스트는 로그인 게이트 통과
     return at
 
 

@@ -127,6 +127,7 @@ def _open_schedule_tab(sched_db):
     at = AppTest.from_file(APP_FILE, default_timeout=60)
     at.secrets["supabase"] = {"url": "https://mock.local",
                               "anon_key": "a", "service_role_key": "s"}
+    at.secrets["auth"] = {"disabled": True}
     at.run()
     assert not at.exception, [str(e.value) for e in at.exception]
     at.sidebar.radio[0].set_value("수주 관리")
