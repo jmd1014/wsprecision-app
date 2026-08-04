@@ -769,6 +769,49 @@ elif page == "마스터 관리":
             "실사 수량으로 맞출 수 있습니다. 모든 기록은 재고 원장에 "
             "남아 LOT 추적이 이어집니다.")
 
+        # ── Day 0 실사 시트 (2026-08-07 금요일 실사 기준일) ──
+        with st.expander("실사 시트 내려받기 (Day 0 준비)"):
+            st.caption(
+                "장부 수량이 있는 자재 목록입니다. 출력해서 실물을 세고, "
+                "다른 수량은 자재 편집에서 고치거나 이 탭의 완성재고 "
+                "조정으로 기록하세요. 실사 이후의 입출고는 전부 앱에만 "
+                "입력합니다.")
+            try:
+                _inv_rows = _db.fetch(
+                    "material_stock",
+                    "material_id,raw_name,material_type,spec,unit,"
+                    "main_supplier,current_stock",
+                    "order=current_stock.desc", limit=500)
+                _inv_rows = [r for r in _inv_rows
+                             if float(r.get("current_stock") or 0) != 0]
+                if _inv_rows:
+                    import csv as _csv
+                    import io as _io
+                    _buf = _io.StringIO()
+                    _wcsv = _csv.writer(_buf)
+                    _wcsv.writerow(["자재ID", "자재명", "재질", "규격",
+                                    "단위", "공급사", "장부수량",
+                                    "실사수량", "차이/비고"])
+                    for r in _inv_rows:
+                        _wcsv.writerow([
+                            r["material_id"], r.get("raw_name") or "",
+                            r.get("material_type") or "",
+                            r.get("spec") or "", r.get("unit") or "EA",
+                            r.get("main_supplier") or "",
+                            f"{float(r.get('current_stock') or 0):g}",
+                            "", ""])
+                    st.download_button(
+                        "소재 실사 시트 (CSV · {}종)".format(len(_inv_rows)),
+                        # BOM(utf-8-sig) — 엑셀에서 한글이 깨지지 않게
+                        _buf.getvalue().encode("utf-8-sig"),
+                        file_name="소재실사시트_{:%Y%m%d}.csv".format(
+                            _ft_date.today()),
+                        mime="text/csv", key="ft_inv_dl")
+                else:
+                    st.info("장부 수량이 있는 자재가 없습니다.")
+            except Exception as e:
+                st.error(f"실사 시트 생성 실패: {e}")
+
         # ── 품번 선택 ──
         _ft_q = st.text_input("품번 검색", key="ft_q",
                               placeholder="예: 4PDVN, MRG6, 8HFDV")
@@ -777,7 +820,7 @@ elif page == "마스터 관리":
             if _ft_q.strip():
                 _qq = _ft_q.strip()
                 _ft_flt.append(f"pn=ilike.*{_qq}*")
-            _ft_prods = _db.fetch("products", "product_id,pn,customer,unit",
+            _ft_prods = _db.fetch("products", "product_id,pn,customer",
                                   "&".join(_ft_flt), limit=300)
         except Exception as e:
             st.error(f"제품 조회 실패: {e}"); _ft_prods = []
@@ -797,7 +840,7 @@ elif page == "마스터 관리":
         if _ft_p:
             _pid = _ft_p["product_id"]
             _pn = _ft_p["pn"]
-            _unit = _ft_p.get("unit") or "EA"
+            _unit = "EA"   # products 에 제품 단위 컬럼 없음 — 전 품목 EA
 
             # ── 현황 집계 ──
             def _ft_load():
