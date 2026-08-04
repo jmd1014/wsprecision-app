@@ -234,6 +234,13 @@ st.divider()
 # ─── 로그인 (계정별 접근 · 2026-08-04) ───────────────────
 from utils import auth as _auth  # noqa: E402
 
+# Streamlit Cloud 는 재배포 시 프로세스를 유지한 채 코드만 바꾸는 경우가
+# 있어, 이미 import 된 모듈이 옛 버전으로 남는다 (sys.modules 캐시).
+# 최신 버전에만 있는 속성이 없으면 강제 reload (2026-08-05 실장애)
+if not hasattr(_auth, "PW_RULES"):
+    import importlib as _il
+    _auth = _il.reload(_auth)
+
 
 def current_user() -> dict:
     return st.session_state.get("auth_user") or {}
