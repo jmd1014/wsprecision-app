@@ -910,12 +910,13 @@ elif page == "마스터 관리":
     import db as _db
     import pandas as pd
 
-    (tab_fit, tab1, tab_prod, tab_mat, tab_bom, tab_excl, tab_map, tab2,
+    # 개발기 정비용 탭(데이터 제외 규칙·매입↔자재 매핑·마스터/연결
+    # 점검)은 2026-08-05 제거 — 제외 규칙 자체는 DB 뷰에 내장되어
+    # 계속 적용된다. 중복 자재 병합 도구는 자재 편집 하단으로 이동.
+    (tab_fit, tab1, tab_prod, tab_mat, tab_bom,
      tab_acct, tab_dsn) = st.tabs([
         "품번별 맞추기",
         "거래처 편집", "제품 편집", "자재 편집", "BOM 편집",
-        "데이터 제외 규칙",
-        "매입↔자재 매핑 (레거시)", "마스터/연결 점검",
         "계정 관리", "디자인 데이터 내보내기"
     ])
 
@@ -1905,6 +1906,153 @@ elif page == "마스터 관리":
                 if chg: st.success(f"✅ {chg}건 update"); st.rerun()
                 else: st.info("변경 사항 없음")
 
+        # ── 중복 자재 병합 (2026-07-31) ──
+        st.divider()
+        st.markdown("##### 중복 자재 병합")
+        st.caption(
+            "같은 소재가 표기만 달라 두 번 등록된 경우 — 예: "
+            "`S304 Ø45*16` 과 `STS304환봉 45￠16ℓ`. BOM·재고 원장·매입 "
+            "매핑을 남길 자재로 옮기고, 흡수된 쪽은 휴면 처리합니다.")
+
+        def _mkey(m):
+            """규격·재질 정규화 키 — 표기 차이를 흡수 (φØ￠Φ, *xL, 316L→316).
+
+            형상은 흡수하지 않는다: 육각(H)과 환봉(Ø)은 다른 소재
+            (2026-08-04 사용자 확정) — 자재명에서 형상을 읽어 키에 포함."""
+            import re as _re
+            s = _re.sub(r"[ *xXL×ℓ]", "",
+                        _re.sub(r"[φØ￠Φ]", "D", (m.get("spec") or "").upper()))
+            t = _re.sub(r"(L|H)$", "",
+                        _re.sub(r"^STS", "SUS", (m.get("material_type")
+                                                 or "").upper()))
+            _nm = m.get("raw_name") or ""
+            shape = "HEX" if _re.search(r"\bH\d|육각", _nm) else "RND"
+            return (s, t, shape) if s and t else None
+
+        if st.button("중복 후보 찾기", key="mg_scan"):
+            st.session_state["mg_scan_on"] = True
+        if st.session_state.get("mg_scan_on"):
+            try:
+                _all_m = _db.fetch("materials",
+                    "material_id,raw_name,material_type,spec,stock_qty,"
+                    "main_supplier,procurement_type",
+                    "archived_at=is.null&order=material_id", limit=1000)
+            except Exception as e:
+                st.error(f"자재 조회 실패: {e}"); _all_m = []
+            _grp = {}
+            for m in _all_m:
+                k = _mkey(m)
+                if k:
+                    _grp.setdefault(k, []).append(m)
+            _dups = {k: v for k, v in _grp.items() if len(v) > 1}
+            if not _dups:
+                st.success("동일 규격·재질의 중복 자재가 없습니다.")
+            else:
+                # 참조 건수 — 어느 쪽을 남길지 판단 근거
+                _ids = [m["material_id"] for v in _dups.values() for m in v]
+                _bcnt, _tcnt = {}, {}
+                try:
+                    for b in _db.fetch("bom", "material_id",
+                            "material_id=in.({})".format(",".join(_ids)),
+                            limit=2000):
+                        _bcnt[b["material_id"]] = _bcnt.get(
+                            b["material_id"], 0) + 1
+                    for t in _db.fetch("inventory_transactions", "material_id",
+                            "material_id=in.({})".format(",".join(_ids)),
+                            limit=2000):
+                        _tcnt[t["material_id"]] = _tcnt.get(
+                            t["material_id"], 0) + 1
+                except Exception:
+                    pass
+                st.caption(f"중복 후보 {len(_dups)}쌍 — 한 쌍씩 확인하고 "
+                           "병합하세요.")
+                for _k, _v in sorted(_dups.items()):
+                    _lab = "{} · {} · {}".format(
+                        _k[1], _k[0], "육각" if _k[2] == "HEX" else "환봉")
+                    with st.expander("{}  ({}건)".format(_lab, len(_v))):
+                        st.dataframe(pd.DataFrame([{
+                            "ID": m["material_id"], "자재명": m["raw_name"],
+                            "재질": m.get("material_type") or "-",
+                            "규격": m.get("spec") or "-",
+                            "공급사": m.get("main_supplier") or "-",
+                            "재고": float(m.get("stock_qty") or 0),
+                            "BOM": _bcnt.get(m["material_id"], 0),
+                            "원장": _tcnt.get(m["material_id"], 0),
+                        } for m in _v]), use_container_width=True,
+                            hide_index=True)
+                        _kk = "_".join(_k)
+                        _keep = st.selectbox(
+                            "남길 자재", _v, key=f"mg_keep_{_kk}",
+                            format_func=lambda m: "{} ({})".format(
+                                m["raw_name"], m["material_id"]))
+                        _drop = [m for m in _v
+                                 if m["material_id"] != _keep["material_id"]]
+                        st.caption("흡수될 자재: " + ", ".join(
+                            "{} ({})".format(m["raw_name"], m["material_id"])
+                            for m in _drop))
+                        if st.button("병합 실행", type="primary",
+                                     key=f"mg_go_{_kk}"):
+                            from datetime import date as _mg_date
+                            _kid = _keep["material_id"]
+                            _today = _mg_date.today().isoformat()
+                            _nbom = 0
+                            try:
+                                for m in _drop:
+                                    _did = m["material_id"]
+                                    # BOM — 남길 자재에 이미 있는 제품이면
+                                    # 중복이 되므로 옮기지 않고 지운다
+                                    _keep_pids = {b["product_id"] for b in
+                                        _db.fetch("bom", "product_id",
+                                            f"material_id=eq.{_kid}",
+                                            limit=500)}
+                                    for b in _db.fetch("bom",
+                                            "bom_id,product_id",
+                                            f"material_id=eq.{_did}",
+                                            limit=500):
+                                        if b["product_id"] in _keep_pids:
+                                            _db.delete(
+                                                "bom",
+                                                f"bom_id=eq.{b['bom_id']}")
+                                        else:
+                                            _db.update(
+                                                "bom",
+                                                f"bom_id=eq.{b['bom_id']}",
+                                                {"material_id": _kid,
+                                                 "raw_material_name":
+                                                 _keep["raw_name"]})
+                                            _nbom += 1
+                                    # 원장·발주라인·매입매핑을 남길 자재로
+                                    _db.update("inventory_transactions",
+                                               f"material_id=eq.{_did}",
+                                               {"material_id": _kid})
+                                    _db.update("purchase_order_items",
+                                               f"material_id=eq.{_did}",
+                                               {"material_id": _kid})
+                                    _db.update("purchase_ledger",
+                                               f"matched_material_id=eq.{_did}",
+                                               {"matched_material_id": _kid})
+                                    # 재고 baseline 합산 후 원본은 휴면
+                                    _ds = float(m.get("stock_qty") or 0)
+                                    if _ds:
+                                        _ks = float(_keep.get("stock_qty") or 0)
+                                        _db.update(
+                                            "materials",
+                                            f"material_id=eq.{_kid}",
+                                            {"stock_qty": _ks + _ds})
+                                        _keep["stock_qty"] = _ks + _ds
+                                    _db.update(
+                                        "materials", f"material_id=eq.{_did}",
+                                        {"archived_at": _today,
+                                         "stock_qty": 0, "in_use": False,
+                                         "remark": f"{_kid} 로 병합 ({_today})"})
+                                st.success(
+                                    "병합 완료 — {} 로 통합 · BOM {}건 이동"
+                                    .format(_kid, _nbom))
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"병합 실패: {e}")
+
+
     # ─── Tab: BOM 편집 ───
     with tab_bom:
         st.caption("📌 BOM = 제품-자재 + 공정 **수량 관계** 만 관리. "
@@ -2358,796 +2506,6 @@ elif page == "마스터 관리":
                         st.rerun()
                     except Exception as e:
                         st.error(f"추가 실패: {e}")
-
-    # ─── Tab: 데이터 제외 규칙 ───
-    with tab_excl:
-        st.caption(
-            "특정 거래처의 특정 기간 데이터(예: 구ERP 마이그레이션 이전)를 "
-            "**평균/마진 계산에서 제외**합니다. 원본은 `sales_ledger` 에 보존."
-        )
-        st.markdown("##### 현재 규칙")
-        try:
-            excl_rows = fetch("sales_data_exclusion",
-                "id,customer_pattern,before_date,after_date,reason,active,created_at",
-                "order=created_at.desc", limit=200)
-            excl_available = True
-        except Exception as e:
-            excl_rows = []
-            excl_available = False
-            st.warning(
-                f"⚠️ `sales_data_exclusion` 테이블이 없습니다. "
-                f"Migration 012 적용 필요. ({str(e)[:80]})"
-            )
-
-        if excl_available:
-            if not excl_rows:
-                st.info("등록된 제외 규칙 없음.")
-            else:
-                df_e = pd.DataFrame(excl_rows)
-                # PostgREST → str/None → Streamlit DateColumn 호환 형식으로 변환
-                df_e["before_date"] = pd.to_datetime(
-                    df_e.get("before_date"), errors="coerce"
-                ).dt.date
-                df_e["after_date"] = pd.to_datetime(
-                    df_e.get("after_date"), errors="coerce"
-                ).dt.date
-                df_e["active"] = df_e["active"].fillna(False).astype(bool)
-                df_e["id"] = pd.to_numeric(df_e["id"], errors="coerce").astype("Int64")
-                df_e["customer_pattern"] = df_e["customer_pattern"].fillna("").astype(str)
-                df_e["reason"] = df_e["reason"].fillna("").astype(str)
-
-                edited_e = st.data_editor(
-                    df_e[["id","customer_pattern","before_date","after_date",
-                          "reason","active"]],
-                    column_config={
-                        "id": st.column_config.NumberColumn("ID",
-                            disabled=True, width="small"),
-                        "customer_pattern": st.column_config.TextColumn(
-                            "거래처 패턴 (ILIKE)", width="medium",
-                            help="예: %미진% 은 '미진' 포함 거래처 모두 매칭"),
-                        "before_date": st.column_config.DateColumn(
-                            "이 날짜 이전 제외", width="small",
-                            format="YYYY-MM-DD"),
-                        "after_date": st.column_config.DateColumn(
-                            "이 날짜 이후 제외", width="small",
-                            format="YYYY-MM-DD"),
-                        "reason": st.column_config.TextColumn("사유",
-                            width="large"),
-                        "active": st.column_config.CheckboxColumn("활성",
-                            width="small"),
-                    },
-                    hide_index=True, use_container_width=True,
-                    num_rows="fixed", key="excl_editor"
-                )
-                if st.button("💾 변경 저장", type="primary", key="excl_save"):
-                    import datetime as _dt
-                    chg = 0
-                    for o, n in zip(excl_rows, edited_e.to_dict("records")):
-                        upd = {}
-                        for k in ("customer_pattern","before_date","after_date",
-                                  "reason","active"):
-                            ov = o.get(k); nv = n.get(k)
-                            # NaN / NaT 정리
-                            if isinstance(nv, float) and pd.isna(nv):
-                                nv = None
-                            try:
-                                if nv is not None and pd.isna(nv):
-                                    nv = None
-                            except Exception:
-                                pass
-                            # date 객체 → ISO 문자열
-                            if isinstance(nv, (_dt.date, _dt.datetime)):
-                                nv = nv.strftime("%Y-%m-%d")
-                            # 원본 ov 도 같은 형식으로 정규화 비교
-                            ov_norm = ov
-                            if isinstance(ov, str) and "T" in ov:
-                                ov_norm = ov.split("T")[0]
-                            if str(ov_norm or "") != str(nv or ""):
-                                upd[k] = nv
-                        if upd:
-                            try:
-                                if _db.update("sales_data_exclusion",
-                                    f"id=eq.{o['id']}", upd):
-                                    chg += 1
-                            except Exception as e:
-                                st.warning(f"id={o['id']} 저장 실패: {e}")
-                    if chg:
-                        st.success(f"✅ {chg}건 변경 저장")
-                        st.rerun()
-                    else:
-                        st.info("변경 사항 없음")
-
-            st.divider()
-            st.markdown("##### ➕ 신규 제외 규칙 추가")
-            with st.form("new_excl_form"):
-                nec1, nec2, nec3 = st.columns([2, 1, 1])
-                with nec1:
-                    new_pat = st.text_input(
-                        "거래처 패턴 (ILIKE)",
-                        placeholder="예: %미진% / %두산% / %HDX%",
-                        help="% 는 와일드카드. '%미진%' 은 '미진' 포함 모두.")
-                with nec2:
-                    new_before = st.date_input("이 날짜 이전 제외",
-                        value=None, key="new_excl_before")
-                with nec3:
-                    new_after = st.date_input("이 날짜 이후 제외",
-                        value=None, key="new_excl_after")
-                new_reason = st.text_input("사유",
-                    placeholder="예: 구ERP 마이그레이션 전 데이터 가격 정합성 부족")
-                add_btn = st.form_submit_button("➕ 규칙 추가",
-                    type="primary")
-
-                if add_btn:
-                    if not new_pat:
-                        st.error("거래처 패턴은 필수입니다.")
-                    elif not new_before and not new_after:
-                        st.error("before/after 중 하나는 반드시 지정해야 합니다.")
-                    else:
-                        record = {
-                            "customer_pattern": new_pat,
-                            "before_date": str(new_before) if new_before else None,
-                            "after_date":  str(new_after)  if new_after  else None,
-                            "reason": new_reason or None,
-                            "active": True,
-                        }
-                        try:
-                            _db.insert("sales_data_exclusion", [record])
-                            st.success(f"✅ 규칙 추가됨: {new_pat}")
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"추가 실패: {e}")
-
-            # 영향 미리보기
-            if excl_rows:
-                st.divider()
-                st.markdown("##### 📊 제외 영향 미리보기")
-                if st.button("🔍 활성 규칙 적용 시 제외되는 거래 수 계산",
-                             key="excl_preview_btn"):
-                    total_excluded = 0
-                    breakdown = []
-                    for r in excl_rows:
-                        if not r.get("active"):
-                            continue
-                        filt = [f"customer=ilike.{r['customer_pattern']}"]
-                        if r.get("before_date"):
-                            filt.append(f"item_date=lt.{r['before_date']}")
-                        if r.get("after_date"):
-                            filt.append(f"item_date=gt.{r['after_date']}")
-                        try:
-                            from db import count_rows as _cnt
-                            # count via Range header
-                            import requests
-                            url = (f"{st.secrets['supabase']['url']}/rest/v1/"
-                                   f"sales_ledger?select=*&limit=1&" +
-                                   "&".join(filt))
-                            sr = st.secrets["supabase"]["service_role_key"]
-                            rr = requests.get(url, headers={
-                                "apikey": sr, "Authorization": f"Bearer {sr}",
-                                "Prefer": "count=exact"}, timeout=15)
-                            cr = rr.headers.get("content-range", "")
-                            n = 0
-                            if "/" in cr:
-                                nstr = cr.split("/")[-1]
-                                n = int(nstr) if nstr.isdigit() else 0
-                            total_excluded += n
-                            breakdown.append({
-                                "패턴": r['customer_pattern'],
-                                "기간": f"{r.get('before_date') or '-'} ~ {r.get('after_date') or '-'}",
-                                "제외 건수": n,
-                                "사유": r.get('reason') or "-"
-                            })
-                        except Exception as e:
-                            breakdown.append({
-                                "패턴": r['customer_pattern'],
-                                "기간": "ERR",
-                                "제외 건수": "-",
-                                "사유": str(e)[:60]
-                            })
-                    st.metric("🎯 총 제외 거래", f"{total_excluded:,}건")
-                    if breakdown:
-                        st.dataframe(pd.DataFrame(breakdown),
-                            use_container_width=True, hide_index=True)
-
-
-    # ─── Tab: 매입↔자재 매핑 (Phase 2 스캐폴딩) ───
-    with tab_map:
-        st.caption(
-            "📌 `purchase_ledger.matched_material_id` 를 채워서 자재별 시점 단가가 "
-            "자동 계산되도록 합니다. (Migration 007 적용 필요)"
-        )
-
-        # 매핑 현황 카드
-        try:
-            total_pl = _db.fetch_one("purchase_ledger",
-                "matched_material_id=is.null", "ledger_id")
-            mapped_pl = _db.fetch_one("purchase_ledger",
-                "matched_material_id=not.is.null", "ledger_id")
-            map_view_ok = True
-        except Exception as e:
-            map_view_ok = False
-            st.warning(f"⚠️ Migration 007 (`matched_material_id` 컬럼) 적용 필요: {e}")
-
-        if map_view_ok:
-            try:
-                unmapped = fetch("purchase_ledger",
-                    "ledger_id,trade_date,vendor,vendor_normalized,item,category,"
-                    "qty,unit,unit_price,kg_price,ea_price",
-                    "matched_material_id=is.null"
-                    "&category=like.MAT_*"
-                    "&order=trade_date.desc",
-                    limit=500)
-            except Exception as e:
-                st.error(f"미매핑 조회 실패: {e}"); unmapped = []
-
-            # 카테고리 필터
-            cat_choices = sorted({u.get("category") or "" for u in unmapped if u.get("category")})
-            mc1, mc2 = st.columns([2, 1])
-            with mc1:
-                cat_pick = st.selectbox("카테고리", ["전체"] + cat_choices,
-                                        key="map_cat")
-            with mc2:
-                search_item = st.text_input("품목명 검색", key="map_search_item")
-
-            view_rows = unmapped
-            if cat_pick != "전체":
-                view_rows = [r for r in view_rows if r.get("category") == cat_pick]
-            if search_item:
-                ssi = search_item.strip().lower()
-                view_rows = [r for r in view_rows
-                             if ssi in (r.get("item") or "").lower()]
-
-            st.caption(
-                f"매입 매핑 현황 — **미매핑 매입(MAT_*):** {len(unmapped):,}건 / "
-                f"표시: **{len(view_rows):,}건**"
-            )
-
-            if not view_rows:
-                st.info("표시할 미매핑 거래 없음. (또는 007 적용 후 데이터 없음)")
-            else:
-                # 동일 item 그룹핑 → 한 번 매핑 시 일괄 적용 후보
-                from collections import defaultdict
-                groups = defaultdict(list)
-                for r in view_rows:
-                    key = (r.get("item") or "", r.get("vendor_normalized") or "")
-                    groups[key].append(r)
-
-                # 상위 그룹 (거래 빈도 순)
-                sorted_groups = sorted(groups.items(),
-                                       key=lambda kv: -len(kv[1]))[:50]
-
-                # 자재 목록 한 번만 로드
-                try:
-                    all_mats = fetch("materials",
-                        "material_id,raw_name,material_type,spec",
-                        "order=raw_name.asc", limit=2000)
-                except Exception:
-                    all_mats = []
-                mat_labels = [f"{m['material_id']} | {m.get('raw_name','')}" for m in all_mats]
-
-                st.markdown("##### 그룹별 매핑 (동일 품목 → 일괄 적용)")
-                for (item, vendor), rows in sorted_groups[:20]:
-                    n = len(rows)
-                    avg_p = sum(float(r.get("unit_price") or 0) for r in rows) / n
-                    with st.expander(
-                        f"📦 **{item or '(품목명 없음)'}**  "
-                        f"· {vendor or '-'}  · {n}건  · 평균 {avg_p:,.0f}원",
-                        expanded=False
-                    ):
-                        gc1, gc2 = st.columns([3, 1])
-                        with gc1:
-                            sel = st.selectbox(
-                                "매핑할 자재", ["(선택)"] + mat_labels,
-                                key=f"map_sel_{hash((item, vendor)) & 0xFFFF}"
-                            )
-                        with gc2:
-                            apply_btn = st.button("✅ 일괄 매핑",
-                                key=f"map_btn_{hash((item, vendor)) & 0xFFFF}")
-                        if apply_btn and sel != "(선택)":
-                            mid = sel.split(" | ")[0]
-                            ok_n, fail_n = 0, 0
-                            for r in rows:
-                                try:
-                                    if _db.update("purchase_ledger",
-                                        f"ledger_id=eq.{r['ledger_id']}",
-                                        {"matched_material_id": mid,
-                                         "mapping_status": "MANUAL"}):
-                                        ok_n += 1
-                                    else:
-                                        fail_n += 1
-                                except Exception:
-                                    fail_n += 1
-                            st.success(
-                                f"✅ {ok_n}건 매핑 완료 → {mid}"
-                                + (f" / 실패 {fail_n}건" if fail_n else "")
-                            )
-                            st.rerun()
-
-                st.divider()
-                st.markdown("##### 개별 거래 매핑 (필요 시)")
-                st.caption("위 그룹에 안 묶이거나 일회성 거래만 별도 매핑.")
-                st.dataframe(
-                    pd.DataFrame(view_rows[:200])[[
-                        "trade_date", "vendor", "item", "category",
-                        "qty", "unit", "unit_price", "kg_price"
-                    ]],
-                    use_container_width=True, hide_index=True, height=320
-                )
-
-    # ─── Tab: 마스터/연결 점검 ───
-    with tab2:
-        st.caption(
-            "📌 마스터 데이터·매핑 키·BOM·원가 신뢰도를 한 화면에서 점검합니다. "
-            "정비 우선순위 결정에 사용."
-        )
-
-        if not st.button("🔄 진단 실행 / 새로고침", type="primary", key="diag_run"):
-            st.info("위 버튼을 눌러 진단을 실행하세요.")
-        else:
-            with st.spinner("진단 중..."):
-                # PostgREST count=exact 가 Content-Range 헤더에 / 뒤 숫자로 총수 반환
-                def _cnt(table, filter_query=""):
-                    try:
-                        import requests
-                        url = f"{st.secrets['supabase']['url']}/rest/v1/{table}?select=*&limit=1"
-                        if filter_query:
-                            url += f"&{filter_query}"
-                        sr = st.secrets["supabase"]["service_role_key"]
-                        r = requests.get(url, headers={
-                            "apikey": sr, "Authorization": f"Bearer {sr}",
-                            "Prefer": "count=exact"}, timeout=15)
-                        if r.status_code in (200, 206):
-                            cr = r.headers.get("content-range", "")
-                            if "/" in cr:
-                                n = cr.split("/")[-1]
-                                return int(n) if n.isdigit() else 0
-                        return 0
-                    except Exception:
-                        return -1  # err
-
-                # ═══════════════ A. 제품 마스터 ═══════════════
-                st.markdown("### 🅰 제품 마스터")
-                ac1, ac2, ac3, ac4 = st.columns(4)
-                total_p = _cnt("products")
-                active_p = _cnt("products", "archived_at=is.null")
-                arch_p = total_p - active_p if total_p >= 0 else 0
-                ac1.metric("전체 제품", f"{total_p:,}")
-                ac2.metric("활성 (archived_at IS NULL)",
-                           f"{active_p:,}",
-                           f"{active_p/total_p*100:.0f}%" if total_p else None)
-                ac3.metric("휴면", f"{arch_p:,}")
-                # 컬럼 보유율
-                has_cost = _cnt("products",
-                    "archived_at=is.null&estimated_cost_per_pc=gt.0")
-                ac4.metric("estimated_cost_per_pc > 0",
-                           f"{has_cost:,}",
-                           f"{has_cost/active_p*100:.0f}%" if active_p else None)
-
-                ac5, ac6, ac7, ac8 = st.columns(4)
-                has_mat_unit = _cnt("products",
-                    "archived_at=is.null&material_unit_price=gt.0")
-                ac5.metric("material_unit_price > 0",
-                           f"{has_mat_unit:,}",
-                           f"{has_mat_unit/active_p*100:.0f}%" if active_p else None)
-                has_heat = _cnt("products",
-                    "archived_at=is.null&heat_treat_per_pc=gt.0")
-                ac6.metric("heat_treat_per_pc > 0",
-                           f"{has_heat:,}",
-                           f"{has_heat/active_p*100:.0f}%" if active_p else None)
-                has_surface = _cnt("products",
-                    "archived_at=is.null&surface_per_pc=gt.0")
-                ac7.metric("surface_per_pc > 0",
-                           f"{has_surface:,}",
-                           f"{has_surface/active_p*100:.0f}%" if active_p else None)
-                has_out = _cnt("products",
-                    "archived_at=is.null&outsourcing_per_pc=gt.0")
-                ac8.metric("outsourcing_per_pc > 0",
-                           f"{has_out:,}",
-                           f"{has_out/active_p*100:.0f}%" if active_p else None)
-
-                # 제품군 분포
-                try:
-                    pg_rows = fetch("products",
-                        "product_group", "archived_at=is.null", limit=2000)
-                    from collections import Counter
-                    pg_count = Counter(p.get("product_group") or "(없음)"
-                                       for p in pg_rows)
-                    pg_df = pd.DataFrame(
-                        pg_count.most_common(15), columns=["제품군", "건수"])
-                    st.markdown("##### 제품군 분포 (상위 15)")
-                    st.dataframe(pg_df, use_container_width=True,
-                                 hide_index=True, height=240)
-                except Exception as e:
-                    st.caption(f"제품군 분포 조회 실패: {e}")
-
-                st.divider()
-
-                # ═══════════════ B. 자재 마스터 ═══════════════
-                st.markdown("### 🅱 자재 마스터")
-                bc1, bc2, bc3, bc4 = st.columns(4)
-                total_m = _cnt("materials")
-                m_with_type = _cnt("materials", "material_type=not.is.null")
-                m_with_spec = _cnt("materials", "spec=not.is.null")
-                m_with_sup = _cnt("materials", "main_supplier=not.is.null")
-                bc1.metric("전체 자재", f"{total_m:,}")
-                bc2.metric("material_type 보유",
-                           f"{m_with_type:,}",
-                           f"{m_with_type/total_m*100:.0f}%" if total_m else None)
-                bc3.metric("spec 보유",
-                           f"{m_with_spec:,}",
-                           f"{m_with_spec/total_m*100:.0f}%" if total_m else None)
-                bc4.metric("main_supplier 보유",
-                           f"{m_with_sup:,}",
-                           f"{m_with_sup/total_m*100:.0f}%" if total_m else None)
-
-                # 자재 type 분포
-                try:
-                    mt_rows = fetch("materials", "material_type", "", limit=2000)
-                    mt_count = Counter(m.get("material_type") or "(없음)"
-                                       for m in mt_rows)
-                    mt_df = pd.DataFrame(
-                        mt_count.most_common(10), columns=["material_type", "건수"])
-                    st.markdown("##### 자재 분류 분포")
-                    st.dataframe(mt_df, use_container_width=True,
-                                 hide_index=True, height=200)
-                except Exception as e:
-                    st.caption(f"자재 분류 조회 실패: {e}")
-
-                st.divider()
-
-                # ═══════════════ C. BOM 상태 ═══════════════
-                st.markdown("### 🅒 BOM 상태")
-                cc1, cc2, cc3, cc4 = st.columns(4)
-                total_bom = _cnt("bom")
-                # process_type 별 (007 적용 시)
-                try:
-                    bom_mat = _cnt("bom", "process_type=eq.MATERIAL")
-                except Exception:
-                    bom_mat = 0
-                bom_process = total_bom - bom_mat if total_bom >= 0 else 0
-                cc1.metric("BOM 행 전체", f"{total_bom:,}")
-                cc2.metric("MATERIAL 행", f"{bom_mat:,}")
-                cc3.metric("공정행 (HEAT/SURFACE/...)",
-                           f"{bom_process:,}")
-                # BOM 보유 제품 수
-                try:
-                    pid_rows = fetch("bom", "product_id", "", limit=10000)
-                    bom_pids = {b['product_id'] for b in pid_rows if b.get('product_id')}
-                    cc4.metric("BOM 보유 제품 수",
-                               f"{len(bom_pids):,}",
-                               f"{len(bom_pids)/active_p*100:.0f}% of 활성"
-                               if active_p else None)
-                except Exception:
-                    cc4.metric("BOM 보유 제품 수", "?")
-
-                cc5, cc6, cc7 = st.columns(3)
-                # 분할가공 (shared_factor > 1)
-                sf_gt1 = _cnt("bom", "shared_factor=gt.1")
-                cc5.metric("shared_factor > 1 행",
-                           f"{sf_gt1:,}",
-                           "분할가공 케이스" if sf_gt1 > 0 else None)
-                # verification 분포
-                try:
-                    vs_rows = fetch("bom", "verification_status", "", limit=10000)
-                    confirmed = sum(1 for v in vs_rows
-                                    if v.get("verification_status") == "확인완료")
-                    cc6.metric("확인완료 행", f"{confirmed:,}",
-                               f"{confirmed/total_bom*100:.0f}%"
-                               if total_bom else None)
-                    auto_n = sum(1 for v in vs_rows
-                                 if (v.get("verification_status") or "").startswith("AUTO"))
-                    cc7.metric("AUTO-* (미확인) 행", f"{auto_n:,}",
-                               "검증 필요" if auto_n > 0 else None,
-                               delta_color="inverse")
-                except Exception:
-                    pass
-
-                # process_type 별 분포
-                try:
-                    pt_rows = fetch("bom", "process_type", "", limit=10000)
-                    pt_count = Counter(b.get("process_type") or "(없음)"
-                                       for b in pt_rows)
-                    pt_df = pd.DataFrame(
-                        sorted(pt_count.items(), key=lambda x: -x[1]),
-                        columns=["process_type", "건수"])
-                    st.markdown("##### process_type 분포")
-                    st.dataframe(pt_df, use_container_width=True,
-                                 hide_index=True, height=220)
-                except Exception:
-                    st.caption("process_type 분포: 007 마이그레이션 미적용 또는 조회 실패")
-
-                st.divider()
-
-                # ═══════════════ D. 거래처 ═══════════════
-                st.markdown("### 🅓 거래처")
-                dc1, dc2, dc3, dc4 = st.columns(4)
-                total_v = _cnt("vendors")
-                v_with_group = _cnt("vendors", "vendor_group=not.is.null")
-                v_active = _cnt("vendors", "archived_at=is.null")
-                dc1.metric("전체 거래처", f"{total_v:,}")
-                dc2.metric("활성", f"{v_active:,}",
-                           f"{v_active/total_v*100:.0f}%" if total_v else None)
-                dc3.metric("vendor_group 보유",
-                           f"{v_with_group:,}",
-                           f"{v_with_group/total_v*100:.0f}%" if total_v else None)
-                v_out_proc = _cnt("vendors",
-                    "vendor_group=in.(\"OUTSOURCE\",\"HEAT_TREAT\",\"SURFACE\")")
-                dc4.metric("공정 거래처 (외주/열처리/표면)",
-                           f"{v_out_proc:,}")
-
-                st.divider()
-
-                # ═══════════════ E. 데이터 연결 (매핑 키) ═══════════════
-                st.markdown("### 🅔 데이터 연결 상태")
-                ec1, ec2, ec3, ec4 = st.columns(4)
-                # 매출 ledger 매핑
-                total_sl = _cnt("sales_ledger")
-                sl_mapped = _cnt("sales_ledger", "product_id=not.is.null")
-                ec1.metric("매출 ledger 전체", f"{total_sl:,}")
-                ec2.metric("product_id 매핑",
-                           f"{sl_mapped:,}",
-                           f"{sl_mapped/total_sl*100:.0f}%" if total_sl else None)
-
-                # 매입 ledger 매핑
-                total_pl = _cnt("purchase_ledger")
-                pl_mapped_pn = _cnt("purchase_ledger", "matched_pn=not.is.null")
-                ec3.metric("매입 ledger 전체", f"{total_pl:,}")
-                ec4.metric("matched_pn 매핑",
-                           f"{pl_mapped_pn:,}",
-                           f"{pl_mapped_pn/total_pl*100:.0f}%" if total_pl else None)
-
-                ec5, ec6 = st.columns(2)
-                # 007 컬럼 (매핑 매핑)
-                try:
-                    pl_mapped_mat = _cnt("purchase_ledger",
-                        "matched_material_id=not.is.null")
-                    ec5.metric("matched_material_id 매핑",
-                               f"{pl_mapped_mat:,}",
-                               f"{pl_mapped_mat/total_pl*100:.0f}%"
-                               if total_pl else None,
-                               help="향후 매입 입력 화면에서 자동 채움")
-                except Exception:
-                    ec5.metric("matched_material_id", "007 적용 필요")
-                # production_log
-                total_prod = _cnt("production_log")
-                try:
-                    prod_mapped = _cnt("production_log", "product_id=not.is.null")
-                    ec6.metric(f"production_log product_id ({total_prod:,}건 중)",
-                               f"{prod_mapped:,}",
-                               f"{prod_mapped/total_prod*100:.0f}%"
-                               if total_prod else None,
-                               help="Stage 4 활성 시 채움")
-                except Exception:
-                    ec6.metric("production_log", "007 적용 필요")
-
-                st.divider()
-
-                # ═══════════════ F. 원가 신뢰도 (product_cost_full_v) ═══════════════
-                st.markdown("### 🅕 원가 데이터 신뢰도")
-                try:
-                    cs_rows = fetch("product_cost_full_v",
-                        "cost_source,total_sales_12m",
-                        "archived_at=is.null", limit=5000)
-                    cs_count = Counter(r.get("cost_source") or "?" for r in cs_rows)
-                    fc1, fc2, fc3, fc4 = st.columns(4)
-                    fc1.metric("🟢 BOM_FULL", f"{cs_count.get('BOM_FULL', 0):,}")
-                    fc2.metric("🟡 BOM_PARTIAL",
-                               f"{cs_count.get('BOM_PARTIAL', 0):,}")
-                    fc3.metric("🟠 LEGACY_ONLY",
-                               f"{cs_count.get('LEGACY_ONLY', 0):,}")
-                    fc4.metric("🔴 NO_DATA",
-                               f"{cs_count.get('NO_DATA', 0):,}",
-                               "정비 우선순위 ↑" if cs_count.get('NO_DATA', 0) > 100
-                               else None,
-                               delta_color="inverse")
-
-                    # NO_DATA 중 매출 있는 것 (진짜 정비 대상)
-                    nd_with_sale = sum(
-                        1 for r in cs_rows
-                        if r.get("cost_source") == "NO_DATA"
-                        and (r.get("total_sales_12m") or 0) > 0
-                    )
-                    if nd_with_sale > 0:
-                        st.warning(
-                            f"⚠️ **NO_DATA 중 12M 매출 있는 품목: {nd_with_sale}건** "
-                            f"— 실제 거래되는데 원가 데이터 없음. 최우선 정비 대상."
-                        )
-                except Exception as e:
-                    st.caption(f"원가 신뢰도 조회 실패 (009 적용 필요): {e}")
-
-                st.divider()
-
-                # ═══════════════ G. 정비 우선순위 추천 ═══════════════
-                st.markdown("### 🎯 정비 우선순위 추천")
-                priority = []
-                try:
-                    if cs_count.get('LEGACY_ONLY', 0) > 0:
-                        priority.append(
-                            (1, f"**LEGACY_ONLY {cs_count.get('LEGACY_ONLY',0)}건**",
-                             "BOM 행 1개만 추가하면 BOM_FULL 격상. 가장 ROI 높음.",
-                             "BOM 편집 → 자재행 추가"))
-                    if nd_with_sale > 0:
-                        priority.append(
-                            (2, f"**NO_DATA 중 매출있음 {nd_with_sale}건**",
-                             "실거래 품목이라 원가 부재가 마진 분석 왜곡. 시급.",
-                             "원가 편집 + BOM 등록"))
-                    if cs_count.get('BOM_PARTIAL', 0) > 0:
-                        priority.append(
-                            (3, f"**BOM_PARTIAL {cs_count.get('BOM_PARTIAL',0)}건**",
-                             "BOM 있으나 자재 단가 누락. 단가 보완으로 BOM_FULL 격상.",
-                             "원가 편집 → material_unit_price 갱신"))
-                except NameError:
-                    pass
-                # BOM 미보유 활성 제품
-                try:
-                    no_bom = active_p - len(bom_pids)
-                    if no_bom > 100:
-                        priority.append(
-                            (4, f"**BOM 미보유 활성 제품 {no_bom:,}건**",
-                             "전체 활성 제품 중 BOM 없는 비율 큼. BOM 등록 캠페인 필요.",
-                             "BOM 편집"))
-                except Exception:
-                    pass
-                # 매입 자재 매핑
-                try:
-                    if pl_mapped_mat == 0:
-                        priority.append(
-                            (5, "**matched_material_id 매핑 0%**",
-                             "향후 매입 입력 화면에서 자동 채움 — 현재 정책상 대기.",
-                             "(우선순위 낮음)"))
-                except Exception:
-                    pass
-
-                if priority:
-                    pdf = pd.DataFrame(priority, columns=["순위", "항목", "이유", "이동"])
-                    st.dataframe(pdf, use_container_width=True, hide_index=True)
-                else:
-                    st.info("정비 우선 항목이 없습니다. (이상적 상태 또는 진단 데이터 부족)")
-
-        # ── 중복 자재 병합 (2026-07-31) ──
-        st.divider()
-        st.markdown("##### 중복 자재 병합")
-        st.caption(
-            "같은 소재가 표기만 달라 두 번 등록된 경우 — 예: "
-            "`S304 Ø45*16` 과 `STS304환봉 45￠16ℓ`. BOM·재고 원장·매입 "
-            "매핑을 남길 자재로 옮기고, 흡수된 쪽은 휴면 처리합니다.")
-
-        def _mkey(m):
-            """규격·재질 정규화 키 — 표기 차이를 흡수 (φØ￠Φ, *xL, 316L→316).
-
-            형상은 흡수하지 않는다: 육각(H)과 환봉(Ø)은 다른 소재
-            (2026-08-04 사용자 확정) — 자재명에서 형상을 읽어 키에 포함."""
-            import re as _re
-            s = _re.sub(r"[ *xXL×ℓ]", "",
-                        _re.sub(r"[φØ￠Φ]", "D", (m.get("spec") or "").upper()))
-            t = _re.sub(r"(L|H)$", "",
-                        _re.sub(r"^STS", "SUS", (m.get("material_type")
-                                                 or "").upper()))
-            _nm = m.get("raw_name") or ""
-            shape = "HEX" if _re.search(r"\bH\d|육각", _nm) else "RND"
-            return (s, t, shape) if s and t else None
-
-        if st.button("중복 후보 찾기", key="mg_scan"):
-            st.session_state["mg_scan_on"] = True
-        if st.session_state.get("mg_scan_on"):
-            try:
-                _all_m = _db.fetch("materials",
-                    "material_id,raw_name,material_type,spec,stock_qty,"
-                    "main_supplier,procurement_type",
-                    "archived_at=is.null&order=material_id", limit=1000)
-            except Exception as e:
-                st.error(f"자재 조회 실패: {e}"); _all_m = []
-            _grp = {}
-            for m in _all_m:
-                k = _mkey(m)
-                if k:
-                    _grp.setdefault(k, []).append(m)
-            _dups = {k: v for k, v in _grp.items() if len(v) > 1}
-            if not _dups:
-                st.success("동일 규격·재질의 중복 자재가 없습니다.")
-            else:
-                # 참조 건수 — 어느 쪽을 남길지 판단 근거
-                _ids = [m["material_id"] for v in _dups.values() for m in v]
-                _bcnt, _tcnt = {}, {}
-                try:
-                    for b in _db.fetch("bom", "material_id",
-                            "material_id=in.({})".format(",".join(_ids)),
-                            limit=2000):
-                        _bcnt[b["material_id"]] = _bcnt.get(
-                            b["material_id"], 0) + 1
-                    for t in _db.fetch("inventory_transactions", "material_id",
-                            "material_id=in.({})".format(",".join(_ids)),
-                            limit=2000):
-                        _tcnt[t["material_id"]] = _tcnt.get(
-                            t["material_id"], 0) + 1
-                except Exception:
-                    pass
-                st.caption(f"중복 후보 {len(_dups)}쌍 — 한 쌍씩 확인하고 "
-                           "병합하세요.")
-                for _k, _v in sorted(_dups.items()):
-                    _lab = "{} · {} · {}".format(
-                        _k[1], _k[0], "육각" if _k[2] == "HEX" else "환봉")
-                    with st.expander("{}  ({}건)".format(_lab, len(_v))):
-                        st.dataframe(pd.DataFrame([{
-                            "ID": m["material_id"], "자재명": m["raw_name"],
-                            "재질": m.get("material_type") or "-",
-                            "규격": m.get("spec") or "-",
-                            "공급사": m.get("main_supplier") or "-",
-                            "재고": float(m.get("stock_qty") or 0),
-                            "BOM": _bcnt.get(m["material_id"], 0),
-                            "원장": _tcnt.get(m["material_id"], 0),
-                        } for m in _v]), use_container_width=True,
-                            hide_index=True)
-                        _kk = "_".join(_k)
-                        _keep = st.selectbox(
-                            "남길 자재", _v, key=f"mg_keep_{_kk}",
-                            format_func=lambda m: "{} ({})".format(
-                                m["raw_name"], m["material_id"]))
-                        _drop = [m for m in _v
-                                 if m["material_id"] != _keep["material_id"]]
-                        st.caption("흡수될 자재: " + ", ".join(
-                            "{} ({})".format(m["raw_name"], m["material_id"])
-                            for m in _drop))
-                        if st.button("병합 실행", type="primary",
-                                     key=f"mg_go_{_kk}"):
-                            from datetime import date as _mg_date
-                            _kid = _keep["material_id"]
-                            _today = _mg_date.today().isoformat()
-                            _nbom = 0
-                            try:
-                                for m in _drop:
-                                    _did = m["material_id"]
-                                    # BOM — 남길 자재에 이미 있는 제품이면
-                                    # 중복이 되므로 옮기지 않고 지운다
-                                    _keep_pids = {b["product_id"] for b in
-                                        _db.fetch("bom", "product_id",
-                                            f"material_id=eq.{_kid}",
-                                            limit=500)}
-                                    for b in _db.fetch("bom",
-                                            "bom_id,product_id",
-                                            f"material_id=eq.{_did}",
-                                            limit=500):
-                                        if b["product_id"] in _keep_pids:
-                                            _db.delete(
-                                                "bom",
-                                                f"bom_id=eq.{b['bom_id']}")
-                                        else:
-                                            _db.update(
-                                                "bom",
-                                                f"bom_id=eq.{b['bom_id']}",
-                                                {"material_id": _kid,
-                                                 "raw_material_name":
-                                                 _keep["raw_name"]})
-                                            _nbom += 1
-                                    # 원장·발주라인·매입매핑을 남길 자재로
-                                    _db.update("inventory_transactions",
-                                               f"material_id=eq.{_did}",
-                                               {"material_id": _kid})
-                                    _db.update("purchase_order_items",
-                                               f"material_id=eq.{_did}",
-                                               {"material_id": _kid})
-                                    _db.update("purchase_ledger",
-                                               f"matched_material_id=eq.{_did}",
-                                               {"matched_material_id": _kid})
-                                    # 재고 baseline 합산 후 원본은 휴면
-                                    _ds = float(m.get("stock_qty") or 0)
-                                    if _ds:
-                                        _ks = float(_keep.get("stock_qty") or 0)
-                                        _db.update(
-                                            "materials",
-                                            f"material_id=eq.{_kid}",
-                                            {"stock_qty": _ks + _ds})
-                                        _keep["stock_qty"] = _ks + _ds
-                                    _db.update(
-                                        "materials", f"material_id=eq.{_did}",
-                                        {"archived_at": _today,
-                                         "stock_qty": 0, "in_use": False,
-                                         "remark": f"{_kid} 로 병합 ({_today})"})
-                                st.success(
-                                    "병합 완료 — {} 로 통합 · BOM {}건 이동"
-                                    .format(_kid, _nbom))
-                                st.rerun()
-                            except Exception as e:
-                                st.error(f"병합 실패: {e}")
 
     # ─── Tab: 계정 관리 (2026-08-05) ───
     with tab_acct:
