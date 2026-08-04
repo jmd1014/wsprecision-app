@@ -513,23 +513,27 @@ with st.sidebar:
             st.session_state["auth_skip_cookie"] = True
             st.rerun()
         with st.expander("비밀번호 변경"):
-            _pc_old = st.text_input("현재 비밀번호", type="password",
-                                    key="pc_old")
-            _pc_new = st.text_input("새 비밀번호 (6자 이상)",
-                                    type="password", key="pc_new")
-            _pc_new2 = st.text_input("새 비밀번호 확인", type="password",
-                                     key="pc_new2")
-            if st.button("변경", key="pc_go", use_container_width=True):
+            # form 필수 — 일반 버튼은 입력 중(포커스 유지) 값을 못 읽어
+            # "6자 이상" 오류가 나는 경합이 있었음 (2026-08-05)
+            with st.form("pc_form", clear_on_submit=True):
+                st.caption(_auth.PW_RULES)
+                _pc_old = st.text_input("현재 비밀번호", type="password")
+                _pc_new = st.text_input("새 비밀번호", type="password")
+                _pc_new2 = st.text_input("새 비밀번호 확인", type="password")
+                _pc_go = st.form_submit_button("변경",
+                                               use_container_width=True)
+            if _pc_go:
                 import db as _pdb
                 _pu = _auth.load_users(_pdb)
                 _me = current_user().get("username")
+                _bad = _auth.check_password(_pc_new, _me)
                 if _me not in _pu or not _auth.verify_pw(
                         _pc_old, _pu[_me].get("pw", "")):
                     st.error("현재 비밀번호가 맞지 않습니다.")
-                elif len(_pc_new or "") < 6:
-                    st.error("새 비밀번호는 6자 이상이어야 합니다.")
+                elif _bad:
+                    st.error(f"새 비밀번호: {_bad}")
                 elif _pc_new != _pc_new2:
-                    st.error("새 비밀번호가 서로 다릅니다.")
+                    st.error("새 비밀번호 확인이 서로 다릅니다.")
                 else:
                     _pu[_me]["pw"] = _auth.hash_pw(_pc_new)
                     if _auth.save_users(_pdb, _pu):
@@ -900,12 +904,12 @@ elif page == "마스터 관리":
     import pandas as pd
 
     (tab_fit, tab1, tab_prod, tab_mat, tab_bom, tab_excl, tab_map, tab2,
-     tab_dsn) = st.tabs([
+     tab_acct, tab_dsn) = st.tabs([
         "품번별 맞추기",
         "거래처 편집", "제품 편집", "자재 편집", "BOM 편집",
         "데이터 제외 규칙",
         "매입↔자재 매핑 (레거시)", "마스터/연결 점검",
-        "디자인 데이터 내보내기"
+        "계정 관리", "디자인 데이터 내보내기"
     ])
 
     # ─── Tab: 품번별 맞추기 (2026-07-31) ───
@@ -3137,6 +3141,123 @@ elif page == "마스터 관리":
                                 st.rerun()
                             except Exception as e:
                                 st.error(f"병합 실패: {e}")
+
+    # ─── Tab: 계정 관리 (2026-08-05) ───
+    with tab_acct:
+        st.markdown("**로그인 계정 추가·역할 변경·비밀번호 초기화**")
+        st.caption("비밀번호 규칙: " + _auth.PW_RULES + " — 계정은 "
+                   "app_settings 에 저장되며 배포 없이 즉시 적용됩니다.")
+
+        _ac_users = _auth.load_users(_db)
+        if not _ac_users:
+            st.error("계정 정보를 불러오지 못했습니다.")
+        else:
+            _ROLE_KO = {"admin": "관리자", "worker": "작업자"}
+            _ROLE_EN = {v: k for k, v in _ROLE_KO.items()}
+            _admins = [u for u, v in _ac_users.items()
+                       if v.get("role") == "admin"]
+            st.dataframe(pd.DataFrame([{
+                "아이디": u, "이름": v.get("name") or u,
+                "역할": _ROLE_KO.get(v.get("role"), v.get("role")),
+            } for u, v in sorted(_ac_users.items())]),
+                use_container_width=True, hide_index=True)
+
+            ac_new, ac_edit = st.columns(2)
+
+            # ── 신규 계정 ──
+            with ac_new:
+                st.markdown("##### 신규 계정")
+                with st.form("acct_new", clear_on_submit=True):
+                    _an_id = st.text_input("아이디 (로그인용)")
+                    _an_name = st.text_input(
+                        "이름 (기록에 남는 실명)",
+                        help="입고·조정·출고 이력의 처리자로 표시됩니다")
+                    _an_role = st.radio("역할", ["작업자", "관리자"],
+                                        horizontal=True)
+                    _an_pw = st.text_input("초기 비밀번호", type="password")
+                    _an_go = st.form_submit_button("계정 추가",
+                                                   type="primary",
+                                                   use_container_width=True)
+                if _an_go:
+                    _an_id = (_an_id or "").strip()
+                    _bad = (_auth.check_username(_an_id)
+                            or _auth.check_password(_an_pw, _an_id))
+                    if _bad:
+                        st.error(_bad)
+                    elif _an_id in _ac_users:
+                        st.error(f"이미 있는 아이디입니다: {_an_id}")
+                    else:
+                        _ac_users[_an_id] = {
+                            "name": (_an_name or "").strip() or _an_id,
+                            "role": _ROLE_EN[_an_role],
+                            "pw": _auth.hash_pw(_an_pw)}
+                        if _auth.save_users(_db, _ac_users):
+                            st.success(f"추가 완료 — {_an_id} "
+                                       f"({_an_role}). 초기 비밀번호를 "
+                                       "본인에게 전달하고, 첫 로그인 후 "
+                                       "변경하도록 안내하세요.")
+                            st.rerun()
+                        else:
+                            st.error("저장 실패 — 다시 시도하세요.")
+
+            # ── 기존 계정 관리 ──
+            with ac_edit:
+                st.markdown("##### 기존 계정")
+                _ae_id = st.selectbox(
+                    "대상 계정", sorted(_ac_users),
+                    format_func=lambda u: "{} · {} ({})".format(
+                        u, _ac_users[u].get("name") or u,
+                        _ROLE_KO.get(_ac_users[u].get("role"), "-")),
+                    key="acct_pick")
+                _ae = _ac_users[_ae_id]
+                _is_last_admin = (_ae.get("role") == "admin"
+                                  and len(_admins) <= 1)
+                _is_me = _ae_id == current_user().get("username")
+
+                with st.form("acct_edit"):
+                    _ae_role = st.radio(
+                        "역할", ["작업자", "관리자"], horizontal=True,
+                        index=1 if _ae.get("role") == "admin" else 0)
+                    _ae_pw = st.text_input(
+                        "비밀번호 초기화 (바꿀 때만 입력)",
+                        type="password")
+                    _ae_go = st.form_submit_button("저장",
+                                                   use_container_width=True)
+                if _ae_go:
+                    _new_role = _ROLE_EN[_ae_role]
+                    if (_is_last_admin and _new_role != "admin"):
+                        st.error("마지막 관리자는 작업자로 바꿀 수 "
+                                 "없습니다 — 다른 관리자를 먼저 만드세요.")
+                    else:
+                        _bad = (_auth.check_password(_ae_pw, _ae_id)
+                                if _ae_pw else None)
+                        if _bad:
+                            st.error(f"비밀번호: {_bad}")
+                        else:
+                            _ae["role"] = _new_role
+                            if _ae_pw:
+                                _ae["pw"] = _auth.hash_pw(_ae_pw)
+                            if _auth.save_users(_db, _ac_users):
+                                st.success("저장 완료"
+                                           + (" — 새 비밀번호를 본인에게 "
+                                              "전달하세요." if _ae_pw else ""))
+                                st.rerun()
+                            else:
+                                st.error("저장 실패 — 다시 시도하세요.")
+
+                if st.button("계정 삭제", key="acct_del",
+                             disabled=_is_me or _is_last_admin,
+                             use_container_width=True):
+                    _ac_users.pop(_ae_id, None)
+                    if _auth.save_users(_db, _ac_users):
+                        st.success(f"삭제 완료 — {_ae_id}")
+                        st.rerun()
+                    else:
+                        st.error("저장 실패 — 다시 시도하세요.")
+                if _is_me:
+                    st.caption("본인 계정은 삭제할 수 없습니다.")
+                elif _is_last_admin:
+                    st.caption("마지막 관리자 계정은 삭제할 수 없습니다.")
 
     # ─── Tab: 디자인 데이터 내보내기 ───
     with tab_dsn:

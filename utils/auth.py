@@ -16,6 +16,33 @@ import time
 
 PBKDF2_ITER = 200_000
 
+# 비밀번호 규칙 (2026-08-05 정립) — 화면 안내문과 검사를 한곳에서 관리
+PW_RULES = "6자 이상 · 앞뒤 공백 불가 · 아이디와 동일 불가 (영문·숫자·기호 자유)"
+
+
+def check_password(pw: str, username: str = None):
+    """규칙 위반이면 사유 문자열, 통과면 None"""
+    pw = pw or ""
+    if len(pw) < 6:
+        return "6자 이상이어야 합니다."
+    if pw != pw.strip():
+        return "앞뒤에 공백은 쓸 수 없습니다."
+    if username and pw == username:
+        return "아이디와 같은 비밀번호는 쓸 수 없습니다."
+    return None
+
+
+def check_username(uid: str):
+    """계정 아이디 규칙 — 2자 이상, 공백·구분자 불가"""
+    uid = uid or ""
+    if len(uid) < 2:
+        return "아이디는 2자 이상이어야 합니다."
+    if uid != uid.strip() or " " in uid:
+        return "아이디에 공백은 쓸 수 없습니다."
+    if "|" in uid or "$" in uid:
+        return "아이디에 | 와 $ 는 쓸 수 없습니다."
+    return None
+
 
 def hash_pw(pw: str) -> str:
     """새 비밀번호 해시 — 'pbkdf2$반복수$salt$hash'"""
