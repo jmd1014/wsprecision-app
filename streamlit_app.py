@@ -935,25 +935,35 @@ elif page == "마스터 관리":
         # ── Day 0 실사 시트 (2026-08-07 금요일 실사 기준일) ──
         with st.expander("실사 시트 내려받기 (Day 0 준비)"):
             st.caption(
-                "장부 수량이 있는 자재 목록입니다. 출력해서 실물을 세고, "
-                "다른 수량은 자재 편집에서 고치거나 이 탭의 완성재고 "
-                "조정으로 기록하세요. 실사 이후의 입출고는 전부 앱에만 "
-                "입력합니다.")
+                "휴면 제외 전체 자재 목록입니다 (장부는 8/5 전량 0으로 "
+                "리셋됨 — 실물 수량이 새 기준이 됩니다). 출력해서 실물을 "
+                "세고, 자재 편집에서 실사 수량을 입력하세요. BOM 에 "
+                "연결된 자재가 위쪽에 옵니다. 실사 이후의 입출고는 전부 "
+                "앱에만 입력합니다.")
             try:
                 _inv_rows = _db.fetch(
-                    "material_stock",
+                    "materials",
                     "material_id,raw_name,material_type,spec,unit,"
-                    "main_supplier,current_stock",
-                    "order=current_stock.desc", limit=500)
-                _inv_rows = [r for r in _inv_rows
-                             if float(r.get("current_stock") or 0) != 0]
+                    "main_supplier,stock_qty",
+                    "archived_at=is.null&order=material_id", limit=1000)
+                # BOM 연결 자재를 앞에 — 실사 우선순위
+                try:
+                    _bom_mids = {b["material_id"] for b in _db.fetch(
+                        "bom", "material_id",
+                        "material_id=not.is.null", limit=2000)}
+                except Exception:
+                    _bom_mids = set()
+                _inv_rows.sort(key=lambda r: (
+                    r["material_id"] not in _bom_mids,
+                    str(r.get("material_type") or "ZZZ"),
+                    str(r.get("raw_name") or "")))
                 if _inv_rows:
                     import csv as _csv
                     import io as _io
                     _buf = _io.StringIO()
                     _wcsv = _csv.writer(_buf)
                     _wcsv.writerow(["자재ID", "자재명", "재질", "규격",
-                                    "단위", "공급사", "장부수량",
+                                    "단위", "공급사", "BOM연결", "장부수량",
                                     "실사수량", "차이/비고"])
                     for r in _inv_rows:
                         _wcsv.writerow([
@@ -961,17 +971,21 @@ elif page == "마스터 관리":
                             r.get("material_type") or "",
                             r.get("spec") or "", r.get("unit") or "EA",
                             r.get("main_supplier") or "",
-                            f"{float(r.get('current_stock') or 0):g}",
+                            "O" if r["material_id"] in _bom_mids else "",
+                            f"{float(r.get('stock_qty') or 0):g}",
                             "", ""])
+                    _n_bom = sum(1 for r in _inv_rows
+                                 if r["material_id"] in _bom_mids)
                     st.download_button(
-                        "소재 실사 시트 (CSV · {}종)".format(len(_inv_rows)),
+                        "소재 실사 시트 (CSV · 전체 {}종 · BOM 연결 {}종)"
+                        .format(len(_inv_rows), _n_bom),
                         # BOM(utf-8-sig) — 엑셀에서 한글이 깨지지 않게
                         _buf.getvalue().encode("utf-8-sig"),
                         file_name="소재실사시트_{:%Y%m%d}.csv".format(
                             _ft_date.today()),
                         mime="text/csv", key="ft_inv_dl")
                 else:
-                    st.info("장부 수량이 있는 자재가 없습니다.")
+                    st.info("활성 자재가 없습니다.")
             except Exception as e:
                 st.error(f"실사 시트 생성 실패: {e}")
 
