@@ -944,17 +944,38 @@ elif page == "마스터 관리":
                 _inv_rows = _db.fetch(
                     "materials",
                     "material_id,raw_name,material_type,spec,unit,"
-                    "main_supplier,stock_qty",
+                    "main_supplier,stock_qty,applied_pn",
                     "archived_at=is.null&order=material_id", limit=1000)
-                # BOM 연결 자재를 앞에 — 실사 우선순위
+                # 사용 품번 — BOM 연결 제품으로 현장에서 소재를 빨리 식별
+                _pn_map = {}
                 try:
-                    _bom_mids = {b["material_id"] for b in _db.fetch(
-                        "bom", "material_id",
-                        "material_id=not.is.null", limit=2000)}
+                    _bl = _db.fetch("bom", "material_id,product_id",
+                                    "material_id=not.is.null", limit=2000)
+                    _pids = {b["product_id"] for b in _bl}
+                    _pm = {}
+                    if _pids:
+                        _pm = {p["product_id"]: p["pn"] for p in _db.fetch(
+                            "products", "product_id,pn",
+                            "product_id=in.({})".format(",".join(
+                                f'"{i}"' for i in _pids)), limit=2000)}
+                    for b in _bl:
+                        _p = _pm.get(b["product_id"])
+                        if _p:
+                            _pn_map.setdefault(
+                                b["material_id"], []).append(_p)
                 except Exception:
-                    _bom_mids = set()
+                    pass
+
+                def _pn_label(r):
+                    _l = sorted(set(_pn_map.get(r["material_id"], [])))
+                    if not _l and r.get("applied_pn"):
+                        return r["applied_pn"]        # BOM 미연결 → 참고 품번
+                    if len(_l) > 3:
+                        return ", ".join(_l[:3]) + f" 외 {len(_l) - 3}"
+                    return ", ".join(_l)
+
                 _inv_rows.sort(key=lambda r: (
-                    r["material_id"] not in _bom_mids,
+                    r["material_id"] not in _pn_map,
                     str(r.get("material_type") or "ZZZ"),
                     str(r.get("raw_name") or "")))
                 if _inv_rows:
@@ -963,19 +984,19 @@ elif page == "마스터 관리":
                     _buf = _io.StringIO()
                     _wcsv = _csv.writer(_buf)
                     _wcsv.writerow(["자재ID", "자재명", "재질", "규격",
-                                    "단위", "공급사", "BOM연결", "장부수량",
-                                    "실사수량", "차이/비고"])
+                                    "단위", "공급사", "사용 품번",
+                                    "장부수량", "실사수량", "차이/비고"])
                     for r in _inv_rows:
                         _wcsv.writerow([
                             r["material_id"], r.get("raw_name") or "",
                             r.get("material_type") or "",
                             r.get("spec") or "", r.get("unit") or "EA",
                             r.get("main_supplier") or "",
-                            "O" if r["material_id"] in _bom_mids else "",
+                            _pn_label(r),
                             f"{float(r.get('stock_qty') or 0):g}",
                             "", ""])
                     _n_bom = sum(1 for r in _inv_rows
-                                 if r["material_id"] in _bom_mids)
+                                 if r["material_id"] in _pn_map)
                     st.download_button(
                         "소재 실사 시트 (CSV · 전체 {}종 · BOM 연결 {}종)"
                         .format(len(_inv_rows), _n_bom),
