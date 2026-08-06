@@ -89,6 +89,17 @@ div[data-testid="stButton"] button[kind="primary"],
 div[data-testid="stDownloadButton"] button[kind="primary"]{
   background:var(--primary) !important;border-color:var(--primary) !important;
 }
+/* 비활성 버튼 — primary 진남색이 유지되면 글자가 묻혀 안 보인다
+   (재고 부족으로 잠긴 '일괄 출고 처리' 버튼, 2026-08-07) */
+div[data-testid="stButton"] button:disabled,
+div[data-testid="stDownloadButton"] button:disabled{
+  background:#eceef2 !important;color:var(--faint) !important;
+  border-color:var(--line) !important;cursor:not-allowed;
+}
+div[data-testid="stButton"] button:disabled p,
+div[data-testid="stDownloadButton"] button:disabled p{
+  color:var(--faint) !important;
+}
 
 /* ── 사이드바: 216px 흰 배경, 우측 1px 보더 ── */
 section[data-testid="stSidebar"]{
@@ -4670,6 +4681,36 @@ elif page == "출고 관리":
         _bk_today = _bk_dt.today()
         with st.expander("스케줄 일괄 출고 — 납품 예정 회차를 한 번에",
                          expanded=True):
+            # ── 직전 일괄 출고분 출력물 (출고 리스트 · 거래명세서) ──
+            _bk_last = st.session_state.get("bk_last_batch")
+            if _bk_last and _bk_last.get("rows"):
+                from utils.statement_generator import (
+                    delivery_list_html, transaction_statements_html)
+                _bk_ld = _bk_last.get("date", "")
+                st.success(
+                    "출고 처리 완료 {}건 · {} — 출고 리스트와 거래명세서를 "
+                    "내려받아 인쇄하세요 (열면 인쇄 창이 자동으로 뜹니다)."
+                    .format(len(_bk_last["rows"]), _bk_ld))
+                pd1, pd2, pd3 = st.columns([1, 1, 1])
+                pd1.download_button(
+                    "출고 리스트 (인쇄)",
+                    delivery_list_html(_bk_last),
+                    file_name=f"출고리스트_{_bk_ld}.html",
+                    mime="text/html", key="bk_dl_list",
+                    use_container_width=True)
+                pd2.download_button(
+                    "거래명세서 (인쇄)",
+                    transaction_statements_html(
+                        _bk_last, _bk_last.get("vendors")),
+                    file_name=f"거래명세서_{_bk_ld}.html",
+                    mime="text/html", key="bk_dl_stmt", type="primary",
+                    use_container_width=True)
+                pd3.button("출력물 목록 지우기", key="bk_clear",
+                           use_container_width=True,
+                           on_click=lambda: st.session_state.pop(
+                               "bk_last_batch", None))
+                st.divider()
+
             bkc1, bkc2, bkc3 = st.columns([1, 1, 2])
             _bk_d = bkc1.date_input("납품일", _bk_today, key="bk_date")
             _bk_late = bkc2.checkbox("지연 회차 포함", value=True,
@@ -4709,7 +4750,8 @@ elif page == "출고 관리":
                     _bk_lim = {l["soi_id"]: l for l in fetch(
                         "sales_order_items",
                         "soi_id,so_id,canonical_pn,customer_part_no,"
-                        "product_id,qty,received_qty,pending_qty,unit",
+                        "customer_item_name,product_id,qty,received_qty,"
+                        "pending_qty,unit,unit_price",
                         f"soi_id=in.({_bk_sois})", limit=500)}
                 except Exception as e:
                     st.error(f"수주 조회 실패: {e}")
@@ -4939,6 +4981,45 @@ elif page == "출고 관리":
                             except Exception:
                                 pass
                         if _bk_ok:
+                            # 출력물(출고 리스트·거래명세서)용 배치 보관
+                            _bk_vmap = {}
+                            for _cu in {it["so"].get("customer")
+                                        for it, _ in _bk_sel
+                                        if it["so"].get("customer")}:
+                                _term = (_cu.replace("㈜", "")
+                                         .replace("(주)", "").strip())
+                                try:
+                                    _vs = fetch("vendors",
+                                        "name,business_no,ceo_name,phone,"
+                                        "address,business_type,"
+                                        "business_item",
+                                        f"name=ilike.*{_term}*", limit=5)
+                                    if _vs:
+                                        _bk_vmap[_cu] = _vs[0]
+                                except Exception:
+                                    pass
+                            st.session_state["bk_last_batch"] = {
+                                "date": _bk_d.isoformat(),
+                                "rows": [{
+                                    "pn": it["pn"],
+                                    "customer_pn":
+                                        it["li"].get("customer_part_no")
+                                        or it["pn"],
+                                    "item_name":
+                                        it["li"].get("customer_item_name"),
+                                    "customer":
+                                        it["so"].get("customer") or "-",
+                                    "so_number":
+                                        it["so"].get("so_number") or "-",
+                                    "qty": _q2,
+                                    "unit": it["li"].get("unit") or "EA",
+                                    "unit_price":
+                                        it["li"].get("unit_price"),
+                                    "spec": None, "remark": None,
+                                    "date": _bk_d.isoformat(),
+                                } for it, _q2 in _bk_sel],
+                                "vendors": _bk_vmap,
+                            }
                             st.success(f"일괄 출고 완료 — {_bk_ok}회차 · "
                                        f"{_bk_total:,.0f}개")
                             st.rerun()
