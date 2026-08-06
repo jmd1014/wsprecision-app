@@ -4532,9 +4532,12 @@ elif page == "수주 관리":
                     m2.metric("계획 합계", f"{_plan:,.0f}")
                     m3.metric("납품 완료", f"{_done:,.0f}")
                     m4.metric("계획 잔량", f"{_plan - _done:,.0f}")
-                    if abs(_plan - _li_pend) > 0.5 and _rows:
+                    # 비교는 '계획 잔량'(합계 − 납품완료) 기준 — 계획
+                    # 합계에는 이미 납품된 회차가 포함되므로 미납과 직접
+                    # 비교하면 기납품만큼 어긋나 보인다 (2026-08-06 확인)
+                    if abs((_plan - _done) - _li_pend) > 0.5 and _rows:
                         st.warning(
-                            f"계획 합계 {_plan:,.0f} 가 라인 미납 "
+                            f"계획 잔량 {_plan - _done:,.0f} 가 라인 미납 "
                             f"{_li_pend:,.0f} 와 다릅니다 — 협의 변경이면 "
                             "그대로 두셔도 되고, 맞추려면 수량을 조정하세요.")
 
