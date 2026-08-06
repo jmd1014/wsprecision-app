@@ -183,6 +183,10 @@ def test_chip_classes_cover_all_states(sched_db):
     assert 'class="gc one late"' in html  # 단발 지연
     # 완료 회차는 기본 필터(완료 숨기기)로 제외
     assert 'class="gc done"' not in html
+    # 호버 메모 — 모든 칩에 세부 내역 tip 포함, 지연 칩에는 경과일
+    assert html.count('class="tip"') >= html.count('class="gc ') - 1
+    assert "지연 " in html and "일째" in html
+    assert "잔량" in html
 
 
 def test_overdue_chips_fold_into_current_week(sched_db):

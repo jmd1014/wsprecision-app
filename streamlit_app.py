@@ -161,7 +161,7 @@ div[data-testid="stDataFrame"]{
 /* ── 납품 스케줄 회차 간트 (7b) ── */
 .gt{display:grid;grid-template-columns:250px repeat(6,1fr) 96px;
   background:var(--card);border:1px solid var(--line);border-radius:6px;
-  overflow:hidden;margin:6px 0 4px}
+  margin:6px 0 4px}  /* overflow hidden 금지 — 호버 메모가 잘린다 */
 .gt>div{padding:9px 10px;border-bottom:1px solid var(--line3);
   border-right:1px solid var(--line3);min-width:0}
 .gt>div:nth-child(8n){border-right:none}
@@ -179,8 +179,21 @@ div[data-testid="stDataFrame"]{
 .gt .gsum.l{font-size:11.5px;font-weight:600;color:var(--faint);
   letter-spacing:.02em;text-align:left}
 .gc{display:flex;justify-content:space-between;align-items:center;
-  gap:8px;padding:4px 9px;border-radius:12px;margin-bottom:5px}
+  gap:8px;padding:4px 9px;border-radius:12px;margin-bottom:5px;
+  position:relative;cursor:default}
 .gc:last-child{margin-bottom:0}
+/* 회차 칩 호버 메모 — 마우스를 올리면 세부 내역 */
+.gc .tip{display:none;position:absolute;z-index:60;left:0;top:100%;
+  margin-top:5px;background:var(--ink);color:#fff;
+  font-size:11.5px;font-weight:400;line-height:1.8;
+  padding:9px 12px;border-radius:6px;white-space:nowrap;
+  box-shadow:0 4px 14px rgba(27,42,65,.28);text-align:left}
+.gc .tip b{font-weight:600;color:#fff}
+.gc .tip .warn{color:#ffb4a0;font-weight:600}
+.gc:hover .tip{display:block}
+/* 마지막 품번 행·합계 행의 칩은 메모를 위로 띄움 (화면 밖 방지) */
+.gt > div:nth-last-child(-n+16) .gc .tip{top:auto;bottom:100%;
+  margin-top:0;margin-bottom:5px}
 .gc .gd{font-size:11px;white-space:nowrap}
 .gc .gq{font-size:11.5px;font-weight:700;color:var(--ink)}
 .gc.late{background:#fff8f6;border:1px solid #f0b8a8;
@@ -202,6 +215,7 @@ div[data-testid="stDataFrame"]{
 .gc.after{display:block;text-align:right;padding:5px 9px;
   background:var(--card);border:1px dashed #c9d6e8;
   border-left:3px solid var(--link);border-radius:12px}
+.gc.after .tip{left:auto;right:0;text-align:left}
 .gc.after .gq{display:block;font-size:12.5px}
 .gc.after .gd{display:block;color:var(--dim);font-weight:600;
   margin-top:1px}
@@ -2763,24 +2777,53 @@ elif page == "수주 관리":
     # 상단 KPI — 페이지 골격 통일 (요약 → 처리 → 현황)
     try:
         _so_kpi = fetch("sales_order_stats",
-            "total_pending_qty,due_date,so_date",
+            "so_id,total_pending_qty,due_date,so_date",
             'status=not.in.("CANCELLED","CANCELED")', limit=500)
     except Exception:
         _so_kpi = []
     _sk_pend = sum(float(s.get("total_pending_qty") or 0) for s in _so_kpi)
     _sk_open = sum(1 for s in _so_kpi
                    if float(s.get("total_pending_qty") or 0) > 0)
-    _sk_late = sum(1 for s in _so_kpi
-                   if float(s.get("total_pending_qty") or 0) > 0
-                   and s.get("due_date")
-                   and s["due_date"] < _date.today().isoformat())
     _sk_month = sum(1 for s in _so_kpi
                     if str(s.get("so_date") or "")[:7]
                     == _date.today().isoformat()[:7])
+    # 납기 지연 = 납품 스케줄 기준 (간트와 동일 정의):
+    # 지난 회차의 미납 잔량 + 회차 없는 라인의 지난 납기 잔량.
+    # (수주 헤더의 협의 납기 기준으로 세면 캘린더와 숫자가 어긋난다
+    #  — 2026-08-06 확인)
+    _sk_alive = {s["so_id"] for s in _so_kpi}
+    _sk_late_n, _sk_late_qty = 0, 0.0
+    try:
+        for _r in fetch("so_delivery_schedule",
+                "so_id,qty,delivered_qty",
+                f"due_date=lt.{_date.today().isoformat()}", limit=1000):
+            if _r["so_id"] in _sk_alive and (
+                    float(_r.get("qty") or 0)
+                    - float(_r.get("delivered_qty") or 0)) > 0:
+                _sk_late_n += 1
+                _sk_late_qty += (float(_r.get("qty") or 0)
+                                 - float(_r.get("delivered_qty") or 0))
+        _sched_soi_all = {r["soi_id"] for r in fetch(
+            "so_delivery_schedule", "soi_id", "", limit=2000)}
+        for _r in fetch("sales_order_items",
+                "so_id,soi_id,pending_qty",
+                f"pending_qty=gt.0&due_date=lt.{_date.today().isoformat()}",
+                limit=1000):
+            if (_r["so_id"] in _sk_alive
+                    and _r["soi_id"] not in _sched_soi_all):
+                _sk_late_n += 1
+                _sk_late_qty += float(_r.get("pending_qty") or 0)
+    except Exception:
+        pass
     sk1, sk2, sk3, sk4 = st.columns(4)
     sk1.metric("미납 수량", f"{_sk_pend:,.0f}")
     sk2.metric("진행 수주", f"{_sk_open:,}건")
-    sk3.metric("납기 지연", f"{_sk_late:,}건")
+    sk3.metric("납기 지연", f"{_sk_late_n:,}건",
+               delta=f"-{_sk_late_qty:,.0f}" if _sk_late_qty else None,
+               delta_color="inverse" if _sk_late_qty else "off",
+               help="납품 스케줄 기준 — 지난 회차·지난 납기의 미납 잔량. "
+                    "부분 납품도 잔량이 남으면 지연으로 셉니다. "
+                    "상세는 납품 스케줄 탭의 지연 상세.")
     sk4.metric("이번 달 수주", f"{_sk_month:,}건")
     st.divider()
 
@@ -3644,6 +3687,37 @@ elif page == "수주 관리":
                         v=v[0], n=v[1], p=v[2])
                     for k, v, cls in _kpi) + "</div>",
                 unsafe_allow_html=True)
+
+            # ── 지연 상세 (부분 납품 포함 — 잔량이 남으면 지연) ──
+            _late_rows = sorted(
+                [c for c in _live if c["상태"] == "지연"],
+                key=lambda c: c["납기"])
+            if _late_rows:
+                with st.expander(
+                        "지연 상세 {}건 · 잔량 {:,.0f} — 품번·회차·경과일"
+                        .format(len(_late_rows),
+                                sum(c["잔량"] for c in _late_rows))):
+                    _ldf = pd.DataFrame([{
+                        "품번": c["품번"], "거래처": c["거래처"],
+                        "수주번호": c["수주번호"],
+                        "회차": "{} {}".format(c["구분"], c["회차"]),
+                        "납기": c["납기"].isoformat(),
+                        "경과": "D+{}".format(
+                            (_today_s - c["납기"]).days),
+                        "회차수량": c["수량"], "납품": c["완료"],
+                        "잔량": c["잔량"],
+                    } for c in _late_rows])
+                    st.dataframe(
+                        _ldf.style.map(
+                            lambda v: "color:#d9480f;font-weight:600",
+                            subset=["경과", "잔량"]),
+                        use_container_width=True, hide_index=True,
+                        column_config={c: st.column_config.NumberColumn(
+                            format="localized")
+                            for c in ("회차수량", "납품", "잔량")})
+                    st.caption(
+                        "부분 납품이라도 잔량이 남으면 지연으로 셉니다. "
+                        "수주 관리 상단 KPI 도 같은 기준입니다.")
         else:
             st.info("등록된 납품 회차가 없습니다 — 아래 **납기 입력**에서 "
                     "수주 라인을 골라 회차를 만들면 여기에 표시됩니다.")
@@ -3737,18 +3811,19 @@ elif page == "수주 관리":
                         if _b == _WEEKS and _cs:
                             # '이후' 열은 회차를 나열하지 않고 총량만 —
                             # 장기 스케줄이 행 높이를 늘리는 것을 막는다
-                            _inner = ['<div class="gc after" title="{t}">'
+                            _inner = ['<div class="gc after">'
                                       '<span class="gq">{q:,.0f}</span>'
                                       '<span class="gd">{n}회 · {f:%m/%d}{e}'
-                                      '</span></div>'.format(
+                                      '</span><span class="tip"><b>{pn}</b> '
+                                      '이후 회차 요약<br>{f2:%Y-%m-%d} ~ '
+                                      '{l:%Y-%m-%d} · {n}회차<br>잔량 합계 '
+                                      '<b>{q:,.0f}</b></span></div>'.format(
                                           q=sum(c["잔량"] for c in _cs
                                                 if c["상태"] != "완료"),
                                           n=len(_cs), f=_cs[0]["납기"],
-                                          e="~" if len(_cs) > 1 else "",
-                                          t="{:%Y-%m-%d} ~ {:%Y-%m-%d} · "
-                                            "{}회차".format(
-                                                _cs[0]["납기"],
-                                                _cs[-1]["납기"], len(_cs)))]
+                                          f2=_cs[0]["납기"],
+                                          l=_cs[-1]["납기"], pn=_p,
+                                          e="~" if len(_cs) > 1 else "")]
                         else:
                             _inner = []
                             for c in _cs:
@@ -3758,10 +3833,31 @@ elif page == "수주 관리":
                                         "one" if c["구분"] == "단발" else
                                         "late" if c["상태"] == "지연"
                                         else "plan")
+                                # 호버 메모 — 마우스를 올리면 세부 내역
+                                _ld = (_today_s - c["납기"]).days
+                                _tip = (
+                                    "<b>{pn}</b> · {cu}<br>"
+                                    "{so} · {kind} {seq}회차<br>"
+                                    "납기 {due:%Y-%m-%d} ({dd})<br>"
+                                    "회차 {q:,.0f} · 납품 {dv:,.0f} · "
+                                    "잔량 <b>{rem:,.0f}</b>{w}").format(
+                                    pn=c["품번"], cu=c["거래처"],
+                                    so=c["수주번호"], kind=c["구분"],
+                                    seq=c["회차"], due=c["납기"],
+                                    dd=("D+{}".format(_ld) if _ld > 0
+                                        else "오늘" if _ld == 0
+                                        else "D-{}".format(-_ld)),
+                                    q=c["수량"], dv=c["완료"],
+                                    rem=c["잔량"],
+                                    w=('<br><span class="warn">지연 '
+                                       '{}일째 — 잔량 미납</span>'
+                                       .format(_ld)
+                                       if c["상태"] == "지연" else ""))
                                 _inner.append(
-                                    '<div class="gc {cl}" title="{t}">'
+                                    '<div class="gc {cl}">'
                                     '<span class="gd">{d}</span>'
-                                    '<span class="gq">{q:,.0f}</span></div>'
+                                    '<span class="gq">{q:,.0f}</span>'
+                                    '<span class="tip">{tip}</span></div>'
                                     .format(
                                         cl=_cls,
                                         q=(c["잔량"] if c["상태"] != "완료"
@@ -3769,9 +3865,7 @@ elif page == "수주 관리":
                                         d="{} {}".format(
                                             _WD[c["납기"].weekday()],
                                             c["납기"].day),
-                                        t="{} {}회차 · {:%Y-%m-%d} · {}"
-                                        .format(c["수주번호"], c["회차"],
-                                                c["납기"], c["상태"])))
+                                        tip=_tip))
                         _h.append('<div class="cell{n}">{v}</div>'.format(
                             n=" now" if _b == 0 else "", v="".join(_inner)))
                 _h.append('<div class="gsum l">주 합계</div>')
