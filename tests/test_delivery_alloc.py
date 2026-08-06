@@ -5,7 +5,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from utils.delivery_alloc import allocate_rounds  # noqa: E402
+from utils.delivery_alloc import allocate_rounds, carry_delivered  # noqa: E402
 
 
 def _rounds():
@@ -70,3 +70,52 @@ def test_overflow_beyond_rounds_is_returned_partially():
 def test_partial_today_round():
     out = allocate_rounds(_rounds(), 900, "2026-08-05")
     assert out == {68: 900}
+
+
+# ─── 재저장 승계 (carry_delivered) ─────────────────────
+
+def test_carry_survives_middle_round_deletion():
+    """8/3 휴가 회차를 지우고 재저장 → 8/5 의 1,400 이 8/5 에 남아야
+    한다 (순번 승계는 8/7 로 밀리던 실버그, 2026-08-06)."""
+    old = [{"due_date": "2026-07-29", "delivered_qty": 1400},
+           {"due_date": "2026-07-31", "delivered_qty": 1400},
+           {"due_date": "2026-08-03", "delivered_qty": 0},
+           {"due_date": "2026-08-05", "delivered_qty": 1400},
+           {"due_date": "2026-08-07", "delivered_qty": 0}]
+    new = [{"due_date": "2026-07-29", "qty": 1400},
+           {"due_date": "2026-07-31", "qty": 1400},
+           {"due_date": "2026-08-05", "qty": 1400},   # 8/3 삭제됨
+           {"due_date": "2026-08-07", "qty": 1400}]
+    done, lost = carry_delivered(old, new)
+    assert done == [1400, 1400, 1400, 0]
+    assert lost == 0
+
+
+def test_carry_deleted_delivered_date_falls_back_to_oldest():
+    """납품된 회차의 날짜 자체를 지우면 실적은 사라지지 않고
+    가장 오래된 회차 여유로 승계된다."""
+    old = [{"due_date": "2026-07-29", "delivered_qty": 500}]
+    new = [{"due_date": "2026-08-03", "qty": 300},
+           {"due_date": "2026-08-05", "qty": 400}]
+    done, lost = carry_delivered(old, new)
+    assert done == [300, 200]
+    assert lost == 0
+
+
+def test_carry_qty_reduced_overflows_to_next():
+    """회차 수량을 납품량보다 줄이면 초과분은 다음 회차로."""
+    old = [{"due_date": "2026-07-29", "delivered_qty": 1400}]
+    new = [{"due_date": "2026-07-29", "qty": 1000},
+           {"due_date": "2026-08-05", "qty": 1000}]
+    done, lost = carry_delivered(old, new)
+    assert done == [1000, 400]
+    assert lost == 0
+
+
+def test_carry_reports_lost_when_plan_too_small():
+    """새 회차 총량 < 납품완료 — 잃는 만큼 반환 (경고용)."""
+    old = [{"due_date": "2026-07-29", "delivered_qty": 1400}]
+    new = [{"due_date": "2026-08-05", "qty": 1000}]
+    done, lost = carry_delivered(old, new)
+    assert done == [1000]
+    assert lost == 400

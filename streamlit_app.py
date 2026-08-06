@@ -4594,14 +4594,21 @@ elif page == "수주 관리":
                             _keep.sort(key=lambda x: x["due_date"])
                             for _i2, _r2 in enumerate(_keep, 1):
                                 _r2["seq"] = _i2
-                            # 기존 납품완료 수량은 회차 순서대로 승계
-                            _old_done = [float(r.get("delivered_qty") or 0)
-                                         for r in sorted(
-                                             _rows, key=lambda x: x["seq"])]
+                            # 납품완료 승계 — 납기 '날짜' 기준.
+                            # 순번(위치) 승계는 중간 회차를 지우면 납품이
+                            # 다음 날짜로 밀림 (8/3 삭제 → 8/5 실적이
+                            # 8/7 로 이동하던 버그, 2026-08-06)
+                            from utils.delivery_alloc import carry_delivered
+                            _done_new, _done_lost = carry_delivered(
+                                _rows, _keep)
+                            if _done_lost > 0.5:
+                                st.warning(
+                                    f"납품완료 {_done_lost:,.0f}개는 새 "
+                                    "회차 총량보다 커서 회차에 싣지 "
+                                    "못했습니다 — 라인 기납품에는 그대로 "
+                                    "남습니다. 회차 수량을 확인하세요.")
                             for _i3, _r3 in enumerate(_keep):
-                                _r3["delivered_qty"] = (
-                                    _old_done[_i3] if _i3 < len(_old_done)
-                                    else 0)
+                                _r3["delivered_qty"] = _done_new[_i3]
                                 _r3["so_id"] = _s_so["so_id"]
                                 _r3["soi_id"] = _li["soi_id"]
                                 _r3["created_by"] = current_user_name()
