@@ -5025,33 +5025,28 @@ elif page == "출고 관리":
                         except Exception as e:
                             st.warning(f"⚠️ 제품 재고 차감 기록 실패 (납품은 정상): {e}")
 
-                    # 분납 스케줄 회차 충당 (오래된 회차부터)
+                    # 분납 스케줄 회차 충당 — 납품일 납기 회차 우선,
+                    # 남으면 오래된 회차부터 (밀린 회차 만회).
+                    # 오래된 회차만 먼저 채우면 건너뛴 회차가 완료로
+                    # 보이는 왜곡 (2026-08-06 4PDVN-03 사례)
+                    from utils.delivery_alloc import allocate_rounds
                     for soi_id, dlv_qty in deliver_inputs.items():
                         if dlv_qty <= 0:
                             continue
                         try:
                             _scs = fetch("so_delivery_schedule",
-                                "sched_id,qty,delivered_qty",
+                                "sched_id,due_date,qty,delivered_qty",
                                 f"soi_id=eq.{soi_id}"
                                 "&order=due_date.asc,seq.asc", limit=100)
                         except Exception:
                             continue
-                        _left = float(dlv_qty)
-                        for _sc in _scs:
-                            if _left <= 0:
-                                break
-                            _room = (float(_sc.get("qty") or 0)
-                                     - float(_sc.get("delivered_qty") or 0))
-                            if _room <= 0:
-                                continue
-                            _take = min(_room, _left)
+                        _chg = allocate_rounds(_scs, dlv_qty,
+                                               _dlv_date.today())
+                        for _sid2, _newdlv in _chg.items():
                             try:
                                 _db.update("so_delivery_schedule",
-                                    f"sched_id=eq.{_sc['sched_id']}",
-                                    {"delivered_qty":
-                                     float(_sc.get("delivered_qty") or 0)
-                                     + _take})
-                                _left -= _take
+                                    f"sched_id=eq.{_sid2}",
+                                    {"delivered_qty": _newdlv})
                             except Exception:
                                 break
 
