@@ -265,11 +265,25 @@ def current_user_name() -> str:
     return current_user().get("name") or "시스템"
 
 
-def _cookie_mgr():
-    """쿠키 컴포넌트 — 미설치·헤드리스 환경에서는 None"""
+def _cookie_js(script: str):
+    """쿠키 기록·삭제용 JS 실행.
+
+    components.html 의 iframe(srcdoc)은 앱과 같은 origin 이라
+    document.cookie 가 앱 도메인에 그대로 적용된다. 단, 같은 런에서
+    st.rerun() 을 부르면 컴포넌트가 마운트되기 전에 화면이 교체되어
+    쿠키가 저장되지 않는다 — 반드시 rerun 없는 안정 런에서 호출할 것
+    (2026-08-07 자동 로그인 미동작 원인)."""
     try:
-        import extra_streamlit_components as _stx
-        return _stx.CookieManager(key="ws_cookie_mgr")
+        from streamlit.components.v1 import html as _html_js
+        _html_js(f"<script>{script}</script>", height=0)
+    except Exception:
+        pass
+
+
+def _cookie_read(name: str):
+    """st.context 로 쿠키 읽기 — 컴포넌트 왕복 없이 첫 런에서 확정."""
+    try:
+        return st.context.cookies.get(name)
     except Exception:
         return None
 
@@ -286,29 +300,35 @@ if _AUTH_OFF and not st.session_state.get("auth_user"):
 
 if DB_AVAILABLE and not st.session_state.get("auth_user"):
     import db as _adb
+    import base64 as _b64
 
     _users = _auth.load_users(_adb)
     _secret = _auth.load_secret(_adb)
 
-    # 1) 쿠키 자동 로그인 (로그아웃 직후에는 건너뜀)
-    _cm = None
+    # 1) 쿠키 자동 로그인 — st.context (동기 읽기, 로그아웃 직후 제외)
     if _users and _secret and not st.session_state.get("auth_skip_cookie"):
-        _cm = _cookie_mgr()
-        if _cm is not None:
+        _tok_b64 = _cookie_read("ws_auth")
+        _tok = None
+        if _tok_b64:
             try:
-                _tok = _cm.get("ws_auth")
+                # 한글 아이디 → 쿠키는 ASCII 만 안전하므로 base64 저장
+                _tok = _b64.urlsafe_b64decode(
+                    _tok_b64.encode()).decode("utf-8")
             except Exception:
                 _tok = None
-            _uid = _auth.parse_token(_tok, _secret) if _tok else None
-            if _uid and _uid in _users:
-                st.session_state["auth_user"] = {
-                    "username": _uid,
-                    "name": _users[_uid].get("name") or _uid,
-                    "role": _users[_uid].get("role") or "worker"}
-                st.rerun()
+        _uid = _auth.parse_token(_tok, _secret) if _tok else None
+        if _uid and _uid in _users:
+            # rerun 불필요 — 같은 런에서 세션만 채우고 아래로 통과
+            st.session_state["auth_user"] = {
+                "username": _uid,
+                "name": _users[_uid].get("name") or _uid,
+                "role": _users[_uid].get("role") or "worker"}
 
     # 2) 로그인 폼
     if not st.session_state.get("auth_user"):
+        # 로그아웃 직후 예약된 쿠키 삭제 실행 (rerun 없는 런)
+        if st.session_state.pop("auth_cookie_clear", None):
+            _cookie_js("document.cookie='ws_auth=; path=/; max-age=0';")
         _lc1, _lc2, _lc3 = st.columns([1, 1.2, 1])
         with _lc2:
             if not _users:
@@ -332,21 +352,23 @@ if DB_AVAILABLE and not st.session_state.get("auth_user"):
                         "role": _u.get("role") or "worker"}
                     st.session_state.pop("auth_skip_cookie", None)
                     if _li_keep and _secret:
-                        _cm2 = _cm or _cookie_mgr()
-                        if _cm2 is not None:
-                            try:
-                                from datetime import datetime as _dt_a
-                                from datetime import timedelta as _td_a
-                                _cm2.set("ws_auth", _auth.make_token(
-                                    st.session_state["auth_user"]["username"],
-                                    _secret),
-                                    expires_at=_dt_a.now() + _td_a(days=14))
-                            except Exception:
-                                pass
+                        # 여기서 바로 쓰면 rerun 에 잘려 저장 안 됨 —
+                        # 인증 후 안정 런에 예약
+                        st.session_state["auth_cookie_write"] = (
+                            _b64.urlsafe_b64encode(_auth.make_token(
+                                st.session_state["auth_user"]["username"],
+                                _secret).encode("utf-8")).decode())
                     st.rerun()
                 else:
                     st.error("아이디 또는 비밀번호가 맞지 않습니다.")
             st.stop()
+
+# 로그인 시 예약한 자동 로그인 쿠키 기록 — 인증 후 첫 안정 런에서 실행
+_pend_ck = st.session_state.pop("auth_cookie_write", None)
+if _pend_ck:
+    _cookie_js(
+        "document.cookie='ws_auth={}; path=/; max-age=1209600; "
+        "SameSite=Lax';".format(_pend_ck))
 
 
 # ─── 상태 표기 (영문 코드 → 한글 배지) ───
@@ -523,14 +545,11 @@ with st.sidebar:
                 "관리자" if _is_admin else "작업자"),
             unsafe_allow_html=True)
         if st.button("로그아웃", use_container_width=True, key="auth_out"):
-            _cmo = _cookie_mgr()
-            if _cmo is not None:
-                try:
-                    _cmo.delete("ws_auth")
-                except Exception:
-                    pass
             st.session_state.pop("auth_user", None)
-            # 쿠키 삭제가 반영되기 전 자동 로그인으로 되돌아가는 것 방지
+            # 쿠키 삭제는 다음 런(로그인 화면)에서 실행 — 같은 런에서
+            # 지우고 rerun 하면 컴포넌트가 잘려 삭제되지 않는다
+            st.session_state["auth_cookie_clear"] = True
+            # st.context 쿠키는 새로고침 전까지 옛 값을 주므로 세션 차단
             st.session_state["auth_skip_cookie"] = True
             st.rerun()
         with st.expander("비밀번호 변경"):
@@ -4643,6 +4662,288 @@ elif page == "출고 관리":
             "선입선출로 자동 배분**되어 소재→생산→납품 역추적이 "
             "LOT 단위로 이어집니다."
         )
+
+        # ── 스케줄 일괄 출고 (2026-08-07) — 납품 예정 회차 기반 ──
+        # 품목을 하나씩 검색하지 않고, 오늘(선택일) 납기 회차를 모아
+        # 표에서 수량만 확인하고 한 번에 출고 처리한다.
+        from datetime import date as _bk_dt
+        _bk_today = _bk_dt.today()
+        with st.expander("스케줄 일괄 출고 — 납품 예정 회차를 한 번에",
+                         expanded=True):
+            bkc1, bkc2, bkc3 = st.columns([1, 1, 2])
+            _bk_d = bkc1.date_input("납품일", _bk_today, key="bk_date")
+            _bk_late = bkc2.checkbox("지연 회차 포함", value=True,
+                                     key="bk_late",
+                                     help="선택일 이전에 밀린 회차 잔량도 "
+                                          "함께 출고 목록에 올립니다")
+            _bk_over = bkc3.checkbox(
+                "재고 없이 출고 허용 (ERP 이관 전 생산분 등)",
+                value=False, key="bk_over")
+
+            _bk_flt = ("due_date=lte." if _bk_late
+                       else "due_date=eq.") + _bk_d.isoformat()
+            try:
+                _bk_rounds = [r for r in fetch("so_delivery_schedule",
+                    "sched_id,soi_id,so_id,seq,due_date,qty,delivered_qty",
+                    _bk_flt + "&order=due_date.asc,seq.asc", limit=500)
+                    if (float(r.get("qty") or 0)
+                        - float(r.get("delivered_qty") or 0)) > 0]
+            except Exception as e:
+                st.error(f"회차 조회 실패: {e}")
+                _bk_rounds = []
+
+            if not _bk_rounds:
+                st.info("해당 날짜에 출고할 회차가 없습니다 — 개별 출고는 "
+                        "아래 수주 검색을 이용하세요.")
+            else:
+                _bk_soids = ",".join(str(i) for i in
+                                     {r["so_id"] for r in _bk_rounds})
+                _bk_sois = ",".join(str(i) for i in
+                                    {r["soi_id"] for r in _bk_rounds})
+                try:
+                    _bk_som = {s["so_id"]: s for s in fetch("sales_orders",
+                        "so_id,so_number,customer,status",
+                        f"so_id=in.({_bk_soids})", limit=300)
+                        if (s.get("status") or "") not in
+                        ("CANCELLED", "CANCELED")}
+                    _bk_lim = {l["soi_id"]: l for l in fetch(
+                        "sales_order_items",
+                        "soi_id,so_id,canonical_pn,customer_part_no,"
+                        "product_id,qty,received_qty,pending_qty,unit",
+                        f"soi_id=in.({_bk_sois})", limit=500)}
+                except Exception as e:
+                    st.error(f"수주 조회 실패: {e}")
+                    _bk_som, _bk_lim = {}, {}
+                _bk_pids = {l.get("product_id")
+                            for l in _bk_lim.values() if l.get("product_id")}
+                _bk_stock, _bk_lots = {}, {}
+                if _bk_pids:
+                    _bk_pstr = ",".join(f'"{p}"' for p in _bk_pids)
+                    try:
+                        _bk_stock = {s["product_id"]:
+                                     float(s.get("current_stock") or 0)
+                                     for s in fetch("product_stock_v",
+                                         "product_id,current_stock",
+                                         f"product_id=in.({_bk_pstr})",
+                                         limit=300)}
+                        for _l in fetch("product_lot_stock_v",
+                                "product_id,lot_number,remain_qty,"
+                                "tokusai_qty",
+                                f"product_id=in.({_bk_pstr})"
+                                "&remain_qty=gt.0"
+                                "&order=first_output_date.asc,"
+                                "lot_number.asc", limit=500):
+                            _bk_lots.setdefault(
+                                _l["product_id"], []).append(_l)
+                    except Exception:
+                        pass
+
+                _bk_items = []
+                for r in _bk_rounds:
+                    _so = _bk_som.get(r["so_id"])
+                    _li2 = _bk_lim.get(r["soi_id"])
+                    if not _so or not _li2:
+                        continue
+                    _pend2 = float(_li2.get("pending_qty") or 0)
+                    if _pend2 <= 0:
+                        continue
+                    _rem2 = (float(r.get("qty") or 0)
+                             - float(r.get("delivered_qty") or 0))
+                    _bk_items.append({
+                        "r": r, "li": _li2, "so": _so,
+                        "pn": (_li2.get("canonical_pn")
+                               or _li2.get("customer_part_no") or "-"),
+                        "cap": min(_rem2, _pend2),
+                    })
+
+                if not _bk_items:
+                    st.info("출고 대상 회차가 없습니다 (취소·완납 제외).")
+                else:
+                    import pandas as _bk_pd
+                    _bk_df = _bk_pd.DataFrame([{
+                        "선택": True,
+                        "품번": it["pn"],
+                        "거래처": it["so"].get("customer") or "-",
+                        "수주번호": it["so"].get("so_number") or "-",
+                        "납기": str(it["r"]["due_date"])[:10],
+                        "회차잔량": float(it["cap"]),
+                        "완성재고": _bk_stock.get(
+                            it["li"].get("product_id"), 0.0),
+                        "출고": float(it["cap"]),
+                    } for it in _bk_items])
+                    _bk_sig = f"{_bk_d}_{_bk_late}_{len(_bk_items)}"
+                    _bk_ed = st.data_editor(
+                        _bk_df, hide_index=True, use_container_width=True,
+                        key=f"bk_ed_{_bk_sig}",
+                        column_config={
+                            "선택": st.column_config.CheckboxColumn(
+                                "선택", width="small"),
+                            "출고": st.column_config.NumberColumn(
+                                "출고 수량", min_value=0, step=1),
+                            **{c: st.column_config.Column(disabled=True)
+                               for c in ("품번", "거래처", "수주번호",
+                                          "납기")},
+                            **{c: st.column_config.NumberColumn(
+                                format="localized", disabled=True)
+                               for c in ("회차잔량", "완성재고")},
+                        })
+                    _bk_sel = []
+                    for _bi, _brow in _bk_ed.iterrows():
+                        if not bool(_brow.get("선택")):
+                            continue
+                        _bq = float(_bk_pd.to_numeric(
+                            _brow.get("출고"), errors="coerce") or 0)
+                        if _bq <= 0:
+                            continue
+                        _it = _bk_items[int(_bi)]
+                        _bk_sel.append((_it, min(_bq, _it["cap"])))
+                    _bk_total = sum(q for _, q in _bk_sel)
+
+                    # 재고 사전 검증 (같은 제품 여러 라인 합산)
+                    _bk_short = {}
+                    if not _bk_over:
+                        _byp = {}
+                        for _it, _q in _bk_sel:
+                            _pid2 = _it["li"].get("product_id")
+                            if _pid2:
+                                _byp[_pid2] = _byp.get(_pid2, 0) + _q
+                        _bk_short = {p: q for p, q in _byp.items()
+                                     if q > _bk_stock.get(p, 0) + 1e-9}
+                    if _bk_short:
+                        st.error("완성 재고 부족 — " + ", ".join(
+                            f"{p}: 출고 {q:,.0f} > 재고 "
+                            f"{_bk_stock.get(p, 0):,.0f}"
+                            for p, q in _bk_short.items())
+                            + ". 수량을 줄이거나 '재고 없이 출고 허용'을 "
+                              "체크하세요.")
+                    if st.button(
+                            f"일괄 출고 처리 ({_bk_total:,.0f} · "
+                            f"{len(_bk_sel)}회차)",
+                            type="primary", key="bk_go",
+                            disabled=(_bk_total <= 0 or bool(_bk_short))):
+                        _bk_ok, _bk_txns = 0, []
+                        _bk_lot_used = {}   # product → 소진 반영용
+                        for _it, _q in _bk_sel:
+                            _li3 = _it["li"]
+                            _r3 = _it["r"]
+                            _qty3 = float(_li3.get("qty") or 0)
+                            _nr = float(_li3.get("received_qty") or 0) + _q
+                            _np = max(_qty3 - _nr, 0)
+                            _ns = ("DELIVERED" if _nr >= _qty3
+                                   else "PARTIAL" if _nr > 0
+                                   else "PENDING")
+                            try:
+                                if not _db.update("sales_order_items",
+                                        f"soi_id=eq.{_li3['soi_id']}",
+                                        {"received_qty": _nr,
+                                         "pending_qty": _np,
+                                         "status": _ns}):
+                                    continue
+                            except Exception as e:
+                                st.warning(
+                                    f"{_it['pn']} 라인 반영 실패: {e}")
+                                continue
+                            _bk_ok += 1
+                            _li3["received_qty"] = _nr   # 같은 라인 2회차 대비
+                            _li3["pending_qty"] = _np
+                            # 회차 충당 — 해당 회차 직접
+                            try:
+                                _db.update("so_delivery_schedule",
+                                    f"sched_id=eq.{_r3['sched_id']}",
+                                    {"delivered_qty":
+                                     float(_r3.get("delivered_qty") or 0)
+                                     + _q})
+                                _r3["delivered_qty"] = (
+                                    float(_r3.get("delivered_qty") or 0))
+                            except Exception:
+                                pass
+                            # 재고 차감 원장 — 완성 LOT 선입선출
+                            _pid3 = _li3.get("product_id")
+                            if _pid3:
+                                _left3 = _q
+                                for _lot3 in _bk_lots.get(_pid3, []):
+                                    if _left3 <= 0:
+                                        break
+                                    _lr = (float(_lot3.get("remain_qty")
+                                                 or 0)
+                                           - _bk_lot_used.get(
+                                               (_pid3,
+                                                _lot3["lot_number"]), 0))
+                                    _tk = min(_left3, max(_lr, 0))
+                                    if _tk <= 0:
+                                        continue
+                                    _bk_lot_used[(_pid3,
+                                                  _lot3["lot_number"])] = \
+                                        _bk_lot_used.get(
+                                            (_pid3, _lot3["lot_number"]),
+                                            0) + _tk
+                                    _bk_txns.append({
+                                        "material_id": None,
+                                        "product_id": _pid3,
+                                        "txn_type": "ISSUE",
+                                        "qty": -_tk,
+                                        "unit": _li3.get("unit") or "EA",
+                                        "lot_number": _lot3["lot_number"],
+                                        "work_order": _lot3["lot_number"],
+                                        "ref_table": "sales_order_items",
+                                        "ref_id": _li3["soi_id"],
+                                        "txn_date": _bk_d.isoformat(),
+                                        "remark": "스케줄 일괄 출고: {}"
+                                            .format(_it["so"]["so_number"]),
+                                        "created_by": current_user_name(),
+                                    })
+                                    _left3 -= _tk
+                                if _left3 > 1e-9:
+                                    _bk_txns.append({
+                                        "material_id": None,
+                                        "product_id": _pid3,
+                                        "txn_type": "ISSUE",
+                                        "qty": -_left3,
+                                        "unit": _li3.get("unit") or "EA",
+                                        "lot_number": None,
+                                        "work_order": None,
+                                        "ref_table": "sales_order_items",
+                                        "ref_id": _li3["soi_id"],
+                                        "txn_date": _bk_d.isoformat(),
+                                        "remark": "스케줄 일괄 출고: {} "
+                                            "(LOT 미지정)".format(
+                                                _it["so"]["so_number"]),
+                                        "created_by": current_user_name(),
+                                    })
+                        if _bk_txns:
+                            try:
+                                _db.insert("inventory_transactions",
+                                           _bk_txns)
+                            except Exception as e:
+                                st.warning(f"재고 차감 기록 실패 "
+                                           f"(납품은 정상): {e}")
+                        # 수주 헤더 상태 갱신
+                        for _sid4 in {it["so"]["so_id"]
+                                      for it, _ in _bk_sel}:
+                            try:
+                                _fr = fetch("sales_order_items",
+                                    "qty,received_qty",
+                                    f"so_id=eq.{_sid4}", limit=100)
+                                _all4 = all(
+                                    float(x.get("received_qty") or 0)
+                                    >= float(x.get("qty") or 0)
+                                    for x in _fr) if _fr else False
+                                _any4 = any(
+                                    float(x.get("received_qty") or 0) > 0
+                                    for x in _fr) if _fr else False
+                                _db.update("sales_orders",
+                                    f"so_id=eq.{_sid4}",
+                                    {"status": "DELIVERED" if _all4
+                                     else "PARTIAL" if _any4
+                                     else "CONFIRMED"})
+                            except Exception:
+                                pass
+                        if _bk_ok:
+                            st.success(f"일괄 출고 완료 — {_bk_ok}회차 · "
+                                       f"{_bk_total:,.0f}개")
+                            st.rerun()
+
+        st.divider()
 
         # ── 1) 미납 수주 조회 ──
         dc1, dc2 = st.columns([3, 1])
