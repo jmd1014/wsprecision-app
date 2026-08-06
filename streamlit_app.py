@@ -4543,17 +4543,39 @@ elif page == "출고 관리":
         # ── 1) 미납 수주 조회 ──
         dc1, dc2 = st.columns([3, 1])
         with dc1:
-            dq = st.text_input("수주번호 / 거래처 검색",
-                placeholder="예: 202605, G264, 미진",
+            dq = st.text_input("품번 / 수주번호 / 거래처 검색",
+                placeholder="예: 4PDVN, 202605, 미진",
                 key="deliver_search")
         with dc2:
             d_limit = st.number_input("표시", 5, 50, 10, 5, key="deliver_limit")
 
         d_filter = ["status=not.in.(\"DELIVERED\",\"CANCELLED\",\"CANCELED\")",
                     "order=so_date.desc"]
+        # 품번 매칭 라인 표시용 — 어느 수주가 왜 걸렸는지 보여준다
+        _d_pn_hit = {}
         if dq:
             qq = dq.strip()
-            d_filter.append(f"or=(so_number.ilike.*{qq}*,customer.ilike.*{qq}*)")
+            # 품번은 라인(canonical_pn·거래처 품번)에서, 번호·거래처는 헤더에서
+            try:
+                for _l in fetch("sales_order_items",
+                        "so_id,canonical_pn,customer_part_no,pending_qty",
+                        f"or=(canonical_pn.ilike.*{qq}*,"
+                        f"customer_part_no.ilike.*{qq}*)", limit=500):
+                    _p = (_l.get("canonical_pn")
+                          or _l.get("customer_part_no") or "")
+                    _e = _d_pn_hit.setdefault(_l["so_id"], set())
+                    if _p:
+                        _e.add(_p)
+            except Exception:
+                _d_pn_hit = {}
+            if _d_pn_hit:
+                _ids = ",".join(str(i) for i in _d_pn_hit)
+                d_filter.append(
+                    f"or=(so_number.ilike.*{qq}*,customer.ilike.*{qq}*,"
+                    f"so_id.in.({_ids}))")
+            else:
+                d_filter.append(
+                    f"or=(so_number.ilike.*{qq}*,customer.ilike.*{qq}*)")
         try:
             d_sos = fetch("sales_orders",
                 "so_id,so_number,customer,so_date,due_date,status",
@@ -4564,11 +4586,16 @@ elif page == "출고 관리":
         if not d_sos:
             st.info("미납 수주 없음 (또는 검색 결과 없음).")
         else:
-            d_labels = [
-                f"{s['so_number']} | {s.get('customer','-')} | "
-                f"수주일 {s.get('so_date','-')} | {status_ko(s.get('status'))}"
-                for s in d_sos
-            ]
+            def _d_label(s):
+                _base = (f"{s['so_number']} | {s.get('customer','-')} | "
+                         f"수주일 {s.get('so_date','-')} | "
+                         f"{status_ko(s.get('status'))}")
+                _pns = sorted(_d_pn_hit.get(s["so_id"], []))
+                if _pns:
+                    _base += " | " + ", ".join(_pns[:2]) + (
+                        f" 외 {len(_pns) - 2}" if len(_pns) > 2 else "")
+                return _base
+            d_labels = [_d_label(s) for s in d_sos]
             d_pick = st.selectbox("수주 선택", d_labels, key="deliver_so_pick")
             d_so = d_sos[d_labels.index(d_pick)]
 
