@@ -296,6 +296,52 @@ def test_cancelled_draft_releases_items(ship_db):
     assert len(ed) == 3                # 회차가 다시 담김
 
 
+def _open_sales_report(ship_db):
+    from streamlit.testing.v1 import AppTest
+    at = AppTest.from_file(APP_FILE, default_timeout=60)
+    at.secrets["supabase"] = {"url": "https://mock.local",
+                              "anon_key": "a", "service_role_key": "s"}
+    at.secrets["auth"] = {"disabled": True}
+    at.run()
+    at.sidebar.radio[1].set_value("영업보고")
+    at.run()
+    assert not at.exception, [str(e.value) for e in at.exception]
+    return at
+
+
+def test_sales_report_ignores_draft(ship_db):
+    """영업보고는 확정 전표만 집계 — 작성중 전표는 안내만 뜬다."""
+    at = _open_shipping(ship_db)
+    _register(at)                      # DRAFT 만 존재
+    at2 = _open_sales_report(ship_db)
+    assert any("작성중 전표" in (w.value or "") for w in at2.warning)
+    assert any("확정 전표가 없습니다" in (i.value or "")
+               for i in at2.info)
+    # 확정이 없으니 결산·마감 인쇄 버튼도 없음
+    labels = {getattr(b, "label", "") for b in at2.get("download_button")}
+    assert not any("일일 결산" in l for l in labels)
+
+
+def test_sales_report_daily_monthly_reissue_after_confirm(ship_db):
+    """확정 후 일일 결산·월 마감·재발행이 모두 제공된다."""
+    at = _open_shipping(ship_db)
+    _register(at)
+    at2 = _open_shipping(ship_db)
+    at2.button(key="cf_go").click()
+    at2.run()
+    at3 = _open_sales_report(ship_db)
+    # KPI — 700(단가 1000) 공급 700,000 + VAT 70,000 = 770,000
+    kpis = " ".join(str(m.value) for m in at3.markdown)
+    assert "770,000" in kpis
+    # 단가 미입력 라인(MRG6-07, 300) 은 금액 제외 안내
+    assert any("단가 미입력 1건" in (w.value or "") for w in at3.warning)
+    labels = {getattr(b, "label", "") for b in at3.get("download_button")}
+    assert any("일일 결산 리포트 인쇄" in l for l in labels)
+    assert any("월 마감 보고서 인쇄" in l for l in labels)
+    assert any("거래명세서 재발행" in l for l in labels)
+    assert any("출고 리스트 재발행" in l for l in labels)
+
+
 def test_confirm_stock_guard(ship_db):
     """재고 부족이면 확정 버튼이 잠긴다 (허용 체크 전까지)."""
     STOCK["P2"] = 50.0

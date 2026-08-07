@@ -32,6 +32,7 @@ PAGES_ADMIN = [
     "마스터 관리",
     "원가 확인",
     "생산 보고",
+    "영업보고",
 ]
 PAGES = PAGES_FLOW + PAGES_ADMIN
 

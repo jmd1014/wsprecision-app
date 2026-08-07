@@ -517,6 +517,7 @@ with st.sidebar:
         "마스터 관리",
         "원가 확인",
         "생산 보고",
+        "영업보고",
     ]
     ALL_MENU = MENU_FLOW + MENU_ADMIN
 
@@ -8951,6 +8952,302 @@ elif page == "생산 보고":
                     st.dataframe(tdf, use_container_width=True,
                                  hide_index=True, height=400)
 
+
+elif page == "영업보고":
+    st.subheader("영업보고")
+    st.caption(
+        "**출고 확정된 전표만** 집계합니다 — 작성중 전표는 확정 전까지 "
+        "매출로 잡히지 않습니다. 월 마감 잠금(마감 후 수정 차단)은 "
+        "v2 예정.")
+
+    if not DB_AVAILABLE:
+        st.error("DB 연결이 활성화되지 않았습니다."); st.stop()
+
+    import pandas as _sr_pd
+    from datetime import date as _sr_date
+    import utils.sales_report as _sr
+    if not hasattr(_sr, "monthly_report_html"):
+        import importlib as _sr_il
+        _sr = _sr_il.reload(_sr)  # Cloud 재배포 시 sys.modules 캐시 가드
+    from utils.statement_generator import (
+        delivery_list_html as _sr_list,
+        transaction_statements_html as _sr_stmt)
+
+    def _sr_ships(cond):
+        return fetch(
+            "shipments",
+            "shipment_id,ship_no,ship_date,status,created_by,confirmed_at",
+            cond + "&order=ship_date.asc,shipment_id.asc", limit=1000)
+
+    def _sr_items(ships):
+        """전표 라인 조회 + ship_no/ship_date(=date) 부착."""
+        smap = {s["shipment_id"]: s for s in ships}
+        ids, out = list(smap), []
+        for _i in range(0, len(ids), 50):
+            _ck = ",".join(str(x) for x in ids[_i:_i + 50])
+            for x in fetch(
+                    "shipment_items",
+                    "si_id,shipment_id,soi_id,pn,customer_pn,item_name,"
+                    "customer,so_number,qty,unit,unit_price",
+                    f"shipment_id=in.({_ck})&order=si_id.asc", limit=2000):
+                _s = smap.get(x["shipment_id"]) or {}
+                x["ship_no"] = _s.get("ship_no")
+                x["date"] = _s.get("ship_date")
+                out.append(x)
+        return out
+
+    def _sr_kpi(label, value, sub="", tone="primary"):
+        _v = value if isinstance(value, str) else f"{value:,.0f}"
+        _z = (not isinstance(value, str)) and value <= 0
+        cls = "zero" if _z else tone
+        return (f'<div class="kpi {cls}"><div class="k">{label}</div>'
+                f'<div class="v">{_v}</div>'
+                + (f'<div class="s">{sub}</div>' if sub else "") + "</div>")
+
+    def _sr_missing_note(agg):
+        if agg["all"]["missing"]:
+            st.warning(
+                "단가 미입력 {}건 (수량 {:,.0f}) 은 금액 집계에서 제외 "
+                "— 수주 관리에서 단가를 채우면 반영됩니다.".format(
+                    agg["all"]["missing"], agg["all"]["missing_qty"]))
+
+    def _sr_cust_df(agg):
+        _rows = [{"거래처": c, "품목수": s["lines"], "수량": s["qty"],
+                  "공급가액": s["supply"], "세액": s["vat"],
+                  "합계": s["total"]}
+                 for c, s in sorted(agg["by_customer"].items(),
+                                    key=lambda kv: -kv[1]["total"])]
+        return _sr_pd.DataFrame(_rows)
+
+    _NUMCOL = {c: st.column_config.NumberColumn(format="localized")
+               for c in ("수량", "단가", "공급가액", "세액", "합계",
+                         "합계(VAT포함)")}
+
+    t_day, t_month, t_re = st.tabs(["일일 결산", "월 마감", "명세서 재발행"])
+
+    # ════════ TAB 1: 일일 결산 ════════
+    with t_day:
+        _d_pick = st.date_input("결산일", _sr_date.today(), key="sr_day")
+        _d_iso = _d_pick.isoformat()
+        try:
+            _d_ships = _sr_ships(
+                f"status=eq.CONFIRMED&ship_date=eq.{_d_iso}")
+            _d_drafts = fetch("shipments", "shipment_id,ship_no",
+                              f"status=eq.DRAFT&ship_date=eq.{_d_iso}",
+                              limit=50)
+        except Exception as e:
+            st.error(f"조회 실패: {e}")
+            _d_ships, _d_drafts = [], []
+        if _d_drafts:
+            st.warning(
+                "이 날짜의 작성중 전표 {}건({})은 집계에 포함되지 "
+                "않았습니다 — 출고 관리 → 출고 전표에서 확정하세요.".format(
+                    len(_d_drafts),
+                    ", ".join(d["ship_no"] for d in _d_drafts)))
+        if not _d_ships:
+            st.info(f"{_d_iso} 확정 전표가 없습니다.")
+        else:
+            _d_rows = _sr_items(_d_ships)
+            _d_agg = _sr.aggregate(_d_rows)
+            _da = _d_agg["all"]
+            st.markdown(
+                '<div class="kpi-row">'
+                + _sr_kpi("전표", f"{len(_d_ships)}건")
+                + _sr_kpi("거래처", f"{len(_d_agg['customers'])}곳")
+                + _sr_kpi("총 수량", _da["qty"])
+                + _sr_kpi("공급가액", _da["supply"], tone="good")
+                + _sr_kpi("합계 (VAT포함)", _da["total"], tone="good")
+                + "</div>", unsafe_allow_html=True)
+            _sr_missing_note(_d_agg)
+
+            st.markdown("##### 거래처별 합계")
+            st.dataframe(_sr_cust_df(_d_agg), use_container_width=True,
+                         hide_index=True, column_config=_NUMCOL)
+
+            st.markdown("##### 품목 상세")
+            _d_det = []
+            for x in _d_rows:
+                _amt = _sr.line_amounts(x)
+                _d_det.append({
+                    "전표": x.get("ship_no"), "거래처": x.get("customer"),
+                    "품번": x.get("pn"),
+                    "거래처 표기": x.get("customer_pn"),
+                    "수량": float(x.get("qty") or 0),
+                    "단가": x.get("unit_price"),
+                    "공급가액": _amt[0] if _amt else None})
+            st.dataframe(_sr_pd.DataFrame(_d_det),
+                         use_container_width=True, hide_index=True,
+                         column_config=_NUMCOL)
+            st.download_button(
+                "일일 결산 리포트 인쇄", _sr.daily_report_html(
+                    _d_iso, _d_rows, current_user_name()),
+                file_name=f"일일결산_{_d_iso}.html", mime="text/html",
+                key="sr_dl_day", type="primary")
+
+    # ════════ TAB 2: 월 마감 ════════
+    with t_month:
+        try:
+            _m_all = _sr_ships("status=eq.CONFIRMED")
+        except Exception as e:
+            st.error(f"조회 실패: {e}")
+            _m_all = []
+        _m_months = sorted({str(s["ship_date"])[:7] for s in _m_all
+                            if s.get("ship_date")}, reverse=True)
+        if not _m_months:
+            st.info("확정 전표가 아직 없습니다 — 출고 확정 후 월 마감을 "
+                    "쓸 수 있습니다.")
+        else:
+            _m_pick = st.selectbox("마감 월", _m_months, key="sr_month")
+            _m_ships = [s for s in _m_all
+                        if str(s["ship_date"])[:7] == _m_pick]
+            _m_rows = _sr_items(_m_ships)
+            _m_agg = _sr.aggregate(_m_rows)
+            _ma = _m_agg["all"]
+            st.markdown(
+                '<div class="kpi-row">'
+                + _sr_kpi("전표", f"{len(_m_ships)}건")
+                + _sr_kpi("출고일수", f"{len(_m_agg['by_date'])}일")
+                + _sr_kpi("거래처", f"{len(_m_agg['customers'])}곳")
+                + _sr_kpi("총 수량", _ma["qty"])
+                + _sr_kpi("공급가액", _ma["supply"], tone="good")
+                + _sr_kpi("합계 (VAT포함)", _ma["total"], tone="good")
+                + "</div>", unsafe_allow_html=True)
+            _sr_missing_note(_m_agg)
+
+            _mc1, _mc2 = st.columns(2)
+            with _mc1:
+                st.markdown("##### 거래처별 합계")
+                st.dataframe(_sr_cust_df(_m_agg),
+                             use_container_width=True, hide_index=True,
+                             column_config=_NUMCOL)
+            with _mc2:
+                st.markdown("##### 일자별 합계")
+                _m_dt = [{"출고일": d, "수량": s["qty"],
+                          "공급가액": s["supply"], "합계": s["total"]}
+                         for d, s in sorted(_m_agg["by_date"].items())]
+                st.dataframe(_sr_pd.DataFrame(_m_dt),
+                             use_container_width=True, hide_index=True,
+                             column_config=_NUMCOL)
+
+            st.markdown("##### 품번별 합계 (금액순)")
+            _m_pn = [{"품번": pn, "거래처": cu, "라인": s["lines"],
+                      "수량": s["qty"], "합계(VAT포함)": s["total"]}
+                     for (pn, cu), s in sorted(
+                         _m_agg["by_pn"].items(),
+                         key=lambda kv: (-kv[1]["total"], -kv[1]["qty"]))]
+            st.dataframe(_sr_pd.DataFrame(_m_pn),
+                         use_container_width=True, hide_index=True,
+                         column_config=_NUMCOL)
+            st.download_button(
+                "월 마감 보고서 인쇄", _sr.monthly_report_html(
+                    _m_pick, _m_rows, current_user_name()),
+                file_name=f"월마감_{_m_pick}.html", mime="text/html",
+                key="sr_dl_month", type="primary")
+            st.caption("마감 잠금(마감 후 해당 월 전표 수정 차단)은 "
+                       "v2 에서 추가 예정입니다.")
+
+    # ════════ TAB 3: 명세서 재발행 ════════
+    with t_re:
+        st.caption("확정 전표를 기간으로 찾아 출고 리스트·거래명세서를 "
+                   "다시 발행합니다. 전표 하나를 바로 열려면 출고 관리 → "
+                   "출고 전표에서도 가능합니다.")
+        _rc1, _rc2 = st.columns(2)
+        _r_from = _rc1.date_input(
+            "시작일", _sr_date.today().replace(day=1), key="sr_re_from")
+        _r_to = _rc2.date_input("종료일", _sr_date.today(), key="sr_re_to")
+        try:
+            _r_ships = _sr_ships(
+                "status=eq.CONFIRMED"
+                f"&ship_date=gte.{_r_from.isoformat()}"
+                f"&ship_date=lte.{_r_to.isoformat()}")
+        except Exception as e:
+            st.error(f"조회 실패: {e}")
+            _r_ships = []
+        if not _r_ships:
+            st.info("기간 내 확정 전표가 없습니다.")
+        else:
+            _r_rows = _sr_items(_r_ships)
+            _r_bysh = {}
+            for x in _r_rows:
+                _r_bysh.setdefault(x["shipment_id"], []).append(x)
+
+            _r_custs = sorted({x.get("customer") or "-" for x in _r_rows})
+            _r_cu = st.selectbox("거래처", ["전체"] + _r_custs,
+                                 key="sr_re_cust")
+            _r_view = [s for s in _r_ships
+                       if _r_cu == "전체" or any(
+                           (x.get("customer") or "-") == _r_cu
+                           for x in _r_bysh.get(s["shipment_id"], []))]
+
+            _r_sum = []
+            for s in _r_view:
+                _xs = _r_bysh.get(s["shipment_id"], [])
+                _ag = _sr.aggregate(_xs)
+                _r_sum.append({
+                    "전표": s["ship_no"], "출고일": s["ship_date"],
+                    "거래처": ", ".join(sorted(_ag["customers"])),
+                    "품목수": _ag["all"]["lines"],
+                    "수량": _ag["all"]["qty"],
+                    "합계": _ag["all"]["total"]})
+            st.dataframe(_sr_pd.DataFrame(_r_sum),
+                         use_container_width=True, hide_index=True,
+                         column_config=_NUMCOL)
+
+            _r_pick = st.selectbox(
+                "재발행할 전표", _r_view,
+                format_func=lambda s: "{} | {} | {}".format(
+                    s["ship_no"], s.get("ship_date"),
+                    ", ".join(sorted({
+                        x.get("customer") or "-"
+                        for x in _r_bysh.get(s["shipment_id"], [])}))),
+                key="sr_re_pick")
+            _r_items = _r_bysh.get(_r_pick["shipment_id"], [])
+
+            def _sr_batch(items, ship):
+                return {"date": str(ship.get("ship_date")),
+                        "rows": [{
+                            "pn": x.get("pn"),
+                            "customer_pn": x.get("customer_pn"),
+                            "item_name": x.get("item_name"),
+                            "customer": x.get("customer"),
+                            "so_number": x.get("so_number"),
+                            "qty": float(x.get("qty") or 0),
+                            "unit": x.get("unit") or "EA",
+                            "unit_price": x.get("unit_price"),
+                            "date": str(ship.get("ship_date")),
+                        } for x in items]}
+
+            def _sr_vmap(items):
+                out = {}
+                for _cu in {x.get("customer") for x in items
+                            if x.get("customer")}:
+                    _term = (_cu.replace("㈜", "")
+                             .replace("(주)", "").strip())
+                    try:
+                        _vs = fetch("vendors",
+                                    "name,business_no,ceo_name,phone,"
+                                    "address,business_type,business_item",
+                                    f"name=ilike.*{_term}*", limit=5)
+                        if _vs:
+                            out[_cu] = _vs[0]
+                    except Exception:
+                        pass
+                return out
+
+            _rb1, _rb2 = st.columns(2)
+            _rb1.download_button(
+                "출고 리스트 재발행",
+                _sr_list(_sr_batch(_r_items, _r_pick)),
+                file_name=f"출고리스트_{_r_pick['ship_no']}.html",
+                mime="text/html", key="sr_re_list",
+                use_container_width=True)
+            _rb2.download_button(
+                "거래명세서 재발행",
+                _sr_stmt(_sr_batch(_r_items, _r_pick),
+                         _sr_vmap(_r_items)),
+                file_name=f"거래명세서_{_r_pick['ship_no']}.html",
+                mime="text/html", key="sr_re_stmt", type="primary",
+                use_container_width=True)
 
 elif page == "원가 확인":
     st.subheader("원가 확인")
