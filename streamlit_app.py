@@ -4876,8 +4876,19 @@ elif page == "출고 관리":
                     "품번 검색으로 추가하세요.")
         else:
             import pandas as _sh_pd
+
+            # 행 추가로 표가 다시 그려져도 편집값(선택·출고 수량)이
+            # 유지되도록 행 식별키 단위로 세션에 보존 (2026-08-07)
+            _sh_edits = st.session_state.setdefault("ship_edits", {})
+
+            def _sh_rowkey(it):
+                return "{}:{}".format(
+                    it["li"]["soi_id"],
+                    it["r"]["sched_id"] if it.get("r") else "M")
+
             _sh_df = _sh_pd.DataFrame([{
-                "선택": True,
+                "선택": bool(_sh_edits.get(_sh_rowkey(it), {})
+                            .get("선택", True)),
                 "구분": it["src"],
                 "품번": it["pn"],
                 "거래처": it["so"].get("customer") or "-",
@@ -4885,7 +4896,9 @@ elif page == "출고 관리":
                 "납기": it["due"],
                 "잔량": float(it["cap"]),
                 "완성재고": _sh_stock.get(it["li"].get("product_id"), 0.0),
-                "출고": float(it["cap"]),
+                "출고": min(float(_sh_edits.get(_sh_rowkey(it), {})
+                               .get("출고", it["cap"])),
+                           float(it["cap"])),
             } for it in _sh_items])
             _sh_sig = "{}_{}_{}_{}".format(_sh_d, _sh_late,
                                            len(_sh_items),
@@ -4914,13 +4927,14 @@ elif page == "출고 관리":
 
             _sh_sel = []
             for _bi, _brow in _sh_ed.iterrows():
-                if not bool(_brow.get("선택")):
-                    continue
+                _it = _sh_items[int(_bi)]
                 _bq = float(_sh_pd.to_numeric(
                     _brow.get("출고"), errors="coerce") or 0)
-                if _bq <= 0:
+                # 편집값 보존 — 행이 늘어나도 유지
+                _sh_edits[_sh_rowkey(_it)] = {
+                    "선택": bool(_brow.get("선택")), "출고": _bq}
+                if not bool(_brow.get("선택")) or _bq <= 0:
                     continue
-                _it = _sh_items[int(_bi)]
                 _sh_sel.append((_it, min(_bq, _it["cap"])))
             _sh_total = sum(q for _, q in _sh_sel)
 
@@ -4944,10 +4958,32 @@ elif page == "출고 관리":
                     + ". 수량을 줄이거나 '재고 없이 출고 허용'을 "
                       "체크하세요.")
 
-            # ── ③ 출고 처리 ──
-            if st.button(
+            # ── ② 현장 확인용 리스트 → ③ 확정 처리 ──
+            # 현장 프로세스: 확인용 리스트를 먼저 출력해 현장 체크 →
+            # 수량 정정을 표에 반영 → 출고 처리(확정) → 거래명세서
+            _go1, _go2 = st.columns([1, 1])
+            if _sh_sel:
+                from utils.statement_generator import delivery_list_html \
+                    as _sh_dlh
+                _go2.download_button(
+                    "출고 리스트 인쇄 (현장 확인용 · 처리 전)",
+                    _sh_dlh({"date": _sh_d.isoformat(), "rows": [{
+                        "pn": it["pn"],
+                        "customer_pn": it["li"].get("customer_part_no")
+                        or it["pn"],
+                        "customer": it["so"].get("customer") or "-",
+                        "so_number": it["so"].get("so_number") or "-",
+                        "qty": _q9, "unit": it["li"].get("unit") or "EA",
+                    } for it, _q9 in _sh_sel]}, draft=True),
+                    file_name=f"출고리스트_확인용_{_sh_d.isoformat()}.html",
+                    mime="text/html", key="bk_dl_draft",
+                    use_container_width=True,
+                    help="아직 출고 처리 전 — 현장 확인 후 수량을 표에서 "
+                         "고치고 출고 처리하세요")
+            if _go1.button(
                     f"출고 처리 ({_sh_total:,.0f} · {len(_sh_sel)}건)",
                     type="primary", key="bk_go",
+                    use_container_width=True,
                     disabled=(_sh_total <= 0 or bool(_sh_short))):
                 # 라인 단위로 합산 (스케줄 여러 회차 + 추가분 통합)
                 _by_soi = {}
@@ -5094,6 +5130,7 @@ elif page == "출고 관리":
                         "vendors": _sh_vmap,
                     }
                     st.session_state["ship_manual"] = []
+                    st.session_state["ship_edits"] = {}
                     st.success(f"출고 처리 완료 — {_sh_ok}개 라인 · "
                                f"{_sh_total:,.0f}개")
                     st.rerun()

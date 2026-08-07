@@ -60,3 +60,13 @@ def test_delivery_list_totals():
     assert "3건" in html and "3,498" in html      # 208+1890+1400
     assert "202606290006" in html
     assert "확인" in html                          # 검수 확인란
+    assert "(확정)" in html
+    assert "정정 수량" not in html
+
+
+def test_delivery_list_draft_has_correction_column():
+    """현장 확인용 — 처리 전 안내와 정정 기입란이 있어야 한다."""
+    html = delivery_list_html(BATCH, draft=True)
+    assert "(현장 확인용)" in html
+    assert "정정 수량" in html
+    assert "출고 처리 전" in html

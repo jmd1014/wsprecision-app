@@ -211,38 +211,53 @@ def transaction_statements_html(batch, vendors_map=None):
               "()=>window.print(),300)</script></body></html>")
 
 
-def delivery_list_html(batch):
-    """내부 출고 리스트 — 상차·검수 확인용 (A4 1장, 확인란 포함)."""
+def delivery_list_html(batch, draft=False):
+    """내부 출고 리스트 — 상차·검수 확인용 (A4, 확인란 포함).
+
+    draft=True: 출고 처리 전 '현장 확인용' — 수량 정정 기입란을 두어
+    현장에서 고친 수량을 앱에 반영한 뒤 확정 처리하도록 한다.
+    """
     date_s = str(batch.get("date") or "")
     rows = batch.get("rows", [])
+    title = "출고 리스트" + (" (현장 확인용)" if draft else "")
+    extra_th = ('<th style="width:70px">정정 수량</th>' if draft else "")
     body = []
     for i, r in enumerate(rows, 1):
         body.append(
             "<tr><td class='c'>{i}</td><td>{pn}</td><td>{cpn}</td>"
             "<td>{cu}</td><td>{so}</td><td class='r'>{q} {u}</td>"
-            "<td class='c chk'></td></tr>".format(
+            "{ex}<td class='c chk'></td></tr>".format(
                 i=i, pn=r.get("pn") or "-",
                 cpn=r.get("customer_pn") or "-",
                 cu=r.get("customer") or "-",
                 so=r.get("so_number") or "-",
-                q=_num(r.get("qty")), u=r.get("unit") or "EA"))
+                q=_num(r.get("qty")), u=r.get("unit") or "EA",
+                ex=("<td class='chk'></td>" if draft else "")))
     total = sum(float(r.get("qty") or 0) for r in rows)
-    css = _base_css("#24406b") + """
+    accent = "#e8590c" if draft else "#24406b"
+    css = _base_css(accent) + """
 .items .chk{width:44px}
 .items td.chk{border:1px solid #9aa1ab}
 """
+    note = ("<div style='font-size:11px;color:#d9480f;margin-top:5px'>"
+            "확인용 — 아직 출고 처리 전입니다. 수량이 달라지면 정정 "
+            "수량에 적고, 앱에서 고친 뒤 출고 처리하세요.</div>"
+            if draft else "")
     return f"""<!doctype html><html><head><meta charset='utf-8'>
-<title>출고 리스트 {date_s}</title><style>{css}</style></head><body>
+<title>{title} {date_s}</title><style>{css}</style></head><body>
 <div class="page">
  <div class="hd"><span class="t">출고 리스트</span>
+  <span class="copy">{'(현장 확인용)' if draft else '(확정)'}</span>
   <span class="meta">{date_s} · {len(rows)}건 · 총 {_num(total)}개</span>
  </div>
  <table class="items">
   <tr><th style="width:30px">NO</th><th>품번</th><th>거래처 표기</th>
       <th style="width:80px">거래처</th><th style="width:120px">수주번호</th>
-      <th style="width:90px">수량</th><th style="width:44px">확인</th></tr>
+      <th style="width:90px">수량</th>{extra_th}
+      <th style="width:44px">확인</th></tr>
   {''.join(body)}
  </table>
+ {note}
  <div class="sign"><span>출고 담당 : <span class="stamp">&nbsp;</span> (인)</span>
   <span>검수 : <span class="stamp">&nbsp;</span> (인)</span></div>
  <div class="ft"><span>{SUPPLIER['name']} 출고 관리</span>
