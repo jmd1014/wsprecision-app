@@ -74,6 +74,10 @@ def _fetch(table, select="*", filter_query="", limit=1000):
         if "shipment_id=eq." in filter_query:
             v = int(filter_query.split("shipment_id=eq.")[1].split("&")[0])
             rows = [r for r in rows if r["shipment_id"] == v]
+        if "shipment_id=in.(" in filter_query:
+            ids = {int(x) for x in filter_query.split(
+                "shipment_id=in.(")[1].split(")")[0].split(",") if x}
+            rows = [r for r in rows if r["shipment_id"] in ids]
         return rows
     if table == "so_delivery_schedule":
         rows = [dict(r) for r in ROUNDS]
@@ -253,6 +257,43 @@ def test_confirmed_shipment_offers_reprints(ship_db):
               for b in at3.get("download_button")}
     assert any("출고 리스트 재발행" in l for l in labels)
     assert any("거래명세서 재발행" in l for l in labels)
+
+
+def test_draft_items_excluded_from_new_cart(ship_db):
+    """사용자 시나리오 (2026-08-08): 작성중 전표를 만들어 둔 상태에서
+    출고 등록을 다시 열면 — 기등록 라인은 목록에서 빠지고 재등록이
+    불가해야 한다 (이중 출고 방지)."""
+    at = _open_shipping(ship_db)
+    _register(at)                      # DRAFT 전표 생성 (3회차·2라인)
+    assert len(SHIPMENTS) == 1
+
+    at2 = _open_shipping(ship_db)      # 다시 출고 등록 탭
+    # 담기 표가 아예 없어야 한다 (전 라인이 작성중 전표에 있음)
+    carts = [d for d in at2.dataframe
+             if "잔량" in d.value.columns and "출고" in d.value.columns]
+    assert not carts, "작성중 전표의 라인이 다시 담겼음 — 중복 위험"
+    # 등록 버튼도 없음 (리스트 비어 있음 안내)
+    assert not any(getattr(b, "key", None) == "ship_reg"
+                   for b in at2.button)
+    # 제외 안내에 전표 번호 노출
+    assert any("작성중 전표에 이미 담긴" in (i.value or "")
+               for i in at2.info)
+    # 전표는 여전히 1건 — 중복 생성되지 않음
+    assert len(SHIPMENTS) == 1
+
+
+def test_cancelled_draft_releases_items(ship_db):
+    """전표를 취소하면 라인이 다시 담을 수 있게 풀린다."""
+    at = _open_shipping(ship_db)
+    _register(at)
+    at2 = _open_shipping(ship_db)
+    at2.button(key="cf_cancel").click()
+    at2.run()
+    assert SHIPMENTS[0]["status"] == "CANCELLED"
+    at3 = _open_shipping(ship_db)
+    ed = next(d.value for d in at3.dataframe
+              if "잔량" in d.value.columns and "출고" in d.value.columns)
+    assert len(ed) == 3                # 회차가 다시 담김
 
 
 def test_confirm_stock_guard(ship_db):

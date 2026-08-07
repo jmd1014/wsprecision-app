@@ -4646,15 +4646,46 @@ elif page == "출고 관리":
                                  help="선택일 이전에 밀린 회차 잔량도 "
                                       "리스트에 올립니다")
 
+        # 작성중(DRAFT) 전표에 이미 담긴 라인은 중복 등록 방지를 위해
+        # 담기 목록에서 제외한다 (2026-08-08 사용자 확정 — 두 전표를
+        # 모두 확정하면 이중 출고가 되므로). 전표를 취소하면 다시 뜬다.
+        _draft_sois = {}
+        try:
+            _open_drafts = fetch("shipments", "shipment_id,ship_no",
+                                 "status=eq.DRAFT", limit=50)
+            if _open_drafts:
+                _d_ids = ",".join(str(s["shipment_id"])
+                                  for s in _open_drafts)
+                _d_no = {s["shipment_id"]: s["ship_no"]
+                         for s in _open_drafts}
+                for x in fetch("shipment_items", "soi_id,shipment_id",
+                               f"shipment_id=in.({_d_ids})", limit=1000):
+                    if x.get("soi_id") is not None:
+                        _draft_sois.setdefault(
+                            x["soi_id"], _d_no.get(x["shipment_id"], "-"))
+        except Exception:
+            _draft_sois = {}
+
         # 스케줄 자동 리스트업
         _sh_flt = ("due_date=lte." if _sh_late
                    else "due_date=eq.") + _sh_d.isoformat()
         try:
-            _sh_rounds = [r for r in fetch("so_delivery_schedule",
+            _sh_rounds_all = [r for r in fetch("so_delivery_schedule",
                 "sched_id,soi_id,so_id,seq,due_date,qty,delivered_qty",
                 _sh_flt + "&order=due_date.asc,seq.asc", limit=500)
                 if (float(r.get("qty") or 0)
                     - float(r.get("delivered_qty") or 0)) > 0]
+            _sh_rounds = [r for r in _sh_rounds_all
+                          if r["soi_id"] not in _draft_sois]
+            _sh_held = {r["soi_id"]: _draft_sois[r["soi_id"]]
+                        for r in _sh_rounds_all
+                        if r["soi_id"] in _draft_sois}
+            if _sh_held:
+                st.info("작성중 전표에 이미 담긴 {}개 라인은 목록에서 "
+                        "제외했습니다 ({}) — 수정은 출고 전표 탭에서, "
+                        "다시 담으려면 해당 전표를 취소하세요.".format(
+                            len(_sh_held),
+                            ", ".join(sorted(set(_sh_held.values())))))
         except Exception as e:
             st.error(f"회차 조회 실패: {e}")
             _sh_rounds = []
@@ -4706,8 +4737,13 @@ elif page == "출고 관리":
                     key="ship_pick", label_visibility="collapsed")
                 if sq2.button("리스트에 추가", key="ship_add",
                               use_container_width=True):
-                    if any(m["soi_id"] == _sh_pick2["soi_id"]
-                           for m in _sh_manual):
+                    if _sh_pick2["soi_id"] in _draft_sois:
+                        st.warning("작성중 전표 {} 에 이미 담긴 "
+                                   "라인입니다 — 수정은 출고 전표 "
+                                   "탭에서 하세요.".format(
+                                       _draft_sois[_sh_pick2["soi_id"]]))
+                    elif any(m["soi_id"] == _sh_pick2["soi_id"]
+                             for m in _sh_manual):
                         st.toast("이미 리스트에 있는 라인입니다.")
                     else:
                         _sh_manual.append({
@@ -4763,8 +4799,8 @@ elif page == "출고 관리":
             })
         _sh_auto_soi = {it["li"]["soi_id"] for it in _sh_items}
         for m in _sh_manual:
-            if m["soi_id"] in _sh_auto_soi:
-                continue
+            if m["soi_id"] in _sh_auto_soi or m["soi_id"] in _draft_sois:
+                continue      # 작성중 전표에 담긴 라인은 재등록 금지
             _li2 = _sh_lim.get(m["soi_id"])
             _so = _sh_som.get(m["so_id"])
             if not _so or not _li2:
