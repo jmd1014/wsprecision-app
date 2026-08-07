@@ -4225,193 +4225,126 @@ elif page == "수주 관리":
                     except Exception:
                         _prev = {}
 
-                    _exp_label = ("납기 추가 (이어서)" if _rows
-                                  else "납기 입력")
-                    # 단발 / 반복을 한 곳에서 — 방식만 고르면 된다
-                    _mode = st.radio(
-                        "납기 방식", ["한 번에 (단발)", "나눠서 (반복)"],
-                        horizontal=True,
-                        index=1 if (_rows or _li_unplan > 3000) else 0,
-                        key=f"sch_mode_{_li['soi_id']}")
-
-                    if _mode == "한 번에 (단발)":
-                        with st.expander(_exp_label, expanded=True):
-                            o1, o2 = st.columns([1, 1])
-                            _o_due = o1.date_input(
-                                "납기", value=_date.today() + _td(days=7),
-                                key=f"sch_od_{_li['soi_id']}")
-                            _o_qty = o2.number_input(
-                                "수량", min_value=0.0,
-                                value=float(_li_unplan), step=1.0,
-                                key=f"sch_oq_{_li['soi_id']}",
-                                help="기본값 = 아직 납기가 입력되지 않은 "
-                                     "미납 수량")
-                            st.caption(f"{_o_due} 에 {_o_qty:,.0f} 를 한 "
-                                       "회차로 등록합니다.")
-                            if st.button("납기 등록", type="primary",
-                                         disabled=_o_qty <= 0,
-                                         key=f"sch_om_{_li['soi_id']}"):
-                                try:
-                                    _seq1 = max((int(r["seq"])
-                                                 for r in _rows),
-                                                default=0) + 1
-                                    _db.insert("so_delivery_schedule", [{
-                                        "so_id": _s_so["so_id"],
-                                        "soi_id": _li["soi_id"],
-                                        "seq": _seq1,
-                                        "due_date": _o_due.isoformat(),
-                                        "qty": float(_o_qty),
-                                        "delivered_qty": 0,
-                                        "note": None,
-                                        "created_by": current_user_name()}])
-                                    if not _rows:
-                                        _db.update("sales_order_items",
-                                            f"soi_id=eq.{_li['soi_id']}",
-                                            {"due_date": _o_due.isoformat()})
-                                    st.success(f"{_o_due} 납기 등록 "
-                                               f"({_o_qty:,.0f})")
-                                    st.rerun()
-                                except Exception as e:
-                                    st.error(f"등록 실패: {e}")
-
-                    if _mode == "나눠서 (반복)":
-                      with st.expander(_exp_label, expanded=True):
-                          _pv_wq = _prev.get("wd_qty") or {}
-                          if _prev:
-                              st.caption(
-                                  f"이전 패턴 감지 ({_prev['src']}): "
-                                  + " · ".join(
-                                      f"{_WD[w]} {q:,.0f}"
-                                      for w, q in sorted(_pv_wq.items()))
-                                  + f" · 마지막 납기 {_prev['last']} → 아래 "
-                                    "기본값에 반영했습니다.")
-                          _def_wd = [_WD[w] for w in _prev.get("wd", [2, 4])
-                                     if w < 7] or ["수", "금"]
-                          _def_start = (
-                              _date.fromisoformat(_prev["last"]) + _td(days=1)
-                              if _prev.get("last")
-                              and _date.fromisoformat(_prev["last"])
-                              >= _date.today()
-                              else _date.today() + _td(days=1))
-                          g1, g2 = st.columns([2, 1])
-                          _g_wd = g1.multiselect(
-                              "납품 요일", _WD, default=_def_wd,
-                              key=f"sch_wd_{_li['soi_id']}",
-                              help="여러 개 선택 — 요일마다 수량을 다르게 "
-                                   "지정할 수 있습니다")
-                          _g_start = g2.date_input(
-                              "시작일", value=_def_start,
-                              key=f"sch_st_{_li['soi_id']}",
-                              help="이 날짜 이후 첫 해당 요일부터 생성")
-
-                          # ── 요일별 수량 (다를 수 있음: 수 2016 / 금 1008 등)
-                          _wd_amt = {}
-                          if _g_wd:
-                              st.caption("요일별 납품 수량 — 요일마다 다르면 "
-                                         "각각 입력하세요.")
-                              _wcols = st.columns(len(_g_wd))
-                              for _wi, _wname in enumerate(_g_wd):
-                                  _widx = _WD.index(_wname)
-                                  _dflt = float(
-                                      _pv_wq.get(_widx)
-                                      or (list(_pv_wq.values())[0]
-                                          if _pv_wq else 0)
-                                      or (round(_remain_to_plan / 4)
-                                          if _remain_to_plan else 0))
-                                  _wd_amt[_widx] = _wcols[_wi].number_input(
-                                      f"{_wname}요일", min_value=0.0,
-                                      value=_dflt, step=1.0,
-                                      key=f"sch_wq_{_li['soi_id']}_{_widx}")
-                          _week_sum = sum(_wd_amt.values())
-                          _g_target = st.number_input(
-                              "총 배분 수량", min_value=0.0,
-                              value=float(_remain_to_plan), step=1.0,
-                              key=f"sch_t_{_li['soi_id']}",
-                              help="기본값 = 아직 납기가 입력되지 않은 미납 "
-                                   "수량. 이 수량이 소진될 때까지 회차를 "
-                                   "만듭니다.")
-                          # 이전 마지막 회차가 정상 수량에 못 미치면 그 부족분을
-                          # 첫 회차에 얹어 리듬을 잇는다 (사용자 요청 2026-07-28)
-                          _carry0 = float(_prev.get("carry") or 0)
-                          _use_carry = False
-                          if _carry0 > 0:
-                              _use_carry = st.checkbox(
-                                  f"{_prev['last']} 잔여 {_carry0:,.0f} 먼저 "
-                                  f"채우기 (그날 {_prev['last_qty']:,.0f} / "
-                                  f"정상 {_prev['last_norm']:,.0f})",
-                                  value=True, key=f"sch_cr_{_li['soi_id']}",
-                                  help="이전 스케줄 마지막 날이 정상 수량에 "
-                                       "못 미쳤다면, 그 날짜에 부족분을 먼저 "
-                                       "얹어 그날 물량을 맞춘 뒤 다음 회차를 "
-                                       "이어갑니다.")
-                          if _g_target <= 0:
-                              st.info("이 라인은 미납 전량이 이미 계획되어 "
-                                      "있습니다 — 추가로 넣으려면 총 배분 "
-                                      "수량을 직접 입력하세요.")
-                          elif _week_sum > 0 and _g_wd:
-                              _wks = _g_target / _week_sum
-                              st.caption(
-                                  f"주당 {_week_sum:,.0f} "
-                                  f"({' + '.join(f'{_WD[w]} {q:,.0f}' for w, q in sorted(_wd_amt.items()))})"
-                                  f" → 약 {_wks:.1f}주 · 총 {_g_target:,.0f} "
-                                  "(마지막 회차에서 잔량 조정)")
-                          _mk = st.button(
-                              "회차 생성", type="primary",
-                              disabled=not (_week_sum > 0 and _g_target > 0
-                                            and _g_wd),
-                              key=f"sch_mk_{_li['soi_id']}")
-                          if _mk:
-                              _cur = _g_start
-                              _left = float(_g_target)
-                              _seq0 = (max((int(r["seq"]) for r in _rows),
-                                           default=0))
-                              _new, _guard = [], 0
-                              # 부족분은 이전 마지막 '그 날짜'에 얹어 그날
-                              # 물량을 맞춘다 (다음 요일로 미루지 않음)
-                              if _use_carry and _carry0 > 0:
-                                  _cq = min(_carry0, _left)
-                                  _seq0 += 1
-                                  _new.append({
-                                      "so_id": _s_so["so_id"],
-                                      "soi_id": _li["soi_id"],
-                                      "seq": _seq0,
-                                      "due_date": _prev["last"],
-                                      "qty": float(_cq),
-                                      "delivered_qty": 0,
-                                      "note": "이전 회차 잔여 보충",
-                                      "created_by": current_user_name(),
-                                  })
-                                  _left -= _cq
-                              # PostgREST 는 배열 insert 시 모든 객체의 키가
-                              # 같아야 한다 (PGRST102) → note 키를 통일
-                              while _left > 0.5 and _guard < 500:
-                                  _guard += 1
-                                  _wq = _wd_amt.get(_cur.weekday())
-                                  if _wq and _wq > 0:
-                                      _q = min(_wq, _left)
-                                      _seq0 += 1
-                                      _new.append({
-                                          "so_id": _s_so["so_id"],
-                                          "soi_id": _li["soi_id"],
-                                          "seq": _seq0,
-                                          "due_date": _cur.isoformat(),
-                                          "qty": float(_q),
-                                          "delivered_qty": 0,
-                                          "note": None,
-                                          "created_by": current_user_name(),
-                                      })
-                                      _left -= _q
-                                  _cur += _td2(days=1)
-                              try:
-                                  if _new:
-                                      _db.insert("so_delivery_schedule", _new)
-                                      st.success(
-                                          f"{len(_new)}개 회차 생성 "
-                                          f"({_new[0]['due_date']} ~ "
-                                          f"{_new[-1]['due_date']})")
-                                      st.rerun()
-                              except Exception as e:
-                                  st.error(f"생성 실패: {e}")
+                    # ── 패턴으로 행 채우기 (2026-08-08 재설계) ──
+                    # 단발/분납 구분 제거 — 회차가 1개면 그게 단발이다.
+                    # 표(회차 편집)가 1차 입력 수단이고, 패턴 도구는 표를
+                    # 빨리 채워줄 뿐이다. 여기서 만든 행은 DB 에 바로
+                    # 저장되지 않고 표에 올라간 뒤 '스케줄 저장' 시점에
+                    # 반영된다 — 저장 전에 표에서 자유롭게 고칠 수 있다.
+                    _pend_key = f"sch_pend_{_li['soi_id']}"
+                    _pending = st.session_state.setdefault(_pend_key, [])
+                    _pending_sum = sum(float(p["qty"]) for p in _pending)
+                    _fill_target = max(0.0, _remain_to_plan - _pending_sum)
+                    with st.expander(
+                            "패턴으로 행 채우기 — 요일 반복을 표에 자동 "
+                            "추가"
+                            + (f" (미저장 {len(_pending)}행 · "
+                               f"{_pending_sum:,.0f})" if _pending else ""),
+                            expanded=not _rows and not _pending):
+                        _pv_wq = _prev.get("wd_qty") or {}
+                        if _prev:
+                            st.caption(
+                                f"이전 패턴 감지 ({_prev['src']}): "
+                                + " · ".join(
+                                    f"{_WD[w]} {q:,.0f}"
+                                    for w, q in sorted(_pv_wq.items()))
+                                + f" · 마지막 납기 {_prev['last']} → 아래 "
+                                  "기본값에 반영했습니다.")
+                        _def_wd = [_WD[w] for w in _prev.get("wd", [2, 4])
+                                   if w < 7] or ["수", "금"]
+                        _def_start = (
+                            _date.fromisoformat(_prev["last"]) + _td(days=1)
+                            if _prev.get("last")
+                            and _date.fromisoformat(_prev["last"])
+                            >= _date.today()
+                            else _date.today() + _td(days=1))
+                        g1, g2 = st.columns([2, 1])
+                        _g_wd = g1.multiselect(
+                            "납품 요일", _WD, default=_def_wd,
+                            key=f"sch_wd_{_li['soi_id']}",
+                            help="여러 개 선택 — 요일마다 수량을 다르게 "
+                                 "지정할 수 있습니다. 1회짜리(단발)는 "
+                                 "이 도구 없이 표에 행 하나만 추가하면 "
+                                 "됩니다.")
+                        _g_start = g2.date_input(
+                            "시작일", value=_def_start,
+                            key=f"sch_st_{_li['soi_id']}",
+                            help="이 날짜 이후 첫 해당 요일부터 생성")
+                        _wd_amt = {}
+                        if _g_wd:
+                            st.caption("요일별 수량 — 요일마다 다르면 각각 "
+                                       "입력하세요.")
+                            _wcols = st.columns(len(_g_wd))
+                            for _wi, _wname in enumerate(_g_wd):
+                                _widx = _WD.index(_wname)
+                                _dflt = float(
+                                    _pv_wq.get(_widx)
+                                    or (list(_pv_wq.values())[0]
+                                        if _pv_wq else 0)
+                                    or (round(_fill_target / 4)
+                                        if _fill_target else 0))
+                                _wd_amt[_widx] = _wcols[_wi].number_input(
+                                    f"{_wname}요일", min_value=0.0,
+                                    value=_dflt, step=1.0,
+                                    key=f"sch_wq_{_li['soi_id']}_{_widx}")
+                        _week_sum = sum(_wd_amt.values())
+                        _g_target = st.number_input(
+                            "총 배분 수량", min_value=0.0,
+                            value=float(_fill_target), step=1.0,
+                            key=f"sch_t_{_li['soi_id']}",
+                            help="기본값 = 납기 미입력 잔량(미저장 행 "
+                                 "제외). 이 수량이 소진될 때까지 행을 "
+                                 "만듭니다.")
+                        _carry0 = float(_prev.get("carry") or 0)
+                        _use_carry = False
+                        if _carry0 > 0:
+                            _use_carry = st.checkbox(
+                                f"{_prev['last']} 잔여 {_carry0:,.0f} 먼저 "
+                                f"채우기 (그날 {_prev['last_qty']:,.0f} / "
+                                f"정상 {_prev['last_norm']:,.0f})",
+                                value=True, key=f"sch_cr_{_li['soi_id']}")
+                        if _g_target > 0 and _week_sum > 0 and _g_wd:
+                            st.caption(
+                                f"주당 {_week_sum:,.0f} → 약 "
+                                f"{_g_target / _week_sum:.1f}주 · 총 "
+                                f"{_g_target:,.0f} (마지막 행에서 잔량 "
+                                "조정)")
+                        fb1, fb2 = st.columns([1, 1])
+                        if fb1.button(
+                                "표에 채우기", type="primary",
+                                disabled=not (_week_sum > 0
+                                              and _g_target > 0 and _g_wd),
+                                key=f"sch_mk_{_li['soi_id']}",
+                                use_container_width=True):
+                            _cur = _g_start
+                            _left = float(_g_target)
+                            _new, _guard = [], 0
+                            if _use_carry and _carry0 > 0:
+                                _cq = min(_carry0, _left)
+                                _new.append({
+                                    "due_date": _prev["last"],
+                                    "qty": float(_cq),
+                                    "note": "이전 회차 잔여 보충"})
+                                _left -= _cq
+                            while _left > 0.5 and _guard < 500:
+                                _guard += 1
+                                _wq = _wd_amt.get(_cur.weekday())
+                                if _wq and _wq > 0:
+                                    _q = min(_wq, _left)
+                                    _new.append({
+                                        "due_date": _cur.isoformat(),
+                                        "qty": float(_q), "note": None})
+                                    _left -= _q
+                                _cur += _td2(days=1)
+                            if _new:
+                                _pending.extend(_new)
+                                st.rerun()
+                        if _pending and fb2.button(
+                                "미저장 행 비우기",
+                                key=f"sch_pclr_{_li['soi_id']}",
+                                use_container_width=True):
+                            st.session_state[_pend_key] = []
+                            st.rerun()
 
                     # ── 일괄 조정 (협의 변경 대응) ──
                     if _rows:
@@ -4516,10 +4449,22 @@ elif page == "수주 관리":
                                "추가하고 휴지통으로 삭제합니다. 회차 번호는 "
                                "저장할 때 납기순으로 자동 부여됩니다. "
                                "납품 완료 수량은 출고 등록 시 자동 반영.")
+                    # 표 = DB 회차 + 패턴으로 채운 미저장 행 (납기순)
                     # 빈 표에서도 컬럼 타입이 정해져야 data_editor 가
                     # column_config 와 충돌하지 않는다 (astype 필수)
-                    if _rows:
-                        _b = pd.DataFrame(_rows).sort_values("due_date")
+                    _tbl_rows = sorted(
+                        [{"due_date": str(r["due_date"])[:10],
+                          "qty": float(r.get("qty") or 0),
+                          "delivered_qty":
+                              float(r.get("delivered_qty") or 0),
+                          "note": r.get("note")} for r in _rows]
+                        + [{"due_date": str(p["due_date"])[:10],
+                            "qty": float(p.get("qty") or 0),
+                            "delivered_qty": 0.0,
+                            "note": p.get("note")} for p in _pending],
+                        key=lambda x: x["due_date"])
+                    if _tbl_rows:
+                        _b = pd.DataFrame(_tbl_rows)
                         _ed_src = pd.DataFrame({
                             "납기": pd.to_datetime(_b["due_date"],
                                                   errors="coerce"),
@@ -4537,10 +4482,15 @@ elif page == "수주 관리":
                             "납품완료": pd.Series([], dtype="float64"),
                             "비고": pd.Series([], dtype="string"),
                         })
+                    if _pending:
+                        st.caption(
+                            f"패턴으로 채운 미저장 행 {len(_pending)}개가 "
+                            "표에 포함되어 있습니다 — 확인·수정 후 "
+                            "**스케줄 저장**을 눌러야 반영됩니다.")
                     # key 에 데이터 시그니처를 포함 — 같은 key 면 Streamlit 이
-                    # 이전 위젯 상태(편집 전 표)를 재사용해 회차 생성 직후
+                    # 이전 위젯 상태(편집 전 표)를 재사용해 행 추가 직후
                     # 표가 갱신되지 않는다 (2026-07-28 사용자 보고)
-                    _ed_sig = f"{len(_rows)}_{hash(tuple(sorted((str(r['due_date']), float(r['qty'])) for r in _rows))) % 99999}"
+                    _ed_sig = f"{len(_tbl_rows)}_{hash(tuple(sorted((r['due_date'], r['qty']) for r in _tbl_rows))) % 99999}"
                     _ed = st.data_editor(
                         _ed_src, num_rows="dynamic", use_container_width=True,
                         hide_index=True,
@@ -4588,6 +4538,7 @@ elif page == "수주 관리":
                                     _db.delete("so_delivery_schedule",
                                                f"soi_id=eq.{_li['soi_id']}")
                                     st.session_state[_rk] = False
+                                    st.session_state[_pend_key] = []
                                     st.success("전체 삭제 완료")
                                     st.rerun()
                                 except Exception as e:
@@ -4649,6 +4600,15 @@ elif page == "수주 관리":
                                        f"soi_id=eq.{_li['soi_id']}")
                             if _keep:
                                 _db.insert("so_delivery_schedule", _keep)
+                                # 라인 납기 = 첫 회차 (화면 납기 표시 기준)
+                                try:
+                                    _db.update("sales_order_items",
+                                        f"soi_id=eq.{_li['soi_id']}",
+                                        {"due_date":
+                                         _keep[0]["due_date"]})
+                                except Exception:
+                                    pass
+                            st.session_state[_pend_key] = []
                             st.success(f"저장 완료 — {len(_keep)}개 회차")
                             st.rerun()
                         except Exception as e:
