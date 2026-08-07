@@ -57,13 +57,17 @@ INSERTED, UPDATED = [], []
 
 def _fetch(table, select="*", filter_query="", limit=1000):
     if table == "so_delivery_schedule":
+        rows = [dict(r) for r in ROUNDS]
+        if "soi_id=eq." in filter_query:
+            sid = int(filter_query.split("soi_id=eq.")[1].split("&")[0])
+            rows = [r for r in rows if r["soi_id"] == sid]
         if "due_date=lte." in filter_query or "due_date=eq." in filter_query:
             cut = filter_query.split("due_date=")[1].split("&")[0]
             op, _, val = cut.partition(".")
-            if op == "eq":
-                return [dict(r) for r in ROUNDS if r["due_date"] == val]
-            return [dict(r) for r in ROUNDS if r["due_date"] <= val]
-        return [dict(r) for r in ROUNDS]
+            rows = [r for r in rows
+                    if (r["due_date"] == val if op == "eq"
+                        else r["due_date"] <= val)]
+        return sorted(rows, key=lambda r: (r["due_date"], r["seq"]))
     if table == "sales_orders":
         return [dict(s) for s in SOS]
     if table == "sales_order_items":
@@ -125,13 +129,14 @@ def test_bulk_table_lists_due_and_late_rounds(bulk_db):
     at = _open_shipping(bulk_db)
     # AppTest 는 data_editor 를 dataframe 요소로 노출한다
     ed = next(d.value for d in at.dataframe
-              if "회차잔량" in d.value.columns)
+              if "잔량" in d.value.columns and "출고" in d.value.columns)
     assert len(ed) == 3
     assert set(ed["품번"]) == {"4PDVN-03", "MRG6-07"}
+    assert set(ed["구분"]) == {"스케줄"}
     row = ed[ed["납기"] == TODAY].iloc[0]
-    assert row["출고"] == row["회차잔량"]
+    assert row["출고"] == row["잔량"]
     # MRG6-07: 회차 300 중 100 납품됨 → 잔량 200
-    assert float(ed[ed["품번"] == "MRG6-07"].iloc[0]["회차잔량"]) == 200
+    assert float(ed[ed["품번"] == "MRG6-07"].iloc[0]["잔량"]) == 200
 
 
 def test_bulk_submit_writes_lines_rounds_and_fifo_issues(bulk_db):
@@ -169,6 +174,13 @@ def test_bulk_submit_writes_lines_rounds_and_fifo_issues(bulk_db):
     # 헤더 상태 갱신
     hdr = [(f, v) for t, f, v in UPDATED if t == "sales_orders"]
     assert any("so_id=eq.100" in f for f, _ in hdr)
+
+    # 출력물 배치 저장 (출고 리스트·거래명세서용)
+    batch = at.session_state["bk_last_batch"]
+    assert len(batch["rows"]) == 3
+    assert {r["pn"] for r in batch["rows"]} == {"4PDVN-03", "MRG6-07"}
+    # 거래처 ERP 표기 우선 (4S4PDVN-03)
+    assert any(r["customer_pn"] == "4S4PDVN-03" for r in batch["rows"])
 
 
 def test_bulk_stock_guard_blocks_over_issue(bulk_db):

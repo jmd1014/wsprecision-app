@@ -4667,812 +4667,474 @@ elif page == "출고 관리":
 
     # ════════ TAB 1: 납품 등록 ════════
     with tab_deliver:
+        # ══ 통합 출하 플로우 (2026-08-07 재설계) ══════════════
+        # ① 출고 리스트: 스케줄이 자동으로 올리고 + 품번 검색으로 추가
+        # ② 표에서 선택·수량 조정 → ③ 출고 처리 → ④ 리스트·명세서 인쇄
+        from datetime import date as _sh_dt
+        from utils.delivery_alloc import allocate_rounds as _sh_alloc
         st.caption(
-            "수주 라인에 납품 수량을 기록합니다 — received_qty 누적 + "
-            "상태 자동 전환 + 완성 재고 차감. **완성 LOT(작업지시)에서 "
-            "선입선출로 자동 배분**되어 소재→생산→납품 역추적이 "
-            "LOT 단위로 이어집니다."
-        )
+            "스케줄이 출고 예정 품목을 자동으로 올리고, 스케줄에 없는 "
+            "품목은 **품번 검색으로 리스트에 추가**합니다. 출고 처리는 "
+            "기납품 누적 + 상태 전환 + 회차 충당 + 완성 LOT 선입선출 "
+            "재고 차감으로 기록되고, 처리 직후 출고 리스트·거래명세서를 "
+            "인쇄합니다.")
 
-        # ── 스케줄 일괄 출고 (2026-08-07) — 납품 예정 회차 기반 ──
-        # 품목을 하나씩 검색하지 않고, 오늘(선택일) 납기 회차를 모아
-        # 표에서 수량만 확인하고 한 번에 출고 처리한다.
-        from datetime import date as _bk_dt
-        _bk_today = _bk_dt.today()
-        with st.expander("스케줄 일괄 출고 — 납품 예정 회차를 한 번에",
-                         expanded=True):
-            # ── 직전 일괄 출고분 출력물 (출고 리스트 · 거래명세서) ──
-            _bk_last = st.session_state.get("bk_last_batch")
-            if _bk_last and _bk_last.get("rows"):
-                from utils.statement_generator import (
-                    delivery_list_html, transaction_statements_html)
-                _bk_ld = _bk_last.get("date", "")
-                st.success(
-                    "출고 처리 완료 {}건 · {} — 출고 리스트와 거래명세서를 "
-                    "내려받아 인쇄하세요 (열면 인쇄 창이 자동으로 뜹니다)."
-                    .format(len(_bk_last["rows"]), _bk_ld))
-                pd1, pd2, pd3 = st.columns([1, 1, 1])
-                pd1.download_button(
-                    "출고 리스트 (인쇄)",
-                    delivery_list_html(_bk_last),
-                    file_name=f"출고리스트_{_bk_ld}.html",
-                    mime="text/html", key="bk_dl_list",
-                    use_container_width=True)
-                pd2.download_button(
-                    "거래명세서 (인쇄)",
-                    transaction_statements_html(
-                        _bk_last, _bk_last.get("vendors")),
-                    file_name=f"거래명세서_{_bk_ld}.html",
-                    mime="text/html", key="bk_dl_stmt", type="primary",
-                    use_container_width=True)
-                pd3.button("출력물 목록 지우기", key="bk_clear",
-                           use_container_width=True,
-                           on_click=lambda: st.session_state.pop(
-                               "bk_last_batch", None))
-                st.divider()
+        # ── ④ 직전 출고분 출력물 ──
+        _sh_last = st.session_state.get("bk_last_batch")
+        if _sh_last and _sh_last.get("rows"):
+            from utils.statement_generator import (
+                delivery_list_html, transaction_statements_html)
+            _sh_ld = _sh_last.get("date", "")
+            st.success(
+                "출고 처리 완료 {}건 · {} — 출력물을 내려받아 인쇄하세요 "
+                "(열면 인쇄 창이 자동으로 뜹니다).".format(
+                    len(_sh_last["rows"]), _sh_ld))
+            pd1, pd2, pd3 = st.columns(3)
+            pd1.download_button(
+                "출고 리스트 (인쇄)", delivery_list_html(_sh_last),
+                file_name=f"출고리스트_{_sh_ld}.html", mime="text/html",
+                key="bk_dl_list", use_container_width=True)
+            pd2.download_button(
+                "거래명세서 (인쇄)",
+                transaction_statements_html(_sh_last,
+                                            _sh_last.get("vendors")),
+                file_name=f"거래명세서_{_sh_ld}.html", mime="text/html",
+                key="bk_dl_stmt", type="primary",
+                use_container_width=True)
+            pd3.button("출력물 목록 지우기", key="bk_clear",
+                       use_container_width=True,
+                       on_click=lambda: st.session_state.pop(
+                           "bk_last_batch", None))
+            st.divider()
 
-            bkc1, bkc2, bkc3 = st.columns([1, 1, 2])
-            _bk_d = bkc1.date_input("납품일", _bk_today, key="bk_date")
-            _bk_late = bkc2.checkbox("지연 회차 포함", value=True,
-                                     key="bk_late",
-                                     help="선택일 이전에 밀린 회차 잔량도 "
-                                          "함께 출고 목록에 올립니다")
-            _bk_over = bkc3.checkbox(
-                "재고 없이 출고 허용 (ERP 이관 전 생산분 등)",
-                value=False, key="bk_over")
+        # ── ① 출고 리스트 구성 ──
+        st.markdown("##### 출고 리스트")
+        shc1, shc2, shc3 = st.columns([1, 1, 2])
+        _sh_d = shc1.date_input("납품일", _sh_dt.today(), key="bk_date")
+        _sh_late = shc2.checkbox("지연 회차 포함", value=True, key="bk_late",
+                                 help="선택일 이전에 밀린 회차 잔량도 "
+                                      "리스트에 올립니다")
+        _sh_over = shc3.checkbox(
+            "재고 없이 출고 허용 (ERP 이관 전 생산분 등)",
+            value=False, key="bk_over")
 
-            _bk_flt = ("due_date=lte." if _bk_late
-                       else "due_date=eq.") + _bk_d.isoformat()
+        # 스케줄 자동 리스트업
+        _sh_flt = ("due_date=lte." if _sh_late
+                   else "due_date=eq.") + _sh_d.isoformat()
+        try:
+            _sh_rounds = [r for r in fetch("so_delivery_schedule",
+                "sched_id,soi_id,so_id,seq,due_date,qty,delivered_qty",
+                _sh_flt + "&order=due_date.asc,seq.asc", limit=500)
+                if (float(r.get("qty") or 0)
+                    - float(r.get("delivered_qty") or 0)) > 0]
+        except Exception as e:
+            st.error(f"회차 조회 실패: {e}")
+            _sh_rounds = []
+
+        # 품번 검색 → 리스트 추가 (스케줄에 없는 품목·임시 출고)
+        _sh_manual = st.session_state.setdefault("ship_manual", [])
+        sq1, sq2 = st.columns([3, 1])
+        _sh_q = sq1.text_input(
+            "품번 · 수주번호 검색 후 리스트에 추가", key="ship_q",
+            placeholder="예: 8HFDV, 4PDVN, 202607")
+        _sh_cand = []
+        if _sh_q.strip():
+            _qq2 = _sh_q.strip()
             try:
-                _bk_rounds = [r for r in fetch("so_delivery_schedule",
-                    "sched_id,soi_id,so_id,seq,due_date,qty,delivered_qty",
-                    _bk_flt + "&order=due_date.asc,seq.asc", limit=500)
-                    if (float(r.get("qty") or 0)
-                        - float(r.get("delivered_qty") or 0)) > 0]
-            except Exception as e:
-                st.error(f"회차 조회 실패: {e}")
-                _bk_rounds = []
-
-            if not _bk_rounds:
-                st.info("해당 날짜에 출고할 회차가 없습니다 — 개별 출고는 "
-                        "아래 수주 검색을 이용하세요.")
+                _sh_cand = fetch("sales_order_items",
+                    "soi_id,so_id,canonical_pn,customer_part_no,"
+                    "pending_qty,due_date",
+                    f"pending_qty=gt.0&or=(canonical_pn.ilike.*{_qq2}*,"
+                    f"customer_part_no.ilike.*{_qq2}*)",
+                    limit=30)
+                if not _sh_cand:      # 수주번호로도 검색
+                    _hit_so2 = [s["so_id"] for s in fetch("sales_orders",
+                        "so_id", f"so_number=ilike.*{_qq2}*", limit=20)]
+                    if _hit_so2:
+                        _sh_cand = fetch("sales_order_items",
+                            "soi_id,so_id,canonical_pn,customer_part_no,"
+                            "pending_qty,due_date",
+                            "pending_qty=gt.0&so_id=in.({})".format(
+                                ",".join(map(str, _hit_so2))), limit=30)
+            except Exception:
+                _sh_cand = []
+        if _sh_cand:
+            _cand_so = {s["so_id"]: s for s in fetch("sales_orders",
+                "so_id,so_number,customer,status",
+                "so_id=in.({})".format(
+                    ",".join(str(c["so_id"]) for c in _sh_cand)),
+                limit=100)}
+            _sh_cand = [c for c in _sh_cand
+                        if (_cand_so.get(c["so_id"], {}).get("status")
+                            or "") not in ("CANCELLED", "CANCELED")]
+            if _sh_cand:
+                _sh_pick2 = sq1.selectbox(
+                    "추가할 수주 라인", _sh_cand,
+                    format_func=lambda c: "{} | {} | 미납 {:,.0f}".format(
+                        c.get("canonical_pn")
+                        or c.get("customer_part_no") or "-",
+                        _cand_so.get(c["so_id"], {}).get("so_number", "-"),
+                        float(c.get("pending_qty") or 0)),
+                    key="ship_pick", label_visibility="collapsed")
+                if sq2.button("리스트에 추가", key="ship_add",
+                              use_container_width=True):
+                    if any(m["soi_id"] == _sh_pick2["soi_id"]
+                           for m in _sh_manual):
+                        st.toast("이미 리스트에 있는 라인입니다.")
+                    else:
+                        _sh_manual.append({
+                            "soi_id": _sh_pick2["soi_id"],
+                            "so_id": _sh_pick2["so_id"]})
+                        st.rerun()
             else:
-                _bk_soids = ",".join(str(i) for i in
-                                     {r["so_id"] for r in _bk_rounds})
-                _bk_sois = ",".join(str(i) for i in
-                                    {r["soi_id"] for r in _bk_rounds})
-                try:
-                    _bk_som = {s["so_id"]: s for s in fetch("sales_orders",
-                        "so_id,so_number,customer,status",
-                        f"so_id=in.({_bk_soids})", limit=300)
-                        if (s.get("status") or "") not in
-                        ("CANCELLED", "CANCELED")}
-                    _bk_lim = {l["soi_id"]: l for l in fetch(
-                        "sales_order_items",
-                        "soi_id,so_id,canonical_pn,customer_part_no,"
-                        "customer_item_name,product_id,qty,received_qty,"
-                        "pending_qty,unit,unit_price",
-                        f"soi_id=in.({_bk_sois})", limit=500)}
-                except Exception as e:
-                    st.error(f"수주 조회 실패: {e}")
-                    _bk_som, _bk_lim = {}, {}
-                _bk_pids = {l.get("product_id")
-                            for l in _bk_lim.values() if l.get("product_id")}
-                _bk_stock, _bk_lots = {}, {}
-                if _bk_pids:
-                    _bk_pstr = ",".join(f'"{p}"' for p in _bk_pids)
+                sq1.caption("미납 라인이 없습니다.")
+        elif _sh_q.strip():
+            sq1.caption("검색 결과가 없습니다 — 품번 일부로 검색하세요.")
+
+        # ── 리스트 행 구성 (스케줄 + 추가분 조인) ──
+        _sh_soids = ({r["so_id"] for r in _sh_rounds}
+                     | {m["so_id"] for m in _sh_manual})
+        _sh_sois = ({r["soi_id"] for r in _sh_rounds}
+                    | {m["soi_id"] for m in _sh_manual})
+        _sh_som, _sh_lim = {}, {}
+        if _sh_soids:
+            try:
+                _sh_som = {s["so_id"]: s for s in fetch("sales_orders",
+                    "so_id,so_number,customer,status",
+                    "so_id=in.({})".format(
+                        ",".join(map(str, _sh_soids))), limit=300)
+                    if (s.get("status") or "") not in
+                    ("CANCELLED", "CANCELED")}
+                _sh_lim = {l["soi_id"]: l for l in fetch(
+                    "sales_order_items",
+                    "soi_id,so_id,canonical_pn,customer_part_no,"
+                    "customer_item_name,product_id,qty,received_qty,"
+                    "pending_qty,unit,unit_price,due_date",
+                    "soi_id=in.({})".format(
+                        ",".join(map(str, _sh_sois))), limit=500)}
+            except Exception as e:
+                st.error(f"수주 조회 실패: {e}")
+        _sh_pids = {l.get("product_id")
+                    for l in _sh_lim.values() if l.get("product_id")}
+        _sh_stock, _sh_lots = {}, {}
+        if _sh_pids:
+            _sh_pstr = ",".join(f'"{p}"' for p in _sh_pids)
+            try:
+                _sh_stock = {s["product_id"]:
+                             float(s.get("current_stock") or 0)
+                             for s in fetch("product_stock_v",
+                                 "product_id,current_stock",
+                                 f"product_id=in.({_sh_pstr})", limit=300)}
+                for _l in fetch("product_lot_stock_v",
+                        "product_id,lot_number,remain_qty,tokusai_qty",
+                        f"product_id=in.({_sh_pstr})&remain_qty=gt.0"
+                        "&order=first_output_date.asc,lot_number.asc",
+                        limit=500):
+                    _sh_lots.setdefault(_l["product_id"], []).append(_l)
+            except Exception:
+                pass
+
+        _sh_items = []
+        for r in _sh_rounds:
+            _so = _sh_som.get(r["so_id"])
+            _li2 = _sh_lim.get(r["soi_id"])
+            if not _so or not _li2:
+                continue
+            _pend2 = float(_li2.get("pending_qty") or 0)
+            _rem2 = (float(r.get("qty") or 0)
+                     - float(r.get("delivered_qty") or 0))
+            if _pend2 <= 0 or _rem2 <= 0:
+                continue
+            _sh_items.append({
+                "src": "스케줄", "r": r, "li": _li2, "so": _so,
+                "pn": (_li2.get("canonical_pn")
+                       or _li2.get("customer_part_no") or "-"),
+                "due": str(r["due_date"])[:10],
+                "cap": min(_rem2, _pend2),
+            })
+        _sh_auto_soi = {it["li"]["soi_id"] for it in _sh_items}
+        for m in _sh_manual:
+            if m["soi_id"] in _sh_auto_soi:
+                continue      # 스케줄 행이 이미 올라온 라인은 중복 방지
+            _li2 = _sh_lim.get(m["soi_id"])
+            _so = _sh_som.get(m["so_id"])
+            if not _so or not _li2:
+                continue
+            _pend2 = float(_li2.get("pending_qty") or 0)
+            if _pend2 <= 0:
+                continue
+            _sh_items.append({
+                "src": "추가", "r": None, "li": _li2, "so": _so,
+                "pn": (_li2.get("canonical_pn")
+                       or _li2.get("customer_part_no") or "-"),
+                "due": str(_li2.get("due_date") or "")[:10] or "-",
+                "cap": _pend2,
+            })
+
+        if not _sh_items:
+            st.info("출고 리스트가 비어 있습니다 — 스케줄 회차가 없으면 "
+                    "품번 검색으로 추가하세요.")
+        else:
+            import pandas as _sh_pd
+            _sh_df = _sh_pd.DataFrame([{
+                "선택": True,
+                "구분": it["src"],
+                "품번": it["pn"],
+                "거래처": it["so"].get("customer") or "-",
+                "수주번호": it["so"].get("so_number") or "-",
+                "납기": it["due"],
+                "잔량": float(it["cap"]),
+                "완성재고": _sh_stock.get(it["li"].get("product_id"), 0.0),
+                "출고": float(it["cap"]),
+            } for it in _sh_items])
+            _sh_sig = "{}_{}_{}_{}".format(_sh_d, _sh_late,
+                                           len(_sh_items),
+                                           len(_sh_manual))
+            _sh_ed = st.data_editor(
+                _sh_df, hide_index=True, use_container_width=True,
+                key=f"bk_ed_{_sh_sig}",
+                column_config={
+                    "선택": st.column_config.CheckboxColumn(
+                        "선택", width="small"),
+                    "출고": st.column_config.NumberColumn(
+                        "출고 수량", min_value=0, step=1),
+                    **{c: st.column_config.Column(disabled=True)
+                       for c in ("구분", "품번", "거래처", "수주번호",
+                                  "납기")},
+                    **{c: st.column_config.NumberColumn(
+                        format="localized", disabled=True)
+                       for c in ("잔량", "완성재고")},
+                })
+            _sh_c1, _sh_c2 = st.columns([3, 1])
+            if _sh_manual:
+                _sh_c2.button("추가분 비우기", key="ship_manual_clear",
+                              use_container_width=True,
+                              on_click=lambda: st.session_state.update(
+                                  ship_manual=[]))
+
+            _sh_sel = []
+            for _bi, _brow in _sh_ed.iterrows():
+                if not bool(_brow.get("선택")):
+                    continue
+                _bq = float(_sh_pd.to_numeric(
+                    _brow.get("출고"), errors="coerce") or 0)
+                if _bq <= 0:
+                    continue
+                _it = _sh_items[int(_bi)]
+                _sh_sel.append((_it, min(_bq, _it["cap"])))
+            _sh_total = sum(q for _, q in _sh_sel)
+
+            # 재고 사전 검증 (같은 제품 여러 행 합산)
+            _sh_short = {}
+            if not _sh_over:
+                _byp = {}
+                for _it, _q in _sh_sel:
+                    _pid2 = _it["li"].get("product_id")
+                    if _pid2:
+                        _byp[_pid2] = _byp.get(_pid2, 0) + _q
+                _pid_pn = {it["li"].get("product_id"): it["pn"]
+                           for it in _sh_items}
+                _sh_short = {(_pid_pn.get(p) or p): (q, _sh_stock.get(p, 0))
+                             for p, q in _byp.items()
+                             if q > _sh_stock.get(p, 0) + 1e-9}
+            if _sh_short:
+                st.error("완성 재고 부족 — " + ", ".join(
+                    f"{p}: 출고 {q:,.0f} > 재고 {s:,.0f}"
+                    for p, (q, s) in _sh_short.items())
+                    + ". 수량을 줄이거나 '재고 없이 출고 허용'을 "
+                      "체크하세요.")
+
+            # ── ③ 출고 처리 ──
+            if st.button(
+                    f"출고 처리 ({_sh_total:,.0f} · {len(_sh_sel)}건)",
+                    type="primary", key="bk_go",
+                    disabled=(_sh_total <= 0 or bool(_sh_short))):
+                # 라인 단위로 합산 (스케줄 여러 회차 + 추가분 통합)
+                _by_soi = {}
+                for _it, _q in _sh_sel:
+                    _e = _by_soi.setdefault(_it["li"]["soi_id"],
+                                            {"it": _it, "q": 0.0})
+                    _e["q"] += _q
+                _sh_ok, _sh_txns = 0, []
+                _lot_used = {}
+                for _soi5, _e in _by_soi.items():
+                    _li3, _so3 = _e["it"]["li"], _e["it"]["so"]
+                    _q3 = min(_e["q"],
+                              float(_li3.get("pending_qty") or 0))
+                    if _q3 <= 0:
+                        continue
+                    _qty3 = float(_li3.get("qty") or 0)
+                    _nr = float(_li3.get("received_qty") or 0) + _q3
+                    _np = max(_qty3 - _nr, 0)
+                    _ns = ("DELIVERED" if _nr >= _qty3
+                           else "PARTIAL" if _nr > 0 else "PENDING")
                     try:
-                        _bk_stock = {s["product_id"]:
-                                     float(s.get("current_stock") or 0)
-                                     for s in fetch("product_stock_v",
-                                         "product_id,current_stock",
-                                         f"product_id=in.({_bk_pstr})",
-                                         limit=300)}
-                        for _l in fetch("product_lot_stock_v",
-                                "product_id,lot_number,remain_qty,"
-                                "tokusai_qty",
-                                f"product_id=in.({_bk_pstr})"
-                                "&remain_qty=gt.0"
-                                "&order=first_output_date.asc,"
-                                "lot_number.asc", limit=500):
-                            _bk_lots.setdefault(
-                                _l["product_id"], []).append(_l)
+                        if not _db.update("sales_order_items",
+                                f"soi_id=eq.{_soi5}",
+                                {"received_qty": _nr,
+                                 "pending_qty": _np, "status": _ns}):
+                            continue
+                    except Exception as e:
+                        st.warning(f"{_e['it']['pn']} 라인 반영 실패: {e}")
+                        continue
+                    _sh_ok += 1
+                    # 회차 충당 — 납품일 회차 우선, 오래된 회차 만회
+                    try:
+                        _rr = fetch("so_delivery_schedule",
+                            "sched_id,due_date,qty,delivered_qty",
+                            f"soi_id=eq.{_soi5}"
+                            "&order=due_date.asc,seq.asc", limit=100)
+                        for _sid6, _nd in _sh_alloc(
+                                _rr, _q3, _sh_d).items():
+                            _db.update("so_delivery_schedule",
+                                       f"sched_id=eq.{_sid6}",
+                                       {"delivered_qty": _nd})
                     except Exception:
                         pass
-
-                _bk_items = []
-                for r in _bk_rounds:
-                    _so = _bk_som.get(r["so_id"])
-                    _li2 = _bk_lim.get(r["soi_id"])
-                    if not _so or not _li2:
-                        continue
-                    _pend2 = float(_li2.get("pending_qty") or 0)
-                    if _pend2 <= 0:
-                        continue
-                    _rem2 = (float(r.get("qty") or 0)
-                             - float(r.get("delivered_qty") or 0))
-                    _bk_items.append({
-                        "r": r, "li": _li2, "so": _so,
-                        "pn": (_li2.get("canonical_pn")
-                               or _li2.get("customer_part_no") or "-"),
-                        "cap": min(_rem2, _pend2),
-                    })
-
-                if not _bk_items:
-                    st.info("출고 대상 회차가 없습니다 (취소·완납 제외).")
-                else:
-                    import pandas as _bk_pd
-                    _bk_df = _bk_pd.DataFrame([{
-                        "선택": True,
-                        "품번": it["pn"],
-                        "거래처": it["so"].get("customer") or "-",
-                        "수주번호": it["so"].get("so_number") or "-",
-                        "납기": str(it["r"]["due_date"])[:10],
-                        "회차잔량": float(it["cap"]),
-                        "완성재고": _bk_stock.get(
-                            it["li"].get("product_id"), 0.0),
-                        "출고": float(it["cap"]),
-                    } for it in _bk_items])
-                    _bk_sig = f"{_bk_d}_{_bk_late}_{len(_bk_items)}"
-                    _bk_ed = st.data_editor(
-                        _bk_df, hide_index=True, use_container_width=True,
-                        key=f"bk_ed_{_bk_sig}",
-                        column_config={
-                            "선택": st.column_config.CheckboxColumn(
-                                "선택", width="small"),
-                            "출고": st.column_config.NumberColumn(
-                                "출고 수량", min_value=0, step=1),
-                            **{c: st.column_config.Column(disabled=True)
-                               for c in ("품번", "거래처", "수주번호",
-                                          "납기")},
-                            **{c: st.column_config.NumberColumn(
-                                format="localized", disabled=True)
-                               for c in ("회차잔량", "완성재고")},
-                        })
-                    _bk_sel = []
-                    for _bi, _brow in _bk_ed.iterrows():
-                        if not bool(_brow.get("선택")):
-                            continue
-                        _bq = float(_bk_pd.to_numeric(
-                            _brow.get("출고"), errors="coerce") or 0)
-                        if _bq <= 0:
-                            continue
-                        _it = _bk_items[int(_bi)]
-                        _bk_sel.append((_it, min(_bq, _it["cap"])))
-                    _bk_total = sum(q for _, q in _bk_sel)
-
-                    # 재고 사전 검증 (같은 제품 여러 라인 합산)
-                    _bk_short = {}
-                    if not _bk_over:
-                        _byp = {}
-                        for _it, _q in _bk_sel:
-                            _pid2 = _it["li"].get("product_id")
-                            if _pid2:
-                                _byp[_pid2] = _byp.get(_pid2, 0) + _q
-                        _bk_short = {p: q for p, q in _byp.items()
-                                     if q > _bk_stock.get(p, 0) + 1e-9}
-                    if _bk_short:
-                        st.error("완성 재고 부족 — " + ", ".join(
-                            f"{p}: 출고 {q:,.0f} > 재고 "
-                            f"{_bk_stock.get(p, 0):,.0f}"
-                            for p, q in _bk_short.items())
-                            + ". 수량을 줄이거나 '재고 없이 출고 허용'을 "
-                              "체크하세요.")
-                    if st.button(
-                            f"일괄 출고 처리 ({_bk_total:,.0f} · "
-                            f"{len(_bk_sel)}회차)",
-                            type="primary", key="bk_go",
-                            disabled=(_bk_total <= 0 or bool(_bk_short))):
-                        _bk_ok, _bk_txns = 0, []
-                        _bk_lot_used = {}   # product → 소진 반영용
-                        for _it, _q in _bk_sel:
-                            _li3 = _it["li"]
-                            _r3 = _it["r"]
-                            _qty3 = float(_li3.get("qty") or 0)
-                            _nr = float(_li3.get("received_qty") or 0) + _q
-                            _np = max(_qty3 - _nr, 0)
-                            _ns = ("DELIVERED" if _nr >= _qty3
-                                   else "PARTIAL" if _nr > 0
-                                   else "PENDING")
-                            try:
-                                if not _db.update("sales_order_items",
-                                        f"soi_id=eq.{_li3['soi_id']}",
-                                        {"received_qty": _nr,
-                                         "pending_qty": _np,
-                                         "status": _ns}):
-                                    continue
-                            except Exception as e:
-                                st.warning(
-                                    f"{_it['pn']} 라인 반영 실패: {e}")
+                    # 재고 차감 — 완성 LOT 선입선출 (교차 소진 추적)
+                    _pid3 = _li3.get("product_id")
+                    if _pid3:
+                        _left3 = _q3
+                        for _lot3 in _sh_lots.get(_pid3, []):
+                            if _left3 <= 0:
+                                break
+                            _lr = (float(_lot3.get("remain_qty") or 0)
+                                   - _lot_used.get(
+                                       (_pid3, _lot3["lot_number"]), 0))
+                            _tk = min(_left3, max(_lr, 0))
+                            if _tk <= 0:
                                 continue
-                            _bk_ok += 1
-                            _li3["received_qty"] = _nr   # 같은 라인 2회차 대비
-                            _li3["pending_qty"] = _np
-                            # 회차 충당 — 해당 회차 직접
-                            try:
-                                _db.update("so_delivery_schedule",
-                                    f"sched_id=eq.{_r3['sched_id']}",
-                                    {"delivered_qty":
-                                     float(_r3.get("delivered_qty") or 0)
-                                     + _q})
-                                _r3["delivered_qty"] = (
-                                    float(_r3.get("delivered_qty") or 0))
-                            except Exception:
-                                pass
-                            # 재고 차감 원장 — 완성 LOT 선입선출
-                            _pid3 = _li3.get("product_id")
-                            if _pid3:
-                                _left3 = _q
-                                for _lot3 in _bk_lots.get(_pid3, []):
-                                    if _left3 <= 0:
-                                        break
-                                    _lr = (float(_lot3.get("remain_qty")
-                                                 or 0)
-                                           - _bk_lot_used.get(
-                                               (_pid3,
-                                                _lot3["lot_number"]), 0))
-                                    _tk = min(_left3, max(_lr, 0))
-                                    if _tk <= 0:
-                                        continue
-                                    _bk_lot_used[(_pid3,
-                                                  _lot3["lot_number"])] = \
-                                        _bk_lot_used.get(
-                                            (_pid3, _lot3["lot_number"]),
-                                            0) + _tk
-                                    _bk_txns.append({
-                                        "material_id": None,
-                                        "product_id": _pid3,
-                                        "txn_type": "ISSUE",
-                                        "qty": -_tk,
-                                        "unit": _li3.get("unit") or "EA",
-                                        "lot_number": _lot3["lot_number"],
-                                        "work_order": _lot3["lot_number"],
-                                        "ref_table": "sales_order_items",
-                                        "ref_id": _li3["soi_id"],
-                                        "txn_date": _bk_d.isoformat(),
-                                        "remark": "스케줄 일괄 출고: {}"
-                                            .format(_it["so"]["so_number"]),
-                                        "created_by": current_user_name(),
-                                    })
-                                    _left3 -= _tk
-                                if _left3 > 1e-9:
-                                    _bk_txns.append({
-                                        "material_id": None,
-                                        "product_id": _pid3,
-                                        "txn_type": "ISSUE",
-                                        "qty": -_left3,
-                                        "unit": _li3.get("unit") or "EA",
-                                        "lot_number": None,
-                                        "work_order": None,
-                                        "ref_table": "sales_order_items",
-                                        "ref_id": _li3["soi_id"],
-                                        "txn_date": _bk_d.isoformat(),
-                                        "remark": "스케줄 일괄 출고: {} "
-                                            "(LOT 미지정)".format(
-                                                _it["so"]["so_number"]),
-                                        "created_by": current_user_name(),
-                                    })
-                        if _bk_txns:
-                            try:
-                                _db.insert("inventory_transactions",
-                                           _bk_txns)
-                            except Exception as e:
-                                st.warning(f"재고 차감 기록 실패 "
-                                           f"(납품은 정상): {e}")
-                        # 수주 헤더 상태 갱신
-                        for _sid4 in {it["so"]["so_id"]
-                                      for it, _ in _bk_sel}:
-                            try:
-                                _fr = fetch("sales_order_items",
-                                    "qty,received_qty",
-                                    f"so_id=eq.{_sid4}", limit=100)
-                                _all4 = all(
-                                    float(x.get("received_qty") or 0)
+                            _lot_used[(_pid3, _lot3["lot_number"])] = \
+                                _lot_used.get(
+                                    (_pid3, _lot3["lot_number"]), 0) + _tk
+                            _sh_txns.append({
+                                "material_id": None, "product_id": _pid3,
+                                "txn_type": "ISSUE", "qty": -_tk,
+                                "unit": _li3.get("unit") or "EA",
+                                "lot_number": _lot3["lot_number"],
+                                "work_order": _lot3["lot_number"],
+                                "ref_table": "sales_order_items",
+                                "ref_id": _soi5,
+                                "txn_date": _sh_d.isoformat(),
+                                "remark": "출고: {}".format(
+                                    _so3.get("so_number") or "-"),
+                                "created_by": current_user_name(),
+                            })
+                            _left3 -= _tk
+                        if _left3 > 1e-9:
+                            _sh_txns.append({
+                                "material_id": None, "product_id": _pid3,
+                                "txn_type": "ISSUE", "qty": -_left3,
+                                "unit": _li3.get("unit") or "EA",
+                                "lot_number": None, "work_order": None,
+                                "ref_table": "sales_order_items",
+                                "ref_id": _soi5,
+                                "txn_date": _sh_d.isoformat(),
+                                "remark": "출고: {} (LOT 미지정)".format(
+                                    _so3.get("so_number") or "-"),
+                                "created_by": current_user_name(),
+                            })
+                if _sh_txns:
+                    try:
+                        _db.insert("inventory_transactions", _sh_txns)
+                    except Exception as e:
+                        st.warning(f"재고 차감 기록 실패 (납품은 정상): {e}")
+                # 수주 헤더 상태 갱신
+                for _sid7 in {e["it"]["so"]["so_id"]
+                              for e in _by_soi.values()}:
+                    try:
+                        _fr = fetch("sales_order_items", "qty,received_qty",
+                                    f"so_id=eq.{_sid7}", limit=100)
+                        _all7 = all(float(x.get("received_qty") or 0)
                                     >= float(x.get("qty") or 0)
                                     for x in _fr) if _fr else False
-                                _any4 = any(
-                                    float(x.get("received_qty") or 0) > 0
+                        _any7 = any(float(x.get("received_qty") or 0) > 0
                                     for x in _fr) if _fr else False
-                                _db.update("sales_orders",
-                                    f"so_id=eq.{_sid4}",
-                                    {"status": "DELIVERED" if _all4
-                                     else "PARTIAL" if _any4
-                                     else "CONFIRMED"})
-                            except Exception:
-                                pass
-                        if _bk_ok:
-                            # 출력물(출고 리스트·거래명세서)용 배치 보관
-                            _bk_vmap = {}
-                            for _cu in {it["so"].get("customer")
-                                        for it, _ in _bk_sel
-                                        if it["so"].get("customer")}:
-                                _term = (_cu.replace("㈜", "")
-                                         .replace("(주)", "").strip())
-                                try:
-                                    _vs = fetch("vendors",
-                                        "name,business_no,ceo_name,phone,"
-                                        "address,business_type,"
-                                        "business_item",
-                                        f"name=ilike.*{_term}*", limit=5)
-                                    if _vs:
-                                        _bk_vmap[_cu] = _vs[0]
-                                except Exception:
-                                    pass
-                            st.session_state["bk_last_batch"] = {
-                                "date": _bk_d.isoformat(),
-                                "rows": [{
-                                    "pn": it["pn"],
-                                    "customer_pn":
-                                        it["li"].get("customer_part_no")
-                                        or it["pn"],
-                                    "item_name":
-                                        it["li"].get("customer_item_name"),
-                                    "customer":
-                                        it["so"].get("customer") or "-",
-                                    "so_number":
-                                        it["so"].get("so_number") or "-",
-                                    "qty": _q2,
-                                    "unit": it["li"].get("unit") or "EA",
-                                    "unit_price":
-                                        it["li"].get("unit_price"),
-                                    "spec": None, "remark": None,
-                                    "date": _bk_d.isoformat(),
-                                } for it, _q2 in _bk_sel],
-                                "vendors": _bk_vmap,
-                            }
-                            st.success(f"일괄 출고 완료 — {_bk_ok}회차 · "
-                                       f"{_bk_total:,.0f}개")
-                            st.rerun()
-
-        st.divider()
-
-        # ── 1) 미납 수주 조회 ──
-        dc1, dc2 = st.columns([3, 1])
-        with dc1:
-            dq = st.text_input("품번 / 수주번호 / 거래처 검색",
-                placeholder="예: 4PDVN, 202605, 미진",
-                key="deliver_search")
-        with dc2:
-            d_limit = st.number_input("표시", 5, 50, 10, 5, key="deliver_limit")
-
-        d_filter = ["status=not.in.(\"DELIVERED\",\"CANCELLED\",\"CANCELED\")",
-                    "order=so_date.desc"]
-        # 품번 매칭 라인 표시용 — 어느 수주가 왜 걸렸는지 보여준다
-        _d_pn_hit = {}
-        if dq:
-            qq = dq.strip()
-            # 품번은 라인(canonical_pn·거래처 품번)에서, 번호·거래처는 헤더에서
-            try:
-                for _l in fetch("sales_order_items",
-                        "so_id,canonical_pn,customer_part_no,pending_qty",
-                        f"or=(canonical_pn.ilike.*{qq}*,"
-                        f"customer_part_no.ilike.*{qq}*)", limit=500):
-                    _p = (_l.get("canonical_pn")
-                          or _l.get("customer_part_no") or "")
-                    _e = _d_pn_hit.setdefault(_l["so_id"], set())
-                    if _p:
-                        _e.add(_p)
-            except Exception:
-                _d_pn_hit = {}
-            if _d_pn_hit:
-                _ids = ",".join(str(i) for i in _d_pn_hit)
-                d_filter.append(
-                    f"or=(so_number.ilike.*{qq}*,customer.ilike.*{qq}*,"
-                    f"so_id.in.({_ids}))")
-            else:
-                d_filter.append(
-                    f"or=(so_number.ilike.*{qq}*,customer.ilike.*{qq}*)")
-        try:
-            d_sos = fetch("sales_orders",
-                "so_id,so_number,customer,so_date,due_date,status",
-                "&".join(d_filter), limit=int(d_limit))
-        except Exception as e:
-            st.error(f"수주 조회 실패: {e}"); d_sos = []
-
-        if not d_sos:
-            st.info("미납 수주 없음 (또는 검색 결과 없음).")
-        else:
-            def _d_label(s):
-                _base = (f"{s['so_number']} | {s.get('customer','-')} | "
-                         f"수주일 {s.get('so_date','-')} | "
-                         f"{status_ko(s.get('status'))}")
-                _pns = sorted(_d_pn_hit.get(s["so_id"], []))
-                if _pns:
-                    _base += " | " + ", ".join(_pns[:2]) + (
-                        f" 외 {len(_pns) - 2}" if len(_pns) > 2 else "")
-                return _base
-            d_labels = [_d_label(s) for s in d_sos]
-            d_pick = st.selectbox("수주 선택", d_labels, key="deliver_so_pick")
-            d_so = d_sos[d_labels.index(d_pick)]
-
-            # ── 2) 수주 라인 조회 ──
-            try:
-                d_items = fetch("sales_order_items",
-                    "soi_id,line_no,customer_part_no,customer_item_name,"
-                    "canonical_pn,product_id,qty,received_qty,unit,status",
-                    f"so_id=eq.{d_so['so_id']}&order=line_no.asc", limit=100)
-            except Exception as e:
-                st.error(f"라인 조회 실패: {e}"); d_items = []
-
-            if not d_items:
-                st.info("수주 라인 없음.")
-            else:
-                st.markdown(f"##### 📋 {d_so['so_number']} 라인 "
-                            f"({len(d_items)}개)")
-
-                # 완성 재고 조회 — LOT별 잔량 (2026-07-27 선입선출)
-                _pids = [it["product_id"] for it in d_items
-                         if it.get("product_id")]
-                _stock_map, _lot_map = {}, {}
-                if _pids:
-                    _pids_str = ",".join(f'"{p}"' for p in set(_pids))
-                    try:
-                        _stock_map = {
-                            s["product_id"]:
-                            float(s.get("current_stock") or 0)
-                            for s in fetch("product_stock_v",
-                                "product_id,current_stock",
-                                f"product_id=in.({_pids_str})",
-                                limit=200)}
-                    except Exception as e:
-                        st.warning(f"완성 재고 조회 실패: {e}")
-                    try:
-                        for _l in fetch("product_lot_stock_v",
-                            "product_id,lot_number,remain_qty,"
-                            "first_output_date,tokusai_qty,material_lot",
-                            f"product_id=in.({_pids_str})&remain_qty=gt.0"
-                            "&order=first_output_date.asc,lot_number.asc",
-                            limit=500):
-                            _lot_map.setdefault(
-                                _l["product_id"], []).append(_l)
-                    except Exception as e:
-                        st.warning(f"LOT 재고 조회 실패 (Migration 026 "
-                                   f"필요): {e}")
-
-                def _fifo_alloc(pid, qty):
-                    """완성 LOT 선입선출 배분 → [(lot, qty, tokusai), ...]"""
-                    out, left = [], float(qty)
-                    for _l in _lot_map.get(pid, []):
-                        if left <= 0:
-                            break
-                        _take = min(left, float(_l.get("remain_qty") or 0))
-                        if _take > 0:
-                            out.append((_l["lot_number"], _take,
-                                        float(_l.get("tokusai_qty") or 0)))
-                            left -= _take
-                    return out, left
-                _allow_over = st.checkbox(
-                    "⚠️ 재고 없이 출고 허용 (ERP 이관 전 생산분 등 — "
-                    "완성 재고와 무관하게 출고)",
-                    value=False, key="dlv_allow_over")
-
-                # 납품 입력 — 라인별 number_input + 일괄 처리 버튼
-                deliver_inputs = {}
-                for it in d_items:
-                    qty = float(it.get("qty") or 0)
-                    rcv = float(it.get("received_qty") or 0)
-                    pending = max(qty - rcv, 0)
-                    _stock = _stock_map.get(it.get("product_id"), 0.0)
-                    _cap = pending if _allow_over \
-                        else min(pending, max(_stock, 0.0))
-                    pn_label = (it.get("canonical_pn")
-                                or it.get("customer_part_no") or "-")
-                    lc = st.columns([3, 1, 1, 1, 2])
-                    with lc[0]:
-                        st.markdown(
-                            f"**L{it.get('line_no','-')}** {pn_label}  \n"
-                            f"<small>{(it.get('customer_item_name') or '')[:40]}</small>",
-                            unsafe_allow_html=True)
-                    with lc[1]:
-                        st.metric("수주", f"{qty:,.0f}",
-                                  label_visibility="collapsed",
-                                  help="수주 수량")
-                        st.caption(f"수주 {qty:,.0f}")
-                    with lc[2]:
-                        st.caption(f"기납품 {rcv:,.0f}")
-                        st.caption(f"미납 **{pending:,.0f}**")
-                        if it.get("product_id"):
-                            _nlot = len(_lot_map.get(it["product_id"], []))
-                            st.caption(f"완성 재고 {_stock:,.0f}"
-                                       + (f" · LOT {_nlot}개"
-                                          if _nlot > 1 else ""))
-                        else:
-                            st.caption("재고 확인 불가 (품번 미매칭)")
-                    with lc[3]:
-                        if pending <= 0:
-                            st.success("완납")
-                        elif _cap <= 0:
-                            st.warning("재고 없음")
-                        else:
-                            # '전량' 버튼이 예약한 값을 위젯 생성 전에 적용
-                            # (렌더된 위젯 키 직접 수정은 StreamlitAPIException)
-                            _pend_key = f"dlv_pend_{it['soi_id']}"
-                            if _pend_key in st.session_state:
-                                st.session_state[f"dlv_{it['soi_id']}"] = \
-                                    min(float(_cap),
-                                        st.session_state.pop(_pend_key))
-                            deliver_inputs[it["soi_id"]] = st.number_input(
-                                "납품", min_value=0.0, max_value=float(_cap),
-                                value=0.0, step=1.0,
-                                key=f"dlv_{it['soi_id']}",
-                                label_visibility="collapsed",
-                                help="이번 납품 수량 (완성 재고 한도)")
-                    with lc[4]:
-                        if pending > 0 and _cap <= 0:
-                            st.caption("공정 관리 → 완성 확정 후 "
-                                       "출고 가능")
-                        elif pending > 0:
-                            _full_label = (f"전량 ({pending:,.0f})"
-                                           if _cap >= pending
-                                           else f"재고 한도 ({_cap:,.0f})")
-                            if st.button(_full_label,
-                                          key=f"dlv_full_{it['soi_id']}",
-                                          help="가능한 최대 수량 입력"):
-                                st.session_state[f"dlv_pend_{it['soi_id']}"] = float(_cap)
-                                st.rerun()
-
-                st.divider()
-                total_to_deliver = sum(v for v in deliver_inputs.values() if v > 0)
-
-                # ── 출고 LOT 배분 (선입선출, 2026-07-27) ──
-                # 완성 LOT(작업지시)별 잔량에서 오래된 순으로 자동 배분.
-                # 고객 LOT 지정·특채 분리가 필요하면 수동 지정으로 전환.
-                _alloc_plan = {}     # soi_id → [(lot, qty, tokusai)]
-                _alloc_short = {}    # soi_id → 미배분 수량
-                if total_to_deliver > 0:
-                    _manual_lot = st.checkbox(
-                        "LOT 직접 지정 (고객 LOT 지정·특채 분리 등 — "
-                        "기본은 선입선출 자동 배분)",
-                        value=False, key="dlv_manual_lot")
-                    for _sid, _q in deliver_inputs.items():
-                        if _q <= 0:
-                            continue
-                        _itx = next(x for x in d_items
-                                    if x["soi_id"] == _sid)
-                        _pid = _itx.get("product_id")
-                        _pl, _left = (_fifo_alloc(_pid, _q)
-                                      if _pid else ([], _q))
-                        _alloc_plan[_sid] = _pl
-                        if _left > 1e-9:
-                            _alloc_short[_sid] = _left
-
-                    if _manual_lot:
-                        st.caption("라인별로 출고할 완성 LOT 을 직접 "
-                                   "고릅니다 (한 라인 = 한 LOT).")
-                        for _sid, _q in deliver_inputs.items():
-                            if _q <= 0:
-                                continue
-                            _itx = next(x for x in d_items
-                                        if x["soi_id"] == _sid)
-                            _lots = _lot_map.get(_itx.get("product_id"),
-                                                 [])
-                            if not _lots:
-                                continue
-                            _opts = [
-                                f"{l['lot_number']} | 잔여 "
-                                f"{float(l.get('remain_qty') or 0):,.0f}"
-                                f" | 완성 {l.get('first_output_date')}"
-                                + (f" | 특채 "
-                                   f"{float(l['tokusai_qty']):,.0f}"
-                                   if float(l.get("tokusai_qty") or 0)
-                                   else "")
-                                for l in _lots]
-                            _pick = st.selectbox(
-                                f"L{_itx.get('line_no','-')} "
-                                f"{_itx.get('canonical_pn') or '-'} "
-                                f"— 출고 LOT ({_q:,.0f})",
-                                _opts, key=f"dlv_lotpick_{_sid}")
-                            _lsel = _lots[_opts.index(_pick)]
-                            _lrem = float(_lsel.get("remain_qty") or 0)
-                            _take = min(_q, _lrem)
-                            _alloc_plan[_sid] = [(
-                                _lsel["lot_number"], _take,
-                                float(_lsel.get("tokusai_qty") or 0))]
-                            _alloc_short[_sid] = _q - _take
-                            if _q > _lrem:
-                                st.warning(
-                                    f"선택 LOT 잔여 {_lrem:,.0f} < 출고 "
-                                    f"{_q:,.0f} — 부족분 "
-                                    f"{_q - _lrem:,.0f}은 LOT 없이 "
-                                    "기록됩니다.")
-
-                    _plan_rows = []
-                    for _sid, _pl in _alloc_plan.items():
-                        _itx = next(x for x in d_items
-                                    if x["soi_id"] == _sid)
-                        for _lot, _lq, _tok in _pl:
-                            _plan_rows.append({
-                                "라인": f"L{_itx.get('line_no','-')}",
-                                "품번": _itx.get("canonical_pn") or "-",
-                                "출고 LOT (작업지시)": _lot,
-                                "수량": _lq,
-                                "특채 포함": f"{_tok:,.0f}" if _tok else "-",
-                            })
-                        _sh = _alloc_short.get(_sid, 0)
-                        if _sh > 1e-9:
-                            _plan_rows.append({
-                                "라인": f"L{_itx.get('line_no','-')}",
-                                "품번": _itx.get("canonical_pn") or "-",
-                                "출고 LOT (작업지시)": "(LOT 미지정)",
-                                "수량": _sh, "특채 포함": "-",
-                            })
-                    if _plan_rows:
-                        st.markdown("##### 출고 LOT 배분"
-                                    + ("" if _manual_lot
-                                       else " (선입선출 자동)"))
-                        st.dataframe(pd.DataFrame(_plan_rows),
-                            use_container_width=True, hide_index=True,
-                            column_config={"수량":
-                                st.column_config.NumberColumn(
-                                    format="localized", width="small")})
-                        if any(v > 1e-9 for v in _alloc_short.values()):
-                            st.warning(
-                                "LOT 미지정 수량이 있습니다 — 완성 LOT "
-                                "잔량보다 많이 출고하는 경우입니다. "
-                                "이 수량은 역추적이 연결되지 않습니다.")
-
-                bc1, bc2 = st.columns([1, 3])
-                with bc1:
-                    do_deliver = st.button(
-                        f"📦 납품 처리 ({total_to_deliver:,.0f})",
-                        type="primary",
-                        disabled=total_to_deliver <= 0,
-                        key="deliver_submit")
-                with bc2:
-                    st.caption(
-                        "received_qty 누적 + 상태 자동 전환 + "
-                        "제품 재고 차감 (ISSUE 원장, product_id 매핑 라인)."
-                    )
-
-                # 재고 재검증 — 같은 제품 여러 라인 합산이 재고 초과인지
-                _stock_ok = True
-                if do_deliver and total_to_deliver > 0 and not _allow_over:
-                    _by_pid = {}
-                    for soi_id, dlv_qty in deliver_inputs.items():
-                        if dlv_qty <= 0:
-                            continue
-                        _pid = next(x for x in d_items
-                                    if x["soi_id"] == soi_id
-                                    ).get("product_id")
-                        if _pid:
-                            _by_pid[_pid] = _by_pid.get(_pid, 0) + dlv_qty
-                    _over = {p: q for p, q in _by_pid.items()
-                             if q > _stock_map.get(p, 0) + 1e-9}
-                    if _over:
-                        st.error("❌ 완성 재고 부족 — " + ", ".join(
-                            f"{p}: 출고 {q:,.0f} > 재고 "
-                            f"{_stock_map.get(p, 0):,.0f}"
-                            for p, q in _over.items())
-                            + ". 공정 관리에서 완성 확정 후 출고하거나 "
-                              "'재고 없이 출고 허용'을 체크하세요.")
-                        _stock_ok = False
-
-                if do_deliver and total_to_deliver > 0 and _stock_ok:
-                    from datetime import date as _dlv_date
-                    ok_n, fail_n = 0, 0
-                    issue_txns = []
-                    for soi_id, dlv_qty in deliver_inputs.items():
-                        if dlv_qty <= 0:
-                            continue
-                        it = next(x for x in d_items if x["soi_id"] == soi_id)
-                        qty = float(it.get("qty") or 0)
-                        new_rcv = float(it.get("received_qty") or 0) + dlv_qty
-                        new_pending = max(qty - new_rcv, 0)
-                        new_status = ("DELIVERED" if new_rcv >= qty
-                                      else "PARTIAL" if new_rcv > 0
-                                      else "PENDING")
+                        _db.update("sales_orders", f"so_id=eq.{_sid7}",
+                                   {"status": "DELIVERED" if _all7
+                                    else "PARTIAL" if _any7
+                                    else "CONFIRMED"})
+                    except Exception:
+                        pass
+                if _sh_ok:
+                    # ④ 출력물 배치 저장 (행 단위 — 명세서·리스트)
+                    _sh_vmap = {}
+                    for _cu in {it["so"].get("customer")
+                                for it, _ in _sh_sel
+                                if it["so"].get("customer")}:
+                        _term = (_cu.replace("㈜", "")
+                                 .replace("(주)", "").strip())
                         try:
-                            if _db.update("sales_order_items",
-                                f"soi_id=eq.{soi_id}",
-                                {"received_qty": new_rcv,
-                                 "pending_qty": new_pending,
-                                 "status": new_status}):
-                                ok_n += 1
-                                # 제품 재고 차감 — 완성 LOT 별 분할 기록
-                                # (선입선출/수동 배분 결과 그대로).
-                                # LOT 미배분 잔량은 LOT 없이 1건.
-                                if it.get("product_id"):
-                                    _base_txn = {
-                                        "material_id": None,
-                                        "txn_type": "ISSUE",
-                                        "unit": it.get("unit") or "EA",
-                                        "ref_table": "sales_order_items",
-                                        "ref_id": soi_id,
-                                        "product_id": it["product_id"],
-                                        "txn_date":
-                                            _dlv_date.today().isoformat(),
-                                        "created_by": current_user_name(),
-                                    }
-                                    for _lot, _lq, _tok in _alloc_plan.get(
-                                            soi_id, []):
-                                        issue_txns.append({
-                                            **_base_txn, "qty": -_lq,
-                                            "lot_number": _lot,
-                                            "work_order": _lot,
-                                            "remark":
-                                                f"납품 출고: "
-                                                f"{d_so['so_number']} "
-                                                f"(LOT {_lot})",
-                                        })
-                                    _sh = _alloc_short.get(soi_id, 0)
-                                    if _sh > 1e-9:
-                                        issue_txns.append({
-                                            **_base_txn, "qty": -_sh,
-                                            "lot_number": None,
-                                            "remark":
-                                                f"납품 출고: "
-                                                f"{d_so['so_number']} "
-                                                "(LOT 미지정)",
-                                        })
-                            else:
-                                fail_n += 1
-                        except Exception as e:
-                            fail_n += 1
-                            st.warning(f"라인 {soi_id} 실패: {e}")
-
-                    # 제품 재고 차감 원장 (실패해도 납품 자체는 유지)
-                    if issue_txns:
-                        try:
-                            _db.insert("inventory_transactions", issue_txns)
-                        except Exception as e:
-                            st.warning(f"⚠️ 제품 재고 차감 기록 실패 (납품은 정상): {e}")
-
-                    # 분납 스케줄 회차 충당 — 납품일 납기 회차 우선,
-                    # 남으면 오래된 회차부터 (밀린 회차 만회).
-                    # 오래된 회차만 먼저 채우면 건너뛴 회차가 완료로
-                    # 보이는 왜곡 (2026-08-06 4PDVN-03 사례)
-                    from utils.delivery_alloc import allocate_rounds
-                    for soi_id, dlv_qty in deliver_inputs.items():
-                        if dlv_qty <= 0:
-                            continue
-                        try:
-                            _scs = fetch("so_delivery_schedule",
-                                "sched_id,due_date,qty,delivered_qty",
-                                f"soi_id=eq.{soi_id}"
-                                "&order=due_date.asc,seq.asc", limit=100)
-                        except Exception:
-                            continue
-                        _chg = allocate_rounds(_scs, dlv_qty,
-                                               _dlv_date.today())
-                        for _sid2, _newdlv in _chg.items():
-                            try:
-                                _db.update("so_delivery_schedule",
-                                    f"sched_id=eq.{_sid2}",
-                                    {"delivered_qty": _newdlv})
-                            except Exception:
-                                break
-
-                    # 수주 헤더 상태 자동 갱신
-                    if ok_n:
-                        try:
-                            fresh = fetch("sales_order_items",
-                                "qty,received_qty",
-                                f"so_id=eq.{d_so['so_id']}", limit=100)
-                            all_done = all(
-                                float(x.get("received_qty") or 0)
-                                >= float(x.get("qty") or 0)
-                                for x in fresh) if fresh else False
-                            any_rcv = any(
-                                float(x.get("received_qty") or 0) > 0
-                                for x in fresh) if fresh else False
-                            hdr_status = ("DELIVERED" if all_done
-                                          else "PARTIAL" if any_rcv
-                                          else d_so.get("status") or "CONFIRMED")
-                            _db.update("sales_orders",
-                                f"so_id=eq.{d_so['so_id']}",
-                                {"status": hdr_status})
+                            _vs = fetch("vendors",
+                                "name,business_no,ceo_name,phone,address,"
+                                "business_type,business_item",
+                                f"name=ilike.*{_term}*", limit=5)
+                            if _vs:
+                                _sh_vmap[_cu] = _vs[0]
                         except Exception:
                             pass
-                        st.success(
-                            f"✅ 납품 처리 완료: {ok_n}개 라인"
-                            + (f" / 실패 {fail_n}" if fail_n else "")
-                        )
-                        st.rerun()
-                    elif fail_n:
-                        st.error(f"납품 처리 실패 ({fail_n}건)")
+                    st.session_state["bk_last_batch"] = {
+                        "date": _sh_d.isoformat(),
+                        "rows": [{
+                            "pn": it["pn"],
+                            "customer_pn":
+                                it["li"].get("customer_part_no")
+                                or it["pn"],
+                            "item_name":
+                                it["li"].get("customer_item_name"),
+                            "customer": it["so"].get("customer") or "-",
+                            "so_number":
+                                it["so"].get("so_number") or "-",
+                            "qty": _q8,
+                            "unit": it["li"].get("unit") or "EA",
+                            "unit_price": it["li"].get("unit_price"),
+                            "spec": None, "remark": None,
+                            "date": _sh_d.isoformat(),
+                        } for it, _q8 in _sh_sel],
+                        "vendors": _sh_vmap,
+                    }
+                    st.session_state["ship_manual"] = []
+                    st.success(f"출고 처리 완료 — {_sh_ok}개 라인 · "
+                               f"{_sh_total:,.0f}개")
+                    st.rerun()
 
     # ════════ TAB 2: 납품 현황 ════════
     with tab_dstat:
+        # ── 최근 출고 이력 (품번 기준 · 2026-08-07 상단 이동) ──
+        st.markdown("##### 최근 출고 이력")
+        try:
+            _iss = fetch("inventory_transactions",
+                "txn_date,product_id,qty,lot_number,remark",
+                "txn_type=eq.ISSUE&order=txn_id.desc", limit=20)
+        except Exception:
+            _iss = []
+        if _iss:
+            _iss_pids = {i["product_id"] for i in _iss
+                         if i.get("product_id")}
+            _iss_pn = {}
+            if _iss_pids:
+                try:
+                    _iss_pn = {p["product_id"]: p["pn"] for p in fetch(
+                        "products", "product_id,pn",
+                        "product_id=in.({})".format(
+                            ",".join(f'"{x}"' for x in _iss_pids)),
+                        limit=200)}
+                except Exception:
+                    pass
+            st.dataframe(pd.DataFrame([{
+                "출고일": i.get("txn_date"),
+                "품번": _iss_pn.get(i.get("product_id"),
+                                   i.get("product_id") or "-"),
+                "수량": -float(i.get("qty") or 0),
+                "출고 LOT": i.get("lot_number") or "-",
+                "비고": i.get("remark") or "-",
+            } for i in _iss]), use_container_width=True, hide_index=True,
+                column_config={"수량": st.column_config.NumberColumn(
+                    format="localized")})
+        else:
+            st.caption("출고 이력 없음.")
+        st.divider()
+
         # 수주별 납품 진행
         try:
             _ds = fetch("sales_order_stats",
@@ -5573,27 +5235,6 @@ elif page == "출고 관리":
                     format="localized", width="small")
                     for c in ["완성", "출고", "잔여", "특채"]})
 
-        # 최근 출고 이력 (ISSUE 원장)
-        st.divider()
-        st.markdown("##### 최근 출고 이력")
-        try:
-            _iss = fetch("inventory_transactions",
-                "txn_date,product_id,qty,lot_number,remark",
-                "txn_type=eq.ISSUE&order=txn_id.desc", limit=20)
-        except Exception:
-            _iss = []
-        if _iss:
-            st.dataframe(pd.DataFrame([{
-                "출고일": i.get("txn_date"),
-                "제품": i.get("product_id"),
-                "수량": -float(i.get("qty") or 0),
-                "출고 LOT": i.get("lot_number") or "-",
-                "비고": i.get("remark") or "-",
-            } for i in _iss]), use_container_width=True, hide_index=True,
-                column_config={"수량": st.column_config.NumberColumn(
-                    format="localized")})
-        else:
-            st.caption("출고 이력 없음.")
 
 
 elif page == "생산 계획":
