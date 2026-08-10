@@ -1648,7 +1648,7 @@ elif page == "마스터 관리":
                 fcust = st.text_input("고객사", placeholder="미진, 명진, 두산",
                                       key="prod_f_cust")
             with pfc3:
-                fgroup = st.text_input("제품군", placeholder="FLANGE, ADAPTER",
+                fgroup = st.text_input("제품군", placeholder="YPBV, LJF, ABV",
                                        key="prod_f_group")
             with pfc4:
                 fstatus = st.selectbox("상태",
@@ -1673,7 +1673,8 @@ elif page == "마스터 관리":
         if fcust:
             parts.append(f"customer=ilike.*{fcust.strip()}*")
         if fgroup:
-            parts.append(f"product_group=ilike.*{fgroup.strip()}*")
+            # 제품군 = sub_class (032: product_group 삭제, 라벨만 교체)
+            parts.append(f"sub_class=ilike.*{fgroup.strip()}*")
         if fmat:
             mq = fmat.strip()
             parts.append(
@@ -1689,7 +1690,7 @@ elif page == "마스터 관리":
 
         try:
             prows = fetch("products",
-                "product_id,pn,customer,product_group,sub_class,material,"
+                "product_id,pn,item_name,customer,sub_class,material,"
                 "raw_material_name,raw_material_spec,procurement_type,"
                 "caution,active,archived_at,archive_reason,drawing_no,"
                 "alias_list,updated_at",
@@ -1702,7 +1703,7 @@ elif page == "마스터 관리":
         if prows:
             pdf = pd.DataFrame(prows)
             # 표시할 컬럼 (편집/조회용)
-            show_cols = ["product_id","pn","customer","product_group","sub_class",
+            show_cols = ["product_id","pn","item_name","customer","sub_class",
                          "material","raw_material_name","raw_material_spec",
                          "procurement_type","caution","active","archived_at",
                          "archive_reason","drawing_no","alias_list"]
@@ -1716,12 +1717,16 @@ elif page == "마스터 관리":
                         disabled=True, width="small"),
                     "pn": st.column_config.TextColumn("품번 *", width="medium",
                         help="중복 금지 — 수정 시 매출/매입 매핑에 영향"),
+                    "item_name": st.column_config.TextColumn("품명",
+                        width="medium",
+                        help="유사 품번 착오 방지 — 출고 리스트에 "
+                             "품번 옆에 표시됨"),
                     "customer": st.column_config.TextColumn("고객사",
                         width="medium"),
-                    "product_group": st.column_config.TextColumn("제품군",
-                        width="small"),
-                    "sub_class": st.column_config.TextColumn("하위분류",
-                        width="small"),
+                    "sub_class": st.column_config.TextColumn("제품군",
+                        width="small",
+                        help="구 하위분류 — YPBV, LJF, ABV-FL 등 "
+                             "제품 계열"),
                     "material": st.column_config.TextColumn("재질",
                         width="small"),
                     "raw_material_name": st.column_config.TextColumn(
@@ -1758,7 +1763,7 @@ elif page == "마스터 관리":
 
             if save_prod:
                 chg = 0
-                editable_keys = ("pn", "customer", "product_group", "sub_class",
+                editable_keys = ("pn", "item_name", "customer", "sub_class",
                                  "material", "raw_material_name", "raw_material_spec",
                                  "procurement_type", "caution", "active",
                                  "archive_reason", "drawing_no", "alias_list")
@@ -1851,13 +1856,13 @@ elif page == "마스터 관리":
                 new_cust = st.text_input("고객사",
                     placeholder="예: 미진정밀")
             with npc3:
-                new_group = st.text_input("제품군",
-                    placeholder="예: ADAPTER, FLANGE")
+                new_iname = st.text_input("품명",
+                    placeholder="예: 40A BELLOWS VALVE GLAND NUT")
 
             npc4, npc5, npc6 = st.columns(3)
             with npc4:
-                new_subclass = st.text_input("하위분류",
-                    placeholder="예: M타입")
+                new_subclass = st.text_input("제품군",
+                    placeholder="예: YPBV, LJF, ABV")
             with npc5:
                 new_mat = st.text_input("재질",
                     placeholder="예: STS630, SCM440")
@@ -1911,7 +1916,7 @@ elif page == "마스터 관리":
                                 "product_id": new_pid,
                                 "pn": new_pn.strip(),
                                 "customer": new_cust.strip() or None,
-                                "product_group": new_group.strip() or None,
+                                "item_name": new_iname.strip() or None,
                                 "sub_class": new_subclass.strip() or None,
                                 "material": new_mat.strip() or None,
                                 "raw_material_spec": new_spec.strip() or None,
@@ -2151,11 +2156,11 @@ elif page == "마스터 관리":
         try:
             if bom_q:
                 qq = bom_q.strip()
-                # (a) products: pn / product_id / product_group / customer 매칭 (archived 포함)
+                # (a) products: pn / product_id / 품명 / customer 매칭 (archived 포함)
                 try:
-                    pmatch = fetch("products", "product_id,pn,sub_class,product_group,customer,archived_at",
+                    pmatch = fetch("products", "product_id,pn,sub_class,item_name,customer,archived_at",
                         f"or=(pn.ilike.*{qq}*,product_id.ilike.*{qq}*,"
-                        f"product_group.ilike.*{qq}*,customer.ilike.*{qq}*)"
+                        f"item_name.ilike.*{qq}*,customer.ilike.*{qq}*)"
                         f"&order=pn.asc",
                         limit=2000)
                 except Exception as e:
@@ -2220,14 +2225,14 @@ elif page == "마스터 관리":
             if pids:
                 pids_q = ",".join(f'"{p}"' for p in pids)
                 try:
-                    prows = fetch("products", "product_id,pn,sub_class,product_group",
+                    prows = fetch("products", "product_id,pn,sub_class",
                                   f"product_id=in.({pids_q})", limit=1500)
                 except Exception: prows = []
                 pmap = {p['product_id']: p for p in prows}
                 for b in brows:
                     p = pmap.get(b['product_id'], {})
                     b['_pn'] = p.get('pn', '')
-                    b['_group'] = p.get('product_group', '')
+                    b['_group'] = p.get('sub_class', '')
 
         st.caption(f"검색 결과: **{len(brows)}건**")
 
@@ -8370,7 +8375,7 @@ elif page == "생산 보고":
             qq = prod_q.strip()
             try:
                 p_cands = fetch("products",
-                    "product_id,pn,customer,product_group",
+                    "product_id,pn,customer",
                     f"or=(pn.ilike.*{qq}*,customer.ilike.*{qq}*)"
                     f"&archived_at=is.null&order=pn.asc", limit=20)
             except Exception as e:
@@ -9298,7 +9303,7 @@ elif page == "원가 확인":
 
     # 호환 alias (009 마이그레이션이 두 컬럼명 모두 제공) → 기존 필드 그대로 사용 가능
     COST_FIELDS = (
-        "product_id,pn,customer,product_group,sub_class,"
+        "product_id,pn,item_name,customer,sub_class,"
         "material_kg_price,material_unit_price,outsourcing_per_pc,"
         "heat_treat_per_pc,surface_per_pc,estimated_cost_per_pc,"
         "cost_data_quality,avg_unit_price,margin_pct,abc_grade,"
@@ -9589,8 +9594,9 @@ elif page == "원가 확인":
         if q:
             parts = [f"archived_at=is.null"]
             qq = q.strip()
-            # OR 검색 (PostgREST or= 문법)
-            parts.append(f"or=(pn.ilike.*{qq}*,customer.ilike.*{qq}*,product_group.ilike.*{qq}*)")
+            # OR 검색 (PostgREST or= 문법) — 품명·제품군(sub_class) 포함
+            parts.append(f"or=(pn.ilike.*{qq}*,customer.ilike.*{qq}*,"
+                         f"item_name.ilike.*{qq}*,sub_class.ilike.*{qq}*)")
             parts.append(f"order=total_sales_12m.desc.nullslast")
             try:
                 rows = fetch(SRC_TABLE, COST_FIELDS, "&".join(parts), limit=int(ca_limit))
@@ -9652,9 +9658,10 @@ elif page == "원가 확인":
 
                     st.markdown("##### 부가 정보")
                     info_rows = [
+                        ("품명", row.get("item_name") or "-"),
                         ("재질", row.get("material") or row.get("raw_material_name") or "-"),
                         ("규격", row.get("raw_material_spec") or "-"),
-                        ("제품군", row.get("product_group") or "-"),
+                        ("제품군", row.get("sub_class") or "-"),
                         ("ABC 등급", row.get("abc_grade") or "-"),
                         ("12M 매출액", _money(row.get("total_sales_12m"))),
                         ("12M 거래건수", row.get("sales_count_12m") or 0),
@@ -10051,11 +10058,11 @@ elif page == "원가 확인":
             df_o["마진율"] = df_o["margin_pct"].apply(_pct)
             df_o["12M매출"] = df_o["total_sales_12m"].apply(_money)
 
-            cols = ["pn", "customer", "product_group", "판매가", "소재비",
+            cols = ["pn", "customer", "sub_class", "판매가", "소재비",
                     "외주비", "열처리", "표면", "추정원가", "마진율",
                     "12M매출", "abc_grade", "cost_data_quality"]
             show = df_o[[c for c in cols if c in df_o.columns]].rename(columns={
-                "pn": "품번", "customer": "고객사", "product_group": "제품군",
+                "pn": "품번", "customer": "고객사", "sub_class": "제품군",
                 "abc_grade": "ABC", "cost_data_quality": "데이터품질"
             })
             st.dataframe(show, use_container_width=True, hide_index=True, height=520)
@@ -10449,7 +10456,8 @@ elif page == "원가 확인":
             parts = ["archived_at=is.null", "order=pn.asc"]
             if bq:
                 qq = bq.strip()
-                parts.append(f"or=(pn.ilike.*{qq}*,customer.ilike.*{qq}*,product_group.ilike.*{qq}*)")
+                parts.append(f"or=(pn.ilike.*{qq}*,customer.ilike.*{qq}*,"
+                             f"item_name.ilike.*{qq}*,sub_class.ilike.*{qq}*)")
             try:
                 rows = fetch("products",
                     "product_id,pn,customer,material_unit_price,outsourcing_per_pc,"
@@ -10584,7 +10592,7 @@ elif page == "원가 확인":
         # view 조회 시도 — 미적용 시 graceful fail
         try:
             cv_rows = fetch("product_cost_full_v",
-                "product_id,pn,customer,product_group,"
+                "product_id,pn,customer,"
                 "legacy_estimated_cost,bom_cost_per_pc,material_cost_per_pc,"
                 "heat_cost_per_pc,surface_cost_per_pc,outsource_cost_per_pc,"
                 "final_cost_per_pc,sale_price,margin_pct_calc,"

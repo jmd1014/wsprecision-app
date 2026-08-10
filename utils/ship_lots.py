@@ -67,7 +67,8 @@ def fifo_preview(items, lots_by_pid):
 def names_and_lots(fetch, items, confirmed):
     """전표 라인 목록 → ({si_id: 품명}, {si_id: LOT 표기}).
 
-    품명 = 스냅샷 item_name → products.sub_class 폴백.
+    품명 = 스냅샷 item_name → products.item_name(품명 마스터, 032)
+    → products.sub_class(제품군) 폴백.
     fetch 는 db.fetch 시그니처 (table, select, filter, limit=).
     """
     pids = sorted({x.get("product_id") for x in items
@@ -76,8 +77,10 @@ def names_and_lots(fetch, items, confirmed):
     if pids:
         _pstr = ",".join(f'"{p}"' for p in pids)
         try:
-            subs = {p["product_id"]: p.get("sub_class")
-                    for p in fetch("products", "product_id,sub_class",
+            subs = {p["product_id"]:
+                    (p.get("item_name") or p.get("sub_class"))
+                    for p in fetch("products",
+                                   "product_id,item_name,sub_class",
                                    f"product_id=in.({_pstr})", limit=500)}
         except Exception:
             subs = {}

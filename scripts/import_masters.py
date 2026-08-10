@@ -25,7 +25,7 @@ PRODUCT_COL_MAP = {
     'alias': 'alias_list',
     '도면번호': 'drawing_no',
     '소분류': 'sub_class',
-    '제품군': 'product_group',
+    # '제품군': product_group 은 Migration 032 에서 삭제됨
     '재질': 'material',
     '조달유형': 'procurement_type',
     '조달유형_시작일': 'procurement_start_date',
@@ -159,7 +159,7 @@ def import_products(client: Client, src_dir: str) -> dict:
             d[k] = to_num(d.get(k))
         d['material_purchase_count'] = to_int(d.get('material_purchase_count'))
         d['procurement_start_date'] = to_date(d.get('procurement_start_date'))
-        for k in ('product_id','pn','alias_list','drawing_no','sub_class','product_group','material',
+        for k in ('product_id','pn','alias_list','drawing_no','sub_class','material',
                   'procurement_type','procurement_prev_type','raw_material_name','raw_material_spec',
                   'customer','bom_material_name','material_unit','material_last_purchase_date',
                   'material_main_supplier','material_data_quality','cost_data_quality',

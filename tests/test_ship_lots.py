@@ -78,3 +78,17 @@ def test_names_and_lots_draft_uses_fifo():
     names, lots = names_and_lots(_fake_fetch, items, confirmed=False)
     assert names[1] == "40A BELLOWS VALVE GLAND NUT"
     assert lots[1] == "W0003"
+
+
+def test_names_prefer_product_master_item_name():
+    """스냅샷 품명이 없으면 제품 마스터 품명(032) → 제품군 순."""
+    def _f(table, select="*", filter_query="", limit=1000):
+        if table == "products":
+            return [{"product_id": "P1",
+                     "item_name": "40A BELLOWS VALVE GLAND NUT",
+                     "sub_class": "ABV"}]
+        return []
+    items = [{"si_id": 1, "product_id": "P1", "item_name": None,
+              "qty": 10}]
+    names, _ = names_and_lots(_f, items, confirmed=True)
+    assert names[1] == "40A BELLOWS VALVE GLAND NUT"
