@@ -81,14 +81,23 @@ def test_names_and_lots_draft_uses_fifo():
 
 
 def test_names_prefer_product_master_item_name():
-    """스냅샷 품명이 없으면 제품 마스터 품명(032) → 제품군 순."""
+    """사내명칭 위주 — 마스터 품명이 스냅샷(수주 품명)보다 우선,
+    마스터 품명이 없으면 스냅샷 → 제품군 순."""
     def _f(table, select="*", filter_query="", limit=1000):
         if table == "products":
             return [{"product_id": "P1",
                      "item_name": "40A BELLOWS VALVE GLAND NUT",
-                     "sub_class": "ABV"}]
+                     "sub_class": "ABV"},
+                    {"product_id": "P2", "item_name": None,
+                     "sub_class": "PDV"}]
         return []
-    items = [{"si_id": 1, "product_id": "P1", "item_name": None,
+    items = [{"si_id": 1, "product_id": "P1",
+              "item_name": "수주때 표기", "qty": 10},
+             {"si_id": 2, "product_id": "P2",
+              "item_name": "수주 품명", "qty": 10},
+             {"si_id": 3, "product_id": "P2", "item_name": None,
               "qty": 10}]
     names, _ = names_and_lots(_f, items, confirmed=True)
-    assert names[1] == "40A BELLOWS VALVE GLAND NUT"
+    assert names[1] == "40A BELLOWS VALVE GLAND NUT"   # 마스터 우선
+    assert names[2] == "수주 품명"                      # 마스터 없음 → 스냅샷
+    assert names[3] == "PDV"                           # 둘 다 없음 → 제품군

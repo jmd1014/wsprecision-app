@@ -1056,14 +1056,16 @@ elif page == "마스터 관리":
                 st.error(f"실사 시트 생성 실패: {e}")
 
         # ── 품번 선택 ──
-        _ft_q = st.text_input("품번 검색", key="ft_q",
-                              placeholder="예: 4PDVN, MRG6, 8HFDV")
+        _ft_q = st.text_input("품번 · 품명 검색", key="ft_q",
+                              placeholder="예: 4PDVN, MRG6, GLAND NUT")
         try:
             _ft_flt = ["archived_at=is.null", "order=pn"]
             if _ft_q.strip():
                 _qq = _ft_q.strip()
-                _ft_flt.append(f"pn=ilike.*{_qq}*")
-            _ft_prods = _db.fetch("products", "product_id,pn,customer",
+                _ft_flt.append(f"or=(pn.ilike.*{_qq}*,"
+                               f"item_name.ilike.*{_qq}*)")
+            _ft_prods = _db.fetch("products",
+                                  "product_id,pn,item_name,customer",
                                   "&".join(_ft_flt), limit=300)
         except Exception as e:
             st.error(f"제품 조회 실패: {e}"); _ft_prods = []
@@ -1076,8 +1078,9 @@ elif page == "마스터 관리":
                 st.caption(f"{len(_ft_prods)}건 — 검색어로 좁히면 찾기 쉽습니다.")
             _ft_p = st.selectbox(
                 "품번", _ft_prods,
-                format_func=lambda r: "{} · {}".format(
-                    r["pn"], r.get("customer") or "-"),
+                format_func=lambda r: " · ".join(
+                    x for x in (r["pn"], r.get("item_name"),
+                                r.get("customer") or "-") if x),
                 key="ft_pick")
 
         if _ft_p:
@@ -1645,24 +1648,28 @@ elif page == "마스터 관리":
                 fpn = st.text_input("품번", placeholder="MRG6, 8HFDV",
                                     key="prod_f_pn")
             with pfc2:
+                fname = st.text_input("품명",
+                                      placeholder="GLAND NUT, FLANGE",
+                                      key="prod_f_name")
+            with pfc3:
                 fcust = st.text_input("고객사", placeholder="미진, 명진, 두산",
                                       key="prod_f_cust")
-            with pfc3:
+            with pfc4:
                 fgroup = st.text_input("제품군", placeholder="YPBV, LJF, ABV",
                                        key="prod_f_group")
-            with pfc4:
+
+            pfc5, pfc6, pfc7, pfc8 = st.columns([1, 2, 2, 1])
+            with pfc5:
                 fstatus = st.selectbox("상태",
                     ["활성", "휴면", "전체"], key="prod_f_status")
-
-            pfc5, pfc6, pfc7 = st.columns([2, 2, 1])
-            with pfc5:
+            with pfc6:
                 fmat = st.text_input("재질/규격/자재명",
                     placeholder="STS304, 환봉, SCM440",
                     key="prod_f_mat")
-            with pfc6:
+            with pfc7:
                 fproc = st.selectbox("조달",
                     ["전체", "도급", "사급"], key="prod_f_proc")
-            with pfc7:
+            with pfc8:
                 plim = st.number_input("행수", 20, 1000, 100, 20,
                                        key="prod_lim")
 
@@ -1670,6 +1677,8 @@ elif page == "마스터 관리":
         parts = ["order=pn.asc"]
         if fpn:
             parts.append(f"pn=ilike.*{fpn.strip()}*")
+        if fname:
+            parts.append(f"item_name=ilike.*{fname.strip()}*")
         if fcust:
             parts.append(f"customer=ilike.*{fcust.strip()}*")
         if fgroup:
@@ -2396,7 +2405,8 @@ elif page == "마스터 관리":
                     qq = p_search.strip()
                     try:
                         p_found = fetch("products", "product_id,pn,customer",
-                            f"or=(pn.ilike.*{qq}*,customer.ilike.*{qq}*)"
+                            f"or=(pn.ilike.*{qq}*,item_name.ilike.*{qq}*,"
+                            f"customer.ilike.*{qq}*)"
                             f"&archived_at=is.null&order=pn.asc", limit=30)
                     except Exception:
                         p_found = []
@@ -3160,7 +3170,8 @@ elif page == "수주 관리":
                         _m_cands = fetch("products",
                             "product_id,pn,alias_list",
                             f"or=(pn.ilike.*{m_pn_q.strip()}*,"
-                            f"alias_list.ilike.*{m_pn_q.strip()}*)"
+                            f"alias_list.ilike.*{m_pn_q.strip()}*,"
+                            f"item_name.ilike.*{m_pn_q.strip()}*)"
                             "&archived_at=is.null&order=pn", limit=30)
                     except Exception:
                         _m_cands = []
@@ -3999,9 +4010,9 @@ elif page == "수주 관리":
 
             # ── 통합 검색 (품번 / 수주번호 / 거래처) ──
             sc1, sc2 = st.columns([3, 1])
-            _sq = sc1.text_input("품번 · 수주번호 · 거래처 검색",
+            _sq = sc1.text_input("품번 · 품명 · 수주번호 · 거래처 검색",
                                  key="sch_q",
-                                 placeholder="예: 4PDVN, 202607, 미진")
+                                 placeholder="예: 4PDVN, GLAND, 202607, 미진")
             _sc_only_open = sc2.checkbox("미납만", value=True,
                                          key="sch_open_only")
 
@@ -4012,7 +4023,8 @@ elif page == "수주 관리":
                 try:
                     _by_pn = fetch("sales_order_items", "soi_id,so_id",
                         f"or=(canonical_pn.ilike.*{_q}*,"
-                        f"customer_part_no.ilike.*{_q}*)", limit=500)
+                        f"customer_part_no.ilike.*{_q}*,"
+                        f"customer_item_name.ilike.*{_q}*)", limit=500)
                     _hit_soi = {r["soi_id"] for r in _by_pn}
                     _hit_so = {r["so_id"] for r in _by_pn}
                 except Exception:
@@ -4700,8 +4712,8 @@ elif page == "출고 관리":
         _sh_manual = st.session_state.setdefault("ship_manual", [])
         sq1, sq2 = st.columns([3, 1])
         _sh_q = sq1.text_input(
-            "품번 · 수주번호 검색 후 리스트에 추가", key="ship_q",
-            placeholder="예: 8HFDV, 4PDVN, 202607")
+            "품번 · 품명 · 수주번호 검색 후 리스트에 추가", key="ship_q",
+            placeholder="예: 8HFDV, GLAND NUT, 202607")
         _sh_cand = []
         if _sh_q.strip():
             _qq2 = _sh_q.strip()
@@ -4710,7 +4722,8 @@ elif page == "출고 관리":
                     "soi_id,so_id,canonical_pn,customer_part_no,"
                     "pending_qty,due_date",
                     f"pending_qty=gt.0&or=(canonical_pn.ilike.*{_qq2}*,"
-                    f"customer_part_no.ilike.*{_qq2}*)",
+                    f"customer_part_no.ilike.*{_qq2}*,"
+                    f"customer_item_name.ilike.*{_qq2}*)",
                     limit=30)
                 if not _sh_cand:
                     _hit_so2 = [s["so_id"] for s in fetch("sales_orders",
@@ -6295,7 +6308,7 @@ elif page == "발주/입고":
                 try:
                     res = fetch("active_products",
                                 "product_id,pn,raw_material_name,raw_material_spec,material,bom_material_name,material_unit_price",
-                                f"or=(pn.ilike.*{search_q}*,alias_list.ilike.*{search_q}*,bom_material_name.ilike.*{search_q}*)&limit=20")
+                                f"or=(pn.ilike.*{search_q}*,alias_list.ilike.*{search_q}*,item_name.ilike.*{search_q}*,bom_material_name.ilike.*{search_q}*)&limit=20")
                 except Exception as e:
                     st.error(f"검색 실패: {e}"); res = []
                 if _vh_only and _vh_pns:
@@ -8364,7 +8377,7 @@ elif page == "생산 보고":
         pc1, pc2 = st.columns([3, 1])
         with pc1:
             prod_q = st.text_input(
-                "제품 검색 (품번/고객사)",
+                "제품 검색 (품번/품명/고객사)",
                 placeholder="예: 8HFDV-VM-05, MRG6, 미진",
                 key="pb_prod_q")
         with pc2:
@@ -8376,7 +8389,8 @@ elif page == "생산 보고":
             try:
                 p_cands = fetch("products",
                     "product_id,pn,customer",
-                    f"or=(pn.ilike.*{qq}*,customer.ilike.*{qq}*)"
+                    f"or=(pn.ilike.*{qq}*,item_name.ilike.*{qq}*,"
+                    f"customer.ilike.*{qq}*)"
                     f"&archived_at=is.null&order=pn.asc", limit=20)
             except Exception as e:
                 st.error(f"제품 검색 실패: {e}"); p_cands = []
@@ -10264,7 +10278,8 @@ elif page == "원가 확인":
                         "product_id,pn,customer,material_unit_price,outsourcing_per_pc,"
                         "heat_treat_per_pc,surface_per_pc,estimated_cost_per_pc,"
                         "avg_unit_price,margin_pct",
-                        f"or=(pn.ilike.*{sq}*,customer.ilike.*{sq}*)"
+                        f"or=(pn.ilike.*{sq}*,item_name.ilike.*{sq}*,"
+                        f"customer.ilike.*{sq}*)"
                         f"&archived_at=is.null&order=pn.asc", limit=30)
                 except Exception as e:
                     st.error(f"검색 실패: {e}"); matches = []

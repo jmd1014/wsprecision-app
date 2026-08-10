@@ -67,25 +67,28 @@ def fifo_preview(items, lots_by_pid):
 def names_and_lots(fetch, items, confirmed):
     """전표 라인 목록 → ({si_id: 품명}, {si_id: LOT 표기}).
 
-    품명 = 스냅샷 item_name → products.item_name(품명 마스터, 032)
-    → products.sub_class(제품군) 폴백.
+    사내명칭 위주 관리 (2026-08-10 확정): 내부 문서 품명은
+    products.item_name(사내 품명 정본) 우선 → 스냅샷 item_name(수주
+    거래처 품명) → products.sub_class(제품군) 폴백. 거래처 표기는
+    거래명세서 등 대외 문서에서만 쓴다.
     fetch 는 db.fetch 시그니처 (table, select, filter, limit=).
     """
     pids = sorted({x.get("product_id") for x in items
                    if x.get("product_id")})
-    subs = {}
+    master, subs = {}, {}
     if pids:
         _pstr = ",".join(f'"{p}"' for p in pids)
         try:
-            subs = {p["product_id"]:
-                    (p.get("item_name") or p.get("sub_class"))
-                    for p in fetch("products",
-                                   "product_id,item_name,sub_class",
-                                   f"product_id=in.({_pstr})", limit=500)}
+            for p in fetch("products", "product_id,item_name,sub_class",
+                           f"product_id=in.({_pstr})", limit=500):
+                master[p["product_id"]] = p.get("item_name")
+                subs[p["product_id"]] = p.get("sub_class")
         except Exception:
-            subs = {}
+            master, subs = {}, {}
     names = {x["si_id"]:
-             (x.get("item_name") or subs.get(x.get("product_id")) or "")
+             (master.get(x.get("product_id"))
+              or x.get("item_name")
+              or subs.get(x.get("product_id")) or "")
              for x in items if x.get("si_id") is not None}
 
     lots = {}
