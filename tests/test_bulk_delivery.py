@@ -303,14 +303,14 @@ def _open_sales_report(ship_db):
                               "anon_key": "a", "service_role_key": "s"}
     at.secrets["auth"] = {"disabled": True}
     at.run()
-    at.sidebar.radio[1].set_value("영업보고")
+    at.sidebar.radio[1].set_value("영업 보고")
     at.run()
     assert not at.exception, [str(e.value) for e in at.exception]
     return at
 
 
 def test_sales_report_ignores_draft(ship_db):
-    """영업보고는 확정 전표만 집계 — 작성중 전표는 안내만 뜬다."""
+    """영업 보고는 확정 전표만 집계 — 작성중 전표는 안내만 뜬다."""
     at = _open_shipping(ship_db)
     _register(at)                      # DRAFT 만 존재
     at2 = _open_sales_report(ship_db)

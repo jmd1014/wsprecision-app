@@ -517,7 +517,7 @@ with st.sidebar:
         "마스터 관리",
         "원가 확인",
         "생산 보고",
-        "영업보고",
+        "영업 보고",
     ]
     ALL_MENU = MENU_FLOW + MENU_ADMIN
 
@@ -4982,12 +4982,21 @@ elif page == "출고 관리":
                 st.error(f"전표 품목 조회 실패: {e}")
                 _cf_items = []
 
+            # 품명(유사 품번 착오 방지) + LOT — 확정은 원장 실적,
+            # 작성중은 FIFO 예정 배분 (2026-08-10 출고 리스트 개편)
+            from utils.ship_lots import names_and_lots as _cf_nl
+            _cf_names, _cf_lotmap = _cf_nl(
+                fetch, _cf_items,
+                confirmed=(_cf_pick.get("status") == "CONFIRMED"))
+
             def _cf_batch(items):
                 return {"date": str(_cf_pick.get("ship_date")),
                         "rows": [{
                             "pn": x.get("pn"),
                             "customer_pn": x.get("customer_pn"),
                             "item_name": x.get("item_name"),
+                            "disp_name": _cf_names.get(x.get("si_id")),
+                            "lots": _cf_lotmap.get(x.get("si_id")),
                             "customer": x.get("customer"),
                             "so_number": x.get("so_number"),
                             "qty": float(x.get("qty") or 0),
@@ -5018,8 +5027,10 @@ elif page == "출고 관리":
             elif _cf_pick.get("status") == "CONFIRMED":
                 import pandas as _cf_pd
                 st.dataframe(_cf_pd.DataFrame([{
-                    "품번": x.get("pn"), "거래처": x.get("customer"),
-                    "수주번호": x.get("so_number"),
+                    "품번": x.get("pn"),
+                    "품명": _cf_names.get(x.get("si_id")) or "-",
+                    "LOT": _cf_lotmap.get(x.get("si_id")) or "-",
+                    "거래처": x.get("customer"),
                     "수량": float(x.get("qty") or 0),
                     "단가": x.get("unit_price"),
                 } for x in _cf_items]), use_container_width=True,
@@ -5047,8 +5058,8 @@ elif page == "출고 관리":
                 import pandas as _cf_pd
                 _cf_df = _cf_pd.DataFrame([{
                     "선택": True, "품번": x.get("pn"),
+                    "품명": _cf_names.get(x.get("si_id")) or "-",
                     "거래처": x.get("customer"),
-                    "수주번호": x.get("so_number"),
                     "수량": float(x.get("qty") or 0),
                 } for x in _cf_items])
                 _cf_ed = st.data_editor(
@@ -5061,7 +5072,7 @@ elif page == "출고 관리":
                         "수량": st.column_config.NumberColumn(
                             "수량 (정정)", min_value=0, step=1),
                         **{c: st.column_config.Column(disabled=True)
-                           for c in ("품번", "거래처", "수주번호")},
+                           for c in ("품번", "품명", "거래처")},
                     })
                 ac1, ac2, ac3 = st.columns([1, 1, 1])
                 ac1.download_button(
@@ -8953,8 +8964,8 @@ elif page == "생산 보고":
                                  hide_index=True, height=400)
 
 
-elif page == "영업보고":
-    st.subheader("영업보고")
+elif page == "영업 보고":
+    st.subheader("영업 보고")
     st.caption(
         "**출고 확정된 전표만** 집계합니다 — 작성중 전표는 확정 전까지 "
         "매출로 잡히지 않습니다. 월 마감 잠금(마감 후 수정 차단)은 "
@@ -8987,8 +8998,8 @@ elif page == "영업보고":
             _ck = ",".join(str(x) for x in ids[_i:_i + 50])
             for x in fetch(
                     "shipment_items",
-                    "si_id,shipment_id,soi_id,pn,customer_pn,item_name,"
-                    "customer,so_number,qty,unit,unit_price",
+                    "si_id,shipment_id,soi_id,product_id,pn,customer_pn,"
+                    "item_name,customer,so_number,qty,unit,unit_price",
                     f"shipment_id=in.({_ck})&order=si_id.asc", limit=2000):
                 _s = smap.get(x["shipment_id"]) or {}
                 x["ship_no"] = _s.get("ship_no")
@@ -9202,6 +9213,8 @@ elif page == "영업보고":
                         for x in _r_bysh.get(s["shipment_id"], [])}))),
                 key="sr_re_pick")
             _r_items = _r_bysh.get(_r_pick["shipment_id"], [])
+            from utils.ship_lots import names_and_lots as _sr_nl
+            _r_names, _r_lots = _sr_nl(fetch, _r_items, confirmed=True)
 
             def _sr_batch(items, ship):
                 return {"date": str(ship.get("ship_date")),
@@ -9209,6 +9222,8 @@ elif page == "영업보고":
                             "pn": x.get("pn"),
                             "customer_pn": x.get("customer_pn"),
                             "item_name": x.get("item_name"),
+                            "disp_name": _r_names.get(x.get("si_id")),
+                            "lots": _r_lots.get(x.get("si_id")),
                             "customer": x.get("customer"),
                             "so_number": x.get("so_number"),
                             "qty": float(x.get("qty") or 0),
