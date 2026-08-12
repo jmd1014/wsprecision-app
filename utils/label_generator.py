@@ -51,7 +51,7 @@ def labels_html(labels: list, mode: str = "label",
 
     labels 항목: {
       "title":  라벨 종류 (예: "소재 입고", "검사 합격"),
-      "big":    크게 표시할 식별자 (W번호 / LOT),
+      "big":    크게 표시할 식별자 (식별 번호 / LOT),
       "badge":  선택 — "합격"/"불합격"/"특채" 등 상태 강조,
       "rows":   [(라벨, 값), ...] 상세 정보,
       "footer": 선택 — 하단 좌측 소문구 (기본: 발행일),
@@ -105,7 +105,7 @@ def receipt_labels(items: list, mode: str = "label") -> str:
         "title": "소재 입고",
         "big": it.get("pn") or "-",
         "rows": [
-            ("소재 LOT", it.get("w_lot")),
+            ("식별 번호", it.get("w_lot")),
             ("재질", it.get("material_name")),
             ("사이즈", it.get("spec")),
             ("수량", f"{it.get('qty', 0):,.0f} {it.get('unit', 'EA')}"),
@@ -125,7 +125,7 @@ def inspection_labels(items: list, mode: str = "label") -> str:
     for it in items:
         rows = [
             ("작업지시", it.get("wo_number")),
-            ("소재 LOT", it.get("w_lot")),
+            ("식별 번호", it.get("w_lot")),
             ("수량", f"{it.get('qty', 0):,.0f} EA"),
             ("검사일", it.get("date")),
         ]
@@ -149,7 +149,7 @@ def finished_labels(items: list, mode: str = "label") -> str:
         rows = [
             ("수량", f"{it.get('qty', 0):,.0f} EA"),
             ("작업지시", it.get("wo_number")),
-            ("소재 LOT", it.get("w_lot")),
+            ("식별 번호", it.get("w_lot")),
             ("완성일", it.get("date")),
         ]
         if it.get("tokusai"):
