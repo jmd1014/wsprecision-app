@@ -1,9 +1,9 @@
 [theme]
-# 2a 시안 — 정밀 라이트 × IBM Plex Sans KR (DESIGN_HANDOFF.md)
-primaryColor = "#24406b"
-backgroundColor = "#f4f5f7"
+# 토스 스타일 — Pretendard × 토스 블루 (design/toss-restyle 2026-08-12)
+primaryColor = "#3182f6"
+backgroundColor = "#f9fafb"
 secondaryBackgroundColor = "#ffffff"
-textColor = "#333a45"
+textColor = "#333d4b"
 font = "sans serif"
 
 [server]
