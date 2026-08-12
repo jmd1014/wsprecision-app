@@ -6427,6 +6427,96 @@ elif page == "발주/입고":
                         mime="text/html", use_container_width=True,
                         key="rcv_relabel_dl2")
 
+            # W번호 수정 — 일괄·자동 채번이 실물 번호와 어긋났을 때 정정
+            st.divider()
+            st.markdown("**W번호 수정** — 자동 채번된 번호가 실물 라벨과 "
+                        "다를 때 바꿉니다. 재고 원장(입고·투입)과 공정 "
+                        "기록(wo_tracking·이력·생산 보고)의 같은 번호가 "
+                        "**한꺼번에** 바뀌어 추적이 유지됩니다.")
+            try:
+                _wr = fetch("inventory_transactions",
+                    "lot_number,material_id,qty,txn_date",
+                    "txn_type=eq.RECEIPT&lot_number=like.W*"
+                    "&order=lot_number.desc", limit=300)
+            except Exception:
+                _wr = []
+            if not _wr:
+                st.caption("수정할 W번호 없음 — W번호 입고 이력이 생기면 "
+                           "여기서 정정할 수 있습니다.")
+            else:
+                _wr_opts = {}
+                for r in _wr:
+                    _k9 = "{} | {} | {} | {:,.0f}".format(
+                        r["lot_number"],
+                        _m_name.get(r["material_id"]) or r["material_id"],
+                        r.get("txn_date") or "-",
+                        float(r.get("qty") or 0))
+                    _wr_opts.setdefault(_k9, r["lot_number"])
+                _we1, _we2, _we3 = st.columns([2.4, 1, 0.8])
+                _wr_pick = _we1.selectbox(
+                    "바꿀 W번호", list(_wr_opts), key="wed_pick")
+                _wr_new_raw = _we2.text_input(
+                    "새 번호", key="wed_new",
+                    placeholder="예: 912 또는 W0912")
+                _we3.write("")
+                if _we3.button("변경", key="wed_go",
+                               use_container_width=True):
+                    _old9 = _wr_opts[_wr_pick]
+                    _dg9 = "".join(ch for ch in (_wr_new_raw or "")
+                                   if ch.isdigit())
+                    if not _dg9:
+                        st.error("새 번호를 숫자로 입력하세요 (예: 912).")
+                    else:
+                        _new9 = f"W{int(_dg9):04d}"
+                        _dup9 = []
+                        try:
+                            _dup9 = fetch("inventory_transactions",
+                                          "txn_id",
+                                          f"lot_number=eq.{_new9}", limit=1)
+                        except Exception:
+                            pass
+                        if _new9 == _old9:
+                            st.info("같은 번호 — 변경할 것이 없습니다.")
+                        elif _dup9:
+                            st.error(f"{_new9} 는 이미 사용 중입니다 — "
+                                     "두 LOT 가 합쳐져 추적이 깨지므로 "
+                                     "다른 번호를 쓰세요.")
+                        else:
+                            try:
+                                _db.update("inventory_transactions",
+                                           f"lot_number=eq.{_old9}",
+                                           {"lot_number": _new9})
+                                for _tb9, _cl9 in (
+                                        ("wo_tracking", "w_lot"),
+                                        ("wo_events", "w_lot"),
+                                        ("production_log", "lot_number")):
+                                    try:
+                                        _db.update(_tb9,
+                                                   f"{_cl9}=eq.{_old9}",
+                                                   {_cl9: _new9})
+                                    except Exception:
+                                        pass
+                                # 카운터가 새 번호보다 작으면 올려서
+                                # 다음 채번 중복 방지
+                                try:
+                                    _wc9 = _db.fetch_one(
+                                        "app_settings",
+                                        "key=eq.w_lot_counter", "value")
+                                    if _wc9 and int(_dg9) > int(
+                                            _wc9.get("value") or 0):
+                                        _db.update(
+                                            "app_settings",
+                                            "key=eq.w_lot_counter",
+                                            {"value": str(int(_dg9))})
+                                except Exception:
+                                    pass
+                                st.success(f"{_old9} → {_new9} 변경 완료. "
+                                           "라벨은 위 재발행에서 새로 "
+                                           "출력하세요.")
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"변경 실패: {e}")
+
             # W번호 채번 설정 (최초 1회 셋업 — 이후 자동)
             st.divider()
             st.markdown("**W번호 채번 설정** — 입고 시 자동 발급되는 "
