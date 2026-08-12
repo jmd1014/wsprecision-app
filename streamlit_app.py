@@ -530,6 +530,40 @@ def toss_table(rows, columns=None, *, badge_cols=(), num_cols=(),
         unsafe_allow_html=True)
 
 
+# ─── 공정 라우팅 (Migration 036, 2026-08-12) ───
+# 라우팅 = 제품별 공정 '순서' 마스터. 공정 '원가'는 BOM(process_type 행).
+# 라우팅 행이 없는 제품은 기본 플로우로 동작한다.
+ROUTING_DEFAULT = [
+    {"routing_id": None, "seq": 1, "step_code": "MAT_IN",
+     "step_name": "소재입고", "step_kind": "INHOUSE", "stage": "MATERIAL"},
+    {"routing_id": None, "seq": 10, "step_code": "PROD",
+     "step_name": "생산", "step_kind": "INHOUSE", "stage": "PRODUCT"},
+    {"routing_id": None, "seq": 50, "step_code": "INSPECT",
+     "step_name": "검사", "step_kind": "INHOUSE", "stage": "PRODUCT"},
+    {"routing_id": None, "seq": 60, "step_code": "DONE",
+     "step_name": "완성", "step_kind": "INHOUSE", "stage": "PRODUCT"},
+]
+
+
+def get_routing(product_id):
+    """제품 라우팅 조회 — 없으면 기본 플로우 반환 (routing_id=None)"""
+    if product_id:
+        try:
+            rows = fetch("product_routing", "*",
+                         f"product_id=eq.{product_id}&order=seq", limit=50)
+            if rows:
+                return rows
+        except Exception:
+            pass
+    return [dict(s) for s in ROUTING_DEFAULT]
+
+
+def routing_out_steps(routing, stage="PRODUCT"):
+    """라우팅의 외주 스텝만 (기본: 제품 단계)"""
+    return [s for s in routing
+            if s.get("step_kind") == "OUTSOURCE" and s.get("stage") == stage]
+
+
 def wo_stage_qty(t):
     """wo_tracking 행 → 단계별 수량. 상태는 행위의 부산물 원칙 —
     모든 단계 수량은 누적 필드에서 유도 (직접 저장 없음)."""
@@ -1110,12 +1144,169 @@ elif page == "마스터 관리":
     # 개발기 정비용 탭(데이터 제외 규칙·매입↔자재 매핑·마스터/연결
     # 점검)은 2026-08-05 제거 — 제외 규칙 자체는 DB 뷰에 내장되어
     # 계속 적용된다. 중복 자재 병합 도구는 자재 편집 하단으로 이동.
-    (tab_fit, tab1, tab_prod, tab_mat, tab_bom,
+    (tab_fit, tab1, tab_prod, tab_mat, tab_bom, tab_rout,
      tab_acct, tab_dsn) = st.tabs([
         "품번별 맞추기",
-        "거래처 편집", "제품 편집", "자재 편집", "BOM 편집",
+        "거래처 편집", "제품 편집", "자재 편집", "BOM 편집", "공정 라우팅",
         "계정 관리", "디자인 데이터 내보내기"
     ])
+
+    # ─── Tab: 공정 라우팅 (Migration 036, 2026-08-12) ───
+    # 라우팅 = 제품별 공정 '순서'. 공정 '원가'는 BOM(process_type 행)이
+    # 담당하고, 외주 스텝은 bom_id 로 원가 행과 연결된다.
+    with tab_rout:
+        st.markdown("**제품별 공정 순서(라우팅)를 정의합니다** — "
+                    "공정 관리의 스테퍼·외주 공정 선택이 이 순서를 따릅니다.")
+        st.caption(
+            "라우팅이 없는 제품은 기본 플로우(소재입고 → 생산 → 외주 → "
+            "검사 → 완성)로 동작하므로, 외주 공정이 있는 제품만 정의하면 "
+            "됩니다. **단계=소재**는 투입 전 외주(소재열처리 등), "
+            "**단계=제품**은 가공 후 외주입니다.")
+
+        # 순서 확정 대기 (BOM 공정에서 자동 생성된 라우팅)
+        try:
+            _unconf = fetch("product_routing", "product_id",
+                            "confirmed=eq.false", limit=500)
+        except Exception:
+            _unconf = []
+        _unids = sorted({r["product_id"] for r in _unconf})
+        if _unids:
+            _ustr = ",".join(f'"{p}"' for p in _unids)
+            try:
+                _upn = fetch("products", "product_id,pn",
+                             f"product_id=in.({_ustr})", limit=100)
+            except Exception:
+                _upn = []
+            st.warning(
+                "**순서 확정 필요**: "
+                + " · ".join(p["pn"] for p in _upn)
+                + " — BOM 공정 행에서 자동 생성된 라우팅입니다. 외주 "
+                "공정의 단계(소재/제품)와 순서를 확인하고 저장하세요.")
+
+        _rq = st.text_input("제품 검색 (품번/품명)", key="rout_q",
+                            placeholder="예: MRG6-07")
+        if (_rq or "").strip():
+            _kw = _rq.strip()
+            try:
+                _rcand = fetch("products", "product_id,pn,item_name",
+                    f"or=(pn.ilike.*{_kw}*,item_name.ilike.*{_kw}*)"
+                    "&archived_at=is.null&order=pn", limit=30)
+            except Exception as e:
+                st.error(e); _rcand = []
+            if not _rcand:
+                st.info("검색 결과 없음")
+            else:
+                _rp_lbl = [p["pn"] + (f" | {p['item_name']}"
+                                      if p.get("item_name") else "")
+                           for p in _rcand]
+                _rp_pick = st.selectbox("제품 선택", _rp_lbl,
+                                        key="rout_pick")
+                _rp_id = _rcand[_rp_lbl.index(_rp_pick)]["product_id"]
+
+                _cur = get_routing(_rp_id)
+                _has_custom = any(s.get("routing_id") for s in _cur)
+                if not _has_custom:
+                    st.caption("정의된 라우팅 없음 — 기본 플로우입니다. "
+                               "수정 후 저장하면 이 제품 전용 라우팅이 "
+                               "생성됩니다.")
+
+                # 이 제품의 BOM 공정 행 (외주 원가 연결 후보)
+                try:
+                    _pbom = fetch("bom",
+                        "bom_id,process_type,raw_material_name,unit_price",
+                        f"product_id=eq.{_rp_id}"
+                        "&process_type=neq.MATERIAL", limit=30)
+                except Exception:
+                    _pbom = []
+                _bom_opts = ["(연결 안 함)"] + [
+                    f"#{b['bom_id']} "
+                    f"{b.get('raw_material_name') or b['process_type']}"
+                    + (f" ₩{int(float(b['unit_price'])):,}"
+                       if b.get("unit_price") else "")
+                    for b in _pbom]
+                _bom_by_lbl = {_bom_opts[i + 1]: _pbom[i]["bom_id"]
+                               for i in range(len(_pbom))}
+                _lbl_by_bom = {v: k for k, v in _bom_by_lbl.items()}
+
+                _kind_lbl = {"INHOUSE": "사내", "OUTSOURCE": "외주"}
+                _stage_lbl = {"MATERIAL": "소재", "PRODUCT": "제품"}
+                _red = st.data_editor(
+                    pd.DataFrame([{
+                        "순서": s["seq"],
+                        "공정명": s["step_name"],
+                        "구분": _kind_lbl.get(s.get("step_kind"), "사내"),
+                        "단계": _stage_lbl.get(s.get("stage"), "제품"),
+                        "BOM 연결": _lbl_by_bom.get(s.get("bom_id"),
+                                                   "(연결 안 함)"),
+                    } for s in _cur]),
+                    hide_index=True, num_rows="dynamic",
+                    use_container_width=True,
+                    column_config={
+                        "순서": st.column_config.NumberColumn(
+                            required=True, step=1,
+                            help="이 숫자 순으로 정렬됩니다"),
+                        "공정명": st.column_config.TextColumn(
+                            required=True),
+                        "구분": st.column_config.SelectboxColumn(
+                            options=["사내", "외주"], required=True),
+                        "단계": st.column_config.SelectboxColumn(
+                            options=["소재", "제품"], required=True,
+                            help="소재 = 투입 전 / 제품 = 가공 후"),
+                        "BOM 연결": st.column_config.SelectboxColumn(
+                            options=_bom_opts,
+                            help="외주 공정의 원가 행(BOM) 연결"),
+                    }, key=f"rout_ed_{_rp_id}")
+
+                _CODE_BY_NAME = {"소재입고": "MAT_IN", "생산": "PROD",
+                                 "검사": "INSPECT", "완성": "DONE"}
+                rc1, rc2 = st.columns([1, 1])
+                if rc1.button("라우팅 저장", type="primary",
+                              key="rout_save"):
+                    _rows = [r for r in _red.to_dict("records")
+                             if (str(r.get("공정명") or "")).strip()]
+                    if not _rows:
+                        st.error("공정이 없습니다.")
+                    else:
+                        _rows.sort(key=lambda r: float(r.get("순서") or 0))
+                        _ins = []
+                        for _i, r in enumerate(_rows):
+                            _nm = str(r["공정명"]).strip()
+                            _kind = ("OUTSOURCE" if r.get("구분") == "외주"
+                                     else "INHOUSE")
+                            _ins.append({
+                                "product_id": _rp_id,
+                                "seq": (_i + 1) * 10,
+                                "step_code": ("OUT" if _kind == "OUTSOURCE"
+                                              else _CODE_BY_NAME.get(
+                                                  _nm, "STEP")),
+                                "step_name": _nm,
+                                "step_kind": _kind,
+                                "stage": ("MATERIAL"
+                                          if r.get("단계") == "소재"
+                                          else "PRODUCT"),
+                                "bom_id": _bom_by_lbl.get(
+                                    r.get("BOM 연결")),
+                                "confirmed": True,
+                            })
+                        try:
+                            _db.delete("product_routing",
+                                       f"product_id=eq.{_rp_id}")
+                            _db.insert("product_routing", _ins)
+                            st.success(f"라우팅 저장: {_rp_pick} — "
+                                       f"{len(_ins)}개 공정")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"저장 실패: {e}")
+                if _has_custom and rc2.button(
+                        "기본 플로우로 되돌리기 (라우팅 삭제)",
+                        key="rout_reset"):
+                    try:
+                        _db.delete("product_routing",
+                                   f"product_id=eq.{_rp_id}")
+                        st.success("라우팅 삭제 — 기본 플로우로 동작합니다.")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"삭제 실패: {e}")
 
     # ─── Tab: 품번별 맞추기 (2026-07-31) ───
     # 발주서 없이 소재를 먼저 입고하고, 완성재고를 출하 시점에 실사로
@@ -1539,8 +1730,11 @@ elif page == "마스터 관리":
 
             ac1, ac2, ac3 = st.columns([1, 1, 1])
             ac1.metric("장부 완성재고", f"{_ft['stock']:,.0f}")
+            # 장부가 음수인 품목도 열리도록 초기값은 0 미만 방지
+            # (음수 장부 = 미기록 생산분 — 실사값 입력으로 바로잡는 대상)
             _real = ac2.number_input("실사 수량", 0.0, 1_000_000.0,
-                                     float(_ft["stock"]), 1.0, key="ft_real")
+                                     max(0.0, float(_ft["stock"])), 1.0,
+                                     key="ft_real")
             _diff = float(_real) - _ft["stock"]
             ac3.metric("조정될 차이", f"{_diff:+,.0f}",
                        delta=None if _diff == 0 else
@@ -7710,6 +7904,30 @@ elif page == "공정 관리":
                     except Exception:
                         pass
 
+                # 라우팅 선행 공정 확인 — 소재 단계 외주(소재열처리 등)가
+                # 정의된 제품이면 이 W-LOT 의 외주 회수 이력을 확인
+                if _prod0:
+                    _rt_in = get_routing(_prod0.get("product_id"))
+                    _mat_steps = routing_out_steps(_rt_in, stage="MATERIAL")
+                    if _mat_steps:
+                        _mnames = " · ".join(
+                            s["step_name"] for s in _mat_steps)
+                        try:
+                            _pre = fetch("wo_events", "event_id",
+                                f"w_lot=eq.{_sel_lot}"
+                                "&event_type=eq.MAT_OUT_RETURN", limit=1)
+                        except Exception:
+                            _pre = []
+                        if _pre:
+                            st.caption(f"선행 소재 외주({_mnames}) 회수 "
+                                       "이력 확인됨 — 투입 가능합니다.")
+                        else:
+                            st.warning(
+                                f"이 제품은 투입 전 소재 외주 공정이 "
+                                f"있습니다 — **{_mnames}**. 아래 '소재 "
+                                "외주 처리'에서 출고·회수를 기록한 뒤 "
+                                "투입하세요. (이력 없이 투입도 가능)")
+
                 ic1, ic2, ic3 = st.columns(3)
                 with ic1:
                     _wo_no = st.text_input("작업지시 NO",
@@ -7796,6 +8014,97 @@ elif page == "공정 관리":
                         else:
                             st.error(f"등록 실패: {e}")
 
+                # ── 소재 외주 처리 (라우팅 MATERIAL 단계 — 소재열처리 등) ──
+                # 투입 전 소재를 외주 보냈다 회수하는 기록. 재고 수량은
+                # 바뀌지 않고(소유권 유지) 이벤트 이력만 남는다.
+                _mev = []
+                try:
+                    _mev = fetch("wo_events",
+                        "event_id,event_type,qty,step_name,detail,"
+                        "event_date,created_by",
+                        f"w_lot=eq.{_sel_lot}"
+                        "&event_type=in.(MAT_OUT_SEND,MAT_OUT_RETURN)"
+                        "&order=event_id", limit=100)
+                except Exception:
+                    pass
+                _m_open = (sum(float(e.get("qty") or 0) for e in _mev
+                               if e["event_type"] == "MAT_OUT_SEND")
+                           - sum(float(e.get("qty") or 0) for e in _mev
+                                 if e["event_type"] == "MAT_OUT_RETURN"))
+                with st.expander(
+                        "소재 외주 처리 (소재열처리 등 — 투입 전 외주)"
+                        + (f" — 외주 중 {_m_open:,.0f}"
+                           if _m_open > 0 else ""),
+                        expanded=_m_open > 0):
+                    st.caption(
+                        f"**{_sel_lot}** 소재를 투입 전에 외주(소재열처리 "
+                        "등) 보내고 회수하는 기록입니다. 장부 재고는 "
+                        "바뀌지 않고 이력만 남아, 투입 시 선행 공정 "
+                        "확인에 사용됩니다.")
+                    try:
+                        _mov = fetch("vendors", "name",
+                            "in_use=eq.true&order=name", limit=300)
+                    except Exception:
+                        _mov = []
+                    mo1, mo2, mo3 = st.columns(3)
+                    with mo1:
+                        _mo_proc = st.text_input("공정명",
+                            placeholder="예: 고용화, 소재열처리",
+                            key=f"mo_proc_{_sel_lot}")
+                    with mo2:
+                        _mo_vendor = st.selectbox("외주 거래처",
+                            [v["name"] for v in _mov] or ["(거래처 없음)"],
+                            key=f"mo_vendor_{_sel_lot}")
+                    with mo3:
+                        _mo_qty = st.number_input("수량",
+                            min_value=0.0, value=float(_sel_bal), step=1.0,
+                            key=f"mo_qty_{_sel_lot}")
+
+                    def _mo_log(ev_type, done_msg):
+                        try:
+                            _db.insert("wo_events", [{
+                                "wo_number": _sel_lot,  # WO 생성 전 — LOT 로 기록
+                                "w_lot": _sel_lot,
+                                "event_type": ev_type,
+                                "qty": _mo_qty,
+                                "step_name": (_mo_proc or "").strip() or None,
+                                "detail": {"vendor": _mo_vendor,
+                                           "material_id": _sel_mid},
+                                "event_date": _pe_date.today().isoformat(),
+                                "created_by": current_user_name()}])
+                            st.success(done_msg)
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"기록 실패: {e}")
+
+                    mb1, mb2 = st.columns(2)
+                    if mb1.button(f"외주 출고 기록 ({_mo_qty:,.0f})",
+                                  disabled=not (_mo_qty > 0 and
+                                                (_mo_proc or "").strip()),
+                                  key=f"mo_send_{_sel_lot}"):
+                        _mo_log("MAT_OUT_SEND",
+                                f"소재 외주 출고 기록: {_sel_lot} "
+                                f"{_mo_qty:,.0f} → {_mo_vendor}")
+                    if mb2.button(f"회수 기록 ({_mo_qty:,.0f})",
+                                  type="primary",
+                                  disabled=not (_mo_qty > 0
+                                                and _m_open > 0),
+                                  key=f"mo_ret_{_sel_lot}"):
+                        _mo_log("MAT_OUT_RETURN",
+                                f"소재 외주 회수 기록: {_sel_lot} "
+                                f"{_mo_qty:,.0f} ← {_mo_vendor}")
+                    if _mev:
+                        toss_table([{
+                            "일자": e.get("event_date"),
+                            "구분": ("출고" if e["event_type"]
+                                     == "MAT_OUT_SEND" else "회수"),
+                            "공정": e.get("step_name"),
+                            "거래처": (e.get("detail") or {}).get("vendor"),
+                            "수량": float(e.get("qty") or 0),
+                            "처리자": e.get("created_by"),
+                        } for e in _mev],
+                            num_cols=("수량",), badge_cols=("구분",))
+
         # 최근 투입 목록
         st.divider()
         st.markdown("##### 최근 투입 등록")
@@ -7867,26 +8176,86 @@ elif page == "공정 관리":
             _t = _p_opts[_p_key]
             _q = wo_stage_qty(_t)
 
-            # 5칸 스테퍼 — 진행 칸만 상태색 (2a 시안)
+            # 라우팅 기반 동적 스테퍼 — 제품의 공정 순서대로 칸 구성,
+            # 진행 칸만 상태색 (Migration 036). 라우팅 없으면 기본 5칸.
+            _rt = get_routing(_t.get("product_id"))
+            _out_steps = routing_out_steps(_rt)
+            try:
+                _rt_evs = fetch("wo_events", "event_type,qty,routing_id",
+                    f"wo_id=eq.{_t['wo_id']}"
+                    "&event_type=in.(OUT_SEND,OUT_RETURN)", limit=300)
+            except Exception:
+                _rt_evs = []
+            _mat_evs = []
+            if _t.get("w_lot") and routing_out_steps(_rt, stage="MATERIAL"):
+                try:
+                    _mat_evs = fetch("wo_events", "event_type,qty",
+                        f"w_lot=eq.{_t['w_lot']}"
+                        "&event_type=in.(MAT_OUT_SEND,MAT_OUT_RETURN)",
+                        limit=100)
+                except Exception:
+                    pass
+            # 외주 스텝별 출고−회수 잔량 (routing 지정 없는 옛 이벤트는 None 키)
+            _ob = {}
+            for _e in _rt_evs:
+                _k = _e.get("routing_id")
+                _sign = 1 if _e["event_type"] == "OUT_SEND" else -1
+                _ob[_k] = _ob.get(_k, 0) + _sign * float(_e.get("qty") or 0)
+
             def _step_cls(active, done):
                 return "on" if active else ("done" if done else "")
-            _stp = [
-                ("투입", _step_cls(False, float(_t.get("input_qty")
-                                                or 0) > 0)),
-                ("생산", _step_cls(_q["생산중"] > 0,
-                                  float(_t.get("received_qty") or 0) > 0)),
-                ("외주", _step_cls(_q["외주중"] > 0,
-                                  float(_t.get("outsource_in_qty")
-                                        or 0) > 0)),
-                ("검사", _step_cls(_q["검사대기"] > 0
-                                  or _q["재작업중"] > 0,
-                                  float(_t.get("pass_qty") or 0) > 0
-                                  or float(_t.get("scrap_qty") or 0) > 0)),
-                ("완성", _step_cls(False, _q["완성"] > 0)),
-            ]
+
+            _stp = []
+            for _s in _rt:
+                _sc = _s["step_code"]
+                if _sc == "MAT_IN":
+                    _cls = _step_cls(False,
+                                     float(_t.get("input_qty") or 0) > 0)
+                elif (_s.get("stage") == "MATERIAL"
+                      and _s.get("step_kind") == "OUTSOURCE"):
+                    _ms = sum(float(e.get("qty") or 0) for e in _mat_evs
+                              if e["event_type"] == "MAT_OUT_SEND")
+                    _mr = sum(float(e.get("qty") or 0) for e in _mat_evs
+                              if e["event_type"] == "MAT_OUT_RETURN")
+                    _cls = _step_cls(_ms > _mr, _mr > 0)
+                elif _sc == "PROD":
+                    _cls = _step_cls(_q["생산중"] > 0,
+                                     float(_t.get("received_qty") or 0) > 0)
+                elif _s.get("step_kind") == "OUTSOURCE":
+                    _bal = _ob.get(_s.get("routing_id"))
+                    if _bal is None and _out_steps and _s is _out_steps[0]:
+                        _bal = _ob.get(None)  # 라우팅 도입 전 이벤트 → 첫 칸
+                    if _bal is None:
+                        # 이벤트 없는 옛 지시 — 집계 수량으로 판정
+                        _first = bool(_out_steps and _s is _out_steps[0])
+                        _cls = _step_cls(
+                            _first and _q["외주중"] > 0,
+                            _first and float(_t.get("outsource_in_qty")
+                                             or 0) > 0)
+                    else:
+                        _cls = _step_cls(_bal > 0,
+                                         _bal <= 0 and bool(_rt_evs))
+                elif _sc == "INSPECT":
+                    _cls = _step_cls(_q["검사대기"] > 0
+                                     or _q["재작업중"] > 0,
+                                     float(_t.get("pass_qty") or 0) > 0
+                                     or float(_t.get("scrap_qty") or 0) > 0)
+                elif _sc == "DONE":
+                    _cls = _step_cls(False, _q["완성"] > 0)
+                else:  # 사용자 정의 사내 공정 — 수량 추적 없음 (2단계 예정)
+                    _cls = ""
+                _stp.append((_s["step_name"], _cls))
             st.markdown('<div class="stepper">' + "".join(
                 f'<div class="step {c}">{n}</div>' for n, c in _stp)
                 + "</div>", unsafe_allow_html=True)
+            # 다음 공정 안내 — 진행 중이면 그 공정, 아니면 첫 미완료 공정
+            _going = [n for n, c in _stp if c == "on"]
+            _next = [n for n, c in _stp if c == ""]
+            if _going:
+                st.caption(f"진행 중: **{' · '.join(_going)}**"
+                           + (f" — 다음 공정: {_next[0]}" if _next else ""))
+            elif _next:
+                st.caption(f"다음 공정: **{_next[0]}**")
 
             pm = st.columns(6)
             for _pi, _pk in enumerate(
@@ -7965,9 +8334,28 @@ elif page == "공정 관리":
                         _o_vendor = st.selectbox("외주 거래처",
                             [v["name"] for v in _ov] or ["(거래처 없음)"],
                             key="pe_o_vendor")
-                        _o_proc = st.text_input("가공 공정",
-                            placeholder="예: 열처리, 도금, 연마",
-                            key="pe_o_proc")
+                        # 라우팅에 외주 공정이 정의된 제품은 공정 선택,
+                        # 없으면 기존처럼 자유 입력
+                        _o_rid = None
+                        if _out_steps:
+                            _o_opts = ([s["step_name"] for s in _out_steps]
+                                       + ["직접 입력"])
+                            _o_pick = st.selectbox("가공 공정 (라우팅)",
+                                _o_opts, key="pe_o_step",
+                                help="마스터 관리 → 공정 라우팅에서 정의된 "
+                                     "이 제품의 외주 공정입니다.")
+                            if _o_pick == "직접 입력":
+                                _o_proc = st.text_input("가공 공정",
+                                    placeholder="예: 열처리, 도금, 연마",
+                                    key="pe_o_proc")
+                            else:
+                                _o_proc = _o_pick
+                                _o_rid = _out_steps[
+                                    _o_opts.index(_o_pick)].get("routing_id")
+                        else:
+                            _o_proc = st.text_input("가공 공정",
+                                placeholder="예: 열처리, 도금, 연마",
+                                key="pe_o_proc")
                     with oc2:
                         _o_qty = st.number_input("출고 수량", 0.0,
                             _q["검사대기"], _q["검사대기"], 1.0,
@@ -7996,6 +8384,8 @@ elif page == "공정 관리":
                             {"outsource_qty":
                              float(_t.get("outsource_qty") or 0) + _o_qty},
                             event={"event_type": "OUT_SEND", "qty": _o_qty,
+                                   "routing_id": _o_rid,
+                                   "step_name": _o_proc,
                                    "detail": {"vendor": _o_vendor,
                                               "process": _o_proc,
                                               "due": str(_o_due),
@@ -8012,6 +8402,21 @@ elif page == "공정 관리":
                 elif _act == "외주 입고":
                     st.caption("외주 가공 완료분 입고 — 입고분은 검사 "
                                "대기로 복귀합니다.")
+                    # 라우팅 기준 나가 있는 공정 목록 — 어느 공정에서
+                    # 돌아오는지 선택 (외주 공정이 여럿인 제품 대비)
+                    _oi_rid, _oi_step = None, None
+                    _rid_name = {s.get("routing_id"): s["step_name"]
+                                 for s in _out_steps}
+                    _open_out = [(k, v) for k, v in _ob.items() if v > 0]
+                    if _open_out:
+                        _oi_opts = [
+                            f"{_rid_name.get(k, '외주(공정 미지정)')} — "
+                            f"잔량 {v:,.0f}" for k, v in _open_out]
+                        _oi_pick = st.selectbox("입고 공정", _oi_opts,
+                                                key="pe_oi_step")
+                        _oi_k = _open_out[_oi_opts.index(_oi_pick)][0]
+                        _oi_rid = _oi_k
+                        _oi_step = _rid_name.get(_oi_k)
                     _oi_qty = st.number_input("입고 수량", 0.0,
                         _q["외주중"], _q["외주중"], 1.0, key="pe_oi_qty")
                     if st.button(f"외주 입고 ({_oi_qty:,.0f})",
@@ -8022,7 +8427,9 @@ elif page == "공정 관리":
                              float(_t.get("outsource_in_qty") or 0)
                              + _oi_qty},
                             event={"event_type": "OUT_RETURN",
-                                   "qty": _oi_qty},
+                                   "qty": _oi_qty,
+                                   "routing_id": _oi_rid,
+                                   "step_name": _oi_step},
                             msg=f"외주 입고 {_oi_qty:,.0f} EA → "
                                 "검사 대기")
 
