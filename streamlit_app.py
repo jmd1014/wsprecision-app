@@ -5990,6 +5990,63 @@ elif page == "발주/입고":
                 column_config={"잔여": st.column_config.NumberColumn(
                     format="localized", width="small")})
 
+        # ── W번호 미부여 입고 — 소급 부여 (2026-08-12) ──
+        # 채번 카운터 설정 전에 처리된 입고는 W번호 없이 기록됨.
+        # 여기서 입고순으로 일괄 부여 → 아래 라벨 재발행에서 출력.
+        try:
+            _nw = fetch("inventory_transactions",
+                "txn_id,material_id,qty,unit,txn_date,remark",
+                "txn_type=eq.RECEIPT&material_id=not.is.null"
+                "&or=(lot_number.is.null,lot_number.not.like.W*)"
+                "&order=txn_id.asc", limit=200)
+        except Exception:
+            _nw = []
+        if _nw:
+            st.divider()
+            st.markdown("##### W번호 미부여 입고")
+            st.caption(
+                "채번 설정 전에 처리되어 W번호가 없는 입고입니다. "
+                "일괄 부여하면 **입고순**으로 번호가 매겨지고, 아래 "
+                "라벨 재발행에서 바로 출력할 수 있습니다.")
+            _nw_mm = {}
+            try:
+                _nw_mids = {r["material_id"] for r in _nw}
+                _nw_mm = {m["material_id"]: m.get("raw_name") for m in
+                          fetch("materials", "material_id,raw_name",
+                                "material_id=in.({})".format(
+                                    ",".join(_nw_mids)), limit=300)}
+            except Exception:
+                pass
+            st.dataframe(pd.DataFrame([{
+                "입고일": r.get("txn_date"),
+                "자재": _nw_mm.get(r["material_id"]) or r["material_id"],
+                "수량": float(r.get("qty") or 0),
+                "비고": r.get("remark") or "",
+            } for r in _nw]), use_container_width=True, hide_index=True,
+                column_config={"수량": st.column_config.NumberColumn(
+                    format="localized")})
+            if st.button(f"W번호 일괄 부여 ({len(_nw)}건 · 입고순)",
+                         type="primary", key="wfix_go"):
+                _ws2 = w_lot_next(len(_nw))
+                if not _ws2:
+                    st.error("채번 카운터 미설정 — 입고 처리 탭 하단 "
+                             "**W번호 채번 설정**에서 마지막 사용 번호를 "
+                             "먼저 저장하세요.")
+                else:
+                    _ok2 = 0
+                    for _r2, _w2 in zip(_nw, _ws2):
+                        try:
+                            _db.update("inventory_transactions",
+                                       f"txn_id=eq.{_r2['txn_id']}",
+                                       {"lot_number": _w2})
+                            _ok2 += 1
+                        except Exception as e:
+                            st.warning(f"{_r2['txn_id']} 부여 실패: {e}")
+                    st.success(f"W번호 부여 완료 — {_ws2[0]}~{_ws2[-1]} "
+                               f"({_ok2}건). 아래 라벨 재발행에서 "
+                               "출력하세요.")
+                    st.rerun()
+
         # ── 입고 라벨 재발행 (분실·훼손 대비) ──
         st.divider()
         st.markdown("##### 입고 라벨 재발행")
