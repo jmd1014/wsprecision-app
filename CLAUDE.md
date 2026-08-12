@@ -1,0 +1,43 @@
+# 우성정밀 업무관리 시스템 (wsprecision-app)
+
+부산 우성정밀의 수주·발주·재고·생산·출고·원가를 관리하는 사내 웹앱.
+**실사용자 6명이 매일 쓰는 운영 시스템**이다 — main 푸시 = 즉시 배포임을 항상 의식할 것.
+
+## 아키텍처
+
+- 앱: Streamlit 단일 파일 `streamlit_app.py` (~1만 줄) + `utils/`(문서 생성·파서) + `db.py`(Supabase REST 래퍼)
+- DB: Supabase PostgreSQL (프로젝트 `iryhamvxpboumnrtajwb`, 서울 리전)
+- 배포: Streamlit Community Cloud — **main 브랜치 푸시 시 자동 배포** (https://wsprecision.streamlit.app)
+- DB 접속: **service_role 키만 사용** (RLS 우회). anon 키 경로는 전부 RLS로 차단되어 있음
+- 인증: 자체 로그인 (사용자·비밀번호 해시는 DB `app_settings`에 저장)
+
+## 이 PC 개발 환경 (주 개발 머신)
+
+- 저장소: `C:\Users\우성 02\wsprecision-app` — **작업은 junction `C:\wsapp` 경로로** (한글 경로가 cmd/도구에서 인코딩 문제를 일으킴)
+- Python: `C:\Python311\python.exe` (3.11.9, NuGet zip 설치 — 이 PC는 MSI 설치가 실패함)
+- 실행: `C:\Python311\python.exe -m streamlit run streamlit_app.py` (로컬 미리보기는 `.claude/launch.json`의 "wsprecision" 구성, port 8501)
+- 테스트: `C:\Python311\python.exe -m pytest tests -q` (AppTest 기반 — st.dataframe→toss_table 전환 시 관련 테스트 확인)
+- 로컬 secrets: `.streamlit/secrets.toml` (커밋 금지, `auth.disabled=true`로 로그인 우회) — 키 원본은 Supabase 대시보드·Streamlit Cloud Secrets
+
+## 작업 흐름
+
+1. `design/...` 또는 `feat/...` 브랜치에서 작업
+2. 로컬 미리보기로 화면·기능 검증 (9개 페이지 예외 없이 렌더되는지)
+3. 사용자 확인 후 main 머지 → 자동 배포
+4. 커밋 메시지: `feat:`/`fix:`/`design:` + 한글 요약 + 본문에 변경 항목 나열
+
+## 디자인 시스템 (토스 스타일, 2026-08-12 확정)
+
+- 폰트 **Pretendard** / 주색 **#3182f6** (hover #1b64da) / 배경 #f9fafb
+- 카드: 테두리 없음 + radius 16px + `var(--shadow)` / 버튼: radius 10px, 보조는 회색 면 #f2f4f6
+- 상태 색 규칙(전 페이지 고정): 문제=#f04452 / 대기·부분=#dd6b02 / 완료=#01a76b / 진행·활성=#3182f6
+- **이모지로 상태 표시 금지** — 색·배지로만 (신호등 이모지는 2026-08-12 제거됨)
+- 토큰·컴포넌트 CSS는 `streamlit_app.py` 상단 CSS 블록 한 곳에만 정의
+- 읽기 전용 표에서 배지·강조가 필요하면 `toss_table()` 헬퍼 사용 (st.dataframe은 CSS 불가). 편집 표는 data_editor 유지
+- 인쇄물(거래명세서·라벨·영업보고 HTML)은 **인쇄용 자체 디자인 유지** — 앱 토큰 적용 대상 아님
+
+## DB 작업 규칙
+
+- 스키마 변경은 Supabase MCP `apply_migration`으로 (이력 유지). 2026-08-12 기준 마이그레이션 035까지
+- **새 테이블은 반드시 `ENABLE ROW LEVEL SECURITY`**, **새 뷰는 `WITH (security_invoker = true)`** — 정책은 만들지 않음 (anon 차단이 목적, 앱은 service_role)
+- 파괴적 변경 전 백업 테이블(`*_backup_MMDD`) 생성 관례 유지
