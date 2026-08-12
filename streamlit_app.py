@@ -241,6 +241,33 @@ div[data-testid="stDataFrame"]{
 .gc.after .gd{display:block;color:var(--dim);font-weight:600;
   margin-top:1px}
 
+/* ── 토스 스타일 HTML 테이블 (toss_table 헬퍼) ── */
+.tt-wrap{background:var(--card);border-radius:16px;box-shadow:var(--shadow);
+  overflow-x:auto;margin:6px 0 10px}
+.tt-wrap.scroll{max-height:560px;overflow-y:auto}
+.tt{width:100%;border-collapse:collapse;font-size:13.5px}
+.tt th{position:sticky;top:0;background:var(--card);z-index:2;
+  font-size:12.5px;font-weight:600;color:var(--faint);text-align:left;
+  padding:12px 16px;border-bottom:1px solid var(--line2);white-space:nowrap}
+.tt td{padding:12px 16px;border-bottom:1px solid var(--line3);
+  color:var(--body);white-space:nowrap}
+.tt tbody tr:last-child td{border-bottom:none}
+.tt tbody tr{transition:background .12s}
+.tt tbody tr:hover{background:#fafbfc}
+.tt th.r,.tt td.r{text-align:right;font-variant-numeric:tabular-nums}
+.tt td b{font-weight:700;color:var(--ink)}
+.tt .neg{color:var(--warn2);font-weight:700}
+.tt .dim{color:var(--mute)}
+.tt tr.hl td{background:#fef1f1}
+.tt .late{color:var(--warn2);font-weight:700}
+.tt .badge{display:inline-block;font-size:12px;font-weight:600;
+  padding:4px 10px;border-radius:7px;line-height:1.3}
+.tt .b-red{background:#fdecec;color:var(--warn2)}
+.tt .b-green{background:var(--good-bg);color:var(--good)}
+.tt .b-amber{background:var(--warn-bg);color:var(--warn)}
+.tt .b-blue{background:var(--primary-bg);color:#1b64da}
+.tt .b-gray{background:#f2f4f6;color:var(--faint)}
+
 /* ── 미계획 물량 경고 카드 ── */
 .unplan{background:var(--warn-bg);border:none;
   border-left:4px solid var(--warn);border-radius:12px;
@@ -436,6 +463,71 @@ def status_style(df, cols=("상태",)):
         return df.style.map(_c, subset=_sub)
     except AttributeError:          # pandas < 2.1
         return df.style.applymap(_c, subset=_sub)
+
+
+def _badge_class(v):
+    """상태 텍스트 → 배지 색 클래스 (status_style 과 같은 색 규칙)"""
+    s = str(v)
+    if any(k in s for k in _ST_RED):
+        return "b-red"
+    if any(k in s for k in _ST_GREEN):
+        return "b-green"
+    if any(k in s for k in _ST_AMBER):
+        return "b-amber"
+    if any(k in s for k in _ST_BLUE):
+        return "b-blue"
+    return "b-gray"
+
+
+def toss_table(rows, columns=None, *, badge_cols=(), num_cols=(),
+               strong_cols=(), raw_cols=(), hl_rows=(), scroll=False):
+    """읽기 전용 표를 토스 스타일 HTML 테이블로 렌더 (.tt CSS).
+
+    st.dataframe(글라이드 그리드)은 CSS 커스텀이 안 되므로, 배지·강조가
+    중요한 표는 이 헬퍼로 그린다. 편집이 필요한 표는 계속 data_editor.
+
+    rows: list[dict] 또는 DataFrame. columns: 표시 순서(생략 시 첫 행 키).
+    badge_cols: 상태 배지로 그릴 컬럼 / num_cols: 우측 정렬+콤마 /
+    strong_cols: 굵게(품번 등) / raw_cols: 호출부가 만든 HTML 그대로
+    (반드시 호출부에서 escape 책임) / hl_rows: 위험 행 인덱스(연빨강 배경).
+    """
+    import html as _h
+    if hasattr(rows, "to_dict"):
+        rows = rows.to_dict("records")
+    if not rows:
+        return
+    cols = list(columns) if columns else list(rows[0].keys())
+
+    def _fmt(c, v):
+        if c in raw_cols:
+            return "" if v is None else str(v)
+        if v is None or v == "":
+            return '<span class="dim">-</span>'
+        if c in badge_cols:
+            return (f'<span class="badge {_badge_class(v)}">'
+                    f"{_h.escape(str(v))}</span>")
+        if c in num_cols and isinstance(v, (int, float)):
+            txt = (f"{v:,.0f}" if float(v).is_integer() else f"{v:,.2f}")
+            return f'<span class="neg">{txt}</span>' if v < 0 else txt
+        out = _h.escape(str(v))
+        return f"<b>{out}</b>" if c in strong_cols else out
+
+    _r = ' class="r"'
+    _hl = ' class="hl"'
+    head = "".join(
+        f"<th{_r if c in num_cols else ''}>{_h.escape(str(c))}</th>"
+        for c in cols)
+    body = []
+    for i, r in enumerate(rows):
+        tds = "".join(
+            f"<td{_r if c in num_cols else ''}>{_fmt(c, r.get(c))}</td>"
+            for c in cols)
+        body.append(f"<tr{_hl if i in hl_rows else ''}>{tds}</tr>")
+    st.markdown(
+        f'<div class="tt-wrap{" scroll" if scroll else ""}">'
+        f'<table class="tt"><thead><tr>{head}</tr></thead>'
+        f'<tbody>{"".join(body)}</tbody></table></div>',
+        unsafe_allow_html=True)
 
 
 def wo_stage_qty(t):
@@ -3366,7 +3458,7 @@ elif page == "수주 관리":
                 avg_match = sum(s.get("match_rate_pct") or 0 for s in sos) / len(sos)
                 sc4.metric("평균 매칭률", f"{avg_match:.1f}%")
                 st.divider()
-                df = pd.DataFrame([{
+                toss_table([{
                     "수주번호": s["so_number"], "거래처": s["customer"],
                     "수주일": s.get("so_date"), "납기": s.get("due_date"),
                     "품목수": s.get("item_count"),
@@ -3374,17 +3466,15 @@ elif page == "수주 관리":
                     "납품": int(s.get("total_received_qty") or 0),
                     "미납": int(s.get("total_pending_qty") or 0),
                     "납품상태": status_ko(s.get("delivery_status")),
-                    "총액": int(s.get("total_amount") or 0),
+                    "총액 (원)": int(s.get("total_amount") or 0),
                     "매칭률": f"{s.get('match_rate_pct') or 0:.0f}%",
                     "상태": status_ko(s["status"]),
-                } for s in sos])
-                st.dataframe(df, use_container_width=True, hide_index=True,
-                    column_config={
-                        "총수량": st.column_config.NumberColumn(format="localized"),
-                        "납품": st.column_config.NumberColumn(format="localized"),
-                        "미납": st.column_config.NumberColumn(format="localized"),
-                        "총액": st.column_config.NumberColumn("총액 (원)", format="localized"),
-                    })
+                } for s in sos],
+                    badge_cols=("납품상태", "상태"),
+                    num_cols=("품목수", "총수량", "납품", "미납",
+                              "총액 (원)", "매칭률"),
+                    strong_cols=("수주번호",),
+                    scroll=len(sos) > 15)
 
                 st.divider()
                 st.markdown("##### 🔍 수주 상세")
@@ -3395,26 +3485,23 @@ elif page == "수주 관리":
                     so = opts[sel_so]
                     sitems = fetch("sales_order_items", "*",
                                    f"so_id=eq.{so['so_id']}&order=line_no", limit=200)
-                    idf = pd.DataFrame([{
-                        "라인": i["line_no"], "거래처 자재": i.get("customer_part_no"),
-                        "우성 품번": i.get("canonical_pn") or "❌",
-                        "수량": int(i.get("qty") or 0),
-                        "납품": int(i.get("received_qty") or 0),
-                        "미납": int(i.get("pending_qty") or 0),
-                        "단가": int(i.get("unit_price") or 0),
-                        "금액": int(i.get("amount") or 0),
-                        "납기": i.get("due_date"),
-                        "상태": status_ko(i.get("status")),
-                    } for i in sitems])
-                    if not idf.empty:
-                        st.dataframe(idf, use_container_width=True, hide_index=True,
-                            column_config={
-                                "수량": st.column_config.NumberColumn(format="localized"),
-                                "납품": st.column_config.NumberColumn(format="localized"),
-                                "미납": st.column_config.NumberColumn(format="localized"),
-                                "단가": st.column_config.NumberColumn("단가 (원)", format="localized"),
-                                "금액": st.column_config.NumberColumn("금액 (원)", format="localized"),
-                            })
+                    if sitems:
+                        toss_table([{
+                            "라인": i["line_no"],
+                            "거래처 자재": i.get("customer_part_no"),
+                            "우성 품번": i.get("canonical_pn") or "미매칭",
+                            "수량": int(i.get("qty") or 0),
+                            "납품": int(i.get("received_qty") or 0),
+                            "미납": int(i.get("pending_qty") or 0),
+                            "단가 (원)": int(i.get("unit_price") or 0),
+                            "금액 (원)": int(i.get("amount") or 0),
+                            "납기": i.get("due_date"),
+                            "상태": status_ko(i.get("status")),
+                        } for i in sitems],
+                            badge_cols=("상태",),
+                            num_cols=("수량", "납품", "미납",
+                                      "단가 (원)", "금액 (원)"),
+                            strong_cols=("우성 품번",))
                     rc1, rc2 = st.columns(2)
                     statuses = ["DRAFT","CONFIRMED","IN_PROD","PARTIAL","DELIVERED","CANCELLED"]
                     new_st = rc1.selectbox("상태 변경", statuses,
@@ -3535,6 +3622,25 @@ elif page == "수주 관리":
 
                 if sitems:
                     from datetime import datetime as _dt
+                    import html as _h
+
+                    def _due_html(due_raw, days_left):
+                        """`08-14 (D-2)` 표기 — 지남·임박(7일)은 빨강"""
+                        if not due_raw:
+                            return '<span class="dim">-</span>'
+                        txt = _h.escape(str(due_raw)[5:]
+                                        if len(str(due_raw)) == 10
+                                        else str(due_raw))
+                        if days_left is None:
+                            return txt
+                        if days_left < 0:
+                            return (f'<span class="late">{txt} '
+                                    f"(D+{-days_left})</span>")
+                        if days_left <= 7:
+                            return (f'<span class="late">{txt} '
+                                    f"(D-{days_left})</span>")
+                        return f"{txt} (D-{days_left})"
+
                     rows = []
                     for i in sitems:
                         so = so_map.get(i["so_id"], {})
@@ -3545,23 +3651,29 @@ elif page == "수주 관리":
                                 due_d = _dt.strptime(due_raw, "%Y-%m-%d").date() if isinstance(due_raw, str) else due_raw
                                 days_left = (due_d - today).days
                             except: pass
-                        emoji = ("🔴" if days_left is not None and days_left < 0 else
-                                 "🟠" if days_left is not None and days_left <= 7 else
-                                 "🟡" if days_left is not None and days_left <= 30 else "🟢")
                         rows.append({
-                            "🔥": emoji,
                             "수주번호": so.get("so_number"),
                             "거래처": so.get("customer"),
-                            "납기": due_raw, "D-day": days_left,
+                            "납기": _due_html(due_raw, days_left),
                             "거래처 자재": i.get("customer_part_no"),
-                            "우성 품번": i.get("canonical_pn") or "❌",
+                            "우성 품번": i.get("canonical_pn") or "미매칭",
                             "수량": int(i.get("qty") or 0),
                             "미납": int(i.get("pending_qty") or 0),
                             "상태": status_ko(i.get("status")),
+                            "_late": (days_left is not None
+                                      and days_left < 0),
                         })
-                    df = pd.DataFrame(rows)
-                    st.dataframe(status_style(df),
-                                 use_container_width=True, hide_index=True)
+                    toss_table(rows,
+                        columns=("수주번호", "거래처", "납기",
+                                 "거래처 자재", "우성 품번", "수량",
+                                 "미납", "상태"),
+                        badge_cols=("상태",),
+                        num_cols=("수량", "미납"),
+                        strong_cols=("우성 품번",),
+                        raw_cols=("납기",),
+                        hl_rows={n for n, r in enumerate(rows)
+                                 if r["_late"]},
+                        scroll=len(rows) > 15)
                 else:
                     st.info("미납 품목 없음")
             else:
@@ -10144,6 +10256,54 @@ elif page == "원가 확인":
                 if c in df_o.columns:
                     df_o[c] = pd.to_numeric(df_o[c], errors="coerce")
 
+            import html as _h
+
+            def _pct_html(v):
+                """마진율 — 음수(역마진)는 빨강"""
+                try:
+                    f = float(v)
+                except (TypeError, ValueError):
+                    return '<span class="dim">-</span>'
+                return (f'<span class="neg">{f:.1f}%</span>' if f < 0
+                        else f"{f:.1f}%")
+
+            def _q_html(v):
+                """cost_data_quality 배지 — 검증=초록, 중간·부분=노랑,
+                낮음=주황, 없음=빨강 (products 실데이터 값 기준)"""
+                if not v:
+                    return '<span class="dim">-</span>'
+                s = str(v)
+                cls = ("b-green" if "검증" in s else
+                       "b-red" if "없음" in s else
+                       "b-amber" if ("낮음" in s or "중간" in s
+                                     or "부분" in s) else "b-gray")
+                return (f'<span class="badge {cls}">'
+                        f"{_h.escape(s)}</span>")
+
+            _recs = df_o.to_dict("records")
+            toss_table([{
+                "품번": r.get("pn"), "고객사": r.get("customer"),
+                "제품군": r.get("sub_class"),
+                "판매가": _money(r.get("avg_unit_price")),
+                "소재비": _money(r.get("material_unit_price")),
+                "외주비": _money(r.get("outsourcing_per_pc")),
+                "열처리": _money(r.get("heat_treat_per_pc")),
+                "표면": _money(r.get("surface_per_pc")),
+                "추정원가": _money(r.get("estimated_cost_per_pc")),
+                "마진율": _pct_html(r.get("margin_pct")),
+                "12M매출": _money(r.get("total_sales_12m")),
+                "ABC": r.get("abc_grade"),
+                "데이터품질": _q_html(r.get("cost_data_quality")),
+            } for r in _recs],
+                num_cols=("판매가", "소재비", "외주비", "열처리", "표면",
+                          "추정원가", "마진율", "12M매출"),
+                strong_cols=("품번",),
+                raw_cols=("마진율", "데이터품질"),
+                hl_rows={n for n, r in enumerate(_recs)
+                         if (r.get("margin_pct") or 0) < 0},
+                scroll=True)
+
+            # CSV 다운로드용 텍스트 표 (기존 컬럼 구성 유지)
             df_o["판매가"] = df_o["avg_unit_price"].apply(_money)
             df_o["소재비"] = df_o["material_unit_price"].apply(_money)
             df_o["외주비"] = df_o["outsourcing_per_pc"].apply(_money)
@@ -10160,7 +10320,6 @@ elif page == "원가 확인":
                 "pn": "품번", "customer": "고객사", "sub_class": "제품군",
                 "abc_grade": "ABC", "cost_data_quality": "데이터품질"
             })
-            st.dataframe(show, use_container_width=True, hide_index=True, height=520)
 
             csv = show.to_csv(index=False).encode("utf-8-sig")
             st.download_button("📥 CSV 다운로드", csv,
