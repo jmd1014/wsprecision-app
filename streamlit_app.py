@@ -6890,17 +6890,26 @@ elif page == "발주/입고":
                             if _rcv_pend_key in st.session_state:
                                 st.session_state[f"rcv_q_{poi_id}"] = \
                                     st.session_state.pop(_rcv_pend_key)
+                            # 상한 없음 — 잔재 협의 등으로 발주보다 많이
+                            # 들어오는 경우 실입고 그대로 기록 (2026-08-10)
                             rcv_qty = st.number_input(
                                 "입고 수량", min_value=0.0,
-                                max_value=float(pending), value=0.0, step=1.0,
+                                value=0.0, step=1.0,
                                 key=f"rcv_q_{poi_id}",
                                 label_visibility="collapsed",
-                                help="이번 입고 수량")
+                                help="이번 입고 수량 — 발주 초과 입력 가능 "
+                                     "(잔재 협의 등, 실입고 기준 기록)")
                         with rl3:
                             if st.button(f"전량 ({pending:,.0f})",
                                           key=f"rcv_full_{poi_id}"):
                                 st.session_state[f"rcv_pend_{poi_id}"] = float(pending)
                                 st.rerun()
+                        if rcv_qty > pending:
+                            st.warning(
+                                f"발주 초과 입고 — 미입고 {pending:,.0f} 보다 "
+                                f"**{rcv_qty - pending:,.0f}** 많습니다 "
+                                "(잔재 협의 등). 실입고 그대로 기록되고 "
+                                "원장에 초과분이 표시됩니다.")
                         if rcv_qty > 0:
                             receive_inputs[poi_id] = (rcv_qty, sel_mid, r)
                         st.divider()
@@ -6941,6 +6950,11 @@ elif page == "발주/입고":
                         for _wi, (poi_id, (rq, mid, r)) in enumerate(
                                 receive_inputs.items()):
                             _w = _w_lots[_wi] if _w_lots else None
+                            _pend_r = float(r.get("pending_qty") or 0)
+                            _rmk = f"발주 입고: {po['po_number']}"
+                            if rq > _pend_r:
+                                _rmk += (f" · 발주 초과 "
+                                         f"+{rq - _pend_r:,.0f}")
                             try:
                                 # 1) 원장 기록 (lot_number = W번호)
                                 _db.insert("inventory_transactions", [{
@@ -6952,7 +6966,7 @@ elif page == "발주/입고":
                                     "ref_table": "purchase_order_items",
                                     "ref_id": poi_id,
                                     "txn_date": _rcv_date.today().isoformat(),
-                                    "remark": f"발주 입고: {po['po_number']}",
+                                    "remark": _rmk,
                                     "created_by": current_user_name(),
                                 }])
                                 _label_items.append({
