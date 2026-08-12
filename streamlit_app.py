@@ -6034,233 +6034,441 @@ elif page == "발주/입고":
     tab_new, tab_hist, tab_rcv_proc, tab_rstat = st.tabs(
         ["새 발주서 작성", "발주 이력", "입고 처리", "입고 현황"])
 
-    # ════════════ TAB 3: 입고 현황 (소재 입고 상황) ════════════
+    # ════════════ TAB 3: 입고 현황 (발주 → 입고 → 투입 흐름) ════════════
     with tab_rstat:
         st.caption(
-            "발주 라인별 입고 진행 + 소재 LOT(W번호) 잔여 현황 — "
-            "입고 처리는 [입고 처리] 탭에서, 투입은 공정 관리에서.")
-        # 발주 라인 입고 상태 (미완료 우선)
+            "**발주 → 입고 → 공정 투입**으로 이어지는 소재 흐름 현황입니다. "
+            "입고 도착 처리는 [입고 처리] 탭에서, 투입은 공정 관리 → "
+            "투입 등록에서 진행합니다.")
+
+        # ── 데이터 로드 ──
+        from datetime import date as _rs_dt, timedelta as _rs_td
         try:
             _rs = fetch("po_item_receipt_v",
-                "po_id,line_no,item_name,spec,ordered_qty,material_id,"
-                "material_name,received_qty,pending_qty,receipt_status,"
-                "last_receipt_date",
-                "order=po_id.desc,line_no.asc", limit=200)
+                "po_id,po_number,line_no,item_name,spec,ordered_qty,"
+                "material_id,material_name,received_qty,pending_qty,"
+                "receipt_status,last_receipt_date",
+                "order=po_id.desc,line_no.asc", limit=300)
         except Exception as e:
             st.error(f"입고 현황 조회 실패: {e}"); _rs = []
-        if not _rs:
-            st.info("발주 라인 없음 — ✏️ 새 발주서 작성에서 시작합니다.")
-        else:
-            _n_wait = sum(1 for r in _rs
-                          if r.get("receipt_status") not in ("RECEIVED",))
-            _q_pend = sum(float(r.get("pending_qty") or 0) for r in _rs)
-            rs1, rs2, rs3 = st.columns(3)
-            rs1.metric("발주 라인", f"{len(_rs):,}건")
-            rs2.metric("입고 대기 라인", f"{_n_wait:,}건")
-            rs3.metric("미입고 수량", f"{_q_pend:,.0f}")
-            _rs_only_wait = st.checkbox("입고 대기만 보기", value=True,
-                                        key="rcv_stat_wait_only")
-            _rs_show = [r for r in _rs
-                        if not _rs_only_wait
-                        or r.get("receipt_status") != "RECEIVED"]
-            if not _rs_show:
-                st.success("✅ 입고 대기 라인 없음 — 전 라인 입고 완료. "
-                           "전체 이력은 체크를 해제하세요.")
-            else:
-                st.dataframe(status_style(pd.DataFrame([{
-                    "PO": r.get("po_id"), "라인": r.get("line_no"),
-                    "품명": r.get("item_name"), "규격": r.get("spec") or "-",
-                    "자재": r.get("material_name") or r.get("material_id")
-                            or "미매핑",
-                    "발주": float(r.get("ordered_qty") or 0),
-                    "입고": float(r.get("received_qty") or 0),
-                    "미입고": float(r.get("pending_qty") or 0),
-                    "상태": status_ko(r.get("receipt_status")),
-                    "최근 입고": r.get("last_receipt_date") or "-",
-                } for r in _rs_show])), use_container_width=True,
-                    hide_index=True,
-                    height=min(400, 60 + len(_rs_show) * 35),
-                    column_config={c: st.column_config.NumberColumn(
-                        format="localized", width="small")
-                        for c in ["발주", "입고", "미입고"]})
-
-        # 소재 LOT (W번호) 잔여 현황
-        st.divider()
-        st.markdown("##### 소재 LOT (W번호) 현황")
         try:
-            _wl = fetch("inventory_transactions",
-                "lot_number,material_id,qty,txn_type,txn_date",
-                "lot_number=like.W*&txn_type=in.(RECEIPT,PROD_INPUT)",
-                limit=2000)
+            _ms = fetch("material_stock",
+                "material_id,raw_name,spec,unit,main_supplier,"
+                "current_stock,total_received,total_consumed,last_txn_date",
+                "order=material_id", limit=1000)
         except Exception:
-            _wl = []
-        if not _wl:
-            st.caption("W번호 발급 이력 없음.")
-        else:
-            _wdf2 = pd.DataFrame(_wl)
-            _wdf2["qty"] = pd.to_numeric(_wdf2["qty"], errors="coerce").fillna(0)
-            _wb = (_wdf2.groupby(["lot_number", "material_id"], as_index=False)
-                   .agg(잔여=("qty", "sum"),
-                        입고일=("txn_date", "min")))
-            _wb = _wb.sort_values("lot_number", ascending=False)
-            _wb["상태"] = _wb["잔여"].apply(
-                lambda v: "투입 대기" if v > 0 else "전량 투입")
-            st.dataframe(status_style(_wb.rename(columns={
-                "lot_number": "W번호", "material_id": "자재"})),
-                use_container_width=True, hide_index=True,
-                height=min(350, 60 + len(_wb) * 35),
-                column_config={"잔여": st.column_config.NumberColumn(
-                    format="localized", width="small")})
-
-        # ── W번호 미부여 입고 — 소급 부여 (2026-08-12) ──
-        # 채번 카운터 설정 전에 처리된 입고는 W번호 없이 기록됨.
-        # 여기서 입고순으로 일괄 부여 → 아래 라벨 재발행에서 출력.
+            _ms = []
         try:
-            _nw = fetch("inventory_transactions",
-                "txn_id,material_id,qty,unit,txn_date,remark",
+            _lots = fetch("material_stock_by_lot",
+                          "material_id,lot_number,lot_balance,last_date",
+                          "order=lot_number.desc", limit=1000)
+        except Exception:
+            _lots = []
+        _wk_from = (_rs_dt.today() - _rs_td(days=6)).isoformat()
+        try:
+            _wk_rows = fetch("inventory_transactions", "qty",
                 "txn_type=eq.RECEIPT&material_id=not.is.null"
-                "&or=(lot_number.is.null,lot_number.not.like.W*)"
-                "&order=txn_id.asc", limit=200)
+                f"&txn_date=gte.{_wk_from}", limit=2000)
         except Exception:
-            _nw = []
-        if _nw:
-            st.divider()
-            st.markdown("##### W번호 미부여 입고")
-            st.caption(
-                "채번 설정 전에 처리되어 W번호가 없는 입고입니다. "
-                "일괄 부여하면 **입고순**으로 번호가 매겨지고, 아래 "
-                "라벨 재발행에서 바로 출력할 수 있습니다.")
-            _nw_mm = {}
+            _wk_rows = []
+
+        _wait_rows = [r for r in _rs
+                      if r.get("receipt_status") != "RECEIVED"
+                      and float(r.get("pending_qty") or 0) > 0]
+        _q_pend = sum(float(r.get("pending_qty") or 0) for r in _wait_rows)
+        _hold = [m for m in _ms
+                 if abs(float(m.get("current_stock") or 0)) > 1e-9]
+        _hold_pos = [m for m in _hold if float(m["current_stock"]) > 0]
+        _wk_sum = sum(float(r.get("qty") or 0) for r in _wk_rows)
+        _lots_w = [l for l in _lots
+                   if str(l.get("lot_number") or "").startswith("W")]
+        _lots_open = [l for l in _lots_w
+                      if float(l.get("lot_balance") or 0) > 0]
+        _m_name = {m["material_id"]: m.get("raw_name") for m in _ms}
+
+        def _rk(label, value, sub="", tone="primary"):
+            _v = value if isinstance(value, str) else f"{value:,.0f}"
+            _z = (not isinstance(value, str)) and value <= 0
+            cls = "zero" if _z else tone
+            return (f'<div class="kpi {cls}"><div class="k">{label}</div>'
+                    f'<div class="v">{_v}</div>'
+                    + (f'<div class="s">{sub}</div>' if sub else "")
+                    + "</div>")
+
+        st.markdown(
+            '<div class="kpi-row">'
+            + _rk("입고 대기", _q_pend, f"{len(_wait_rows)}개 라인", "warn")
+            + _rk("최근 7일 입고", _wk_sum)
+            + _rk("보유 소재", f"{len(_hold_pos)}종",
+                  "총 {:,.0f}".format(sum(
+                      float(m["current_stock"]) for m in _hold_pos)), "good")
+            + _rk("투입 대기 LOT", f"{len(_lots_open)}건",
+                  "공정 관리 → 투입 등록")
+            + "</div>", unsafe_allow_html=True)
+
+        # ── 1) 입고 대기 소재 (발주 잔량) ──
+        st.markdown("##### 입고 대기 소재")
+        if not _wait_rows:
+            st.success("입고 대기 없음 — 발주된 소재가 모두 입고됐습니다. "
+                       "새 발주는 [새 발주서 작성] 탭에서.")
+        else:
+            _po_hdr, _v_nm0 = {}, {}
             try:
-                _nw_mids = {r["material_id"] for r in _nw}
-                _nw_mm = {m["material_id"]: m.get("raw_name") for m in
-                          fetch("materials", "material_id,raw_name",
-                                "material_id=in.({})".format(
-                                    ",".join(_nw_mids)), limit=300)}
+                _po_ids0 = {r["po_id"] for r in _wait_rows}
+                _po_hdr = {p["po_id"]: p for p in fetch(
+                    "purchase_orders",
+                    "po_id,po_number,po_date,delivery_date,vendor_id",
+                    "po_id=in.({})".format(
+                        ",".join(str(i) for i in _po_ids0)), limit=300)}
+                _v_ids0 = {p.get("vendor_id") for p in _po_hdr.values()
+                           if p.get("vendor_id")}
+                if _v_ids0:
+                    _v_nm0 = {v["vendor_id"]: v["name"] for v in fetch(
+                        "vendors", "vendor_id,name",
+                        "vendor_id=in.({})".format(
+                            ",".join(str(i) for i in _v_ids0)), limit=300)}
             except Exception:
                 pass
-            st.dataframe(pd.DataFrame([{
-                "입고일": r.get("txn_date"),
-                "자재": _nw_mm.get(r["material_id"]) or r["material_id"],
-                "수량": float(r.get("qty") or 0),
-                "비고": r.get("remark") or "",
-            } for r in _nw]), use_container_width=True, hide_index=True,
-                column_config={"수량": st.column_config.NumberColumn(
-                    format="localized")})
-            if st.button(f"W번호 일괄 부여 ({len(_nw)}건 · 입고순)",
-                         type="primary", key="wfix_go"):
-                _ws2 = w_lot_next(len(_nw))
-                if not _ws2:
-                    st.error("채번 카운터 미설정 — 입고 처리 탭 하단 "
-                             "**W번호 채번 설정**에서 마지막 사용 번호를 "
-                             "먼저 저장하세요.")
-                else:
-                    _ok2 = 0
-                    for _r2, _w2 in zip(_nw, _ws2):
-                        try:
-                            _db.update("inventory_transactions",
-                                       f"txn_id=eq.{_r2['txn_id']}",
-                                       {"lot_number": _w2})
-                            _ok2 += 1
-                        except Exception as e:
-                            st.warning(f"{_r2['txn_id']} 부여 실패: {e}")
-                    st.success(f"W번호 부여 완료 — {_ws2[0]}~{_ws2[-1]} "
-                               f"({_ok2}건). 아래 라벨 재발행에서 "
-                               "출력하세요.")
-                    st.rerun()
+            _wq = st.text_input(
+                "입고 대기 검색", key="rcv_wait_q",
+                label_visibility="collapsed",
+                placeholder="검색 — 자재 · 품명 · 발주번호 · 거래처")
+            _today_s = _rs_dt.today().isoformat()
+            _wt = []
+            for r in _wait_rows:
+                _h = _po_hdr.get(r["po_id"], {})
+                _due = _h.get("delivery_date")
+                _wt.append({
+                    "발주": r.get("po_number")
+                            or _h.get("po_number") or str(r["po_id"]),
+                    "거래처": _v_nm0.get(_h.get("vendor_id")) or "-",
+                    "발주일": _h.get("po_date") or "-",
+                    "입고 예정": ((str(_due) + " ⚠ 경과")
+                                if _due and str(_due) < _today_s
+                                else (_due or "-")),
+                    "품명": r.get("item_name") or "-",
+                    "자재": r.get("material_name")
+                            or r.get("material_id") or "미매핑",
+                    "발주수량": float(r.get("ordered_qty") or 0),
+                    "기입고": float(r.get("received_qty") or 0),
+                    "미입고": float(r.get("pending_qty") or 0),
+                })
+            if (_wq or "").strip():
+                _q0 = _wq.strip().lower()
+                _wt = [w for w in _wt if any(
+                    _q0 in str(w[k]).lower()
+                    for k in ("발주", "거래처", "품명", "자재"))]
+            st.dataframe(pd.DataFrame(_wt), use_container_width=True,
+                hide_index=True,
+                height=min(400, 60 + len(_wt) * 35),
+                column_config={c: st.column_config.NumberColumn(
+                    format="localized", width="small")
+                    for c in ("발주수량", "기입고", "미입고")})
+            st.caption("입고 예정일이 지난 라인은 ⚠ 표시 — 도착하면 "
+                       "[입고 처리] 탭에서 처리하세요. 부분 입고된 라인은 "
+                       "잔량만 남습니다.")
 
-        # ── 입고 라벨 재발행 (분실·훼손 대비) ──
+        # ── 2) 보유 소재 (현재고 → 투입) ──
         st.divider()
-        st.markdown("##### 입고 라벨 재발행")
-        st.caption("입고 처리 때 발행한 소재 입고 라벨을 다시 출력합니다. "
-                   "W번호로 선택 — 여러 장 동시 출력 가능.")
-        try:
-            _rl = fetch("inventory_transactions",
-                "txn_id,lot_number,material_id,qty,unit,ref_id,txn_date",
-                "txn_type=eq.RECEIPT&lot_number=like.W*"
-                "&order=txn_date.desc,txn_id.desc", limit=300)
-        except Exception:
-            _rl = []
-        if not _rl:
-            st.caption("재발행할 입고 라벨 없음 — W번호 입고 이력이 "
-                       "생기면 여기서 재출력할 수 있습니다.")
+        st.markdown("##### 보유 소재 (현재고)")
+        if not _hold:
+            st.info("보유 소재 없음 — 입고 처리하면 여기에 집계됩니다. "
+                    "(기초재고는 Day 0 실사 기준 0에서 시작)")
         else:
-            # 발주 라인→헤더→거래처, 자재명 역조인으로 라벨 데이터 재구성
-            _poi_map, _po_map, _v_map, _m_map = {}, {}, {}, {}
+            # 사용 품번 — BOM 역조인 (이 소재로 만드는 제품)
+            _use_pn = {}
             try:
-                _poi_ids = {r["ref_id"] for r in _rl if r.get("ref_id")}
-                if _poi_ids:
-                    _poi_map = {p["poi_id"]: p for p in fetch(
-                        "purchase_order_items", "poi_id,item_name,spec,po_id",
-                        f"poi_id=in.({','.join(str(i) for i in _poi_ids)})",
-                        limit=500)}
-                _po_ids = {p["po_id"] for p in _poi_map.values()}
-                if _po_ids:
-                    _po_map = {p["po_id"]: p for p in fetch(
-                        "purchase_orders", "po_id,po_number,vendor_id",
-                        f"po_id=in.({','.join(str(i) for i in _po_ids)})",
-                        limit=500)}
-                _v_ids = {p.get("vendor_id") for p in _po_map.values()
-                          if p.get("vendor_id")}
-                if _v_ids:
-                    _v_map = {v["vendor_id"]: v["name"] for v in fetch(
-                        "vendors", "vendor_id,name",
-                        f"vendor_id=in.({','.join(str(i) for i in _v_ids)})",
-                        limit=500)}
-                _m_ids = {r["material_id"] for r in _rl
-                          if r.get("material_id")}
-                if _m_ids:
-                    _m_map = {m["material_id"]: m.get("raw_name") for m in
-                        fetch("materials", "material_id,raw_name",
-                              f"material_id=in.({','.join(_m_ids)})",
-                              limit=500)}
-            except Exception as e:
-                st.warning(f"라벨 정보 일부 조회 실패: {e}")
+                _mb_ids = [m["material_id"] for m in _hold]
+                _bom0 = []
+                for _i0 in range(0, len(_mb_ids), 50):
+                    _bom0 += fetch("bom", "material_id,product_id",
+                        "material_id=in.({})".format(
+                            ",".join(_mb_ids[_i0:_i0 + 50])), limit=2000)
+                _bp_ids = sorted({b["product_id"] for b in _bom0
+                                  if b.get("product_id")})
+                _bp_nm = {}
+                for _i0 in range(0, len(_bp_ids), 100):
+                    _bp_nm.update({p["product_id"]: p["pn"] for p in fetch(
+                        "products", "product_id,pn",
+                        "product_id=in.({})".format(",".join(
+                            f'"{x}"' for x in _bp_ids[_i0:_i0 + 100])),
+                        limit=300)})
+                for b in _bom0:
+                    _pn0 = _bp_nm.get(b.get("product_id"))
+                    if _pn0:
+                        _use_pn.setdefault(b["material_id"], []).append(_pn0)
+            except Exception:
+                pass
 
-            def _relabel_item(r):
-                poi = _poi_map.get(r.get("ref_id"), {})
-                po = _po_map.get(poi.get("po_id"), {})
-                return {
-                    "w_lot": r.get("lot_number"),
-                    "pn": poi.get("item_name") or "-",
-                    "material_name": _m_map.get(r.get("material_id"))
-                                     or r.get("material_id") or "-",
-                    "spec": poi.get("spec") or "-",
-                    "qty": float(r.get("qty") or 0),
-                    "unit": r.get("unit") or "EA",
-                    "po_number": po.get("po_number") or "-",
-                    "vendor": _v_map.get(po.get("vendor_id")) or "-",
-                    "date": r.get("txn_date") or "",
-                }
+            _hq = st.text_input(
+                "보유 소재 검색", key="rcv_hold_q",
+                label_visibility="collapsed",
+                placeholder="검색 — 자재명 · 규격 · 공급처 · 사용 품번")
+            _ht = []
+            for m in sorted(_hold,
+                            key=lambda x: -float(x["current_stock"])):
+                _pns = sorted(set(_use_pn.get(m["material_id"], [])))
+                _cs = float(m["current_stock"])
+                _ht.append({
+                    "자재": m.get("raw_name") or m["material_id"],
+                    "현재고": _cs,
+                    "누적 입고": float(m.get("total_received") or 0),
+                    "누적 투입": float(m.get("total_consumed") or 0),
+                    "최근 이동": m.get("last_txn_date") or "-",
+                    "주공급처": m.get("main_supplier") or "-",
+                    "사용 품번": (", ".join(_pns[:3])
+                                + (f" 외 {len(_pns) - 3}" if len(_pns) > 3
+                                   else "")) if _pns else "-",
+                    "비고": "⚠ 음수 — 입고 미기록분 확인" if _cs < 0 else "",
+                })
+            if (_hq or "").strip():
+                _q1 = _hq.strip().lower()
+                _ht = [h for h in _ht if any(
+                    _q1 in str(h[k]).lower()
+                    for k in ("자재", "주공급처", "사용 품번"))]
+            st.dataframe(pd.DataFrame(_ht), use_container_width=True,
+                hide_index=True,
+                height=min(420, 60 + len(_ht) * 35),
+                column_config={c: st.column_config.NumberColumn(
+                    format="localized", width="small")
+                    for c in ("현재고", "누적 입고", "누적 투입")})
 
-            _rl_opts = {}
-            for r in _rl:
-                _poi = _poi_map.get(r.get("ref_id"), {})
-                _key = (f"{r['lot_number']} | "
-                        f"{_poi.get('item_name') or r.get('material_id')} | "
-                        f"{r.get('txn_date')}")
-                _rl_opts.setdefault(_key, r)
-            _sel_rl = st.multiselect(
-                "재발행할 W번호 선택", list(_rl_opts.keys()),
-                key="rcv_relabel_sel",
-                placeholder="W번호 | 품명 | 입고일")
-            if _sel_rl:
-                from utils.label_generator import receipt_labels
-                _re_items = [_relabel_item(_rl_opts[k]) for k in _sel_rl]
-                rl1, rl2 = st.columns(2)
-                rl1.download_button(
-                    "라벨 프린터용 (단표)",
-                    data=receipt_labels(_re_items, mode="label"),
-                    file_name=f"입고라벨_재발행_{_re_items[0]['w_lot']}.html",
-                    mime="text/html", use_container_width=True,
-                    key="rcv_relabel_dl1")
-                rl2.download_button(
-                    "A4 배치 (예비)",
-                    data=receipt_labels(_re_items, mode="a4"),
-                    file_name=(
-                        f"입고라벨_재발행_A4_{_re_items[0]['w_lot']}.html"),
-                    mime="text/html", use_container_width=True,
-                    key="rcv_relabel_dl2")
+            # LOT(W번호)별 잔량 + 공정 투입 연계
+            with st.expander(
+                    f"LOT(W번호)별 잔량 · 투입 현황 — 투입 대기 "
+                    f"{len(_lots_open)}건", expanded=False):
+                if not _lots:
+                    st.caption("LOT 이력 없음 — 입고 처리 시 W번호가 "
+                               "발급되면 여기서 LOT 단위로 추적됩니다.")
+                else:
+                    _wo_by_lot = {}
+                    try:
+                        _wl_ids = sorted({l["lot_number"] for l in _lots_w})
+                        for _i0 in range(0, len(_wl_ids), 50):
+                            for w in fetch("wo_tracking", "w_lot,pn,status",
+                                    "w_lot=in.({})".format(",".join(
+                                        f'"{x}"' for x in
+                                        _wl_ids[_i0:_i0 + 50])), limit=500):
+                                _wo_by_lot.setdefault(
+                                    w["w_lot"], []).append(
+                                    f"{w.get('pn') or '-'}"
+                                    f"({status_ko(w.get('status'))})")
+                    except Exception:
+                        pass
+                    _lt = []
+                    for l in _lots:
+                        _ln = l.get("lot_number")
+                        _bal = float(l.get("lot_balance") or 0)
+                        _lt.append({
+                            "W번호": _ln or "(미부여)",
+                            "자재": _m_name.get(l["material_id"])
+                                    or l["material_id"],
+                            "잔량": _bal,
+                            "상태": ("투입 대기" if _bal > 0
+                                     else "전량 투입"),
+                            "공정 투입": ", ".join(
+                                _wo_by_lot.get(_ln, [])) or "-",
+                            "최근일": l.get("last_date") or "-",
+                        })
+                    st.dataframe(pd.DataFrame(_lt),
+                        use_container_width=True, hide_index=True,
+                        height=min(350, 60 + len(_lt) * 35),
+                        column_config={"잔량": st.column_config.NumberColumn(
+                            format="localized", width="small")})
+                    st.caption("잔량이 남은 LOT 는 공정 관리 → 투입 등록에서 "
+                               "사용합니다. (미부여) LOT 는 아래 도구에서 "
+                               "W번호를 부여하세요.")
+
+        # ── 3) 라벨 · W번호 도구 (셋업·예외용 — 평소 접어둠) ──
+        st.divider()
+        with st.expander("라벨 · W번호 도구 — 재발행 · 미부여 소급 · 채번 설정",
+                         expanded=False):
+            # W번호 미부여 입고 — 소급 부여
+            try:
+                _nw = fetch("inventory_transactions",
+                    "txn_id,material_id,qty,unit,txn_date,remark",
+                    "txn_type=eq.RECEIPT&material_id=not.is.null"
+                    "&or=(lot_number.is.null,lot_number.not.like.W*)"
+                    "&order=txn_id.asc", limit=200)
+            except Exception:
+                _nw = []
+            if _nw:
+                st.markdown("**W번호 미부여 입고** — 채번 설정 전에 처리된 "
+                            "입고입니다. 일괄 부여하면 입고순으로 번호가 "
+                            "매겨지고 아래 라벨 재발행에서 출력할 수 "
+                            "있습니다.")
+                st.dataframe(pd.DataFrame([{
+                    "입고일": r.get("txn_date"),
+                    "자재": _m_name.get(r["material_id"])
+                            or r["material_id"],
+                    "수량": float(r.get("qty") or 0),
+                    "비고": r.get("remark") or "",
+                } for r in _nw]), use_container_width=True,
+                    hide_index=True,
+                    column_config={"수량": st.column_config.NumberColumn(
+                        format="localized")})
+                if st.button(f"W번호 일괄 부여 ({len(_nw)}건 · 입고순)",
+                             type="primary", key="wfix_go"):
+                    _ws2 = w_lot_next(len(_nw))
+                    if not _ws2:
+                        st.error("채번 카운터 미설정 — 아래 **W번호 채번 "
+                                 "설정**에서 마지막 사용 번호를 먼저 "
+                                 "저장하세요.")
+                    else:
+                        _ok2 = 0
+                        for _r2, _w2 in zip(_nw, _ws2):
+                            try:
+                                _db.update("inventory_transactions",
+                                           f"txn_id=eq.{_r2['txn_id']}",
+                                           {"lot_number": _w2})
+                                _ok2 += 1
+                            except Exception as e:
+                                st.warning(f"{_r2['txn_id']} 부여 실패: {e}")
+                        st.success(f"W번호 부여 완료 — {_ws2[0]}~{_ws2[-1]} "
+                                   f"({_ok2}건). 아래 라벨 재발행에서 "
+                                   "출력하세요.")
+                        st.rerun()
+                st.divider()
+
+            # 입고 라벨 재발행 (분실·훼손 대비)
+            st.markdown("**입고 라벨 재발행** — 입고 때 발행한 소재 라벨을 "
+                        "다시 출력합니다. W번호로 선택, 여러 장 동시 출력.")
+            try:
+                _rl = fetch("inventory_transactions",
+                    "txn_id,lot_number,material_id,qty,unit,ref_id,txn_date",
+                    "txn_type=eq.RECEIPT&lot_number=like.W*"
+                    "&order=txn_date.desc,txn_id.desc", limit=300)
+            except Exception:
+                _rl = []
+            if not _rl:
+                st.caption("재발행할 입고 라벨 없음 — W번호 입고 이력이 "
+                           "생기면 여기서 재출력할 수 있습니다.")
+            else:
+                # 발주 라인→헤더→거래처, 자재명 역조인으로 라벨 재구성
+                _poi_map, _po_map, _v_map, _m_map = {}, {}, {}, {}
+                try:
+                    _poi_ids = {r["ref_id"] for r in _rl if r.get("ref_id")}
+                    if _poi_ids:
+                        _poi_map = {p["poi_id"]: p for p in fetch(
+                            "purchase_order_items",
+                            "poi_id,item_name,spec,po_id",
+                            "poi_id=in.({})".format(
+                                ",".join(str(i) for i in _poi_ids)),
+                            limit=500)}
+                    _po_ids = {p["po_id"] for p in _poi_map.values()}
+                    if _po_ids:
+                        _po_map = {p["po_id"]: p for p in fetch(
+                            "purchase_orders", "po_id,po_number,vendor_id",
+                            "po_id=in.({})".format(
+                                ",".join(str(i) for i in _po_ids)),
+                            limit=500)}
+                    _v_ids = {p.get("vendor_id") for p in _po_map.values()
+                              if p.get("vendor_id")}
+                    if _v_ids:
+                        _v_map = {v["vendor_id"]: v["name"] for v in fetch(
+                            "vendors", "vendor_id,name",
+                            "vendor_id=in.({})".format(
+                                ",".join(str(i) for i in _v_ids)),
+                            limit=500)}
+                    _m_ids = {r["material_id"] for r in _rl
+                              if r.get("material_id")}
+                    if _m_ids:
+                        _m_map = {m["material_id"]: m.get("raw_name")
+                                  for m in fetch(
+                                      "materials", "material_id,raw_name",
+                                      "material_id=in.({})".format(
+                                          ",".join(_m_ids)), limit=500)}
+                except Exception as e:
+                    st.warning(f"라벨 정보 일부 조회 실패: {e}")
+
+                def _relabel_item(r):
+                    poi = _poi_map.get(r.get("ref_id"), {})
+                    po = _po_map.get(poi.get("po_id"), {})
+                    return {
+                        "w_lot": r.get("lot_number"),
+                        "pn": poi.get("item_name") or "-",
+                        "material_name": _m_map.get(r.get("material_id"))
+                                         or r.get("material_id") or "-",
+                        "spec": poi.get("spec") or "-",
+                        "qty": float(r.get("qty") or 0),
+                        "unit": r.get("unit") or "EA",
+                        "po_number": po.get("po_number") or "-",
+                        "vendor": _v_map.get(po.get("vendor_id")) or "-",
+                        "date": r.get("txn_date") or "",
+                    }
+
+                _rl_opts = {}
+                for r in _rl:
+                    _poi = _poi_map.get(r.get("ref_id"), {})
+                    _key = (f"{r['lot_number']} | "
+                            f"{_poi.get('item_name') or r.get('material_id')}"
+                            f" | {r.get('txn_date')}")
+                    _rl_opts.setdefault(_key, r)
+                _sel_rl = st.multiselect(
+                    "재발행할 W번호 선택", list(_rl_opts.keys()),
+                    key="rcv_relabel_sel",
+                    placeholder="W번호 | 품명 | 입고일")
+                if _sel_rl:
+                    from utils.label_generator import receipt_labels
+                    _re_items = [_relabel_item(_rl_opts[k]) for k in _sel_rl]
+                    rl1, rl2 = st.columns(2)
+                    rl1.download_button(
+                        "라벨 프린터용 (단표)",
+                        data=receipt_labels(_re_items, mode="label"),
+                        file_name=("입고라벨_재발행_"
+                                   f"{_re_items[0]['w_lot']}.html"),
+                        mime="text/html", use_container_width=True,
+                        key="rcv_relabel_dl1")
+                    rl2.download_button(
+                        "A4 배치 (예비)",
+                        data=receipt_labels(_re_items, mode="a4"),
+                        file_name=("입고라벨_재발행_A4_"
+                                   f"{_re_items[0]['w_lot']}.html"),
+                        mime="text/html", use_container_width=True,
+                        key="rcv_relabel_dl2")
+
+            # W번호 채번 설정 (최초 1회 셋업 — 이후 자동)
+            st.divider()
+            st.markdown("**W번호 채번 설정** — 입고 시 자동 발급되는 "
+                        "W번호(소재 LOT) 카운터. **현장에서 마지막으로 "
+                        "사용한 번호**를 한 번만 등록하면 다음 입고부터 "
+                        "+1 로 자동 채번됩니다. 예: 904 등록 → 다음 입고 "
+                        "W0905.")
+            try:
+                _wc_row = _db.fetch_one("app_settings",
+                    "key=eq.w_lot_counter", "value,updated_at")
+            except Exception:
+                _wc_row = None
+            _wc_cur = (_wc_row or {}).get("value")
+            if _wc_cur:
+                st.info(f"현재 카운터: **W{int(_wc_cur):04d}** (다음 채번 "
+                        f"W{int(_wc_cur) + 1:04d})")
+            else:
+                st.warning("카운터 미설정 — 설정 전 입고는 W번호 없이 "
+                           "기록됩니다 (위 미부여 소급 부여로 보정 가능).")
+            sc1, sc2 = st.columns([1, 2])
+            with sc1:
+                _wc_new = st.number_input("마지막 사용 번호", min_value=0,
+                    max_value=9999, value=int(_wc_cur) if _wc_cur else 904,
+                    step=1, key="pe_wc_new")
+            with sc2:
+                st.write("")
+                st.write("")
+                if st.button("카운터 저장", key="pe_wc_save"):
+                    try:
+                        if _wc_row is not None:
+                            _db.update("app_settings",
+                                       "key=eq.w_lot_counter",
+                                       {"value": str(int(_wc_new))})
+                        else:
+                            _db.insert("app_settings", [{
+                                "key": "w_lot_counter",
+                                "value": str(int(_wc_new))}])
+                        st.success("저장 — 다음 입고부터 "
+                                   f"W{int(_wc_new) + 1:04d}")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"저장 실패: {e}")
 
     # ════════════ TAB 1: 새 발주서 작성 ════════════
     with tab_new:
@@ -7123,8 +7331,9 @@ elif page == "발주/입고":
                         if _w_lots is None:
                             st.warning(
                                 "⚠️ W번호 카운터 미설정 — 이번 입고는 W번호 "
-                                "없이 기록됩니다. 아래 채번 설정에서 "
-                                "시작 번호를 등록하세요.")
+                                "없이 기록됩니다. 입고 현황 탭 → 라벨·W번호 "
+                                "도구에서 시작 번호를 등록하면 소급 부여도 "
+                                "가능합니다.")
                         _label_items = []
                         for _wi, (poi_id, (rq, mid, r)) in enumerate(
                                 receive_inputs.items()):
@@ -7308,45 +7517,8 @@ elif page == "발주/입고":
             except Exception as e:
                 st.error(f"직접 입고 실패: {e}")
 
-        # ── W번호 채번 설정 (2026-07-23 공정 관리에서 이동) ──
-        st.divider()
-        st.markdown("##### W번호 채번 설정")
-        st.caption(
-            "소재 입고 시 자동 발급되는 W번호(소재 LOT)의 카운터입니다. "
-            "**현장에서 마지막으로 사용한 번호**를 등록하면 다음 입고부터 "
-            "+1 로 채번됩니다. 예: 904 등록 → 다음 입고 W0905.")
-        try:
-            _wc_row = _db.fetch_one("app_settings",
-                "key=eq.w_lot_counter", "value,updated_at")
-        except Exception:
-            _wc_row = None
-        _wc_cur = (_wc_row or {}).get("value")
-        if _wc_cur:
-            st.info(f"현재 카운터: **W{int(_wc_cur):04d}** (다음 채번 "
-                    f"W{int(_wc_cur) + 1:04d})")
-        else:
-            st.warning("⚠️ 카운터 미설정 — 설정 전 입고는 W번호 없이 기록됩니다.")
-        sc1, sc2 = st.columns([1, 2])
-        with sc1:
-            _wc_new = st.number_input("마지막 사용 번호", min_value=0,
-                max_value=9999, value=int(_wc_cur) if _wc_cur else 904,
-                step=1, key="pe_wc_new")
-        with sc2:
-            st.write("")
-            st.write("")
-            if st.button("💾 카운터 저장", key="pe_wc_save"):
-                try:
-                    if _wc_row is not None:
-                        _db.update("app_settings", "key=eq.w_lot_counter",
-                                   {"value": str(int(_wc_new))})
-                    else:
-                        _db.insert("app_settings", [{
-                            "key": "w_lot_counter",
-                            "value": str(int(_wc_new))}])
-                    st.success(f"저장 — 다음 입고부터 W{int(_wc_new)+1:04d}")
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"저장 실패: {e}")
+        # W번호 채번 설정은 입고 현황 탭 → 라벨·W번호 도구로 이동
+        # (최초 1회 셋업 후 손댈 일 없는 기능이라 상시 노출 제거, 2026-08-12)
 
 # ════════════════════════════════════════════════════════════════
 elif page == "공정 관리":
