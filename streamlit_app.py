@@ -580,11 +580,36 @@ def n_fmt(v):
         return v if v is not None else "-"
 
 
-def w_lot_next(count=1):
-    """소재 LOT (식별 번호) 채번 — app_settings.w_lot_counter 기반.
+def w_lot_max_used():
+    """원장에서 실제 사용 중인 최대 식별 번호 (없으면 0).
 
-    반환: ["W0905", ...] count개. 카운터 미설정 시 None (입고는 식별 번호
-    없이 진행 가능, 공정 관리 → 설정에서 시작 번호 등록 안내).
+    수기 수정·취소 등 인위적 개입이 있어도 채번이 스스로 최신
+    번호를 찾는 근거 — 카운터가 어긋나도 원장이 정본.
+    """
+    try:
+        import db as _dbw
+        rows = _dbw.fetch("inventory_transactions", "lot_number",
+                          "lot_number=like.W*"
+                          "&order=lot_number.desc", limit=20)
+        nums = []
+        for r in rows:
+            _d = "".join(ch for ch in str(r.get("lot_number") or "")
+                         if ch.isdigit())
+            if _d:
+                nums.append(int(_d))
+        return max(nums) if nums else 0
+    except Exception:
+        return 0
+
+
+def w_lot_next(count=1):
+    """소재 LOT (식별 번호) 채번 — max(카운터, 원장 최대 번호) + 1.
+
+    카운터는 앱 도입 전 실물 이력의 기준점(설정 후 발급 시 갱신),
+    원장 최대 번호는 실사용 정본. 둘 중 큰 값 다음부터 발급하므로
+    수기 수정으로 카운터가 어긋나도 중복 발급이 없다.
+    반환: ["W0905", ...] count개. 카운터 미설정 시 None (입고는 식별
+    번호 없이 진행 가능, 입고 처리 탭 하단에서 시작 번호 등록 안내).
     """
     if count <= 0:
         return []
@@ -594,11 +619,36 @@ def w_lot_next(count=1):
         val = str((row or {}).get("value") or "").strip()
         if not val.isdigit():
             return None
-        cur = int(val)
-        nums = [cur + i + 1 for i in range(count)]
+        base = max(int(val), w_lot_max_used())
+        nums = [base + i + 1 for i in range(count)]
         _dbw.update("app_settings", "key=eq.w_lot_counter",
                     {"value": str(nums[-1])})
         return [f"W{n:04d}" for n in nums]
+    except Exception:
+        return None
+
+
+def w_lot_sync_counter():
+    """수기 수정·입고 취소 후 카운터를 원장 실사용 최대 번호로 동기화.
+
+    최신 번호를 지우거나 아래로 고치면 카운터가 따라 내려가 다음
+    입고가 그 번호를 다시 받고, 위로 고치면 따라 올라가 중복이 없다.
+    원장이 비면(전량 취소) 실물 기준점 보존을 위해 손대지 않는다.
+    반환: 동기화 후 카운터 값 (미설정·원장 비면 None).
+    """
+    try:
+        import db as _dbw
+        mx = w_lot_max_used()
+        if mx <= 0:
+            return None
+        row = _dbw.fetch_one("app_settings", "key=eq.w_lot_counter", "value")
+        val = str((row or {}).get("value") or "").strip()
+        if not val.isdigit():
+            return None
+        if int(val) != mx:
+            _dbw.update("app_settings", "key=eq.w_lot_counter",
+                        {"value": str(mx)})
+        return mx
     except Exception:
         return None
 
@@ -6242,7 +6292,7 @@ elif page == "발주/입고":
                 if _rn9:
                     if st.button(f"식별 번호 변경 저장 ({len(_rn9)}건)",
                                  type="primary", key="rcv_wid_save"):
-                        _errs9, _okr9, _bump9 = [], 0, 0
+                        _errs9, _okr9 = [], 0
                         _batch9 = set()
                         for r, d, _nv in _rn9:
                             _lbl0 = d["식별 번호"]
@@ -6279,23 +6329,12 @@ elif page == "발주/입고":
                                            {"lot_number": _nw})
                                 _batch9.add(_nw)
                                 _okr9 += 1
-                                _bump9 = max(_bump9, int(_dg))
                             except Exception as e:
                                 _errs9.append(f"{_nw}: {e}")
-                        # 카운터보다 큰 번호를 쓰면 카운터 상향 — 다음
-                        # 자동 채번과의 중복 방지
-                        if _bump9:
-                            try:
-                                _wcx = _db.fetch_one(
-                                    "app_settings",
-                                    "key=eq.w_lot_counter", "value")
-                                if _wcx and _bump9 > int(
-                                        _wcx.get("value") or 0):
-                                    _db.update("app_settings",
-                                               "key=eq.w_lot_counter",
-                                               {"value": str(_bump9)})
-                            except Exception:
-                                pass
+                        # 카운터를 원장 최대 번호로 동기화 — 위로
+                        # 고치면 상향, 최신 번호를 아래로 고치면 복귀
+                        if _okr9:
+                            w_lot_sync_counter()
                         for _e9 in _errs9:
                             st.warning(_e9)
                         if _okr9:
@@ -6344,7 +6383,6 @@ elif page == "발주/입고":
                                   key="rcv_recv_cancel",
                                   use_container_width=True):
                         _blocked, _done9, _aff9 = [], 0, set()
-                        _cxl9 = []
                         for r, d in _sel9:
                             _ln = r.get("lot_number")
                             _is_w = str(_ln or "").startswith("W")
@@ -6362,8 +6400,6 @@ elif page == "발주/입고":
                                 _poi9 = _poi_m.get(r.get("ref_id"), {})
                                 if _poi9.get("po_id"):
                                     _aff9.add(_poi9["po_id"])
-                                if _is_w:
-                                    _cxl9.append(int(str(_ln)[1:]))
                                 _done9 += 1
                             except Exception as e:
                                 st.warning(f"{_ln or r['txn_id']} 취소 "
@@ -6388,33 +6424,9 @@ elif page == "발주/입고":
                                            {"status": _h9})
                             except Exception:
                                 pass
-                        # 마지막 번호를 취소한 경우 카운터 롤백 —
-                        # 다음 입고가 그 번호를 다시 받게 함 (번호 공백 방지)
-                        _rolled9 = None
-                        if _cxl9:
-                            try:
-                                _wc9 = _db.fetch_one(
-                                    "app_settings",
-                                    "key=eq.w_lot_counter", "value")
-                                _cv9 = int((_wc9 or {}).get("value") or 0)
-                                _nc9 = _cv9
-                                for _n9 in sorted(set(_cxl9),
-                                                  reverse=True):
-                                    if _n9 != _nc9:
-                                        break
-                                    if fetch("inventory_transactions",
-                                             "txn_id",
-                                             "lot_number=eq.W"
-                                             f"{_n9:04d}", limit=1):
-                                        break
-                                    _nc9 = _n9 - 1
-                                if _nc9 != _cv9:
-                                    _db.update("app_settings",
-                                               "key=eq.w_lot_counter",
-                                               {"value": str(_nc9)})
-                                    _rolled9 = _nc9
-                            except Exception:
-                                pass
+                        # 카운터를 원장 최대 번호로 동기화 — 최신 번호
+                        # 취소 시 다음 입고가 그 번호를 다시 받는다
+                        _mx9c = w_lot_sync_counter() if _done9 else None
                         if _blocked:
                             st.warning("투입이 시작된 LOT 은 취소 불가: "
                                        + ", ".join(_blocked))
@@ -6422,9 +6434,9 @@ elif page == "발주/입고":
                             st.success(
                                 f"입고 취소 {_done9}건 — 발주 미입고가 "
                                 "복구되었습니다."
-                                + (f" 다음 입고는 W{_rolled9 + 1:04d} "
-                                   "부터 발급됩니다."
-                                   if _rolled9 is not None else ""))
+                                + (f" 다음 입고는 W{_mx9c + 1:04d} 부터 "
+                                   "발급됩니다."
+                                   if _mx9c is not None else ""))
                             st.rerun()
 
         # ── 자재별 현재고 요약 ──
