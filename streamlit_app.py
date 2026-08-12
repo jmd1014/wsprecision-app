@@ -20,22 +20,26 @@ except Exception as e:
     DB_ERROR = str(e)
 
 
-# ─── 2a 시안: 정밀 라이트 × IBM Plex Sans KR (DESIGN_HANDOFF.md) ───
+# ─── 토스 스타일 리스타일 (design/toss-restyle, 2026-08-12) ───
+# 원칙: 테두리 대신 그림자+큰 라디우스, 색은 상태·버튼에만, Pretendard.
+# 상태 의미는 기존 규칙 유지 — 문제=danger, 대기=warn, 완료=good, 진행=primary
 st.markdown("""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;500;600;700&display=swap');
+@import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.min.css');
 :root{
-  --primary:#24406b;--link:#3b5b8c;--bg:#f4f5f7;--card:#ffffff;
-  --line:#e2e5ea;--line2:#eceef2;--line3:#f2f3f6;
-  --ink:#1b2a41;--body:#333a45;--dim:#7a828d;--faint:#9aa1ab;--mute:#b6bcc4;
-  --warn:#e8590c;--warn2:#d9480f;--warn-bg:#fff4e6;
-  --good:#2f9e44;--good-bg:#e6f7ec;
-  --note:#f0b429;--note-txt:#b08a1e;--note-bg:#fdf6e3;
-  --primary-bg:#eef2f8;--blue-bg:#e7f0ff;
+  --primary:#3182f6;--primary-hov:#1b64da;--link:#1b64da;
+  --bg:#f9fafb;--card:#ffffff;
+  --line:#eef1f4;--line2:#f2f4f6;--line3:#f7f8fa;
+  --ink:#191f28;--body:#333d4b;--dim:#6b7684;--faint:#8b95a1;--mute:#b0b8c1;
+  --warn:#dd6b02;--warn2:#f04452;--warn-bg:#fff3e0;
+  --good:#01a76b;--good-bg:#e6f9f1;
+  --note:#ffb331;--note-txt:#a86e00;--note-bg:#fff7e1;
+  --primary-bg:#e8f3ff;--blue-bg:#e8f3ff;
+  --shadow:0 1px 3px rgba(2,32,71,.05),0 5px 14px rgba(2,32,71,.06);
 }
 html, body, [class*="css"], font, div, span, p, label, input, textarea,
 button, select {
-  font-family:'IBM Plex Sans KR',sans-serif !important;
+  font-family:'Pretendard',-apple-system,sans-serif !important;
 }
 /* Material 아이콘은 아이콘 폰트 유지 (전역 폰트 강제의 예외) */
 span[data-testid="stIconMaterial"],
@@ -44,161 +48,167 @@ span[data-testid="stIconMaterial"],
 }
 
 /* ── 제목 위계 ── */
-h1{font-size:22px !important;font-weight:700 !important;
-   color:var(--ink) !important;letter-spacing:-.2px;}
-h2,h3{color:var(--ink) !important;font-weight:600 !important;}
-h5{font-size:14.5px !important;font-weight:600 !important;
+h1{font-size:22px !important;font-weight:800 !important;
+   color:var(--ink) !important;letter-spacing:-.4px;}
+h2,h3{color:var(--ink) !important;font-weight:700 !important;
+   letter-spacing:-.2px;}
+h5{font-size:14.5px !important;font-weight:700 !important;
    color:var(--ink) !important;}
 
-/* ── KPI 메트릭 → 카드 (보더 구분, 그림자 없음) ── */
+/* ── KPI 메트릭 → 카드 (그림자 구분, 테두리 없음) ── */
 div[data-testid="stMetric"]{
-  background:var(--card);border:1px solid var(--line);border-radius:6px;
-  padding:14px 16px;
+  background:var(--card);border:none;border-radius:16px;
+  padding:18px 20px;box-shadow:var(--shadow);
 }
 div[data-testid="stMetricLabel"] p{
-  font-size:11.5px !important;font-weight:600 !important;
-  color:var(--faint) !important;letter-spacing:.02em;
+  font-size:13px !important;font-weight:500 !important;
+  color:var(--faint) !important;
 }
 div[data-testid="stMetricValue"]{
-  font-size:24px !important;font-weight:700 !important;
-  color:var(--ink) !important;letter-spacing:-.3px;
+  font-size:26px !important;font-weight:800 !important;
+  color:var(--ink) !important;letter-spacing:-.6px;
 }
-div[data-testid="stMetricDelta"]{font-size:12px !important;}
+div[data-testid="stMetricDelta"]{font-size:12.5px !important;}
 
 /* ── 탭 ── */
 div[data-testid="stTabs"] button[data-baseweb="tab"]{
-  font-weight:600;color:var(--dim);font-size:13.5px;
+  font-weight:600;color:var(--faint);font-size:14px;
 }
 div[data-testid="stTabs"] button[aria-selected="true"]{
-  color:var(--primary);
+  color:var(--ink);
 }
 
 /* ── expander → 카드 ── */
 div[data-testid="stExpander"]{
-  background:var(--card);border:1px solid var(--line) !important;
-  border-radius:6px;box-shadow:none;
+  background:var(--card);border:none !important;
+  border-radius:16px;box-shadow:var(--shadow);
 }
 
-/* ── 버튼 ── */
+/* ── 버튼 (보조: 테두리 없는 회색 면 — 토스 스타일) ── */
 div[data-testid="stButton"] button,
 div[data-testid="stDownloadButton"] button{
-  border-radius:6px;font-weight:600;font-size:13px;
-  border:1px solid #d8dbe0;
+  border-radius:10px;font-weight:600;font-size:14px;
+  border:none;background:#f2f4f6;color:var(--body);
+  transition:background .15s ease;
+}
+div[data-testid="stButton"] button:hover,
+div[data-testid="stDownloadButton"] button:hover{
+  background:#e8ebee;color:var(--ink);
 }
 div[data-testid="stButton"] button[kind="primary"],
 div[data-testid="stDownloadButton"] button[kind="primary"]{
-  background:var(--primary) !important;border-color:var(--primary) !important;
+  background:var(--primary) !important;color:#fff !important;
 }
-/* 비활성 버튼 — primary 진남색이 유지되면 글자가 묻혀 안 보인다
-   (재고 부족으로 잠긴 '일괄 출고 처리' 버튼, 2026-08-07) */
+div[data-testid="stButton"] button[kind="primary"]:hover,
+div[data-testid="stDownloadButton"] button[kind="primary"]:hover{
+  background:var(--primary-hov) !important;
+}
+/* 비활성 버튼 — 회색 면 유지 + 흐린 글자 (잠긴 버튼 가독성) */
 div[data-testid="stButton"] button:disabled,
 div[data-testid="stDownloadButton"] button:disabled{
-  background:#eceef2 !important;color:var(--faint) !important;
-  border-color:var(--line) !important;cursor:not-allowed;
+  background:#f2f4f6 !important;color:var(--mute) !important;
+  border:none !important;cursor:not-allowed;
 }
 div[data-testid="stButton"] button:disabled p,
 div[data-testid="stDownloadButton"] button:disabled p{
-  color:var(--faint) !important;
+  color:var(--mute) !important;
 }
 
-/* ── 사이드바: 216px 흰 배경, 우측 1px 보더 ── */
+/* ── 사이드바: 흰 배경, 경계는 은은하게 ── */
 section[data-testid="stSidebar"]{
-  background:var(--card);border-right:1px solid var(--line);
+  background:var(--card);border-right:1px solid var(--line2);
   min-width:216px !important;max-width:246px !important;
 }
 section[data-testid="stSidebar"] h2{
   font-size:15px !important;color:var(--ink) !important;
 }
 section[data-testid="stSidebar"] div[data-testid="stCaptionContainer"] p{
-  font-size:11px !important;font-weight:600 !important;
-  color:var(--faint) !important;letter-spacing:.06em;
+  font-size:11px !important;font-weight:700 !important;
+  color:var(--mute) !important;letter-spacing:.07em;
   text-transform:uppercase;
 }
 section[data-testid="stSidebar"] label[data-baseweb="radio"] div p{
-  font-size:13.5px !important;color:var(--body);
+  font-size:14px !important;color:var(--body);
 }
 
 /* ── 알림 박스 ── */
 div[data-testid="stAlert"]{
-  border-radius:6px;border-left-width:4px !important;
+  border-radius:12px;border-left-width:4px !important;
 }
 
 /* ── 데이터프레임 ── */
 div[data-testid="stDataFrame"]{
-  border:1px solid var(--line);border-radius:6px;
+  border:1px solid var(--line2);border-radius:12px;
 }
 
 /* ── 헤더 ── */
 .ws-hdr{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:4px}
-.ws-hdr .t{font-size:22px;color:var(--ink);font-weight:700;letter-spacing:-.2px}
+.ws-hdr .t{font-size:22px;color:var(--ink);font-weight:800;letter-spacing:-.4px}
 .ws-hdr .t .co{color:var(--primary)}
 .ws-hdr .sub{color:var(--dim);font-size:13.5px}
 .ws-hdr-meta{margin-left:auto;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
-.ws-chip{background:var(--card);border:1px solid var(--line);border-radius:15px;
-  padding:5px 12px;font-size:12px;color:var(--dim);
+.ws-chip{background:#f2f4f6;border:none;border-radius:20px;
+  padding:6px 13px;font-size:12px;color:var(--dim);
   display:inline-flex;gap:6px;align-items:center}
-.ws-chip b{font-weight:600}
+.ws-chip b{font-weight:700}
 .ws-chip.ok b{color:var(--good)}
 .ws-chip.err b{color:var(--warn2)}
 
-/* ── 홈 KPI 카드 (border-top 상태색) ── */
-.kpi-row{display:flex;gap:14px;flex-wrap:wrap;margin:4px 0 10px}
+/* ── 홈 KPI 카드 (상태는 숫자 색으로 — 스트라이프 없음) ── */
+.kpi-row{display:flex;gap:14px;flex-wrap:wrap;margin:4px 0 12px}
 .kpi{flex:1;min-width:150px;background:var(--card);
-  border:1px solid var(--line);border-top:3px solid var(--primary);
-  border-radius:6px;padding:14px 16px}
-.kpi .k{font-size:11.5px;font-weight:600;color:var(--faint);
-  letter-spacing:.02em;margin-bottom:6px}
-.kpi .v{font-size:27px;font-weight:700;color:var(--ink);
-  letter-spacing:-.3px;line-height:1.1}
-.kpi .s{font-size:12px;color:var(--dim);margin-top:4px}
-.kpi.warn{border-top-color:var(--warn)}
-.kpi.danger{border-top-color:var(--warn2)}
-.kpi.good{border-top-color:var(--good)}
-.kpi.zero{border-top-color:var(--line)}
+  border:none;border-radius:16px;padding:18px 20px;
+  box-shadow:var(--shadow)}
+.kpi .k{font-size:13px;font-weight:500;color:var(--faint);
+  margin-bottom:7px}
+.kpi .v{font-size:28px;font-weight:800;color:var(--ink);
+  letter-spacing:-.6px;line-height:1.1}
+.kpi .s{font-size:12.5px;color:var(--faint);margin-top:5px}
+.kpi.warn .v{color:var(--warn)}
+.kpi.danger .v{color:var(--warn2)}
+.kpi.good .v{color:var(--good)}
 .kpi.zero .v{color:var(--mute)}
 
-/* ── 공정 스테퍼 (투입→생산→외주→검사→완성) ── */
-.stepper{display:flex;gap:6px;margin:6px 0 10px}
-.step{flex:1;text-align:center;font-size:12px;font-weight:600;
-  padding:7px 4px;border:1px solid var(--line);border-radius:4px;
-  color:var(--faint);background:var(--card)}
-.step.on{background:var(--blue-bg);color:var(--primary);
-  border-color:var(--primary)}
-.step.done{background:var(--good-bg);color:var(--good);
-  border-color:var(--good)}
-.step.warn{background:var(--warn-bg);color:var(--warn2);
-  border-color:var(--warn2)}
+/* ── 공정 스테퍼 (투입→생산→외주→검사→완성) — 필 세그먼트 ── */
+.stepper{display:flex;gap:8px;margin:6px 0 10px}
+.step{flex:1;text-align:center;font-size:12.5px;font-weight:600;
+  padding:9px 4px;border:none;border-radius:10px;
+  color:var(--mute);background:#f2f4f6}
+.step.on{background:var(--primary);color:#fff}
+.step.done{background:var(--good-bg);color:var(--good)}
+.step.warn{background:var(--warn-bg);color:var(--warn)}
 
 /* ── 납품 스케줄 회차 간트 (7b) ── */
 .gt{display:grid;grid-template-columns:250px repeat(6,1fr) 96px;
-  background:var(--card);border:1px solid var(--line);border-radius:6px;
+  background:var(--card);border:none;border-radius:16px;
+  box-shadow:var(--shadow);
   margin:6px 0 4px}  /* overflow hidden 금지 — 호버 메모가 잘린다 */
 .gt>div{padding:9px 10px;border-bottom:1px solid var(--line3);
   border-right:1px solid var(--line3);min-width:0}
 .gt>div:nth-child(8n){border-right:none}
 .gt>div:nth-child(8n+1){border-right:1px solid var(--line2)}
-.gt .gh{font-size:11.5px;font-weight:600;color:var(--faint);
-  letter-spacing:.02em;border-bottom:1px solid var(--line)}
-.gt .gh.now{color:var(--primary);font-weight:700;background:#f7f9fc}
-.gt .cell.now{background:#fbfcfe}
-.gt .gpn{font-size:13px;font-weight:600;color:var(--ink);
+.gt .gh{font-size:12px;font-weight:600;color:var(--faint);
+  border-bottom:1px solid var(--line2)}
+.gt .gh.now{color:var(--primary);font-weight:700;background:#f5f9ff}
+.gt .cell.now{background:#fafcff}
+.gt .gpn{font-size:13px;font-weight:700;color:var(--ink);
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .gt .gsub{font-size:11.5px;color:var(--dim);margin-top:2px}
 .gt .grate{font-size:11px;font-weight:600;margin-top:3px}
-.gt .gsum{background:#f9fafb;border-bottom:none;font-size:12.5px;
-  font-weight:600;color:var(--ink);text-align:right}
+.gt .gsum{background:var(--line3);border-bottom:none;font-size:12.5px;
+  font-weight:700;color:var(--ink);text-align:right}
 .gt .gsum.l{font-size:11.5px;font-weight:600;color:var(--faint);
   letter-spacing:.02em;text-align:left}
 .gc{display:flex;justify-content:space-between;align-items:center;
-  gap:8px;padding:4px 9px;border-radius:12px;margin-bottom:5px;
+  gap:8px;padding:5px 10px;border-radius:12px;margin-bottom:5px;
   position:relative;cursor:default}
 .gc:last-child{margin-bottom:0}
 /* 회차 칩 호버 메모 — 마우스를 올리면 세부 내역 */
 .gc .tip{display:none;position:absolute;z-index:60;left:0;top:100%;
   margin-top:5px;background:var(--ink);color:#fff;
   font-size:11.5px;font-weight:400;line-height:1.8;
-  padding:9px 12px;border-radius:6px;white-space:nowrap;
-  box-shadow:0 4px 14px rgba(27,42,65,.28);text-align:left}
+  padding:10px 13px;border-radius:10px;white-space:nowrap;
+  box-shadow:0 6px 18px rgba(25,31,40,.28);text-align:left}
 .gc .tip b{font-weight:600;color:#fff}
 .gc .tip .warn{color:#ffb4a0;font-weight:600}
 .gc:hover .tip{display:block}
@@ -207,24 +217,24 @@ div[data-testid="stDataFrame"]{
   margin-top:0;margin-bottom:5px}
 .gc .gd{font-size:11px;white-space:nowrap}
 .gc .gq{font-size:11.5px;font-weight:700;color:var(--ink)}
-.gc.late{background:#fff8f6;border:1px solid #f0b8a8;
+.gc.late{background:#fef1f1;border:none;
   border-left:3px solid var(--warn2)}
 .gc.late .gd{color:var(--warn2);font-weight:700}
-.gc.plan{background:var(--primary-bg);border:1px solid #c9d6e8;
+.gc.plan{background:var(--primary-bg);border:none;
   border-left:3px solid var(--primary)}
 .gc.plan .gd{color:var(--link);font-weight:600}
-.gc.done{background:#f6f7f9;border:1px solid var(--line);
+.gc.done{background:var(--line3);border:none;
   border-left:3px solid var(--good)}
 .gc.done .gd{color:var(--faint);font-weight:600}
 .gc.done .gq{color:var(--faint)}
-.gc.one{background:#f6f7f9;border:1px solid #d8dbe0;
-  border-left:3px solid var(--dim);border-radius:4px}
-.gc.one .gd{color:#444b56;font-weight:600}
+.gc.one{background:var(--line3);border:none;
+  border-left:3px solid var(--dim);border-radius:8px}
+.gc.one .gd{color:#4e5968;font-weight:600}
 .gc.one.late{border-left-color:var(--warn2)}
 .gc.one.late .gd{color:var(--warn2);font-weight:700}
 /* '이후' 열 — 회차 나열 대신 총량 요약 (행 높이 고정) */
-.gc.after{display:block;text-align:right;padding:5px 9px;
-  background:var(--card);border:1px dashed #c9d6e8;
+.gc.after{display:block;text-align:right;padding:6px 10px;
+  background:var(--card);border:1px dashed #c7ddfb;
   border-left:3px solid var(--link);border-radius:12px}
 .gc.after .tip{left:auto;right:0;text-align:left}
 .gc.after .gq{display:block;font-size:12.5px}
@@ -232,10 +242,10 @@ div[data-testid="stDataFrame"]{
   margin-top:1px}
 
 /* ── 미계획 물량 경고 카드 ── */
-.unplan{background:var(--warn-bg);border:1px solid #f5c396;
-  border-left:4px solid var(--warn);border-radius:6px;
-  padding:14px 16px;margin:12px 0 6px}
-.unplan .t{font-size:14.5px;font-weight:600;color:var(--warn2)}
+.unplan{background:var(--warn-bg);border:none;
+  border-left:4px solid var(--warn);border-radius:12px;
+  padding:15px 18px;margin:12px 0 6px}
+.unplan .t{font-size:14.5px;font-weight:700;color:var(--warn)}
 .unplan .d{font-size:12.5px;color:var(--body);margin-top:7px;
   line-height:1.75}
 .unplan .d b{font-weight:600;color:var(--ink)}
@@ -397,9 +407,9 @@ def status_ko(s):
 
 
 # 상태 색 규칙 (2a 시안 DESIGN_HANDOFF) — 색 = 의미 고정:
-#   진한 주황 #d9480f = 문제(지연·불합격·폐기·부족) / 주황 #e8590c =
-#   진행 대기(부분·외주·재작업) / 초록 #2f9e44 = 완료·합격 /
-#   주색 #24406b = 생산중·활성 — 전 페이지 동일 규칙.
+#   진한 주황 #f04452 = 문제(지연·불합격·폐기·부족) / 주황 #dd6b02 =
+#   진행 대기(부분·외주·재작업) / 초록 #01a76b = 완료·합격 /
+#   주색 #3182f6 = 생산중·활성 — 전 페이지 동일 규칙.
 _ST_RED = ("지연", "불합", "폐기", "취소", "부족")
 _ST_GREEN = ("완납", "입고완료", "합격", "완료", "전량", "종결", "완성")
 _ST_AMBER = ("대기", "부분", "외주", "재작업", "미납")
@@ -411,14 +421,14 @@ def status_style(df, cols=("상태",)):
     def _c(v):
         s = str(v)
         if any(k in s for k in _ST_RED):
-            return "color:#d9480f;font-weight:700"
+            return "color:#f04452;font-weight:700"
         if any(k in s for k in _ST_GREEN):
-            return "color:#2f9e44;font-weight:600"
+            return "color:#01a76b;font-weight:600"
         if any(k in s for k in _ST_AMBER):
-            return "color:#e8590c;font-weight:600"
+            return "color:#dd6b02;font-weight:600"
         if any(k in s for k in _ST_BLUE):
-            return "color:#24406b;font-weight:600"
-        return "color:#7a828d"
+            return "color:#3182f6;font-weight:600"
+        return "color:#6b7684"
     _sub = [c for c in cols if c in df.columns]
     if not _sub:
         return df
@@ -811,7 +821,7 @@ if page == "홈":
                 } for a in _rows_pn[:15]])
                 st.dataframe(
                     _pndf.style.apply(
-                        lambda r: ["color:#d9480f;font-weight:700"
+                        lambda r: ["color:#f04452;font-weight:700"
                                    if str(r["납기"]).startswith("지연")
                                    else ""] * len(r), axis=1),
                     use_container_width=True, hide_index=True,
@@ -888,7 +898,7 @@ if page == "홈":
             } for s in _open_so[:15]])
             st.dataframe(
                 _h_sodf.style.apply(
-                    lambda row: ["color: #d9480f; font-weight: 700"
+                    lambda row: ["color: #f04452; font-weight: 700"
                                  if "지연" in str(row["납기"])
                                  else ""] * len(row), axis=1),
                 use_container_width=True, hide_index=True,
@@ -1219,9 +1229,9 @@ elif page == "마스터 관리":
                     _bdf.style.format({
                         "1개당": "{:,.3f}", "필요량": "{:,.0f}",
                         "현재고": "{:,.0f}", "부족": "{:,.0f}"}).map(
-                        lambda v: ("color:#d9480f;font-weight:600"
+                        lambda v: ("color:#f04452;font-weight:600"
                                    if isinstance(v, (int, float)) and v > 0
-                                   else "color:#b6bcc4"), subset=["부족"]),
+                                   else "color:#b0b8c1"), subset=["부족"]),
                     use_container_width=True, hide_index=True)
 
             with st.expander("BOM 소재 추가 / 수정", expanded=not _ft["bom"]):
@@ -2773,12 +2783,12 @@ elif page == "마스터 관리":
                              "공정 관리", "출고 관리", "마스터 관리",
                              "원가 확인", "생산 보고"],
                     "디자인 토큰": {
-                        "font": "IBM Plex Sans KR",
-                        "primary": "#24406b", "bg": "#f4f5f7",
-                        "card": "#ffffff", "line": "#e2e5ea",
-                        "ink": "#1b2a41", "dim": "#7a828d",
-                        "warn": "#e8590c", "danger": "#d9480f",
-                        "good": "#2f9e44",
+                        "font": "Pretendard",
+                        "primary": "#3182f6", "bg": "#f9fafb",
+                        "card": "#ffffff", "line": "#eef1f4",
+                        "ink": "#191f28", "dim": "#6b7684",
+                        "warn": "#dd6b02", "danger": "#f04452",
+                        "good": "#01a76b",
                         "규칙": "이모지 미사용. 상태는 색으로만 구분 — "
                                 "문제=danger, 대기=warn, 완료=good, 진행=primary.",
                     },
@@ -3756,7 +3766,7 @@ elif page == "수주 관리":
                     } for c in _late_rows])
                     st.dataframe(
                         _ldf.style.map(
-                            lambda v: "color:#d9480f;font-weight:600",
+                            lambda v: "color:#f04452;font-weight:600",
                             subset=["경과", "잔량"]),
                         use_container_width=True, hide_index=True,
                         column_config={c: st.column_config.NumberColumn(
@@ -3838,12 +3848,12 @@ elif page == "수주 관리":
                     _pd0 = _pend_pn.get(_p, 0.0)
                     if _pd0 > 0:
                         _rt = _plan_pn.get(_p, 0.0) / _pd0
-                        _rc = ("#d9480f" if _rt < 0.3 else
-                               "#e8590c" if _rt < 0.7 else "#2f9e44")
+                        _rc = ("#f04452" if _rt < 0.3 else
+                               "#dd6b02" if _rt < 0.7 else "#01a76b")
                         _rtxt = ('<div class="grate" style="color:{c}">'
                                  '계획률 {r:.0%}</div>'.format(c=_rc, r=_rt))
                     else:
-                        _rtxt = ('<div class="grate" style="color:#9aa1ab">'
+                        _rtxt = ('<div class="grate" style="color:#8b95a1">'
                                  '미납 없음</div>')
                     _h.append('<div><div class="gpn">{p}</div>'
                               '<div class="gsub">{c} · 미납 {q:,.0f}</div>'
@@ -3919,7 +3929,7 @@ elif page == "수주 관리":
                 for _b in range(_WEEKS + 1):
                     _h.append('<div class="gsum">{}</div>'.format(
                         "{:,.0f}".format(_sums[_b]) if _sums[_b]
-                        else '<span style="color:#b6bcc4">0</span>'))
+                        else '<span style="color:#b0b8c1">0</span>'))
                 _h.append("</div>")
                 st.markdown("".join(_h), unsafe_allow_html=True)
                 st.caption(
@@ -3956,7 +3966,7 @@ elif page == "수주 관리":
                     except (TypeError, ValueError):
                         return ""
                     if v <= 0 or _vmax <= 0:
-                        return "color:#b6bcc4"
+                        return "color:#b0b8c1"
                     _t = min(v / _vmax, 1.0)
                     _bg = (f"background-color: rgba(36,64,107,"
                            f"{0.06 + 0.5 * _t:.2f})")
@@ -4129,9 +4139,9 @@ elif page == "수주 관리":
                         "납기 미입력", ascending=False)
                     st.dataframe(
                         _st_df.style.map(
-                            lambda v: ("color:#d9480f;font-weight:700"
+                            lambda v: ("color:#f04452;font-weight:700"
                                        if isinstance(v, (int, float))
-                                       and v > 0 else "color:#9aa1ab"),
+                                       and v > 0 else "color:#8b95a1"),
                             subset=["납기 미입력"]).format(
                             {c: "{:,.0f}" for c in
                              ["미납", "납기 입력됨", "납기 미입력"]}),
@@ -5666,13 +5676,13 @@ elif page == "생산 계획":
         if not df.empty:
             # 예외 중심 강조 — 부족 행은 옅은 붉은 배경, 발주 필요량은 진한 빨강
             def _hl_short(row):
-                css = ("background-color:#fff8f6"
+                css = ("background-color:#fef1f1"
                        if row["발주 필요량"] > 0 else "")
                 return [css] * len(row)
             _styled = (df.style
                        .apply(_hl_short, axis=1)
-                       .map(lambda v: "color:#d9480f;font-weight:700"
-                            if isinstance(v, (int, float)) and v > 0 else "color:#9aa1ab",
+                       .map(lambda v: "color:#f04452;font-weight:700"
+                            if isinstance(v, (int, float)) and v > 0 else "color:#8b95a1",
                             subset=["발주 필요량"])
                        .format({"총필요량": "{:,.0f}", "소재 재고": "{:,.0f}",
                                 "재고 충당": "{:,.0f}",
@@ -8286,7 +8296,7 @@ elif page == "생산 보고":
                         ["util"].mean())
 
             _shift_scale = alt.Scale(domain=["주간", "야간"],
-                                     range=["#3b5b8c", "#d9480f"])
+                                     range=["#1b64da", "#f04452"])
             _num_col = st.column_config.NumberColumn
             ch1, ch2 = st.columns([2, 1])
             with ch1:
