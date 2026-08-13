@@ -48,6 +48,8 @@ WO = {"wo_id": 9, "wo_number": "20260812-001", "product_id": "P1",
       "created_at": "2026-08-12T00:00:00+00:00",
       "updated_at": "2026-08-12T00:00:00+00:00"}
 
+WO_LIST = [WO]
+
 MAT_EVENTS = [
     {"event_id": 1, "event_type": "MAT_OUT_SEND", "qty": 100,
      "step_name": "고용화", "detail": {"vendor": "성보정밀"},
@@ -82,7 +84,7 @@ def _fetch(table, select="*", filter_query="", limit=1000):
                      "raw_material_name": "에이징", "unit_price": 200000}]
         return []
     if table == "wo_tracking":
-        return [dict(WO)]
+        return [dict(w) for w in WO_LIST]
     if table == "wo_events":
         if "MAT_OUT" in filter_query:
             return [dict(e) for e in MAT_EVENTS]
@@ -103,6 +105,7 @@ def _fetch_one(table, filter_query, select="*"):
 def routing_db(monkeypatch):
     import db
     INSERTED.clear()
+    WO_LIST[:] = [WO]
     monkeypatch.setattr(db, "fetch", _fetch)
     monkeypatch.setattr(db, "fetch_one", _fetch_one)
     monkeypatch.setattr(db, "insert",
@@ -165,14 +168,51 @@ def test_process_stepper_follows_routing(routing_db):
     assert _i_mat < _i_sol < _i_prod < _i_age
     # 소재 외주(고용화)는 회수 완료 → done 칸
     assert 'step done">고용화' in md
-    # 외주 출고 액션 → 가공 공정 선택지가 라우팅(에이징)에서 옴
+    # 순차 강제 — 에이징(외주)이 남아 있으므로 '검사'는 잠긴다
     _pr = next(r for r in at.radio
                if r.options and "외주 출고" in r.options)
+    assert "검사" not in _pr.options, "라우팅 순차 강제 실패 — 검사가 열려 있음"
+    # 외주 출고 → 가공 공정이 다음 라우팅 공정(에이징)으로 고정
     _pr.set_value("외주 출고")
     at.run()
     assert not at.exception, [str(e.value) for e in at.exception]
-    _sb = [s for s in at.selectbox if s.label == "가공 공정 (라우팅)"]
-    assert _sb, "라우팅 외주 공정 선택 selectbox 가 없습니다"
-    assert "에이징" in _sb[0].options and "직접 입력" in _sb[0].options
-    # PRODUCT 단계만 — 소재 단계(고용화)는 제품 외주 선택지에 없어야 함
-    assert "고용화" not in _sb[0].options
+    _fx = [t for t in at.text_input if t.key == "pe_o_proc_fixed"]
+    assert _fx and _fx[0].value == "에이징", "다음 외주 공정 고정 실패"
+
+
+def test_input_cancel_action(routing_db):
+    """투입 취소 — 후속 처리 없는 투입만 관리자에게 노출, 실행 시
+    취소 이벤트 기록 + 작업지시 삭제."""
+    # 후속 처리 없는 갓 투입된 지시
+    WO_LIST[:] = [dict(WO, received_qty=0.0, status="IN_PROD")]
+    at = _boot(routing_db)
+    at.sidebar.radio[0].set_value("공정 관리")
+    at.sidebar.radio[1].set_value(None)
+    at.run()
+    assert not at.exception, [str(e.value) for e in at.exception]
+    _pr = next(r for r in at.radio
+               if r.options and "완료 인수" in r.options)
+    assert "투입 취소" in _pr.options
+    _pr.set_value("투입 취소")
+    at.run()
+    at.checkbox(key="pe_cx_ok").set_value(True)
+    at.run()
+    at.button(key="pe_cx_btn").click()
+    at.run()
+    assert not at.exception, [str(e.value) for e in at.exception]
+    _ev = [(t, r) for t, recs in INSERTED if t == "wo_events"
+           for r in recs if r.get("event_type") == "INPUT_CANCEL"]
+    assert _ev, "INPUT_CANCEL 이벤트가 기록되지 않음"
+
+
+def test_input_cancel_hidden_after_downstream(routing_db):
+    """후속 처리(인수)가 시작된 지시에는 투입 취소가 노출되지 않는다."""
+    WO_LIST[:] = [dict(WO)]  # received_qty 40 — 후속 있음
+    at = _boot(routing_db)
+    at.sidebar.radio[0].set_value("공정 관리")
+    at.sidebar.radio[1].set_value(None)
+    at.run()
+    _pr = next(r for r in at.radio
+               if r.options and ("외주 출고" in r.options
+                                 or "완료 인수" in r.options))
+    assert "투입 취소" not in _pr.options

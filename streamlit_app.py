@@ -538,6 +538,10 @@ ROUTING_DEFAULT = [
      "step_name": "소재입고", "step_kind": "INHOUSE", "stage": "MATERIAL"},
     {"routing_id": None, "seq": 10, "step_code": "PROD",
      "step_name": "생산", "step_kind": "INHOUSE", "stage": "PRODUCT"},
+    # 기본 플로우의 외주는 '선택적' — 순차 강제 없음 (라우팅 정의
+    # 제품만 순서를 강제한다). 기존 고정 5칸과 동일한 동작.
+    {"routing_id": None, "seq": 30, "step_code": "OUT",
+     "step_name": "외주", "step_kind": "OUTSOURCE", "stage": "PRODUCT"},
     {"routing_id": None, "seq": 50, "step_code": "INSPECT",
      "step_name": "검사", "step_kind": "INHOUSE", "stage": "PRODUCT"},
     {"routing_id": None, "seq": 60, "step_code": "DONE",
@@ -587,6 +591,8 @@ EVENT_KO = {
     "OUT_SEND": "외주 출고", "OUT_RETURN": "외주 입고",
     "INSPECT": "검사", "REWORK_BACK": "재작업 복귀",
     "OUTPUT": "완성 확정",
+    "INPUT_CANCEL": "투입 취소",
+    "MAT_OUT_SEND": "소재 외주 출고", "MAT_OUT_RETURN": "소재 외주 회수",
 }
 
 
@@ -8291,12 +8297,42 @@ elif page == "공정 관리":
             _acts = []
             if _q["생산중"] > 0:
                 _acts.append("완료 인수")
+            # 라우팅이 정의된 제품은 공정 순차 강제 — 남은 외주 공정이
+            # 있으면 '검사'가 잠기고 다음 외주 공정만 출고할 수 있다.
+            # 기본 플로우(라우팅 미정의) 제품은 기존처럼 자유 선택.
+            _routed = any(s.get("routing_id") for s in _out_steps)
+            _pending_out = None
+            if _routed:
+                for _s2 in _out_steps:
+                    _bal2 = _ob.get(_s2.get("routing_id"))
+                    if not (_bal2 is not None and _bal2 <= 0):
+                        _pending_out = _s2
+                        break
             if _q["검사대기"] > 0:
-                _acts += ["검사", "외주 출고"]
+                if _routed:
+                    if _pending_out is not None:
+                        _acts.append("외주 출고")
+                        st.caption(
+                            "라우팅 순서에 따라 다음 공정은 "
+                            f"**{_pending_out['step_name']} (외주)** 입니다 "
+                            "— 완료 전에는 검사를 진행할 수 없습니다.")
+                    else:
+                        _acts.append("검사")
+                else:
+                    _acts += ["검사", "외주 출고"]
             if _q["외주중"] > 0:
                 _acts.append("외주 입고")
             if _q["재작업중"] > 0:
                 _acts.append("재작업 복귀")
+            # 오입력 정리 — 후속 처리(인수·외주·검사)가 없는 투입만 취소
+            # 가능. 관리자 전용.
+            _dnstream = sum(float(_t.get(k) or 0) for k in
+                            ("received_qty", "outsource_qty", "pass_qty",
+                             "tokusai_qty", "scrap_qty", "rework_qty",
+                             "output_qty", "return_qty"))
+            if (float(_t.get("input_qty") or 0) > 0 and _dnstream == 0
+                    and current_user().get("role") == "admin"):
+                _acts.append("투입 취소")
 
             if not _acts:
                 st.success("✅ 이 작업지시는 모든 수량이 처리되었습니다.")
@@ -8334,24 +8370,16 @@ elif page == "공정 관리":
                         _o_vendor = st.selectbox("외주 거래처",
                             [v["name"] for v in _ov] or ["(거래처 없음)"],
                             key="pe_o_vendor")
-                        # 라우팅에 외주 공정이 정의된 제품은 공정 선택,
-                        # 없으면 기존처럼 자유 입력
+                        # 라우팅이 정의된 제품은 다음 외주 공정으로 고정
+                        # (순차 강제), 기본 플로우 제품은 자유 입력
                         _o_rid = None
-                        if _out_steps:
-                            _o_opts = ([s["step_name"] for s in _out_steps]
-                                       + ["직접 입력"])
-                            _o_pick = st.selectbox("가공 공정 (라우팅)",
-                                _o_opts, key="pe_o_step",
-                                help="마스터 관리 → 공정 라우팅에서 정의된 "
-                                     "이 제품의 외주 공정입니다.")
-                            if _o_pick == "직접 입력":
-                                _o_proc = st.text_input("가공 공정",
-                                    placeholder="예: 열처리, 도금, 연마",
-                                    key="pe_o_proc")
-                            else:
-                                _o_proc = _o_pick
-                                _o_rid = _out_steps[
-                                    _o_opts.index(_o_pick)].get("routing_id")
+                        if _routed and _pending_out is not None:
+                            _o_proc = _pending_out["step_name"]
+                            _o_rid = _pending_out.get("routing_id")
+                            st.text_input(
+                                "가공 공정 (라우팅 순서 — 자동 지정)",
+                                value=_o_proc, disabled=True,
+                                key="pe_o_proc_fixed")
                         else:
                             _o_proc = st.text_input("가공 공정",
                                 placeholder="예: 열처리, 도금, 연마",
@@ -8580,6 +8608,60 @@ elif page == "공정 관리":
                                    "qty": _rw_qty},
                             msg=f"재작업 복귀 {_rw_qty:,.0f} EA → "
                                 "검사 대기 (재검사)")
+
+                # ── 6. 투입 취소 (오입력 정리 — 관리자 전용) ──
+                elif _act == "투입 취소":
+                    st.caption(
+                        "잘못 등록한 투입을 취소합니다 — **작업지시가 "
+                        "삭제되고 소재 LOT 잔량이 복원**됩니다. 후속 "
+                        "처리(인수·외주·검사)가 시작된 지시는 취소할 수 "
+                        "없습니다. 취소 이력은 남습니다.")
+                    _cx_ok = st.checkbox(
+                        f"{_t['wo_number']} · {_t.get('pn') or '-'} · "
+                        f"소재 {_t.get('w_lot') or '-'} 투입을 "
+                        "취소합니다", key="pe_cx_ok")
+                    if st.button("투입 취소 실행", type="primary",
+                                 disabled=not _cx_ok, key="pe_cx_btn"):
+                        try:
+                            # 원래 투입한 소재 수량 — 원장에서 역산
+                            _otx = fetch("inventory_transactions", "qty",
+                                f"work_order=eq.{_t['wo_number']}"
+                                f"&lot_number=eq.{_t.get('w_lot')}"
+                                "&txn_type=eq.PROD_INPUT", limit=20)
+                            _back = sum(-float(x.get("qty") or 0)
+                                        for x in _otx)
+                            if _back > 0:
+                                _db.insert("inventory_transactions", [{
+                                    "material_id": _t.get("material_id"),
+                                    "txn_type": "PROD_INPUT",
+                                    "qty": _back, "unit": "EA",
+                                    "lot_number": _t.get("w_lot"),
+                                    "work_order": _t["wo_number"],
+                                    "txn_date":
+                                        _pe_date.today().isoformat(),
+                                    "remark": "투입 취소 복원: "
+                                              f"{_t.get('pn') or '-'} "
+                                              f"({_t['wo_number']})",
+                                    "created_by": current_user_name()}])
+                            _db.insert("wo_events", [{
+                                "wo_number": _t["wo_number"],
+                                "w_lot": _t.get("w_lot"),
+                                "pn": _t.get("pn"),
+                                "event_type": "INPUT_CANCEL",
+                                "qty": float(_t.get("input_qty") or 0),
+                                "detail": {"restored_material": _back},
+                                "event_date":
+                                    _pe_date.today().isoformat(),
+                                "created_by": current_user_name()}])
+                            _db.delete("wo_tracking",
+                                       f"wo_id=eq.{_t['wo_id']}")
+                            st.success(
+                                f"투입 취소 완료 — {_t['wo_number']} 삭제, "
+                                f"소재 {_back:,.0f} 복원 "
+                                f"({_t.get('w_lot') or '-'})")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"취소 실패: {e}")
 
             # ── 공정 이력 (스텝별 타임라인) + 문서 재발행 ──
             st.divider()
