@@ -1216,34 +1216,57 @@ elif page == "마스터 관리":
                                "수정 후 저장하면 이 제품 전용 라우팅이 "
                                "생성됩니다.")
 
-                # 이 제품의 BOM 공정 행 (외주 원가 연결 후보)
+                # 이 제품의 BOM 전체 행 — 소재(MATERIAL)는 소재입고
+                # 스텝에, 공정(HEAT/SURFACE 등)은 외주 스텝에 연결해
+                # '라우팅 = BOM 정보가 공정 순서 위에 완성된 그림'이 되게
                 try:
                     _pbom = fetch("bom",
                         "bom_id,process_type,raw_material_name,unit_price",
-                        f"product_id=eq.{_rp_id}"
-                        "&process_type=neq.MATERIAL", limit=30)
+                        f"product_id=eq.{_rp_id}", limit=50)
                 except Exception:
                     _pbom = []
-                _bom_opts = ["(연결 안 함)"] + [
-                    f"#{b['bom_id']} "
-                    f"{b.get('raw_material_name') or b['process_type']}"
-                    + (f" ₩{int(float(b['unit_price'])):,}"
-                       if b.get("unit_price") else "")
-                    for b in _pbom]
+                _pbom.sort(key=lambda b: (
+                    (b.get("process_type") or "MATERIAL") != "MATERIAL",
+                    b["bom_id"]))
+
+                def _bom_lbl(b):
+                    _is_mat = ((b.get("process_type") or "MATERIAL")
+                               == "MATERIAL")
+                    return (f"#{b['bom_id']} "
+                            f"{b.get('raw_material_name') or b['process_type']}"
+                            + (" (소재)" if _is_mat else " (외주)")
+                            + (f" ₩{int(float(b['unit_price'])):,}"
+                               if b.get("unit_price") else ""))
+
+                _bom_opts = ["(연결 안 함)"] + [_bom_lbl(b) for b in _pbom]
                 _bom_by_lbl = {_bom_opts[i + 1]: _pbom[i]["bom_id"]
                                for i in range(len(_pbom))}
                 _lbl_by_bom = {v: k for k, v in _bom_by_lbl.items()}
+                _mat_bom = next(
+                    (b for b in _pbom
+                     if (b.get("process_type") or "MATERIAL")
+                     == "MATERIAL"), None)
 
                 _kind_lbl = {"INHOUSE": "사내", "OUTSOURCE": "외주"}
                 _stage_lbl = {"MATERIAL": "소재", "PRODUCT": "제품"}
+
+                def _link_lbl(s):
+                    """스텝의 BOM 연결 표시 — 소재입고는 소재 행 자동 제안"""
+                    _l = _lbl_by_bom.get(s.get("bom_id"))
+                    if _l:
+                        return _l
+                    if s.get("step_code") == "MAT_IN" and _mat_bom:
+                        return _lbl_by_bom.get(_mat_bom["bom_id"],
+                                               "(연결 안 함)")
+                    return "(연결 안 함)"
+
                 _red = st.data_editor(
                     pd.DataFrame([{
                         "순서": s["seq"],
                         "공정명": s["step_name"],
                         "구분": _kind_lbl.get(s.get("step_kind"), "사내"),
                         "단계": _stage_lbl.get(s.get("stage"), "제품"),
-                        "BOM 연결": _lbl_by_bom.get(s.get("bom_id"),
-                                                   "(연결 안 함)"),
+                        "BOM 연결": _link_lbl(s),
                     } for s in _cur]),
                     hide_index=True, num_rows="dynamic",
                     use_container_width=True,
@@ -1262,6 +1285,20 @@ elif page == "마스터 관리":
                             options=_bom_opts,
                             help="외주 공정의 원가 행(BOM) 연결"),
                     }, key=f"rout_ed_{_rp_id}")
+
+                # BOM 연결 완성도 — 라우팅이 BOM 정보를 다 덮었는지 표시
+                _linked_ids = {_bom_by_lbl.get(r.get("BOM 연결"))
+                               for r in _red.to_dict("records")}
+                _unlinked = [b for b in _pbom
+                             if b["bom_id"] not in _linked_ids]
+                if _pbom and _unlinked:
+                    st.caption(
+                        f"BOM 연결 {len(_pbom) - len(_unlinked)}"
+                        f"/{len(_pbom)} — 미연결: "
+                        + ", ".join(_bom_lbl(b) for b in _unlinked))
+                elif _pbom:
+                    st.caption(f"BOM 연결 {len(_pbom)}/{len(_pbom)} — "
+                               "모든 BOM 행이 라우팅에 연결되었습니다.")
 
                 _CODE_BY_NAME = {"소재입고": "MAT_IN", "생산": "PROD",
                                  "검사": "INSPECT", "완성": "DONE"}

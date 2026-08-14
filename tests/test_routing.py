@@ -77,7 +77,7 @@ def _fetch(table, select="*", filter_query="", limit=1000):
             return [{"product_id": "P1", "pn": "MRG6-07"}]
         return []
     if table == "bom":
-        if "process_type=neq.MATERIAL" in filter_query:
+        if "product_id=eq.P1" in filter_query:
             return [{"bom_id": 346, "process_type": "HEAT",
                      "raw_material_name": "고용화", "unit_price": 200000},
                     {"bom_id": 347, "process_type": "HEAT",
