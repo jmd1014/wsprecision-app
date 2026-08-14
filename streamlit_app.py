@@ -4763,13 +4763,24 @@ elif page == "수주 관리":
                                 })
                             # 회차 번호는 납기순 자동 부여 (사용자 입력 없음)
                             _keep.sort(key=lambda x: x["due_date"])
+                            # 같은 납기는 한 회차로 병합 — 납기당 1회차.
+                            # 중복 날짜가 저장되면 한 번의 납품이 두 행에
+                            # 나뉘어 보이는 왜곡 (2026-08-13, 4PDVN-02)
+                            from utils.delivery_alloc import (
+                                carry_delivered, merge_same_date)
+                            _n_before = len(_keep)
+                            _keep = merge_same_date(_keep)
+                            if len(_keep) < _n_before:
+                                st.info("같은 납기 {}건을 한 회차로 "
+                                        "병합했습니다 (납기당 1회차 · "
+                                        "수량 합산).".format(
+                                            _n_before - len(_keep)))
                             for _i2, _r2 in enumerate(_keep, 1):
                                 _r2["seq"] = _i2
                             # 납품완료 승계 — 납기 '날짜' 기준.
                             # 순번(위치) 승계는 중간 회차를 지우면 납품이
                             # 다음 날짜로 밀림 (8/3 삭제 → 8/5 실적이
                             # 8/7 로 이동하던 버그, 2026-08-06)
-                            from utils.delivery_alloc import carry_delivered
                             _done_new, _done_lost = carry_delivered(
                                 _rows, _keep)
                             if _done_lost > 0.5:

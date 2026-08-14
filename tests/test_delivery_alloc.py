@@ -119,3 +119,53 @@ def test_carry_reports_lost_when_plan_too_small():
     done, lost = carry_delivered(old, new)
     assert done == [1000]
     assert lost == 400
+
+
+# ─── 같은 납기 병합 (2026-08-13, 4PDVN-02 중복 날짜 사례) ───
+
+def test_merge_same_date_sums_qty_and_joins_notes():
+    """같은 날짜 회차는 하나로 — 수량 합산, 비고 이어붙임."""
+    from utils.delivery_alloc import merge_same_date
+    rounds = [
+        {"due_date": "2026-08-12", "qty": 1732,
+         "note": "이전 회차 잔여 보충"},
+        {"due_date": "2026-08-12", "qty": 2016, "note": None},
+        {"due_date": "2026-08-14", "qty": 1008, "note": None},
+    ]
+    out = merge_same_date(rounds)
+    assert len(out) == 2
+    assert out[0]["due_date"] == "2026-08-12"
+    assert out[0]["qty"] == 3748
+    assert out[0]["note"] == "이전 회차 잔여 보충"
+    assert out[1]["qty"] == 1008
+    # 원본은 불변
+    assert rounds[0]["qty"] == 1732
+
+
+def test_merge_distinct_dates_untouched():
+    from utils.delivery_alloc import merge_same_date
+    rounds = [{"due_date": "2026-08-12", "qty": 100, "note": "a"},
+              {"due_date": "2026-08-14", "qty": 200, "note": "b"}]
+    assert merge_same_date(rounds) == rounds
+
+
+def test_allocate_duplicate_dates_never_double_counts():
+    """중복 날짜 회차가 있어도 한 번의 납품은 총량만큼만 배분된다."""
+    rounds = [
+        {"sched_id": 1, "due_date": "2026-08-12", "qty": 1732,
+         "delivered_qty": 0},
+        {"sched_id": 2, "due_date": "2026-08-12", "qty": 2016,
+         "delivered_qty": 0},
+    ]
+    out = allocate_rounds(rounds, 1732, "2026-08-12")
+    assert out == {1: 1732}          # 첫 회차만, 둘째는 손대지 않음
+
+
+def test_carry_duplicate_dates_never_double_counts():
+    """재저장 승계도 중복 날짜에 실적을 나눠 담되 총량을 보존한다."""
+    old = [{"due_date": "2026-08-12", "delivered_qty": 1732}]
+    new = [{"due_date": "2026-08-12", "qty": 1732},
+           {"due_date": "2026-08-12", "qty": 2016}]
+    done, lost = carry_delivered(old, new)
+    assert done == [1732, 0]
+    assert lost == 0

@@ -48,6 +48,33 @@ def allocate_rounds(rounds, qty, deliver_date):
     return changed
 
 
+def merge_same_date(rounds):
+    """같은 납기 날짜의 회차를 하나로 병합 — 납기당 1회차 원칙.
+
+    같은 날짜가 두 회차로 저장되면 (예: 패턴 도구의 '이전 회차 잔여
+    보충' 행이 기존 회차와 같은 날짜로 생성) 화면에서 한 번의 납품이
+    양쪽에 나뉘어 찍힌 것처럼 보여 대조가 어긋난다 (2026-08-13,
+    4PDVN-02 사례). 수량은 합산, 비고는 이어붙인다.
+
+    rounds: [{"due_date", "qty", "note", ...}] — 납기순 정렬 상태
+    returns: 병합된 리스트 (원본 dict 는 변경하지 않음)
+    """
+    merged, by_date = [], {}
+    for r in rounds:
+        d = str(r.get("due_date"))[:10]
+        if d in by_date:
+            t = by_date[d]
+            t["qty"] = float(t.get("qty") or 0) + float(r.get("qty") or 0)
+            n_old, n_new = t.get("note") or "", r.get("note") or ""
+            if n_new and n_new not in n_old:
+                t["note"] = (n_old + " · " + n_new) if n_old else n_new
+        else:
+            t = dict(r)
+            by_date[d] = t
+            merged.append(t)
+    return merged
+
+
 def carry_delivered(old_rounds, new_rounds):
     """스케줄 재저장 시 납품완료 승계 — 납기 '날짜' 기준.
 
