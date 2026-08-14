@@ -23,13 +23,13 @@ ROUTING = [
      "bom_id": None, "confirmed": False},
     {"routing_id": 2, "product_id": "P1", "seq": 5, "step_code": "OUT",
      "step_name": "고용화", "step_kind": "OUTSOURCE", "stage": "MATERIAL",
-     "bom_id": 346, "confirmed": False},
+     "bom_id": 346, "default_vendor": "성보정밀", "confirmed": False},
     {"routing_id": 3, "product_id": "P1", "seq": 10, "step_code": "PROD",
      "step_name": "생산", "step_kind": "INHOUSE", "stage": "PRODUCT",
      "bom_id": None, "confirmed": False},
     {"routing_id": 4, "product_id": "P1", "seq": 12, "step_code": "OUT",
      "step_name": "에이징", "step_kind": "OUTSOURCE", "stage": "PRODUCT",
-     "bom_id": 347, "confirmed": False},
+     "bom_id": 347, "default_vendor": "성보정밀", "confirmed": False},
     {"routing_id": 5, "product_id": "P1", "seq": 50, "step_code": "INSPECT",
      "step_name": "검사", "step_kind": "INHOUSE", "stage": "PRODUCT",
      "bom_id": None, "confirmed": False},
@@ -50,13 +50,22 @@ WO = {"wo_id": 9, "wo_number": "20260812-001", "product_id": "P1",
 
 WO_LIST = [WO]
 
-MAT_EVENTS = [
+MAT_EVENTS_FULL = [
     {"event_id": 1, "event_type": "MAT_OUT_SEND", "qty": 100,
-     "step_name": "고용화", "detail": {"vendor": "성보정밀"},
+     "routing_id": 2, "step_name": "고용화",
+     "detail": {"vendor": "성보정밀"},
      "event_date": "2026-08-10", "created_by": "테스트"},
     {"event_id": 2, "event_type": "MAT_OUT_RETURN", "qty": 100,
-     "step_name": "고용화", "detail": {"vendor": "성보정밀"},
+     "routing_id": 2, "step_name": "고용화",
+     "detail": {"vendor": "성보정밀"},
      "event_date": "2026-08-11", "created_by": "테스트"},
+]
+MAT_EVENTS = list(MAT_EVENTS_FULL)
+
+# 투입 등록 탭용 — 잔여 소재 W-LOT (RECEIPT 210)
+W_LOT_TXNS = [
+    {"lot_number": "W2608-001", "material_id": "M1", "qty": 210.0,
+     "txn_type": "RECEIPT", "ref_id": None},
 ]
 
 INSERTED = []
@@ -73,15 +82,32 @@ def _fetch(table, select="*", filter_query="", limit=1000):
         if "ilike" in filter_query and "MRG6" in filter_query:
             return [{"product_id": "P1", "pn": "MRG6-07",
                      "item_name": "가이드핀"}]
+        if "pn=eq.MRG6-07" in filter_query:
+            return [{"product_id": "P1", "pn": "MRG6-07"}]
         if "product_id=in." in filter_query and "P1" in filter_query:
             return [{"product_id": "P1", "pn": "MRG6-07"}]
         return []
     if table == "bom":
+        if ("product_id=eq.P1" in filter_query
+                and "material_id=eq.M1" in filter_query):
+            return [{"qty_per_pc": 1, "shared_factor": 1,
+                     "bom_id": 164, "material_id": "M1",
+                     "process_type": "MATERIAL"}]
+        if "material_id=eq.M1" in filter_query:
+            return [{"product_id": "P1"}]
         if "product_id=eq.P1" in filter_query:
             return [{"bom_id": 346, "process_type": "HEAT",
                      "raw_material_name": "고용화", "unit_price": 200000},
                     {"bom_id": 347, "process_type": "HEAT",
                      "raw_material_name": "에이징", "unit_price": 200000}]
+        return []
+    if table == "inventory_transactions":
+        if "lot_number=like.W*" in filter_query:
+            return [dict(t) for t in W_LOT_TXNS]
+        return []
+    if table == "materials":
+        if "material_id=in." in filter_query:
+            return [{"material_id": "M1", "raw_name": "S630"}]
         return []
     if table == "wo_tracking":
         return [dict(w) for w in WO_LIST]
@@ -106,6 +132,7 @@ def routing_db(monkeypatch):
     import db
     INSERTED.clear()
     WO_LIST[:] = [WO]
+    MAT_EVENTS[:] = list(MAT_EVENTS_FULL)
     monkeypatch.setattr(db, "fetch", _fetch)
     monkeypatch.setattr(db, "fetch_one", _fetch_one)
     monkeypatch.setattr(db, "insert",
@@ -178,6 +205,38 @@ def test_process_stepper_follows_routing(routing_db):
     assert not at.exception, [str(e.value) for e in at.exception]
     _fx = [t for t in at.text_input if t.key == "pe_o_proc_fixed"]
     assert _fx and _fx[0].value == "에이징", "다음 외주 공정 고정 실패"
+    # 승인 업체(마스터 고정) — 거래처 변경 불가 표시
+    _fv = [t for t in at.text_input if t.key == "pe_o_vendor_fixed"]
+    assert _fv and _fv[0].value == "성보정밀", "승인 업체 고정 실패"
+
+
+def test_material_outsource_gate_blocks_input(routing_db):
+    """소재 외주 미완료면 투입 차단 — 배너에 고정 업체 표시,
+    관리자 우회 체크 시에만 투입 버튼이 열린다."""
+    MAT_EVENTS[:] = []          # 소재 외주 이력 없음
+    at = _boot(routing_db)
+    at.sidebar.radio[0].set_value("공정 관리")
+    at.sidebar.radio[1].set_value(None)
+    at.run()
+    assert not at.exception, [str(e.value) for e in at.exception]
+
+    _errs = " ".join(e.value for e in at.error)
+    assert "선행 공정 미완료" in _errs and "고용화" in _errs
+    # 작업지시 NO 를 채워도 투입 버튼은 잠겨 있어야 한다
+    at.text_input(key="pe_wo_no").set_value("20260812-099")
+    at.run()
+    assert at.button(key="pe_in_submit").disabled, "소재 외주 차단 실패"
+    # 배너의 공정·업체 고정 표기
+    _bp = [t for t in at.text_input if (t.key or "").startswith("mo2_p_")]
+    assert _bp and _bp[0].value == "고용화"
+    _bv = [t for t in at.text_input if (t.key or "").startswith("mo2_v_")]
+    assert _bv and _bv[0].value == "성보정밀"
+    # 관리자 우회 → 투입 버튼 활성
+    _ov = [c for c in at.checkbox if (c.key or "").startswith("mo2_ov_")]
+    assert _ov, "관리자 우회 체크박스가 없습니다"
+    _ov[0].set_value(True)
+    at.run()
+    assert not at.button(key="pe_in_submit").disabled
 
 
 def test_input_cancel_action(routing_db):
