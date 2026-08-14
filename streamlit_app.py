@@ -4824,7 +4824,7 @@ elif page == "출고 관리":
     import db as _db
     import pandas as pd
 
-    tab_deliver, tab_ship, tab_dstat = st.tabs(["출고 등록", "출고 전표", "납품 현황"])
+    tab_deliver, tab_ship, tab_dstat = st.tabs(["출고 등록", "출고 전표", "출고 현황"])
 
     # ════════ TAB 1: 납품 등록 ════════
     with tab_deliver:
@@ -5522,143 +5522,327 @@ elif page == "출고 관리":
                     except Exception as e:
                         st.error(f"취소 실패: {e}")
 
-    # ════════ TAB 3: 납품 현황 ════════
+    # ════════ TAB 3: 출고 현황 (확정 전표 기준 품목별 조회) ════════
     with tab_dstat:
-        # ── 최근 출고 이력 (품번 기준 · 2026-08-07 상단 이동) ──
-        st.markdown("##### 최근 출고 이력")
+        st.caption(
+            "**확정 전표 기준 출고 조회** — 품목별 집계·출고 이력·수주별 "
+            "대사(전표 외 기납품 구분)까지 확인합니다. 수주 진행 KPI 는 "
+            "홈·수주 관리에서.")
+
+        from datetime import date as _dv_dt, timedelta as _dv_td
+        from utils.ship_lots import issued_lots as _dv_lots_fn
+
+        _dv_preset = st.radio(
+            "기간", ["최근 7일", "최근 30일", "이번 달", "전체"],
+            index=1, horizontal=True, key="dstat_range",
+            label_visibility="collapsed")
+        _dv_today = _dv_dt.today()
+        _dv_from = {
+            "최근 7일": (_dv_today - _dv_td(days=6)).isoformat(),
+            "최근 30일": (_dv_today - _dv_td(days=29)).isoformat(),
+            "이번 달": _dv_today.replace(day=1).isoformat(),
+            "전체": None,
+        }[_dv_preset]
+
         try:
-            _iss = fetch("inventory_transactions",
-                "txn_date,product_id,qty,lot_number,remark",
-                "txn_type=eq.ISSUE&order=txn_id.desc", limit=20)
-        except Exception:
-            _iss = []
-        if _iss:
-            _iss_pids = {i["product_id"] for i in _iss
-                         if i.get("product_id")}
-            _iss_pn = {}
-            if _iss_pids:
+            _dv_cond = "status=eq.CONFIRMED"
+            if _dv_from:
+                _dv_cond += f"&ship_date=gte.{_dv_from}"
+            _dv_ships = fetch(
+                "shipments", "shipment_id,ship_no,ship_date,created_by",
+                _dv_cond + "&order=ship_date.desc,shipment_id.desc",
+                limit=300)
+        except Exception as e:
+            st.error(f"출고 조회 실패: {e}"); _dv_ships = []
+
+        if not _dv_ships:
+            st.info("기간 내 확정 전표 없음 — 기간을 넓히거나 출고 전표 "
+                    "탭에서 확정하세요.")
+        else:
+            _dv_smap = {s["shipment_id"]: s for s in _dv_ships}
+            _dv_rows = []
+            _dv_ids = list(_dv_smap)
+            for _i0 in range(0, len(_dv_ids), 50):
+                _ck = ",".join(str(x) for x in _dv_ids[_i0:_i0 + 50])
                 try:
-                    _iss_pn = {p["product_id"]: p["pn"] for p in fetch(
-                        "products", "product_id,pn",
-                        "product_id=in.({})".format(
-                            ",".join(f'"{x}"' for x in _iss_pids)),
-                        limit=200)}
+                    for x in fetch(
+                            "shipment_items",
+                            "si_id,shipment_id,soi_id,product_id,pn,"
+                            "item_name,customer,so_number,qty",
+                            f"shipment_id=in.({_ck})&order=si_id.desc",
+                            limit=2000):
+                        _s0 = _dv_smap.get(x["shipment_id"]) or {}
+                        x["ship_no"] = _s0.get("ship_no")
+                        x["ship_date"] = _s0.get("ship_date")
+                        x["by"] = _s0.get("created_by")
+                        _dv_rows.append(x)
                 except Exception:
                     pass
-            st.dataframe(pd.DataFrame([{
-                "출고일": i.get("txn_date"),
-                "품번": _iss_pn.get(i.get("product_id"),
-                                   i.get("product_id") or "-"),
-                "수량": -float(i.get("qty") or 0),
-                "출고 LOT": i.get("lot_number") or "-",
-                "비고": i.get("remark") or "-",
-            } for i in _iss]), use_container_width=True, hide_index=True,
-                column_config={"수량": st.column_config.NumberColumn(
-                    format="localized")})
-        else:
-            st.caption("출고 이력 없음.")
-        st.divider()
 
-        # 수주별 납품 진행
-        try:
-            _ds = fetch("sales_order_stats",
-                "so_number,customer,so_date,total_qty,total_received_qty,"
-                "total_pending_qty,delivery_status",
-                'status=not.in.("CANCELLED","CANCELED")&order=so_date.desc',
-            limit=500)
-        except Exception as e:
-            st.error(f"납품 현황 조회 실패: {e}"); _ds = []
-        if not _ds:
-            st.info("수주 데이터 없음 — 수주 관리에서 업로드 후 표시됩니다.")
-        else:
-            _t_qty = sum(float(s.get("total_qty") or 0) for s in _ds)
-            _t_rcv = sum(float(s.get("total_received_qty") or 0) for s in _ds)
-            _t_pend = sum(float(s.get("total_pending_qty") or 0) for s in _ds)
-            dm1, dm2, dm3, dm4 = st.columns(4)
-            dm1.metric("수주 수량", f"{_t_qty:,.0f}")
-            dm2.metric("납품 완료", f"{_t_rcv:,.0f}")
-            dm3.metric("미납", f"{_t_pend:,.0f}")
-            dm4.metric("납품률",
-                f"{_t_rcv / _t_qty * 100:.1f}%" if _t_qty else "-")
-            dsc1, dsc2 = st.columns([2, 1])
-            _ds_q = dsc1.text_input("검색", key="dstat_q",
-                placeholder="수주번호 / 거래처 검색",
-                label_visibility="collapsed")
-            _ds_open = dsc2.checkbox("미납만 보기", value=True,
-                                     key="dstat_open_only")
-            _ds_show = [s for s in _ds
-                        if (not _ds_open
-                            or float(s.get("total_pending_qty") or 0) > 0)
-                        and (not _ds_q
-                             or _ds_q.lower() in (s["so_number"] or "").lower()
-                             or _ds_q.lower() in (s["customer"] or "").lower())]
-            _ds_cut = len(_ds_show) - 50
-            _ds_show = _ds_show[:50]
-            if not _ds_show:
-                st.success("✅ 조건에 맞는 수주 없음 — 미납만 보기 상태면 "
-                           "전부 납품 완료입니다. 체크 해제로 전체 확인.")
-                _ddf = None
-            else:
-                _ddf = pd.DataFrame([{
-                    "수주번호": s["so_number"], "거래처": s["customer"],
-                    "수주일": s.get("so_date"),
-                    "수주": float(s.get("total_qty") or 0),
-                    "납품": float(s.get("total_received_qty") or 0),
-                    "미납": float(s.get("total_pending_qty") or 0),
-                    "진행률": (float(s.get("total_received_qty") or 0)
-                              / float(s.get("total_qty") or 1)),
-                    "상태": status_ko(s.get("delivery_status")),
-                } for s in _ds_show])
-            if _ddf is not None:
-                st.dataframe(status_style(_ddf),
+            # 품명 (사내 정본 우선) · LOT (원장 ISSUE 실적)
+            _dv_pn_nm = {}
+            try:
+                _dv_pns = sorted({r["pn"] for r in _dv_rows if r.get("pn")})
+                for _i0 in range(0, len(_dv_pns), 80):
+                    _dv_pn_nm.update({
+                        p["pn"]: (p.get("item_name")
+                                  or p.get("sub_class"))
+                        for p in fetch(
+                            "products", "pn,item_name,sub_class",
+                            "pn=in.({})".format(",".join(
+                                f'"{x}"' for x in _dv_pns[_i0:_i0 + 80])),
+                            limit=300)})
+            except Exception:
+                pass
+
+            def _dv_name(r):
+                return (_dv_pn_nm.get(r.get("pn"))
+                        or r.get("item_name") or "-")
+
+            _dv_lot_map = {}
+            try:
+                _si_ids = [r["si_id"] for r in _dv_rows]
+                _tx0 = []
+                for _i0 in range(0, len(_si_ids), 80):
+                    _tx0 += fetch(
+                        "inventory_transactions", "ref_id,lot_number,qty",
+                        "ref_table=eq.shipment_items&txn_type=eq.ISSUE"
+                        "&ref_id=in.({})".format(",".join(
+                            str(x) for x in _si_ids[_i0:_i0 + 80])),
+                        limit=2000)
+                _dv_lot_map = _dv_lots_fn(_tx0)
+            except Exception:
+                pass
+
+            _dv_q = st.text_input(
+                "출고 검색", key="dstat_q", label_visibility="collapsed",
+                placeholder="검색 — 품번 · 품명 · 거래처 · 수주번호 · 전표")
+            if (_dv_q or "").strip():
+                _q0 = _dv_q.strip().lower()
+                _dv_rows = [r for r in _dv_rows if any(
+                    _q0 in str(v).lower() for v in (
+                        r.get("pn"), _dv_name(r), r.get("customer"),
+                        r.get("so_number"), r.get("ship_no")))]
+
+            _dv_sum = sum(float(r.get("qty") or 0) for r in _dv_rows)
+            _dv_nship = len({r["shipment_id"] for r in _dv_rows})
+            _dv_npn = len({r.get("pn") for r in _dv_rows})
+            _dv_ncust = len({r.get("customer") for r in _dv_rows
+                             if r.get("customer")})
+
+            def _dv_kpi(label, value, sub="", tone="primary"):
+                _v = (value if isinstance(value, str)
+                      else f"{value:,.0f}")
+                _z = (not isinstance(value, str)) and value <= 0
+                cls = "zero" if _z else tone
+                return (f'<div class="kpi {cls}"><div class="k">{label}'
+                        f'</div><div class="v">{_v}</div>'
+                        + (f'<div class="s">{sub}</div>' if sub else "")
+                        + "</div>")
+
+            st.markdown(
+                '<div class="kpi-row">'
+                + _dv_kpi("출고 수량", _dv_sum, _dv_preset, "good")
+                + _dv_kpi("전표", f"{_dv_nship}건")
+                + _dv_kpi("품목", f"{_dv_npn}종")
+                + _dv_kpi("거래처", f"{_dv_ncust}곳")
+                + "</div>", unsafe_allow_html=True)
+
+            _dv_view = st.radio(
+                "보기", ["품목별", "출고 이력"], horizontal=True,
+                key="dstat_view", label_visibility="collapsed")
+
+            if _dv_view == "품목별":
+                # ── 품목별 집계 ──
+                _dv_agg = {}
+                for r in _dv_rows:
+                    _a = _dv_agg.setdefault(r.get("pn") or "-", {
+                        "qty": 0.0, "n": 0, "last": "",
+                        "cust": set()})
+                    _a["qty"] += float(r.get("qty") or 0)
+                    _a["n"] += 1
+                    _a["last"] = max(_a["last"],
+                                     str(r.get("ship_date") or ""))
+                    if r.get("customer"):
+                        _a["cust"].add(r["customer"])
+                st.dataframe(pd.DataFrame([{
+                    "품번": pn,
+                    "품명": _dv_pn_nm.get(pn) or "-",
+                    "거래처": ", ".join(sorted(a["cust"])) or "-",
+                    "출고 수량": a["qty"],
+                    "횟수": a["n"],
+                    "최근 출고일": a["last"] or "-",
+                } for pn, a in sorted(_dv_agg.items(),
+                                      key=lambda kv: -kv[1]["qty"])]),
                     use_container_width=True, hide_index=True,
-                    height=min(500, 60 + len(_ddf) * 35),
+                    height=min(400, 60 + len(_dv_agg) * 35),
                     column_config={
-                        "수주": st.column_config.NumberColumn(
+                        "출고 수량": st.column_config.NumberColumn(
                             format="localized"),
-                        "납품": st.column_config.NumberColumn(
-                            format="localized"),
-                        "미납": st.column_config.NumberColumn(
-                            format="localized"),
-                        "진행률": st.column_config.ProgressColumn(
-                            "진행률", min_value=0, max_value=1),
-                    })
-                if _ds_cut > 0:
-                    st.caption(f"최근 50건 표시 — 외 {_ds_cut:,}건은 "
-                               "검색으로 좁혀서 확인하세요.")
+                        "횟수": st.column_config.NumberColumn(
+                            width="small")})
 
-        # 완성 LOT별 재고 (선입선출 순서)
-        st.divider()
-        st.markdown("##### 완성 LOT별 재고 (출고 순서)")
-        st.caption("출고는 완성일이 빠른 LOT부터 자동 배분됩니다. "
-                   "LOT = 작업지시 번호이며, 소재 LOT(식별 번호)까지 "
-                   "연결되어 클레임 시 역추적이 가능합니다.")
-        try:
-            _ls = fetch("product_lot_stock_v",
-                "pn,lot_number,produced_qty,issued_qty,remain_qty,"
-                "first_output_date,tokusai_qty,material_lot",
-                "remain_qty=gt.0&order=pn.asc,first_output_date.asc",
-                limit=300)
-        except Exception:
-            _ls = []
-        if not _ls:
-            st.caption("출고 가능한 완성 LOT 없음.")
-        else:
-            st.dataframe(pd.DataFrame([{
-                "품번": l["pn"],
-                "완성 LOT (작업지시)": l["lot_number"],
-                "소재 LOT": l.get("material_lot") or "-",
-                "완성일": l.get("first_output_date") or "-",
-                "완성": float(l.get("produced_qty") or 0),
-                "출고": float(l.get("issued_qty") or 0),
-                "잔여": float(l.get("remain_qty") or 0),
-                "특채": float(l.get("tokusai_qty") or 0),
-            } for l in _ls]), use_container_width=True, hide_index=True,
-                height=min(400, 60 + len(_ls) * 35),
-                column_config={c: st.column_config.NumberColumn(
-                    format="localized", width="small")
-                    for c in ["완성", "출고", "잔여", "특채"]})
+                # ── 품번 상세: 출고 라인 + 수주별 대사 ──
+                _dv_pick = st.selectbox(
+                    "품번 상세", sorted(_dv_agg),
+                    format_func=lambda p: "{} · {}".format(
+                        p, _dv_pn_nm.get(p) or "-"),
+                    key="dstat_pick")
+                if _dv_pick:
+                    _dv_det = [r for r in _dv_rows
+                               if r.get("pn") == _dv_pick]
+                    st.markdown("**출고 라인 (기간 내)**")
+                    st.dataframe(pd.DataFrame([{
+                        "출고일": r.get("ship_date"),
+                        "전표": r.get("ship_no"),
+                        "수주번호": r.get("so_number") or "-",
+                        "수량": float(r.get("qty") or 0),
+                        "LOT": _dv_lot_map.get(r["si_id"]) or "-",
+                        "처리자": r.get("by") or "-",
+                    } for r in _dv_det]), use_container_width=True,
+                        hide_index=True,
+                        column_config={
+                            "수량": st.column_config.NumberColumn(
+                                format="localized")})
 
+                    # 수주별 대사 — 기납품 중 전표 출고와 전표 외
+                    # (런칭 전 소급·업로드) 를 구분해 표시
+                    st.markdown("**수주별 대사 (누적 기준)**")
+                    try:
+                        _dv_sois = fetch(
+                            "sales_order_items",
+                            "soi_id,so_id,qty,received_qty,pending_qty",
+                            f"canonical_pn=eq.{_dv_pick}"
+                            "&order=soi_id.asc", limit=100)
+                    except Exception:
+                        _dv_sois = []
+                    if not _dv_sois:
+                        st.caption("이 품번의 수주 라인 없음.")
+                    else:
+                        _dv_so_nm = {}
+                        try:
+                            _so_ids = {s["so_id"] for s in _dv_sois}
+                            _dv_so_nm = {
+                                s["so_id"]:
+                                    (s.get("so_number"),
+                                     s.get("customer"))
+                                for s in fetch(
+                                    "sales_orders",
+                                    "so_id,so_number,customer",
+                                    "so_id=in.({})".format(",".join(
+                                        str(i) for i in _so_ids)),
+                                    limit=200)}
+                        except Exception:
+                            pass
+                        # 전표 출고 누적 (기간 무관 — 전체 확정 전표)
+                        _dv_ship_sum = {}
+                        try:
+                            _soi_str = ",".join(
+                                str(s["soi_id"]) for s in _dv_sois)
+                            _all_li = fetch(
+                                "shipment_items",
+                                "soi_id,shipment_id,qty",
+                                f"soi_id=in.({_soi_str})", limit=1000)
+                            _sh_st = {}
+                            _sh_ids2 = {x["shipment_id"]
+                                        for x in _all_li}
+                            if _sh_ids2:
+                                _sh_st = {s["shipment_id"]: s["status"]
+                                          for s in fetch(
+                                        "shipments",
+                                        "shipment_id,status",
+                                        "shipment_id=in.({})".format(
+                                            ",".join(str(i) for i in
+                                                     _sh_ids2)),
+                                        limit=300)}
+                            for x in _all_li:
+                                if _sh_st.get(
+                                        x["shipment_id"]) == "CONFIRMED":
+                                    _dv_ship_sum[x["soi_id"]] = (
+                                        _dv_ship_sum.get(x["soi_id"], 0)
+                                        + float(x.get("qty") or 0))
+                        except Exception:
+                            pass
+                        _dv_rc = []
+                        for s in _dv_sois:
+                            _rcv = float(s.get("received_qty") or 0)
+                            _shp = _dv_ship_sum.get(s["soi_id"], 0.0)
+                            _no, _cu = _dv_so_nm.get(
+                                s["so_id"], ("-", "-"))
+                            _dv_rc.append({
+                                "수주번호": _no, "거래처": _cu,
+                                "수주": float(s.get("qty") or 0),
+                                "기납품": _rcv,
+                                "전표 출고": _shp,
+                                "전표 외 기납품": max(_rcv - _shp, 0),
+                                "미납": float(
+                                    s.get("pending_qty") or 0),
+                            })
+                        st.dataframe(pd.DataFrame(_dv_rc),
+                            use_container_width=True, hide_index=True,
+                            column_config={c:
+                                st.column_config.NumberColumn(
+                                    format="localized", width="small")
+                                for c in ("수주", "기납품", "전표 출고",
+                                          "전표 외 기납품", "미납")})
+                        if any(r["전표 외 기납품"] > 0 for r in _dv_rc):
+                            st.caption(
+                                "**전표 외 기납품** = 런칭 전 실적 "
+                                "(수주 업로드 스냅샷·기납품 소급) — "
+                                "앱 전표 없이 기납품에만 반영된 물량. "
+                                "회차 표의 납품완료가 전표보다 많아 "
+                                "보이는 이유입니다.")
+            else:
+                # ── 출고 이력 (라인 단위 시간순) ──
+                st.dataframe(pd.DataFrame([{
+                    "출고일": r.get("ship_date"),
+                    "전표": r.get("ship_no"),
+                    "품번": r.get("pn"),
+                    "품명": _dv_name(r),
+                    "거래처": r.get("customer") or "-",
+                    "수주번호": r.get("so_number") or "-",
+                    "수량": float(r.get("qty") or 0),
+                    "LOT": _dv_lot_map.get(r["si_id"]) or "-",
+                    "처리자": r.get("by") or "-",
+                } for r in _dv_rows]), use_container_width=True,
+                    hide_index=True,
+                    height=min(500, 60 + len(_dv_rows) * 35),
+                    column_config={
+                        "수량": st.column_config.NumberColumn(
+                            format="localized")})
+
+        # ── 완성 LOT별 재고 (출고 순서) ──
+        with st.expander("완성 LOT별 재고 (출고 순서 · FIFO)",
+                         expanded=False):
+            st.caption("출고는 완성일이 빠른 LOT부터 자동 배분됩니다. "
+                       "LOT = 작업지시 번호이며, 소재 식별 번호까지 "
+                       "연결되어 클레임 시 역추적이 가능합니다.")
+            try:
+                _ls = fetch("product_lot_stock_v",
+                    "pn,lot_number,produced_qty,issued_qty,remain_qty,"
+                    "first_output_date,tokusai_qty,material_lot",
+                    "remain_qty=gt.0&order=pn.asc,first_output_date.asc",
+                    limit=300)
+            except Exception:
+                _ls = []
+            if not _ls:
+                st.caption("출고 가능한 완성 LOT 없음.")
+            else:
+                st.dataframe(pd.DataFrame([{
+                    "품번": l["pn"],
+                    "완성 LOT (작업지시)": l["lot_number"],
+                    "소재 LOT": l.get("material_lot") or "-",
+                    "완성일": l.get("first_output_date") or "-",
+                    "완성": float(l.get("produced_qty") or 0),
+                    "출고": float(l.get("issued_qty") or 0),
+                    "잔여": float(l.get("remain_qty") or 0),
+                    "특채": float(l.get("tokusai_qty") or 0),
+                } for l in _ls]), use_container_width=True,
+                    hide_index=True,
+                    height=min(400, 60 + len(_ls) * 35),
+                    column_config={c: st.column_config.NumberColumn(
+                        format="localized", width="small")
+                        for c in ["완성", "출고", "잔여", "특채"]})
 
 
 elif page == "생산 계획":
