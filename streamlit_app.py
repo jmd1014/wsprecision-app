@@ -7861,19 +7861,34 @@ elif page == "공정 관리":
                 _rcpt = _wdf[_wdf["txn_type"] == "RECEIPT"]
                 _lot_ref = dict(zip(_rcpt["lot_number"], _rcpt["ref_id"]))
 
-                _w_labels = [
-                    f"{b.lot_number} | "
-                    f"{_mn_map.get(b.material_id, b.material_id)} | "
-                    f"잔여 {b.qty:,.0f}"
-                    for b in _bal.itertuples()]
-                iw1, iw2 = st.columns([2, 1])
-                with iw1:
-                    _w_pick = st.selectbox(
-                        f"소재 식별 번호 ({len(_w_labels)}건 잔여)",
-                        _w_labels, key="pe_w_pick")
-                _sel = _bal.iloc[_w_labels.index(_w_pick)]
+                # 잔여 소재 LOT 리스트 — 행을 선택(체크)해 투입 진행
+                # (스크롤 선택 대체, 2026-08-12)
+                _bal = _bal.reset_index(drop=True)
+                _w_df = pd.DataFrame([{
+                    "식별 번호": b.lot_number,
+                    "자재": _mn_map.get(b.material_id, b.material_id),
+                    "잔여": float(b.qty),
+                } for b in _bal.itertuples()])
+                _w_ev = st.dataframe(
+                    _w_df, hide_index=True, use_container_width=True,
+                    on_select="rerun", selection_mode="single-row",
+                    key="pe_w_list",
+                    column_config={"잔여": st.column_config.NumberColumn(
+                        format="localized")})
+                _w_rows = (getattr(getattr(_w_ev, "selection", None),
+                                   "rows", None) or [])
+                if not _w_rows:
+                    _w_rows = [0]     # 미선택 시 첫 LOT 표시
+                    if len(_bal) > 1:
+                        st.caption("리스트에서 행을 체크하면 그 소재로 "
+                                   "투입을 진행합니다 — 지금은 첫 번째 "
+                                   "LOT 이 선택되어 있습니다.")
+                _sel = _bal.iloc[min(_w_rows[0], len(_bal) - 1)]
                 _sel_lot, _sel_mid = _sel["lot_number"], _sel["material_id"]
                 _sel_bal = float(_sel["qty"])
+                st.caption(f"선택: **{_sel_lot}** · "
+                           f"{_mn_map.get(_sel_mid, _sel_mid)} · "
+                           f"잔여 {_sel_bal:,.0f}")
 
                 # 품번 자동 매핑 (2026-07-27 개선) —
                 #  ① 발주 라인명이 제품 품번이면 그대로 (품목 발주 경로)
@@ -8383,15 +8398,49 @@ elif page == "공정 관리":
         if not _pe_pool:
             st.info("작업지시가 없습니다 — 투입 등록에서 시작합니다.")
         else:
-            _p_opts = {}
-            for _t1 in _pe_pool:
-                _p_opts[f"{_t1['wo_number']} | {_t1.get('pn') or '-'} | "
-                        f"{_t1.get('w_lot') or '-'} | "
-                        f"{status_ko(wo_derive_status(_t1))}"] = _t1
-            _p_key = st.selectbox(
-                f"작업지시 선택 ({len(_p_opts)}건)",
-                list(_p_opts.keys()), key="pe_proc_pick")
-            _t = _p_opts[_p_key]
+            # 작업지시 상태 리스트 — 전체 진행 상황을 보면서 행을
+            # 선택(체크)해 바로 처리한다 (스크롤 선택 대체, 2026-08-12)
+            def _next_hint(t1):
+                q1 = wo_stage_qty(t1)
+                if q1["생산중"] > 0:
+                    return "완료 인수"
+                if q1["외주중"] > 0:
+                    return "외주 입고"
+                if q1["재작업중"] > 0:
+                    return "재작업 복귀"
+                if q1["검사대기"] > 0:
+                    return "검사 / 외주"
+                if q1["완성"] > 0:
+                    return "완성 확정"
+                return "-"
+
+            _p_df = pd.DataFrame([{
+                "지시번호": t1["wo_number"],
+                "품번": t1.get("pn") or "-",
+                "소재 LOT": t1.get("w_lot") or "-",
+                "생산중": float(wo_stage_qty(t1)["생산중"]),
+                "외주중": float(wo_stage_qty(t1)["외주중"]),
+                "검사대기": float(wo_stage_qty(t1)["검사대기"]),
+                "완성": float(wo_stage_qty(t1)["완성"]),
+                "상태": status_ko(wo_derive_status(t1)),
+                "다음 처리": _next_hint(t1),
+            } for t1 in _pe_pool])
+            _p_ev = st.dataframe(
+                _p_df, hide_index=True, use_container_width=True,
+                on_select="rerun", selection_mode="single-row",
+                key="pe_proc_list",
+                column_config={c: st.column_config.NumberColumn(
+                    format="localized") for c in
+                    ("생산중", "외주중", "검사대기", "완성")})
+            _p_rows = (getattr(getattr(_p_ev, "selection", None),
+                               "rows", None) or [])
+            if not _p_rows:
+                _p_rows = [0]     # 미선택 시 첫 지시 표시
+                if len(_pe_pool) > 1:
+                    st.caption("리스트에서 행을 체크하면 그 작업지시가 "
+                               "아래에 열립니다 — 지금은 첫 번째 지시가 "
+                               "표시되고 있습니다.")
+            _t = _pe_pool[min(_p_rows[0], len(_pe_pool) - 1)]
             _q = wo_stage_qty(_t)
 
             # 라우팅 기반 동적 스테퍼 — 제품의 공정 순서대로 칸 구성,
