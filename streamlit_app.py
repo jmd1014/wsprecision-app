@@ -313,6 +313,32 @@ def current_user_name() -> str:
     return current_user().get("name") or "시스템"
 
 
+def click_guard(name, ttl=5.0):
+    """이중 클릭 가드 — 같은 처리의 재진입을 ttl초 동안 막는다.
+
+    Streamlit 은 클릭 즉시 버튼을 잠글 수 없어(서버 rerun 모델)
+    빠른 두 번째 클릭이 큐잉되어 순서대로 실행된다 — 2026-08-18
+    SH-20260817-01/-02 동일 전표 2건(1.4초 간격) 사고의 원인.
+    쓰기 버튼의 클릭 핸들러 첫 줄에서 호출해 True 일 때만 처리:
+
+        if st.button(...):
+            if click_guard("ship_reg"):
+                ... insert ...
+
+    런은 세션 안에서 직렬 실행되므로 두 번째 런은 첫 런이 남긴
+    타임스탬프를 보고 중단된다 (멱등성 키의 로컬 구현).
+    """
+    import time
+    k = f"_guard_{name}"
+    now = time.time()
+    if now - float(st.session_state.get(k) or 0) < ttl:
+        st.warning("방금 같은 처리가 실행됐습니다 — 버튼이 두 번 "
+                   "눌린 경우입니다. 화면의 결과를 확인하세요.")
+        return False
+    st.session_state[k] = now
+    return True
+
+
 def _cookie_js(script: str):
     """쿠키 기록·삭제용 JS 실행.
 
@@ -5361,10 +5387,9 @@ elif page == "출고 관리":
                 _sd = _sh_d.isoformat()
                 # 이중 클릭 가드 — 화면 구성 시점의 제외 목록은 클릭
                 # 1.4초 간격의 두 번째 실행을 못 거른다 (2026-08-18
-                # SH-20260817-01/-02 동일 전표 2건 사례). insert 직전에
-                # 라이브로 재확인해 같은 라인이 이미 작성중 전표에
-                # 있으면 중단한다.
-                _dup_guard = False
+                # SH-20260817-01/-02 동일 전표 2건 사례). ① 시간 가드
+                # ② insert 직전 라이브 재확인의 이중 방어.
+                _dup_guard = not click_guard("ship_reg")
                 try:
                     _g_drafts = fetch("shipments", "shipment_id,ship_no",
                                       "status=eq.DRAFT", limit=50)
@@ -5672,7 +5697,8 @@ elif page == "출고 관리":
                         f"{len(_cf_rows)}건) — 수주 반영·재고 차감·"
                         "명세서 발행",
                         type="primary", key="cf_go",
-                        disabled=(_cf_total <= 0 or bool(_cf_short))):
+                        disabled=(_cf_total <= 0 or bool(_cf_short))
+                        ) and click_guard("cf_go"):
                     _cf_date = str(_cf_pick.get("ship_date"))
                     # 라인 단위 합산
                     _by_soi = {}
@@ -7815,7 +7841,8 @@ elif page == "발주/입고":
                 if st.button(
                         f"입고 처리 ({_tot:,.0f} · {len(_todo)}개 라인)",
                         type="primary", key="rcvp_go",
-                        disabled=(_tot <= 0 or bool(_unmapped))):
+                        disabled=(_tot <= 0 or bool(_unmapped))
+                        ) and click_guard("rcvp_go"):
                     from datetime import date as _rcv_date
                     _wls = w_lot_next(len(_todo))
                     if _wls is None:
@@ -7971,7 +7998,7 @@ elif page == "발주/입고":
             placeholder="예: 미진정밀 사급, OO상사")
         if st.button(f"직접 입고 ({_dr_qty:,.0f})", type="primary",
                      disabled=not (_dr_pick and _dr_qty > 0),
-                     key="dr_submit"):
+                     key="dr_submit") and click_guard("dr_submit"):
             from datetime import date as _dr_date
             _dw = (w_lot_next(1) or [None])[0]
             try:
@@ -8859,6 +8886,8 @@ elif page == "공정 관리":
             def _wo_apply(fields, ledger=None, docs=None, msg="",
                           event=None):
                 """수량 누적 갱신 + 상태 자동 유도 + 원장/문서/이벤트 기록"""
+                if not click_guard("wo_apply", ttl=3.0):
+                    return
                 fields["status"] = wo_derive_status({**_t, **fields})
                 fields["updated_at"] = _pe_dt.utcnow().isoformat()
                 _db.update("wo_tracking", f"wo_id=eq.{_t['wo_id']}", fields)
