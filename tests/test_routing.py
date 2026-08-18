@@ -306,6 +306,20 @@ def test_input_cancel_action(routing_db):
     assert _ev, "INPUT_CANCEL 이벤트가 기록되지 않음"
 
 
+def test_lot_trace_tab(routing_db):
+    """LOT 추적 (Phase C) — 지시번호 검색 시 계보·타임라인 렌더."""
+    at = _boot(routing_db)
+    at.sidebar.radio[0].set_value("공정 관리")
+    at.sidebar.radio[1].set_value(None)
+    at.run()
+    at.text_input(key="tr_q").set_value("20260812-001")
+    at.run()
+    assert not at.exception, [str(e.value) for e in at.exception]
+    md = " ".join(m.value for m in at.markdown)
+    assert "배치 계보" in md, "계보 트리 섹션 미렌더"
+    assert "20260812-001-B" in md, "계보에 배치 없음"
+
+
 def test_input_cancel_hidden_after_downstream(routing_db):
     """후속 처리(인수)가 시작된 지시에는 투입 취소가 노출되지 않는다."""
     WO_LIST[:] = [dict(WO)]  # received_qty 40 — 후속 있음
