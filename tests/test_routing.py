@@ -119,6 +119,10 @@ def _fetch(table, select="*", filter_query="", limit=1000):
         if "in_use=eq.true" in filter_query:
             return [{"name": "성보정밀"}]
         return []
+    if table == "wo_batches":
+        return [{"batch_no": "20260812-001-A", "qty": 100.0,
+                 "step_name": "생산", "location": "사내",
+                 "status": "OPEN"}]
     return []
 
 
@@ -195,6 +199,8 @@ def test_process_stepper_follows_routing(routing_db):
     assert _i_mat < _i_sol < _i_prod < _i_age
     # 소재 외주(고용화)는 회수 완료 → done 칸
     assert 'step done">고용화' in md
+    # 배치 현황 표 (Phase A — 지시번호-가지)
+    assert "20260812-001-A" in md
     # 순차 강제 — 에이징(외주)이 남아 있으므로 '검사'는 잠긴다
     _pr = next(r for r in at.radio
                if r.options and "외주 출고" in r.options)

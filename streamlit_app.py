@@ -8434,6 +8434,30 @@ elif page == "공정 관리":
                             "status": "IN_PROD",
                             "created_by": current_user_name(),
                         }])
+                        # 초기 배치 생성 (Phase A — 지시번호-A, 계보 뿌리)
+                        _new_batch_id = None
+                        try:
+                            _nwo = _db.fetch_one("wo_tracking",
+                                f"wo_number=eq.{_wo}&w_lot=eq.{_sel_lot}",
+                                "wo_id")
+                            _db.insert("wo_batches", [{
+                                "batch_no": f"{_wo}-A",
+                                "wo_id": (_nwo or {}).get("wo_id"),
+                                "wo_number": _wo,
+                                "product_id":
+                                    (_prod0 or {}).get("product_id"),
+                                "pn": _pn_clean or None,
+                                "w_lot": _sel_lot,
+                                "qty": _in_prod_qty,
+                                "step_code": "PROD",
+                                "step_name": "생산",
+                                "location": "사내",
+                                "created_by": current_user_name()}])
+                            _nb = _db.fetch_one("wo_batches",
+                                f"batch_no=eq.{_wo}-A", "batch_id")
+                            _new_batch_id = (_nb or {}).get("batch_id")
+                        except Exception:
+                            pass   # 배치는 병행 기록 — 실패해도 투입 진행
                         _db.insert("inventory_transactions", [{
                             "material_id": _sel_mid,
                             "txn_type": "PROD_INPUT",
@@ -8451,7 +8475,9 @@ elif page == "공정 관리":
                                 "pn": _pn_clean or None,
                                 "event_type": "INPUT",
                                 "qty": _in_prod_qty,
-                                "detail": {"material_qty": _in_qty},
+                                "batch_id": _new_batch_id,
+                                "detail": {"material_qty": _in_qty,
+                                           "batch_no": f"{_wo}-A"},
                                 "event_date":
                                     _pe_date.today().isoformat(),
                                 "created_by": current_user_name()}])
@@ -8789,6 +8815,27 @@ elif page == "공정 관리":
                 } for s in _out_steps],
                     num_cols=("출고 누계", "회수 누계", "외주 중",
                               "미처리"))
+
+            # 배치 현황 (Phase A 병행 기록 — 분기·합류는 Phase B 에서
+            # 처리 단위가 된다. 배치번호 = 지시번호-가지)
+            try:
+                _bat = fetch("wo_batches",
+                    "batch_no,qty,step_name,location,status",
+                    f"wo_number=eq.{_t['wo_number']}"
+                    "&status=neq.CANCELLED&order=batch_no", limit=100)
+            except Exception:
+                _bat = []
+            if _bat:
+                toss_table([{
+                    "배치": b["batch_no"],
+                    "수량": float(b.get("qty") or 0),
+                    "현재 공정": b.get("step_name") or "-",
+                    "위치": b.get("location") or "-",
+                    "상태": ("진행" if b.get("status") == "OPEN"
+                             else "종결"),
+                } for b in _bat],
+                    num_cols=("수량",), badge_cols=("상태",),
+                    strong_cols=("배치",))
 
             pm = st.columns(6)
             for _pi, _pk in enumerate(
@@ -9212,6 +9259,12 @@ elif page == "공정 관리":
                                 "event_date":
                                     _pe_date.today().isoformat(),
                                 "created_by": current_user_name()}])
+                            try:   # 배치도 함께 정리 (Phase A 병행 기록)
+                                _db.delete(
+                                    "wo_batches",
+                                    f"wo_number=eq.{_t['wo_number']}")
+                            except Exception:
+                                pass
                             _db.delete("wo_tracking",
                                        f"wo_id=eq.{_t['wo_id']}")
                             st.success(
