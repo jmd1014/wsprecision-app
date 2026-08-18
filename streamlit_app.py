@@ -8816,26 +8816,6 @@ elif page == "공정 관리":
                     num_cols=("출고 누계", "회수 누계", "외주 중",
                               "미처리"))
 
-            # 배치 현황 (Phase A 병행 기록 — 분기·합류는 Phase B 에서
-            # 처리 단위가 된다. 배치번호 = 지시번호-가지)
-            try:
-                _bat = fetch("wo_batches",
-                    "batch_no,qty,step_name,location,status",
-                    f"wo_number=eq.{_t['wo_number']}"
-                    "&status=neq.CANCELLED&order=batch_no", limit=100)
-            except Exception:
-                _bat = []
-            if _bat:
-                toss_table([{
-                    "배치": b["batch_no"],
-                    "수량": float(b.get("qty") or 0),
-                    "현재 공정": b.get("step_name") or "-",
-                    "위치": b.get("location") or "-",
-                    "상태": ("진행" if b.get("status") == "OPEN"
-                             else "종결"),
-                } for b in _bat],
-                    num_cols=("수량",), badge_cols=("상태",),
-                    strong_cols=("배치",))
 
             pm = st.columns(6)
             for _pi, _pk in enumerate(
@@ -8868,8 +8848,507 @@ elif page == "공정 관리":
                 st.success(msg)
                 st.rerun()
 
+            # ═══ 배치 단위 처리 (Phase B) — 분기·합류가 처리의 기본 ═══
+            # 배치가 있는 지시는 배치 리스트에서 행을 선택해 처리한다.
+            # 부분 수량 = 자동 분기(SPLIT), 합치기 = 같은 지시 내 합류.
+            # 완성 LOT 번호 = 배치번호 → 회차별 완성 추적이 이어진다.
+            try:
+                _bat_all = fetch("wo_batches", "*",
+                    f"wo_number=eq.{_t['wo_number']}&order=batch_no",
+                    limit=200)
+            except Exception:
+                _bat_all = []
+            _bat_open = [b for b in _bat_all if b.get("status") == "OPEN"]
+
+            _flow = [s for s in _rt
+                     if s.get("stage") != "MATERIAL"
+                     and s["step_code"] in ("PROD", "OUT",
+                                            "INSPECT", "DONE")]
+
+            def _bpos(b):
+                """배치의 현재 위치 → _flow 인덱스"""
+                if b["step_code"] == "OUT":
+                    for _i, s in enumerate(_flow):
+                        if (s["step_code"] == "OUT"
+                                and s.get("routing_id")
+                                == b.get("routing_id")):
+                            return _i
+                    return max(0, next(
+                        (_i for _i, s in enumerate(_flow)
+                         if s["step_code"] == "INSPECT"), 1) - 1)
+                return next((_i for _i, s in enumerate(_flow)
+                             if s["step_code"] == b["step_code"]), 0)
+
+            def _bnext(b):
+                _i = _bpos(b)
+                return _flow[_i + 1] if _i + 1 < len(_flow) else None
+
+            def _b_action(b):
+                """배치 위치 → 가능한 처리 (위치가 액션을 결정)"""
+                if b["step_code"] == "PROD":
+                    return "완료 인수"
+                if b["step_code"] == "OUT":
+                    return ("외주 입고"
+                            if (b.get("location") or "사내")
+                            not in ("사내", "재작업") else "외주 출고")
+                if b["step_code"] == "INSPECT":
+                    return ("재작업 복귀"
+                            if b.get("location") == "재작업" else "검사")
+                return "-"
+
+            def _b_suffix():
+                """다음 가지 문자 (A~Z, AA~) — 지시 내 유일"""
+                import string as _bs
+                _used = {b["batch_no"].rsplit("-", 1)[-1]
+                         for b in _bat_all}
+                for _c in list(_bs.ascii_uppercase) + [
+                        a + b2 for a in _bs.ascii_uppercase
+                        for b2 in _bs.ascii_uppercase]:
+                    if _c not in _used:
+                        return _c
+                return f"X{len(_bat_all)}"
+
+            def _bat_update(bid, fields):
+                fields = dict(fields)
+                fields["updated_at"] = _pe_dt.utcnow().isoformat()
+                _db.update("wo_batches", f"batch_id=eq.{bid}", fields)
+
+            def _bat_take(b, qty, new_fields):
+                """배치에서 qty 를 떼어 새 상태로. 전량이면 배치 이동,
+                부분이면 자동 분기(SPLIT 계보 기록). (번호, id) 반환"""
+                if qty >= float(b["qty"]) - 1e-9:
+                    _bat_update(b["batch_id"], new_fields)
+                    return b["batch_no"], b["batch_id"]
+                _new_no = f"{_t['wo_number']}-{_b_suffix()}"
+                _db.insert("wo_batches", [{
+                    "batch_no": _new_no, "wo_id": _t["wo_id"],
+                    "wo_number": _t["wo_number"],
+                    "product_id": _t.get("product_id"),
+                    "pn": _t.get("pn"), "w_lot": _t.get("w_lot"),
+                    "qty": qty, **new_fields,
+                    "created_by": current_user_name()}])
+                _nb = _db.fetch_one("wo_batches",
+                                    f"batch_no=eq.{_new_no}", "batch_id")
+                _bat_update(b["batch_id"],
+                            {"qty": float(b["qty"]) - qty})
+                if _nb:
+                    try:
+                        _db.insert("batch_links", [{
+                            "parent_batch_id": b["batch_id"],
+                            "child_batch_id": _nb["batch_id"],
+                            "qty": qty, "link_type": "SPLIT"}])
+                    except Exception:
+                        pass
+                _bat_all.append({"batch_no": _new_no})  # suffix 중복 방지
+                return _new_no, (_nb or {}).get("batch_id")
+
+            if _bat_open:
+                st.markdown("##### 배치 처리")
+                st.caption("행을 선택해 진행합니다 — 부분 수량은 자동으로 "
+                           "분기(새 가지 번호)되고, 계보가 기록되어 "
+                           "회차·LOT 추적이 유지됩니다.")
+                _bt_ev = st.dataframe(
+                    pd.DataFrame([{
+                        "배치": b["batch_no"],
+                        "수량": float(b.get("qty") or 0),
+                        "공정": b.get("step_name") or "-",
+                        "위치": b.get("location") or "사내",
+                        "다음 처리": _b_action(b),
+                    } for b in _bat_open]),
+                    hide_index=True, use_container_width=True,
+                    on_select="rerun", selection_mode="single-row",
+                    key=f"bt_list_{_t['wo_id']}",
+                    column_config={"수량": st.column_config.NumberColumn(
+                        format="localized")})
+                _bt_rows = (getattr(getattr(_bt_ev, "selection", None),
+                                    "rows", None) or [])
+                if not _bt_rows:
+                    _bt_rows = [0]
+                    if len(_bat_open) > 1:
+                        st.caption("행을 체크하면 그 배치를 처리합니다 — "
+                                   "지금은 첫 배치가 선택되어 있습니다.")
+                _sb = _bat_open[min(_bt_rows[0], len(_bat_open) - 1)]
+                _sb_qty = float(_sb.get("qty") or 0)
+                _sb_act = _b_action(_sb)
+                st.markdown(
+                    f"**{_sb['batch_no']}** · {_sb_qty:,.0f} EA · "
+                    f"{_sb.get('step_name') or '-'} · "
+                    f"{_sb.get('location') or '사내'} → **{_sb_act}**")
+
+                # ── 완료 인수 (배치: 생산 → 다음 공정 대기) ──
+                if _sb_act == "완료 인수":
+                    _bq = st.number_input("인수 수량", 0.0, _sb_qty,
+                        _sb_qty, 1.0, key=f"bt_rq_{_sb['batch_id']}")
+                    if st.button(f"인수 등록 ({_bq:,.0f})",
+                                 type="primary", disabled=_bq <= 0,
+                                 key=f"bt_rq_btn_{_sb['batch_id']}"):
+                        _nx = _bnext(_sb)
+                        _no, _nid = _bat_take(_sb, _bq, {
+                            "step_code": _nx["step_code"],
+                            "step_name": _nx["step_name"],
+                            "routing_id": _nx.get("routing_id"),
+                            "location": "사내"})
+                        _wo_apply(
+                            {"received_qty":
+                             float(_t.get("received_qty") or 0) + _bq},
+                            event={"event_type": "RECEIVE", "qty": _bq,
+                                   "batch_id": _nid,
+                                   "detail": {"batch_no": _no}},
+                            msg=f"✅ {_no} 인수 {_bq:,.0f} EA → "
+                                f"{_nx['step_name']} 대기")
+
+                # ── 외주 출고 (배치: 공정 대기 → 거래처) ──
+                elif _sb_act == "외주 출고":
+                    _stp_r = next(
+                        (s for s in _out_steps
+                         if s.get("routing_id") == _sb.get("routing_id")),
+                        None)
+                    _fxv = ((_stp_r or {}).get("default_vendor")
+                            or "").strip()
+                    bc1, bc2 = st.columns(2)
+                    with bc1:
+                        st.text_input("가공 공정 (배치 위치 — 자동)",
+                            value=_sb.get("step_name") or "외주",
+                            disabled=True,
+                            key=f"bt_p_{_sb['batch_id']}")
+                        if _fxv:
+                            _bv = _fxv
+                            st.text_input(
+                                "외주 거래처 (마스터 고정 — 승인 업체)",
+                                value=_bv, disabled=True,
+                                key=f"bt_v_{_sb['batch_id']}")
+                        else:
+                            try:
+                                _bov = fetch("vendors", "name",
+                                    "in_use=eq.true&order=name",
+                                    limit=300)
+                            except Exception:
+                                _bov = []
+                            _bv = st.selectbox("외주 거래처",
+                                [v["name"] for v in _bov]
+                                or ["(거래처 없음)"],
+                                key=f"bt_vs_{_sb['batch_id']}")
+                            st.caption("마스터 관리 → 공정 라우팅에서 "
+                                       "승인 업체를 고정할 수 있습니다.")
+                    with bc2:
+                        _bq = st.number_input("출고 수량", 0.0, _sb_qty,
+                            _sb_qty, 1.0,
+                            key=f"bt_oq_{_sb['batch_id']}")
+                        _bd = st.date_input("납기 요청일",
+                            key=f"bt_od_{_sb['batch_id']}")
+                    if st.button(
+                            f"외주 출고 ({_bq:,.0f}) + 의뢰서 발행",
+                            type="primary", disabled=_bq <= 0,
+                            key=f"bt_o_btn_{_sb['batch_id']}"):
+                        from utils.label_generator import (
+                            outsource_request_html)
+                        _no, _nid = _bat_take(_sb, _bq,
+                                              {"location": _bv})
+                        _doc = outsource_request_html({
+                            "vendor": _bv,
+                            "process": _sb.get("step_name") or "외주",
+                            "due_date": str(_bd),
+                            "issue_date": _pe_date.today().isoformat(),
+                            "items": [{"pn": _t.get("pn"),
+                                       "wo_number": _no,
+                                       "w_lot": _t.get("w_lot"),
+                                       "qty": _bq,
+                                       "note": _sb.get("step_name")
+                                               or "외주"}],
+                            "remark": f"배치 {_no}",
+                        })
+                        _wo_apply(
+                            {"outsource_qty":
+                             float(_t.get("outsource_qty") or 0) + _bq},
+                            event={"event_type": "OUT_SEND", "qty": _bq,
+                                   "routing_id": _sb.get("routing_id"),
+                                   "step_name": _sb.get("step_name"),
+                                   "batch_id": _nid,
+                                   "detail": {"vendor": _bv,
+                                              "due": str(_bd),
+                                              "batch_no": _no}},
+                            docs={"title": f"외주 의뢰서 — {_bv} "
+                                           f"({_sb.get('step_name')} "
+                                           f"{_bq:,.0f} EA · {_no})",
+                                  "files": [("외주 의뢰서 (A4)",
+                                             f"외주의뢰서_{_no}_{_bv}"
+                                             ".html", _doc)]},
+                            msg=f"{_no} 외주 출고 {_bq:,.0f} EA → {_bv}")
+
+                # ── 외주 입고 (배치: 거래처 → 다음 공정 대기) ──
+                elif _sb_act == "외주 입고":
+                    st.caption(f"{_sb.get('location')} 에서 "
+                               f"{_sb.get('step_name')} 완료분을 "
+                               "회수합니다 — 부분 입고 시 잔량은 외주에 "
+                               "남습니다.")
+                    _bq = st.number_input("입고 수량", 0.0, _sb_qty,
+                        _sb_qty, 1.0, key=f"bt_iq_{_sb['batch_id']}")
+                    if st.button(f"외주 입고 ({_bq:,.0f})",
+                                 type="primary", disabled=_bq <= 0,
+                                 key=f"bt_i_btn_{_sb['batch_id']}"):
+                        _nx = _bnext(_sb)
+                        _no, _nid = _bat_take(_sb, _bq, {
+                            "step_code": _nx["step_code"],
+                            "step_name": _nx["step_name"],
+                            "routing_id": _nx.get("routing_id"),
+                            "location": "사내"})
+                        _wo_apply(
+                            {"outsource_in_qty":
+                             float(_t.get("outsource_in_qty") or 0)
+                             + _bq},
+                            event={"event_type": "OUT_RETURN",
+                                   "qty": _bq,
+                                   "routing_id": _sb.get("routing_id"),
+                                   "step_name": _sb.get("step_name"),
+                                   "batch_id": _nid,
+                                   "detail": {"batch_no": _no}},
+                            msg=f"{_no} 외주 입고 {_bq:,.0f} EA → "
+                                f"{_nx['step_name']} 대기")
+
+                # ── 검사 (배치 판정 — 완성 LOT = 배치번호) ──
+                elif _sb_act == "검사":
+                    st.caption("이 배치를 판정합니다 — 완성(합격+특채)은 "
+                               "즉시 완성 재고로 확정되고 **완성 LOT "
+                               "번호 = 배치번호**로 발행됩니다.")
+                    qc1, qc2, qc3, qc4, qc5 = st.columns(5)
+                    _i_pass = qc1.number_input("완성 (합격)", 0.0,
+                        _sb_qty, _sb_qty, 1.0,
+                        key=f"bt_ip_{_sb['batch_id']}")
+                    _i_rework = qc2.number_input("재작업", 0.0, _sb_qty,
+                        0.0, 1.0, key=f"bt_ir_{_sb['batch_id']}")
+                    _i_scrap = qc3.number_input("폐기", 0.0, _sb_qty,
+                        0.0, 1.0, key=f"bt_is_{_sb['batch_id']}")
+                    _i_tok = qc4.number_input("특채", 0.0, _sb_qty,
+                        0.0, 1.0, key=f"bt_it_{_sb['batch_id']}")
+                    _i_ret = qc5.number_input("반품", 0.0, _sb_qty,
+                        0.0, 1.0, key=f"bt_ib_{_sb['batch_id']}")
+                    _i_done = _i_pass + _i_tok
+                    _i_sum = (_i_pass + _i_rework + _i_scrap
+                              + _i_tok + _i_ret)
+                    if _i_sum > _sb_qty:
+                        st.error(f"판정 합계 {_i_sum:,.0f}가 배치 수량 "
+                                 f"{_sb_qty:,.0f}를 초과합니다.")
+                    _f_pid = _t.get("product_id")
+                    if not _f_pid and _t.get("pn"):
+                        try:
+                            _f_pid = (_db.fetch_one("products",
+                                f"pn=eq.{_t['pn']}", "product_id")
+                                or {}).get("product_id")
+                        except Exception:
+                            pass
+                    if _i_done > 0 and not _f_pid:
+                        st.error("품번이 제품 마스터와 연결되지 않아 "
+                                 "완성 재고 등록이 불가합니다.")
+                    if st.button(f"검사 등록 (판정 {_i_sum:,.0f} · "
+                                 f"완성 {_i_done:,.0f})", type="primary",
+                                 disabled=not (0 < _i_sum <= _sb_qty
+                                               and (_i_done <= 0
+                                                    or bool(_f_pid))),
+                                 key=f"bt_i_go_{_sb['batch_id']}"):
+                        from utils.label_generator import (
+                            inspection_labels, finished_labels)
+                        _today = _pe_date.today().isoformat()
+                        # 판정별 분기 — 부모 잔량을 추적하며 순서대로
+                        _par = dict(_sb)
+
+                        def _take2(q, fields):
+                            _no2, _id2 = _bat_take(_par, q, fields)
+                            _par["qty"] = max(
+                                0.0, float(_par["qty"]) - q)
+                            if _par["qty"] <= 1e-9:
+                                _par["batch_no"] = _no2
+                            return _no2, _id2
+
+                        _fin_no = None
+                        if _i_done > 0:
+                            _fin_no, _fin_id = _take2(_i_done, {
+                                "step_code": "DONE",
+                                "step_name": "완성",
+                                "routing_id": None,
+                                "location": "사내",
+                                "status": "DONE"})
+                        if _i_rework > 0 and _par["qty"] > 0:
+                            _take2(_i_rework, {"location": "재작업"})
+                        if _i_scrap > 0 and _par["qty"] > 0:
+                            _take2(_i_scrap, {"status": "SCRAP",
+                                              "location": "사내"})
+                        if _i_ret > 0 and _par["qty"] > 0:
+                            _take2(_i_ret, {"status": "RETURN",
+                                            "location": "사내"})
+                        _lot_no = _fin_no or _t["wo_number"]
+                        _base = {"pn": _t.get("pn"),
+                                 "wo_number": _t["wo_number"],
+                                 "w_lot": _t.get("w_lot"),
+                                 "lot": _lot_no, "date": _today}
+                        _ng_items = []
+                        if _i_tok:
+                            _ng_items.append({**_base, "verdict": "특채",
+                                              "qty": _i_tok})
+                        if _i_rework:
+                            _ng_items.append({**_base,
+                                              "verdict": "불합격",
+                                              "qty": _i_rework,
+                                              "note": "재작업"})
+                        if _i_scrap:
+                            _ng_items.append({**_base,
+                                              "verdict": "불합격",
+                                              "qty": _i_scrap,
+                                              "note": "폐기"})
+                        if _i_ret:
+                            _ng_items.append({**_base, "verdict": "반품",
+                                              "qty": _i_ret,
+                                              "note": "공급처 반품"})
+                        _files = []
+                        if _i_done > 0:
+                            _fin = [{**_base, "qty": _i_done,
+                                     "tokusai": _i_tok}]
+                            _files += [
+                                ("완성 라벨 (단표)",
+                                 f"완성라벨_{_lot_no}.html",
+                                 finished_labels(_fin, mode="label")),
+                                ("완성 라벨 A4",
+                                 f"완성라벨_A4_{_lot_no}.html",
+                                 finished_labels(_fin, mode="a4"))]
+                        if _ng_items:
+                            _files += [
+                                ("판정 라벨 (단표)",
+                                 f"검사라벨_{_t['wo_number']}.html",
+                                 inspection_labels(_ng_items,
+                                                   mode="label")),
+                                ("판정 라벨 A4",
+                                 f"검사라벨_A4_{_t['wo_number']}.html",
+                                 inspection_labels(_ng_items,
+                                                   mode="a4"))]
+                        _wo_apply(
+                            {"pass_qty": float(_t.get("pass_qty") or 0)
+                                         + _i_pass,
+                             "tokusai_qty":
+                             float(_t.get("tokusai_qty") or 0) + _i_tok,
+                             "rework_qty":
+                             float(_t.get("rework_qty") or 0)
+                             + _i_rework,
+                             "scrap_qty":
+                             float(_t.get("scrap_qty") or 0) + _i_scrap,
+                             "return_qty":
+                             float(_t.get("return_qty") or 0) + _i_ret,
+                             "output_qty":
+                             float(_t.get("output_qty") or 0) + _i_done},
+                            event={"event_type": "INSPECT",
+                                   "qty": _i_sum,
+                                   "batch_id": _sb["batch_id"],
+                                   "detail": {"pass": _i_pass,
+                                              "rework": _i_rework,
+                                              "scrap": _i_scrap,
+                                              "tokusai": _i_tok,
+                                              "return": _i_ret,
+                                              "output": _i_done,
+                                              "batch_no":
+                                                  _sb["batch_no"],
+                                              "lot": _fin_no}},
+                            ledger=({
+                                "product_id": _f_pid,
+                                "txn_type": "PROD_OUTPUT",
+                                "qty": _i_done, "unit": "EA",
+                                "lot_number": _lot_no,
+                                "work_order": _t["wo_number"],
+                                "txn_date": _today,
+                                "remark": "검사 완성: "
+                                          f"{_t.get('pn') or '-'} "
+                                          f"(배치 {_lot_no} · 소재 "
+                                          f"{_t.get('w_lot') or '-'})",
+                                "created_by": current_user_name(),
+                            } if _i_done > 0 else None),
+                            docs=({"title": "검사 판정 문서",
+                                   "files": _files} if _files else None),
+                            msg=f"검사 등록 — 완성 {_i_done:,.0f} "
+                                f"(LOT {_fin_no or '-'}) · 재작업 "
+                                f"{_i_rework:,.0f} · 폐기 "
+                                f"{_i_scrap:,.0f}")
+
+                # ── 재작업 복귀 (배치: 재작업 → 검사 대기) ──
+                elif _sb_act == "재작업 복귀":
+                    _bq = st.number_input("복귀 수량", 0.0, _sb_qty,
+                        _sb_qty, 1.0, key=f"bt_rw_{_sb['batch_id']}")
+                    if st.button(f"재작업 복귀 ({_bq:,.0f})",
+                                 type="primary", disabled=_bq <= 0,
+                                 key=f"bt_rw_btn_{_sb['batch_id']}"):
+                        _no, _nid = _bat_take(_sb, _bq,
+                                              {"location": "사내"})
+                        _wo_apply(
+                            {"rework_in_qty":
+                             float(_t.get("rework_in_qty") or 0) + _bq},
+                            event={"event_type": "REWORK_BACK",
+                                   "qty": _bq, "batch_id": _nid,
+                                   "detail": {"batch_no": _no}},
+                            msg=f"{_no} 재작업 복귀 {_bq:,.0f} EA → "
+                                "재검사 대기")
+
+                # ── 배치 합치기 (같은 지시 · 같은 공정·위치만) ──
+                _mg_pool = [b for b in _bat_open
+                            if (b["step_code"], b.get("routing_id"),
+                                b.get("location") or "사내")
+                            == (_sb["step_code"], _sb.get("routing_id"),
+                                _sb.get("location") or "사내")]
+                if len(_mg_pool) >= 2:
+                    with st.expander(
+                            f"배치 합치기 — {_sb.get('step_name')} · "
+                            f"{_sb.get('location') or '사내'} 위치 "
+                            f"{len(_mg_pool)}개"):
+                        st.caption("같은 공정·위치의 배치만 합칠 수 "
+                                   "있습니다. 계보(MERGE)가 남아 원천 "
+                                   "추적은 유지되지만, 리콜 시 합쳐진 "
+                                   "전체가 범위가 됩니다.")
+                        _mg_pick = st.multiselect("합칠 배치",
+                            [b["batch_no"] for b in _mg_pool],
+                            default=[b["batch_no"] for b in _mg_pool],
+                            key=f"bt_mg_{_sb['batch_id']}")
+                        _mg_sel = [b for b in _mg_pool
+                                   if b["batch_no"] in _mg_pick]
+                        _mg_qty = sum(float(b["qty"]) for b in _mg_sel)
+                        if st.button(
+                                f"합치기 ({len(_mg_sel)}개 → "
+                                f"{_mg_qty:,.0f} EA)",
+                                disabled=len(_mg_sel) < 2,
+                                key=f"bt_mg_btn_{_sb['batch_id']}"):
+                            try:
+                                _mg_no = (f"{_t['wo_number']}-"
+                                          f"{_b_suffix()}")
+                                _db.insert("wo_batches", [{
+                                    "batch_no": _mg_no,
+                                    "wo_id": _t["wo_id"],
+                                    "wo_number": _t["wo_number"],
+                                    "product_id": _t.get("product_id"),
+                                    "pn": _t.get("pn"),
+                                    "w_lot": _t.get("w_lot"),
+                                    "qty": _mg_qty,
+                                    "step_code": _sb["step_code"],
+                                    "step_name": _sb.get("step_name"),
+                                    "routing_id": _sb.get("routing_id"),
+                                    "location": _sb.get("location")
+                                                or "사내",
+                                    "created_by": current_user_name()}])
+                                _mg_new = _db.fetch_one("wo_batches",
+                                    f"batch_no=eq.{_mg_no}", "batch_id")
+                                for b in _mg_sel:
+                                    _bat_update(b["batch_id"],
+                                                {"status": "MERGED"})
+                                    if _mg_new:
+                                        _db.insert("batch_links", [{
+                                            "parent_batch_id":
+                                                b["batch_id"],
+                                            "child_batch_id":
+                                                _mg_new["batch_id"],
+                                            "qty": float(b["qty"]),
+                                            "link_type": "MERGE"}])
+                                st.success(f"합치기 완료 → {_mg_no} "
+                                           f"({_mg_qty:,.0f} EA)")
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"합치기 실패: {e}")
+
+            # ── 레거시 경로: 배치가 없는 옛 지시만 수량 풀 방식 유지 ──
             _acts = []
-            if _q["생산중"] > 0:
+            if not _bat_open and _q["생산중"] > 0:
                 _acts.append("완료 인수")
             # 라우팅이 정의된 제품은 공정 순차 강제 — 인수 누계 전량이
             # 각 외주 공정을 순서대로 통과해야 검사가 열린다. 수량 분기
@@ -8886,7 +9365,7 @@ elif page == "공정 관리":
                                            _avail - _step_sent(_s2))
                         break
                     _avail = min(_rv2, _rcv_cum)
-            if _q["검사대기"] > 0:
+            if not _bat_open and _q["검사대기"] > 0:
                 if _routed:
                     if _pending_out is not None:
                         if _pending_cap > 0:
@@ -8903,9 +9382,9 @@ elif page == "공정 관리":
                         _acts.append("검사")
                 else:
                     _acts += ["검사", "외주 출고"]
-            if _q["외주중"] > 0:
+            if not _bat_open and _q["외주중"] > 0:
                 _acts.append("외주 입고")
-            if _q["재작업중"] > 0:
+            if not _bat_open and _q["재작업중"] > 0:
                 _acts.append("재작업 복귀")
             # 오입력 정리 — 후속 처리(인수·외주·검사)가 없는 투입만 취소
             # 가능. 관리자 전용.
@@ -8917,7 +9396,7 @@ elif page == "공정 관리":
                     and current_user().get("role") == "admin"):
                 _acts.append("투입 취소")
 
-            if not _acts:
+            if not _acts and not _bat_open:
                 st.success("✅ 이 작업지시는 모든 수량이 처리되었습니다.")
             else:
                 st.divider()

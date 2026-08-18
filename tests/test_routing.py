@@ -68,6 +68,15 @@ W_LOT_TXNS = [
      "txn_type": "RECEIPT", "ref_id": None},
 ]
 
+# 공정 배치 (Phase B) — 기본: 인수분 40 이 에이징 대기
+WO_BATCHES_FULL = [
+    {"batch_id": 1, "batch_no": "20260812-001-B", "wo_id": 9,
+     "wo_number": "20260812-001", "qty": 40.0, "step_code": "OUT",
+     "routing_id": 4, "step_name": "에이징", "location": "사내",
+     "status": "OPEN"},
+]
+WO_BATCHES = list(WO_BATCHES_FULL)
+
 INSERTED = []
 
 
@@ -120,9 +129,7 @@ def _fetch(table, select="*", filter_query="", limit=1000):
             return [{"name": "성보정밀"}]
         return []
     if table == "wo_batches":
-        return [{"batch_no": "20260812-001-A", "qty": 100.0,
-                 "step_name": "생산", "location": "사내",
-                 "status": "OPEN"}]
+        return [dict(b) for b in WO_BATCHES]
     return []
 
 
@@ -137,6 +144,7 @@ def routing_db(monkeypatch):
     INSERTED.clear()
     WO_LIST[:] = [WO]
     MAT_EVENTS[:] = list(MAT_EVENTS_FULL)
+    WO_BATCHES[:] = [dict(b) for b in WO_BATCHES_FULL]
     monkeypatch.setattr(db, "fetch", _fetch)
     monkeypatch.setattr(db, "fetch_one", _fetch_one)
     monkeypatch.setattr(db, "insert",
@@ -199,21 +207,16 @@ def test_process_stepper_follows_routing(routing_db):
     assert _i_mat < _i_sol < _i_prod < _i_age
     # 소재 외주(고용화)는 회수 완료 → done 칸
     assert 'step done">고용화' in md
-    # 배치 현황 표 (Phase A — 지시번호-가지)
-    assert "20260812-001-A" in md
-    # 순차 강제 — 에이징(외주)이 남아 있으므로 '검사'는 잠긴다
-    _pr = next(r for r in at.radio
-               if r.options and "외주 출고" in r.options)
-    assert "검사" not in _pr.options, "라우팅 순차 강제 실패 — 검사가 열려 있음"
-    # 외주 출고 → 가공 공정이 다음 라우팅 공정(에이징)으로 고정
-    _pr.set_value("외주 출고")
-    at.run()
-    assert not at.exception, [str(e.value) for e in at.exception]
-    _fx = [t for t in at.text_input if t.key == "pe_o_proc_fixed"]
-    assert _fx and _fx[0].value == "에이징", "다음 외주 공정 고정 실패"
-    # 승인 업체(마스터 고정) — 거래처 변경 불가 표시
-    _fv = [t for t in at.text_input if t.key == "pe_o_vendor_fixed"]
+    # 배치 경로 (Phase B) — 에이징 대기 배치가 선택되어 외주 출고
+    # 폼이 열리고, 공정·승인 업체가 고정 표시된다
+    assert "20260812-001-B" in md, "배치 처리 섹션이 렌더되지 않음"
+    _fp = [t for t in at.text_input if (t.key or "") == "bt_p_1"]
+    assert _fp and _fp[0].value == "에이징", "배치 공정 고정 실패"
+    _fv = [t for t in at.text_input if (t.key or "") == "bt_v_1"]
     assert _fv and _fv[0].value == "성보정밀", "승인 업체 고정 실패"
+    # 레거시 수량 풀 radio(검사/외주 선택)는 배치 경로에서 비노출
+    assert not any(r.options and "검사" in r.options for r in at.radio), \
+        "배치 경로에서 레거시 검사 선택지가 노출됨"
 
 
 def test_material_outsource_gate_blocks_input(routing_db):
@@ -245,19 +248,52 @@ def test_material_outsource_gate_blocks_input(routing_db):
     assert not at.button(key="pe_in_submit").disabled
 
 
-def test_input_cancel_action(routing_db):
-    """투입 취소 — 후속 처리 없는 투입만 관리자에게 노출, 실행 시
-    취소 이벤트 기록 + 작업지시 삭제."""
-    # 후속 처리 없는 갓 투입된 지시
-    WO_LIST[:] = [dict(WO, received_qty=0.0, status="IN_PROD")]
+def test_batch_split_on_partial_outsource(routing_db):
+    """부분 출고 = 자동 분기 — 새 배치 생성 + SPLIT 계보 + 이벤트에
+    배치번호 기록 (수량 분기 추적의 핵심 경로)."""
     at = _boot(routing_db)
     at.sidebar.radio[0].set_value("공정 관리")
     at.sidebar.radio[1].set_value(None)
     at.run()
     assert not at.exception, [str(e.value) for e in at.exception]
+    at.number_input(key="bt_oq_1").set_value(20.0)
+    at.run()
+    at.button(key="bt_o_btn_1").click()
+    at.run()
+    assert not at.exception, [str(e.value) for e in at.exception]
+    _nb = [r for t, recs in INSERTED if t == "wo_batches" for r in recs]
+    assert _nb and float(_nb[0]["qty"]) == 20.0, "분기 배치 미생성"
+    assert _nb[0]["location"] == "성보정밀", "분기 배치 위치(거래처) 오류"
+    _lk = [r for t, recs in INSERTED if t == "batch_links" for r in recs]
+    assert _lk and _lk[0]["link_type"] == "SPLIT" \
+        and float(_lk[0]["qty"]) == 20.0, "SPLIT 계보 미기록"
+    _ev = [r for t, recs in INSERTED if t == "wo_events" for r in recs
+           if r.get("event_type") == "OUT_SEND"]
+    assert _ev and (_ev[0].get("detail") or {}).get("batch_no"), \
+        "출고 이벤트에 배치번호 누락"
+
+
+def test_input_cancel_action(routing_db):
+    """투입 취소 — 후속 처리 없는 투입만 관리자에게 노출, 실행 시
+    취소 이벤트 기록 + 작업지시 삭제. 배치(생산 위치)에는 인수
+    버튼이 열린다."""
+    # 후속 처리 없는 갓 투입된 지시 + 생산 위치 배치
+    WO_LIST[:] = [dict(WO, received_qty=0.0, status="IN_PROD")]
+    WO_BATCHES[:] = [{"batch_id": 1, "batch_no": "20260812-001-A",
+                      "wo_id": 9, "wo_number": "20260812-001",
+                      "qty": 100.0, "step_code": "PROD",
+                      "routing_id": None, "step_name": "생산",
+                      "location": "사내", "status": "OPEN"}]
+    at = _boot(routing_db)
+    at.sidebar.radio[0].set_value("공정 관리")
+    at.sidebar.radio[1].set_value(None)
+    at.run()
+    assert not at.exception, [str(e.value) for e in at.exception]
+    # 배치 경로: 인수 버튼 존재
+    assert at.button(key="bt_rq_btn_1"), "배치 인수 버튼이 없습니다"
+    # 투입 취소 radio (배치 경로에서도 유지)
     _pr = next(r for r in at.radio
-               if r.options and "완료 인수" in r.options)
-    assert "투입 취소" in _pr.options
+               if r.options and "투입 취소" in r.options)
     _pr.set_value("투입 취소")
     at.run()
     at.checkbox(key="pe_cx_ok").set_value(True)
@@ -277,7 +313,5 @@ def test_input_cancel_hidden_after_downstream(routing_db):
     at.sidebar.radio[0].set_value("공정 관리")
     at.sidebar.radio[1].set_value(None)
     at.run()
-    _pr = next(r for r in at.radio
-               if r.options and ("외주 출고" in r.options
-                                 or "완료 인수" in r.options))
-    assert "투입 취소" not in _pr.options
+    assert not any(r.options and "투입 취소" in r.options
+                   for r in at.radio)
