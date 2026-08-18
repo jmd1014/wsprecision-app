@@ -5359,46 +5359,78 @@ elif page == "출고 관리":
                     use_container_width=True,
                     disabled=_sh_total <= 0):
                 _sd = _sh_d.isoformat()
+                # 이중 클릭 가드 — 화면 구성 시점의 제외 목록은 클릭
+                # 1.4초 간격의 두 번째 실행을 못 거른다 (2026-08-18
+                # SH-20260817-01/-02 동일 전표 2건 사례). insert 직전에
+                # 라이브로 재확인해 같은 라인이 이미 작성중 전표에
+                # 있으면 중단한다.
+                _dup_guard = False
                 try:
-                    _cnt = len(fetch("shipments", "shipment_id",
-                                     f"ship_date=eq.{_sd}", limit=100))
+                    _g_drafts = fetch("shipments", "shipment_id,ship_no",
+                                      "status=eq.DRAFT", limit=50)
+                    if _g_drafts:
+                        _g_ids = ",".join(str(d["shipment_id"])
+                                          for d in _g_drafts)
+                        _g_sois = {x["soi_id"] for x in fetch(
+                            "shipment_items", "soi_id,shipment_id",
+                            f"shipment_id=in.({_g_ids})", limit=1000)}
+                        _new_sois = {it["li"]["soi_id"]
+                                     for it, _ in _sh_sel}
+                        _hit_g = _new_sois & _g_sois
+                        if _hit_g:
+                            _dup_guard = True
+                            st.warning(
+                                "등록 중단 — 방금 만든 작성중 전표에 "
+                                "같은 라인이 이미 담겨 있습니다 "
+                                "(버튼이 두 번 눌린 경우). 출고 전표 "
+                                "탭에서 기존 전표를 확인하세요.")
                 except Exception:
-                    _cnt = 0
-                _ship_no = "SH-{}-{:02d}".format(
-                    _sd.replace("-", ""), _cnt + 1)
-                try:
-                    _db.insert("shipments", [{
-                        "ship_no": _ship_no, "ship_date": _sd,
-                        "status": "DRAFT",
-                        "created_by": current_user_name()}])
-                    _srow = _db.fetch_one("shipments",
-                                          f"ship_no=eq.{_ship_no}",
-                                          "shipment_id")
-                    _db.insert("shipment_items", [{
-                        "shipment_id": _srow["shipment_id"],
-                        "soi_id": it["li"]["soi_id"],
-                        "so_id": it["so"]["so_id"],
-                        "sched_id": (it["r"]["sched_id"]
-                                     if it.get("r") else None),
-                        "product_id": it["li"].get("product_id"),
-                        "pn": it["pn"],
-                        "customer_pn":
-                            it["li"].get("customer_part_no") or it["pn"],
-                        "item_name": it["li"].get("customer_item_name"),
-                        "customer": it["so"].get("customer") or "-",
-                        "so_number": it["so"].get("so_number") or "-",
-                        "qty": _q9,
-                        "unit": it["li"].get("unit") or "EA",
-                        "unit_price": it["li"].get("unit_price"),
-                    } for it, _q9 in _sh_sel])
-                    st.session_state["ship_manual"] = []
-                    st.session_state["ship_edits"] = {}
-                    st.session_state["ship_open_no"] = _ship_no
-                    st.success(f"출고 전표 {_ship_no} 등록 — 출고 전표 "
-                               "탭에서 확인용 리스트 인쇄·정정·확정을 "
-                               "진행하세요.")
-                except Exception as e:
-                    st.error(f"전표 등록 실패: {e}")
+                    pass
+                if not _dup_guard:
+                    try:
+                        _cnt = len(fetch("shipments", "shipment_id",
+                                         f"ship_date=eq.{_sd}",
+                                         limit=100))
+                    except Exception:
+                        _cnt = 0
+                    _ship_no = "SH-{}-{:02d}".format(
+                        _sd.replace("-", ""), _cnt + 1)
+                    try:
+                        _db.insert("shipments", [{
+                            "ship_no": _ship_no, "ship_date": _sd,
+                            "status": "DRAFT",
+                            "created_by": current_user_name()}])
+                        _srow = _db.fetch_one("shipments",
+                                              f"ship_no=eq.{_ship_no}",
+                                              "shipment_id")
+                        _db.insert("shipment_items", [{
+                            "shipment_id": _srow["shipment_id"],
+                            "soi_id": it["li"]["soi_id"],
+                            "so_id": it["so"]["so_id"],
+                            "sched_id": (it["r"]["sched_id"]
+                                         if it.get("r") else None),
+                            "product_id": it["li"].get("product_id"),
+                            "pn": it["pn"],
+                            "customer_pn":
+                                it["li"].get("customer_part_no")
+                                or it["pn"],
+                            "item_name":
+                                it["li"].get("customer_item_name"),
+                            "customer": it["so"].get("customer") or "-",
+                            "so_number":
+                                it["so"].get("so_number") or "-",
+                            "qty": _q9,
+                            "unit": it["li"].get("unit") or "EA",
+                            "unit_price": it["li"].get("unit_price"),
+                        } for it, _q9 in _sh_sel])
+                        st.session_state["ship_manual"] = []
+                        st.session_state["ship_edits"] = {}
+                        st.session_state["ship_open_no"] = _ship_no
+                        st.success(f"출고 전표 {_ship_no} 등록 — 출고 "
+                                   "전표 탭에서 확인용 리스트 인쇄·정정·"
+                                   "확정을 진행하세요.")
+                    except Exception as e:
+                        st.error(f"전표 등록 실패: {e}")
             _rg2.caption("등록 시점에는 아무것도 차감되지 않습니다 — "
                          "확정(출고 전표 탭)에서 수주 반영·재고 차감·"
                          "거래명세서 발행이 이루어집니다.")
