@@ -2447,6 +2447,71 @@ elif page == "마스터 관리":
                 if chg: st.success(f"✅ {chg}건 update"); st.rerun()
                 else: st.info("변경 사항 없음")
 
+        # ── 신규 자재 등록 (2026-08-12 — 기능 공백 보완) ──
+        with st.expander("신규 자재 등록"):
+            st.caption("자재 ID 는 자동 채번(M###)됩니다. 재고는 "
+                       "발주·입고로 잡는 것이 정석이며, 초기 재고는 "
+                       "실사값이 있을 때만 넣으세요.")
+            nm1, nm2, nm3 = st.columns(3)
+            _nm_name = nm1.text_input("자재명 *", key="nm_name",
+                placeholder="예: S45C Ø45 환봉")
+            _nm_type = nm2.text_input("재질", key="nm_type",
+                placeholder="예: S45C")
+            _nm_spec = nm3.text_input("규격", key="nm_spec",
+                placeholder="예: Ø45*2000")
+            nm4, nm5, nm6 = st.columns(3)
+            _nm_sup = nm4.text_input("주공급사", key="nm_sup")
+            _nm_proc = nm5.selectbox("조달유형", ["", "도급", "사급"],
+                                     key="nm_proc")
+            _nm_stock = nm6.number_input("초기 재고 (EA)", 0.0,
+                step=1.0, key="nm_stock")
+            if st.button("💾 자재 등록", type="primary", key="nm_btn",
+                         disabled=not (_nm_name or "").strip()):
+                _nn = _nm_name.strip()
+                try:
+                    _dup = fetch("materials", "material_id,raw_name,spec",
+                        f"raw_name=eq.{_nn}"
+                        + (f"&spec=eq.{_nm_spec.strip()}"
+                           if (_nm_spec or "").strip() else ""),
+                        limit=1)
+                except Exception:
+                    _dup = []
+                if _dup:
+                    st.error(f"이미 등록된 자재입니다: "
+                             f"{_dup[0]['material_id']} | "
+                             f"{_dup[0]['raw_name']} | "
+                             f"{_dup[0].get('spec') or '-'}")
+                else:
+                    try:
+                        _all_mid = fetch("materials", "material_id",
+                                         "material_id=like.M*",
+                                         limit=3000)
+                        _mx = max((int(m["material_id"][1:])
+                                   for m in _all_mid
+                                   if m["material_id"][1:].isdigit()),
+                                  default=0)
+                        _new_mid = f"M{_mx + 1:03d}"
+                        _db.insert("materials", [{
+                            "material_id": _new_mid,
+                            "raw_name": _nn,
+                            "material_type":
+                                (_nm_type or "").strip() or None,
+                            "spec": (_nm_spec or "").strip() or None,
+                            "unit": "EA",
+                            "stock_qty": _nm_stock,
+                            "main_supplier":
+                                (_nm_sup or "").strip() or None,
+                            "procurement_type": _nm_proc or None,
+                        }])
+                        st.success(f"✅ 자재 등록: {_new_mid} | {_nn}"
+                                   + (f" | {_nm_spec}"
+                                      if (_nm_spec or "").strip()
+                                      else "")
+                                   + " — BOM 연결은 BOM 편집에서.")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"등록 실패: {e}")
+
         # ── 중복 자재 병합 (2026-07-31) ──
         st.divider()
         st.markdown("##### 중복 자재 병합")
