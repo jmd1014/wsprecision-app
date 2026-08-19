@@ -2231,6 +2231,9 @@ elif page == "마스터 관리":
                             nv = new.get(k)
                             if isinstance(nv, float) and pd.isna(nv):
                                 nv = None
+                            if isinstance(nv, str):
+                                # 앞뒤 공백 품번(' H11SDF-…') 재발 방지
+                                nv = nv.strip()
                             if nv == "":
                                 nv = None
                             if ov != nv:
@@ -2335,6 +2338,13 @@ elif page == "마스터 관리":
 
             new_caution = st.text_input("주의사항 (선택)",
                 placeholder="예: 진공열처리 필수")
+            new_matname = st.text_input(
+                "기존 자재 연결 (선택 — 자재명이 정확히 일치하면 BOM "
+                "자동 생성)",
+                placeholder="예: 20AHYBV-X1413 — 자재 편집의 자재명 그대로",
+                help="공용 자재를 쓰는 신제품이면 여기에 자재명을 넣으세요. "
+                     "1개당 1EA 로 BOM 이 생성되며, 환산이 다르면 BOM "
+                     "편집에서 수량을 조정하면 됩니다.")
 
             if st.form_submit_button("➕ 제품 추가", type="primary"):
                 if not new_pn:
@@ -2381,10 +2391,49 @@ elif page == "마스터 관리":
                                 "caution": new_caution.strip() or None,
                                 "active": "1",
                             }])
-                            st.success(
-                                f"✅ 제품 추가: **{new_pid}** | {new_pn}. "
-                                f"💰 원가 분석에서 비용 정보 입력하세요."
-                            )
+                            # 기존 자재 자동 연결 → BOM 생성 (선택)
+                            _bom_msg = " · 원가 분석에서 비용 정보 입력"
+                            _mn = (new_matname or "").strip()
+                            if _mn:
+                                try:
+                                    _mrow = _db.fetch_one("materials",
+                                        f"raw_name=eq.{_mn}"
+                                        "&archived_at=is.null",
+                                        "material_id,raw_name")
+                                except Exception:
+                                    _mrow = None
+                                if _mrow:
+                                    try:
+                                        _db.insert("bom", [{
+                                            "product_id": new_pid,
+                                            "material_id":
+                                                _mrow["material_id"],
+                                            "raw_material_name":
+                                                _mrow["raw_name"],
+                                            "qty_per_pc": 1.0,
+                                            "shared_factor": 1,
+                                            "process_type": "MATERIAL",
+                                            "source": "신규 제품 자동 연결",
+                                        }])
+                                        _db.update("products",
+                                            f"product_id=eq.{new_pid}",
+                                            {"raw_material_name":
+                                                 _mrow["raw_name"],
+                                             "bom_material_name":
+                                                 _mrow["raw_name"]})
+                                        _bom_msg = (
+                                            f" · 자재 {_mrow['material_id']}"
+                                            f" ({_mrow['raw_name']}) BOM "
+                                            "자동 연결됨 (1EA/개 — 환산이 "
+                                            "다르면 BOM 편집에서 조정)")
+                                    except Exception as e2:
+                                        _bom_msg = f" · BOM 연결 실패: {e2}"
+                                else:
+                                    _bom_msg = (f" · 자재 '{_mn}' 일치 "
+                                                "없음 — BOM 편집에서 "
+                                                "연결하세요")
+                            st.success(f"✅ 제품 추가: **{new_pid}** | "
+                                       f"{new_pn}{_bom_msg}")
                             st.rerun()
                         except Exception as e:
                             st.error(f"추가 실패: {e}")
