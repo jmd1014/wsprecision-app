@@ -131,17 +131,16 @@ def test_kpi_excludes_cancelled_and_computes_shortfall(fit_db):
 def test_bom_shared_factor_halves_requirement(fit_db):
     """분할 계수 2 → 1개당 0.5 · 필요량 600 · 재고 4,020 → 부족 0"""
     at = _open_master(fit_db)
-    df = next((d.value for d in at.dataframe
-               if hasattr(d.value, "columns") and "1개당" in d.value.columns),
-              None)
-    assert df is not None, "BOM 표가 없음"
-    row = df[df["자재"] == "S304 Ø45*16"].iloc[0]
-    assert round(float(row["1개당"]), 3) == 0.5
-    assert float(row["필요량"]) == 600      # 1,200 × 0.5
-    assert float(row["부족"]) == 0          # 재고 4,020 으로 충분
-    row2 = df[df["자재"] == "S304 Ø22*14"].iloc[0]
-    assert float(row2["필요량"]) == 1200
-    assert float(row2["부족"]) == 1100      # 1,200 − 100
+    # BOM 표는 토스 스타일 HTML 로 렌더 (2026-08-19 표 통일) —
+    # 마크다운에서 셀 값을 검증한다
+    md = " ".join(m.value for m in at.markdown
+                  if '<table class="tt"' in m.value)
+    assert "S304 Ø45*16" in md, "BOM 표가 없음"
+    assert ">0.50<" in md          # 분할 계수 2 → 1개당 0.5
+    assert ">600<" in md           # 필요량 1,200 × 0.5
+    assert "S304 Ø22*14" in md
+    assert ">1,200<" in md         # Ø22 필요량
+    assert ">1,100<" in md         # Ø22 부족 1,200 − 100
 
 
 # ─── 2. 완성재고 조정 가드 ─────────────────────────────

@@ -568,6 +568,38 @@ def toss_table(rows, columns=None, *, badge_cols=(), num_cols=(),
         unsafe_allow_html=True)
 
 
+def toss_df(data, *, column_config=None, hide_index=True,
+            use_container_width=True, height=None, key=None,
+            badge_cols=None, **_ignored):
+    """st.dataframe 호환 드롭인 — 보기 전용 표를 toss_table 로 렌더.
+
+    pandas Styler 는 내부 데이터로 풀고(색은 배지 규칙이 대체),
+    숫자 컬럼은 자동 우측 정렬·콤마, '상태' 성격 컬럼은 자동 배지.
+    편집이 필요한 표(data_editor)는 대상이 아니다. (2026-08-19 통일)
+    """
+    try:
+        if type(data).__name__ == "Styler":
+            data = data.data
+    except Exception:
+        pass
+    if not hasattr(data, "to_dict"):
+        data = pd.DataFrame(data)
+    if data is None or len(data) == 0:
+        st.caption("표시할 데이터 없음")
+        return
+    _num = tuple(c for c in data.columns
+                 if pd.api.types.is_numeric_dtype(data[c]))
+    if badge_cols is None:
+        badge_cols = tuple(
+            c for c in data.columns if isinstance(c, str)
+            and ("상태" in c or c in ("구분", "판정")))
+    _d2 = data.astype(object).where(pd.notna(data), None)
+    toss_table(_d2.to_dict("records"),
+               columns=list(data.columns),
+               badge_cols=badge_cols, num_cols=_num,
+               scroll=bool(height) or len(data) > 15)
+
+
 # ─── 토스 스타일 선택 그리드 (2026-08-19) ───
 # toss_table(HTML)은 보기 전용이라 클릭을 못 받는다 — 선택이 필요한
 # 리스트는 이 그리드로 통일: 토스 CSS를 입힌 AgGrid(DOM), 행 클릭 =
@@ -1189,7 +1221,7 @@ if page == "홈":
                     "부족": max(0.0, a["pend"] - _stock_map.get(a["pn"], 0.0)
                                - _wip_map.get(a["pn"], 0.0)),
                 } for a in _rows_pn[:15]])
-                st.dataframe(
+                toss_df(
                     _pndf.style.apply(
                         lambda r: ["color:#f04452;font-weight:700"
                                    if str(r["납기"]).startswith("지연")
@@ -1266,7 +1298,7 @@ if page == "홈":
                           / float(s.get("total_qty") or 1)),
                 "상태": status_ko(s.get("delivery_status")),
             } for s in _open_so[:15]])
-            st.dataframe(
+            toss_df(
                 _h_sodf.style.apply(
                     lambda row: ["color: #f04452; font-weight: 700"
                                  if "지연" in str(row["납기"])
@@ -1294,7 +1326,7 @@ if page == "홈":
             st.info("진행 중인 작업지시 없음 — 공정 관리에서 투입 등록으로 "
                     "시작합니다.")
         else:
-            st.dataframe(status_style(pd.DataFrame([{
+            toss_df(status_style(pd.DataFrame([{
                 "작업지시": w["wo_number"], "품번": w.get("pn") or "-",
                 "생산중": max(0.0, float(w.get("input_qty") or 0)
                              - float(w.get("received_qty") or 0)),
@@ -1316,7 +1348,7 @@ if page == "홈":
     if _h_ps:
         st.divider()
         st.markdown("##### 완성 재고 보유 품목")
-        st.dataframe(pd.DataFrame([{
+        toss_df(pd.DataFrame([{
             "품번": p["pn"], "재고": float(p.get("current_stock") or 0),
         } for p in _h_ps[:10]]), use_container_width=True, hide_index=True,
             column_config={"재고": st.column_config.NumberColumn(
@@ -1852,7 +1884,7 @@ elif page == "마스터 관리":
                         "부족": max(_need - _have, 0),
                     })
                 _bdf = pd.DataFrame(_brows)
-                st.dataframe(
+                toss_df(
                     _bdf.style.format({
                         "1개당": "{:,.3f}", "필요량": "{:,.0f}",
                         "현재고": "{:,.0f}", "부족": "{:,.0f}"}).map(
@@ -2020,7 +2052,7 @@ elif page == "마스터 관리":
                 "차이만큼 조정 기록이 남습니다. 조정분에도 LOT 이 붙어 "
                 "출고 선입선출에 그대로 쓰입니다.")
             if _ft["lots"]:
-                st.dataframe(
+                toss_df(
                     pd.DataFrame([{
                         "완성 LOT": l["lot_number"],
                         "소재 LOT": l.get("material_lot") or "-",
@@ -2083,7 +2115,7 @@ elif page == "마스터 관리":
             # ══ 4) 최근 원장 ══
             with st.expander("이 품번의 최근 재고 원장 15건"):
                 if _ft["txns"]:
-                    st.dataframe(pd.DataFrame([{
+                    toss_df(pd.DataFrame([{
                         "일자": t.get("txn_date"),
                         "유형": t.get("txn_type"),
                         "수량": float(t.get("qty") or 0),
@@ -2879,7 +2911,7 @@ elif page == "마스터 관리":
                     _lab = "{} · {} · {}".format(
                         _k[1], _k[0], "육각" if _k[2] == "HEX" else "환봉")
                     with st.expander("{}  ({}건)".format(_lab, len(_v))):
-                        st.dataframe(pd.DataFrame([{
+                        toss_df(pd.DataFrame([{
                             "ID": m["material_id"], "자재명": m["raw_name"],
                             "재질": m.get("material_type") or "-",
                             "규격": m.get("spec") or "-",
@@ -3453,7 +3485,7 @@ elif page == "마스터 관리":
             _ROLE_EN = {v: k for k, v in _ROLE_KO.items()}
             _admins = [u for u, v in _ac_users.items()
                        if v.get("role") == "admin"]
-            st.dataframe(pd.DataFrame([{
+            toss_df(pd.DataFrame([{
                 "아이디": u, "이름": v.get("name") or u,
                 "역할": _ROLE_KO.get(v.get("role"), v.get("role")),
             } for u, v in sorted(_ac_users.items())]),
@@ -3814,7 +3846,7 @@ elif page == "수주 관리":
                                       "단가": k[3], "납기": k[4],
                                       "중복 행수": _key_counts[k]}
                                      for k in sorted(_dup_keys)]
-                        st.dataframe(pd.DataFrame(_dup_prev),
+                        toss_df(pd.DataFrame(_dup_prev),
                                      use_container_width=True, hide_index=True)
                         keep_dups = st.checkbox(
                             "중복 행을 그대로 모두 저장 (실제로 같은 품목을 "
@@ -3901,7 +3933,7 @@ elif page == "수주 관리":
                         "금액": int(it.get("amount") or 0),
                         "납기": it.get("due_date"),
                     } for it in items])
-                    st.dataframe(df, use_container_width=True, hide_index=True,
+                    toss_df(df, use_container_width=True, hide_index=True,
                         column_config={
                             "수량": st.column_config.NumberColumn(format="%d"),
                             "단가": st.column_config.NumberColumn(format="₩%d"),
@@ -4099,7 +4131,7 @@ elif page == "수주 관리":
 
             if st.session_state.m_so_items:
                 df = pd.DataFrame(st.session_state.m_so_items)
-                st.dataframe(df, use_container_width=True, hide_index=True)
+                toss_df(df, use_container_width=True, hide_index=True)
                 total = sum(it["amount"] for it in st.session_state.m_so_items)
                 st.markdown(f"**총액**: ₩{total:,}")
 
@@ -4281,7 +4313,7 @@ elif page == "수주 관리":
                         "납기": i.get("due_date"),
                         "상태": status_ko(i.get("status")),
                     } for i in sitems])
-                    st.dataframe(df, use_container_width=True, hide_index=True,
+                    toss_df(df, use_container_width=True, hide_index=True,
                         column_config={
                             "수량": st.column_config.NumberColumn(format="localized"),
                             "미납": st.column_config.NumberColumn(format="localized"),
@@ -4335,7 +4367,7 @@ elif page == "수주 관리":
                     "평균매칭률": f"{(a['_ms']/a['_mn'] if a['_mn'] else 0):.1f}%",
                 } for cust, a in sorted(agg.items(), key=lambda x: -x[1]["총액"])]
                 df = pd.DataFrame(rows)
-                st.dataframe(df, use_container_width=True, hide_index=True,
+                toss_df(df, use_container_width=True, hide_index=True,
                     column_config={"총액": st.column_config.NumberColumn(format="₩%d")})
             else:
                 st.info("결과 없음")
@@ -4439,7 +4471,7 @@ elif page == "수주 관리":
                         "수주 상태": status_ko(
                             so_map.get(i["so_id"], {}).get("status")),
                     } for i in sitems])
-                    st.dataframe(status_style(df, cols=("수주 상태",)),
+                    toss_df(status_style(df, cols=("수주 상태",)),
                                  use_container_width=True, hide_index=True)
                     st.caption("💡 거래처 자재코드 → 우성정밀 품번 매핑은 마스터 관리에서 추가 가능 (다음 push)")
                 else:
@@ -4610,7 +4642,7 @@ elif page == "수주 관리":
                         "회차수량": c["수량"], "납품": c["완료"],
                         "잔량": c["잔량"],
                     } for c in _late_rows])
-                    st.dataframe(
+                    toss_df(
                         _ldf.style.map(
                             lambda v: "color:#f04452;font-weight:600",
                             subset=["경과", "잔량"]),
@@ -4818,7 +4850,7 @@ elif page == "수주 관리":
                            f"{0.06 + 0.5 * _t:.2f})")
                     return (_bg + ";color:#fff;font-weight:600"
                             if _t > 0.55 else _bg)
-                st.dataframe(
+                toss_df(
                     _piv.style.format("{:,.0f}").map(_heat, subset=_wk_cols),
                     use_container_width=True,
                     height=min(460, 60 + len(_piv) * 35))
@@ -4849,7 +4881,7 @@ elif page == "수주 관리":
                 st.session_state["sch_view_next"] = "납기 입력"
                 st.rerun()
             if st.session_state.get("sch_unplan_open"):
-                st.dataframe(
+                toss_df(
                     pd.DataFrame([{"품번": p, "거래처": _cust_pn.get(p, "-"),
                                    "미납": _pend_pn.get(p, 0.0),
                                    "계획됨": _plan_pn.get(p, 0.0),
@@ -4983,7 +5015,7 @@ elif page == "수주 관리":
                     } for i in _all_items]
                     _st_df = pd.DataFrame(_st_rows).sort_values(
                         "납기 미입력", ascending=False)
-                    st.dataframe(
+                    toss_df(
                         _st_df.style.map(
                             lambda v: ("color:#f04452;font-weight:700"
                                        if isinstance(v, (int, float))
@@ -5905,20 +5937,21 @@ elif page == "출고 관리":
         else:
             _cf_stko = {"DRAFT": "작성중", "CONFIRMED": "확정",
                         "CANCELLED": "취소"}
+            # 방금 등록한 전표는 리스트 맨 위로 (그리드 기본 선택 = 첫 행)
             _open_no = st.session_state.pop("ship_open_no", None)
-            _cf_idx = 0
             if _open_no:
-                for _i9, _s9 in enumerate(_cf_ships):
-                    if _s9["ship_no"] == _open_no:
-                        _cf_idx = _i9
-                        break
-            _cf_pick = st.selectbox(
-                "전표 선택", _cf_ships, index=_cf_idx,
-                format_func=lambda s: "{} | {} | {} | {}".format(
-                    s["ship_no"], s.get("ship_date"),
-                    _cf_stko.get(s.get("status"), s.get("status")),
-                    s.get("created_by") or "-"),
-                key="cf_pick")
+                _cf_ships.sort(
+                    key=lambda s: s["ship_no"] != _open_no)
+            _cf_i = toss_grid([{
+                "전표번호": s["ship_no"],
+                "출고일": s.get("ship_date"),
+                "상태": _cf_stko.get(s.get("status"), s.get("status")),
+                "작성자": s.get("created_by") or "-",
+            } for s in _cf_ships],
+                key="cf_grid",
+                badge_cols=("상태",),
+                strong_cols=("전표번호",))
+            _cf_pick = _cf_ships[_cf_i if _cf_i is not None else 0]
             try:
                 _cf_items = fetch("shipment_items",
                     "si_id,soi_id,so_id,sched_id,product_id,pn,"
@@ -5974,7 +6007,7 @@ elif page == "출고 관리":
                 st.info("전표에 품목이 없습니다.")
             elif _cf_pick.get("status") == "CONFIRMED":
                 import pandas as _cf_pd
-                st.dataframe(_cf_pd.DataFrame([{
+                toss_df(_cf_pd.DataFrame([{
                     "품번": x.get("pn"),
                     "품명": _cf_names.get(x.get("si_id")) or "-",
                     "LOT": _cf_lotmap.get(x.get("si_id")) or "-",
@@ -6468,7 +6501,7 @@ elif page == "출고 관리":
                                      str(r.get("ship_date") or ""))
                     if r.get("customer"):
                         _a["cust"].add(r["customer"])
-                st.dataframe(pd.DataFrame([{
+                toss_df(pd.DataFrame([{
                     "품번": pn,
                     "품명": _dv_pn_nm.get(pn) or "-",
                     "거래처": ", ".join(sorted(a["cust"])) or "-",
@@ -6495,7 +6528,7 @@ elif page == "출고 관리":
                     _dv_det = [r for r in _dv_rows
                                if r.get("pn") == _dv_pick]
                     st.markdown("**출고 라인 (기간 내)**")
-                    st.dataframe(pd.DataFrame([{
+                    toss_df(pd.DataFrame([{
                         "출고일": r.get("ship_date"),
                         "전표": r.get("ship_no"),
                         "수주번호": r.get("so_number") or "-",
@@ -6581,7 +6614,7 @@ elif page == "출고 관리":
                                 "미납": float(
                                     s.get("pending_qty") or 0),
                             })
-                        st.dataframe(pd.DataFrame(_dv_rc),
+                        toss_df(pd.DataFrame(_dv_rc),
                             use_container_width=True, hide_index=True,
                             column_config={c:
                                 st.column_config.NumberColumn(
@@ -6597,7 +6630,7 @@ elif page == "출고 관리":
                                 "보이는 이유입니다.")
             else:
                 # ── 출고 이력 (라인 단위 시간순) ──
-                st.dataframe(pd.DataFrame([{
+                toss_df(pd.DataFrame([{
                     "출고일": r.get("ship_date"),
                     "전표": r.get("ship_no"),
                     "품번": r.get("pn"),
@@ -6631,7 +6664,7 @@ elif page == "출고 관리":
             if not _ls:
                 st.caption("출고 가능한 완성 LOT 없음.")
             else:
-                st.dataframe(pd.DataFrame([{
+                toss_df(pd.DataFrame([{
                     "품번": l["pn"],
                     "완성 LOT (작업지시)": l["lot_number"],
                     "소재 LOT": l.get("material_lot") or "-",
@@ -6800,7 +6833,7 @@ elif page == "생산 계획":
     if items_no_bom:
         with st.expander(f"⚠️ BOM 미등록 품목 {len(items_no_bom)}건 — 마스터에서 BOM 등록 필요"):
             df_no = pd.DataFrame(items_no_bom)
-            st.dataframe(df_no, use_container_width=True, hide_index=True)
+            toss_df(df_no, use_container_width=True, hide_index=True)
 
     st.divider()
 
@@ -6847,7 +6880,7 @@ elif page == "생산 계획":
                        .format({"총필요량": "{:,.0f}", "소재 재고": "{:,.0f}",
                                 "재고 충당": "{:,.0f}",
                                 "발주 필요량": "{:,.0f}"}))
-            st.dataframe(_styled, use_container_width=True, hide_index=True)
+            toss_df(_styled, use_container_width=True, hide_index=True)
 
             shortage_rows = [r for r in rows if r["발주 필요량"] > 0]
             if shortage_rows:
@@ -6904,7 +6937,7 @@ elif page == "생산 계획":
                             "재고": round(stock, 2),
                             "부족분": round(max(0, need - stock), 2),
                         })
-                st.dataframe(pd.DataFrame(so_rows), use_container_width=True, hide_index=True)
+                toss_df(pd.DataFrame(so_rows), use_container_width=True, hide_index=True)
 
     # ─── 탭 3: 발주 자동 제안 ───
     with tab_po:
@@ -7004,7 +7037,7 @@ elif page == "생산 계획":
                         "부족분 (발주 권장)": round(m["shortage"], 2),
                         "단위": m["unit"],
                     } for m in mats])
-                    st.dataframe(pdf, use_container_width=True, hide_index=True)
+                    toss_df(pdf, use_container_width=True, hide_index=True)
 
                     # 거래처 미지정이면 직접 고를 수 있게 (발주 불가 방지)
                     _target = supplier
@@ -7488,7 +7521,7 @@ elif page == "발주/입고":
                         "비고": ("⚠ 음수 — 입고 미기록분 확인"
                                  if _cs < 0 else ""),
                     })
-                st.dataframe(pd.DataFrame(_ht), use_container_width=True,
+                toss_df(pd.DataFrame(_ht), use_container_width=True,
                     hide_index=True,
                     height=min(420, 60 + len(_ht) * 35),
                     column_config={c: st.column_config.NumberColumn(
@@ -8012,38 +8045,27 @@ elif page == "발주/입고":
 
             st.divider()
 
-            df = pd.DataFrame([{
+            # 발주 리스트 = 선택 그리드 하나로 통합 — 행 클릭 시
+            # 아래에 상세/재발급이 열린다 (중복 표 제거, 2026-08-19)
+            _po_i = toss_grid([{
                 "발주번호": r["po_number"],
                 "거래처": r["_vname"],
                 "그룹": r["_vgroup"],
                 "발주일": r["po_date"],
                 "납기": r.get("delivery_date") or "-",
-                "총액": int(r.get("total_amount") or 0),
-                "VAT": int(r.get("vat") or 0),
-                "상태": status_ko(r["status"]),
-            } for r in history])
-            st.dataframe(
-                df, use_container_width=True, hide_index=True,
-                column_config={
-                    "총액": st.column_config.NumberColumn("총액 (원)", format="localized"),
-                    "VAT": st.column_config.NumberColumn("VAT (원)", format="localized"),
-                }
-            )
-
-            st.divider()
-            st.markdown("##### 🔍 발주서 상세 / 재발급")
-            # 토스 스타일 선택 그리드 — 행 클릭 = 상세/재발급 열기
-            _po_i = toss_grid([{
-                "발주번호": r["po_number"],
-                "거래처": r["_vname"],
                 "총액 (원)": int(r.get("total_amount") or 0),
-                "상태": status_ko(r.get("status")),
+                "VAT (원)": int(r.get("vat") or 0),
+                "상태": status_ko(r["status"]),
             } for r in history],
                 key="po_grid",
                 badge_cols=("상태",),
-                num_cols=("총액 (원)",),
+                num_cols=("총액 (원)", "VAT (원)"),
                 strong_cols=("발주번호",))
+
+            st.divider()
             po = history[_po_i if _po_i is not None else 0]
+            st.markdown(f"##### 발주서 상세 / 재발급 — "
+                        f"{po['po_number']} · {po['_vname']}")
             if po:
                 items = fetch("purchase_order_items", "*",
                               f"po_id=eq.{po['po_id']}&order=line_no", limit=50)
@@ -8057,7 +8079,7 @@ elif page == "발주/입고":
                     "비고": i.get("remark") or "-",
                 } for i in items])
                 if not item_df.empty:
-                    st.dataframe(item_df, use_container_width=True, hide_index=True,
+                    toss_df(item_df, use_container_width=True, hide_index=True,
                                  column_config={
                                     "수량": st.column_config.NumberColumn(format="localized"),
                                     "단가": st.column_config.NumberColumn("단가 (원)", format="localized"),
@@ -9395,7 +9417,7 @@ elif page == "공정 관리":
         except Exception:
             _recent = []
         if _recent:
-            st.dataframe(status_style(pd.DataFrame([{
+            toss_df(status_style(pd.DataFrame([{
                 "작업지시": t["wo_number"], "품번": t.get("pn") or "-",
                 "소재 LOT": t.get("w_lot") or "-",
                 "투입": float(t.get("input_qty") or 0),
@@ -10584,7 +10606,7 @@ elif page == "공정 관리":
                     if e["event_type"] == "OUTPUT" and d.get("tokusai"):
                         return f"특채 포함 {float(d['tokusai']):,.0f}"
                     return "-"
-                st.dataframe(pd.DataFrame([{
+                toss_df(pd.DataFrame([{
                     "일자": e.get("event_date"),
                     "처리": EVENT_KO.get(e["event_type"],
                                         e["event_type"]),
@@ -10605,15 +10627,18 @@ elif page == "공정 관리":
                     st.caption("발행했던 문서를 이력에서 다시 출력합니다. "
                                "소재 입고 라벨은 발주/입고 → 입고 "
                                "현황에서 재발행.")
-                    _re_opts = {
-                        f"{e.get('event_date')} | "
-                        f"{EVENT_KO.get(e['event_type'])} | "
-                        f"{float(e.get('qty') or 0):,.0f} EA "
-                        f"(#{e['event_id']})": e
-                        for e in _re_evs}
-                    _re_pick = st.selectbox("재발행할 이력 선택",
-                        list(_re_opts.keys()), key="pe_re_pick")
-                    _re = _re_opts[_re_pick]
+                    _re_i = toss_grid([{
+                        "일자": e.get("event_date"),
+                        "처리": EVENT_KO.get(e["event_type"],
+                                             e["event_type"]),
+                        "수량": float(e.get("qty") or 0),
+                        "배치": ((e.get("detail") or {})
+                                 .get("batch_no") or "-"),
+                    } for e in _re_evs],
+                        key=f"pe_re_grid_{_t['wo_id']}",
+                        badge_cols=("처리",),
+                        num_cols=("수량",))
+                    _re = _re_evs[_re_i if _re_i is not None else 0]
                     _red = _re.get("detail") or {}
                     _re_date = _re.get("event_date") or ""
                     _re_qty = float(_re.get("qty") or 0)
@@ -10784,7 +10809,7 @@ elif page == "공정 관리":
                 "완성": _bdf["output_qty"],
                 "상태": _bdf["상태"],
             })
-            st.dataframe(status_style(_board_df),
+            toss_df(status_style(_board_df),
                 use_container_width=True, hide_index=True,
                 height=min(500, 60 + len(_bdf) * 35),
                 column_config={c: st.column_config.NumberColumn(
@@ -11015,7 +11040,7 @@ elif page == "생산 보고":
                              sorted({w for w in s if w and w != "-"})))))
             by_m = by_m.sort_values(["machine", "process"]).rename(
                 columns={"machine": "설비", "pn": "품번", "process": "공정"})
-            st.dataframe(by_m[["설비", "품번", "공정", "생산", "불량", "작업자"]],
+            toss_df(by_m[["설비", "품번", "공정", "생산", "불량", "작업자"]],
                          use_container_width=True, hide_index=True,
                          height=min(420, 60 + len(by_m) * 35),
                          column_config={
@@ -11040,7 +11065,7 @@ elif page == "생산 보고":
                         .rename(columns={"pn": "품번", "process": "공정"}))
                 by_p["불량률"] = by_p.apply(
                     lambda r: r["불량"] / r["생산"] if r["생산"] else None, axis=1)
-                st.dataframe(by_p, use_container_width=True, hide_index=True,
+                toss_df(by_p, use_container_width=True, hide_index=True,
                              height=min(420, 60 + len(by_p) * 35),
                              column_config={
                                  "공정": st.column_config.TextColumn("공정", width="small"),
@@ -11059,7 +11084,7 @@ elif page == "생산 보고":
                                  sorted(set(s))[:6])))
                         .sort_values("생산", ascending=False)
                         .rename(columns={"worker": "작업자"}))
-                st.dataframe(by_w, use_container_width=True, hide_index=True,
+                toss_df(by_w, use_container_width=True, hide_index=True,
                              height=min(420, 60 + len(by_w) * 35),
                              column_config={
                                  "작업자": st.column_config.TextColumn("작업자", width="small"),
@@ -11091,7 +11116,7 @@ elif page == "생산 보고":
                         .rename(columns={"wo": "작업지시", "pn": "품번"})
                         .sort_values("작업지시", ascending=False))
                 wo_p.columns.name = None
-                st.dataframe(wo_p, use_container_width=True, hide_index=True,
+                toss_df(wo_p, use_container_width=True, hide_index=True,
                              height=min(420, 60 + len(wo_p) * 35))
 
             st.divider()
@@ -11102,7 +11127,7 @@ elif page == "생산 보고":
             if def_rows.empty:
                 st.caption("기간 내 불량 없음 🎉")
             else:
-                st.dataframe(
+                toss_df(
                     def_rows[["log_date", "shift", "machine", "pn",
                               "process", "worker", "total_qty",
                               "defect_qty"]].rename(columns={
@@ -11232,7 +11257,7 @@ elif page == "생산 보고":
                     "현재고": round(c["stock"], 2),
                     "차감 후": round(c["stock"] - c["need"], 2),
                 } for c in consumption])
-                st.dataframe(cdf, use_container_width=True, hide_index=True)
+                toss_df(cdf, use_container_width=True, hide_index=True)
                 short = [c for c in consumption if c["stock"] < c["need"]]
                 if short:
                     st.warning(
@@ -11593,7 +11618,7 @@ elif page == "생산 보고":
                 "작업지시서": l.get("work_order") or "-",
                 "비고": l.get("remark") or "-",
             } for l in logs])
-            st.dataframe(ldf, use_container_width=True, hide_index=True,
+            toss_df(ldf, use_container_width=True, hide_index=True,
                          height=400)
 
             # 일간 보고서 집계 (MES 소계 대체) — 조회 결과 기준
@@ -11604,13 +11629,13 @@ elif page == "생산 보고":
                     eq_agg = ldf.groupby("설비", as_index=False).agg(
                         생산=("생산", "sum"), 불량=("불량", "sum"),
                         행수=("품번", "count")).sort_values("생산", ascending=False)
-                    st.dataframe(eq_agg, use_container_width=True, hide_index=True)
+                    toss_df(eq_agg, use_container_width=True, hide_index=True)
                 with ag2:
                     st.markdown("**품번·공정별**")
                     pn_agg = ldf.groupby(["품번", "공정"], as_index=False).agg(
                         생산=("생산", "sum"), 불량=("불량", "sum")).sort_values(
                         "생산", ascending=False)
-                    st.dataframe(pn_agg, use_container_width=True, hide_index=True)
+                    toss_df(pn_agg, use_container_width=True, hide_index=True)
 
         # 제품 완성 재고 현황
         st.divider()
@@ -11626,7 +11651,7 @@ elif page == "생산 보고":
                 "pn": "품번", "customer": "고객사",
                 "produced_qty": "생산 누적", "issued_qty": "출고 누적",
                 "current_stock": "현재고", "last_txn_date": "최근 거래"})
-            st.dataframe(psdf, use_container_width=True, hide_index=True)
+            toss_df(psdf, use_container_width=True, hide_index=True)
         else:
             st.caption("제품 재고 거래 없음 (생산 보고 저장 시 자동 생성).")
 
@@ -11677,7 +11702,7 @@ elif page == "생산 보고":
                             "참조": f"{t.get('ref_table') or '-'}#{t.get('ref_id') or ''}",
                             "비고": t.get("remark") or "-",
                         } for t in trace_rows])
-                        st.dataframe(tdf, use_container_width=True,
+                        toss_df(tdf, use_container_width=True,
                                      hide_index=True)
                         # 요약: 투입/완성/출고 밸런스
                         t_in = sum(-float(t["qty"]) for t in trace_rows
@@ -11721,7 +11746,7 @@ elif page == "생산 보고":
                         "참조": f"{t.get('ref_table') or '-'}#{t.get('ref_id') or ''}",
                         "비고": t.get("remark") or "-",
                     } for t in trace_rows])
-                    st.dataframe(tdf, use_container_width=True,
+                    toss_df(tdf, use_container_width=True,
                                  hide_index=True, height=400)
 
 
@@ -11833,7 +11858,7 @@ elif page == "영업 보고":
             _sr_missing_note(_d_agg)
 
             st.markdown("##### 거래처별 합계")
-            st.dataframe(_sr_cust_df(_d_agg), use_container_width=True,
+            toss_df(_sr_cust_df(_d_agg), use_container_width=True,
                          hide_index=True, column_config=_NUMCOL)
 
             st.markdown("##### 품목 상세")
@@ -11847,7 +11872,7 @@ elif page == "영업 보고":
                     "수량": float(x.get("qty") or 0),
                     "단가": x.get("unit_price"),
                     "공급가액": _amt[0] if _amt else None})
-            st.dataframe(_sr_pd.DataFrame(_d_det),
+            toss_df(_sr_pd.DataFrame(_d_det),
                          use_container_width=True, hide_index=True,
                          column_config=_NUMCOL)
             st.download_button(
@@ -11889,7 +11914,7 @@ elif page == "영업 보고":
             _mc1, _mc2 = st.columns(2)
             with _mc1:
                 st.markdown("##### 거래처별 합계")
-                st.dataframe(_sr_cust_df(_m_agg),
+                toss_df(_sr_cust_df(_m_agg),
                              use_container_width=True, hide_index=True,
                              column_config=_NUMCOL)
             with _mc2:
@@ -11897,7 +11922,7 @@ elif page == "영업 보고":
                 _m_dt = [{"출고일": d, "수량": s["qty"],
                           "공급가액": s["supply"], "합계": s["total"]}
                          for d, s in sorted(_m_agg["by_date"].items())]
-                st.dataframe(_sr_pd.DataFrame(_m_dt),
+                toss_df(_sr_pd.DataFrame(_m_dt),
                              use_container_width=True, hide_index=True,
                              column_config=_NUMCOL)
 
@@ -11907,7 +11932,7 @@ elif page == "영업 보고":
                      for (pn, cu), s in sorted(
                          _m_agg["by_pn"].items(),
                          key=lambda kv: (-kv[1]["total"], -kv[1]["qty"]))]
-            st.dataframe(_sr_pd.DataFrame(_m_pn),
+            toss_df(_sr_pd.DataFrame(_m_pn),
                          use_container_width=True, hide_index=True,
                          column_config=_NUMCOL)
             st.download_button(
@@ -11961,7 +11986,7 @@ elif page == "영업 보고":
                     "품목수": _ag["all"]["lines"],
                     "수량": _ag["all"]["qty"],
                     "합계": _ag["all"]["total"]})
-            st.dataframe(_sr_pd.DataFrame(_r_sum),
+            toss_df(_sr_pd.DataFrame(_r_sum),
                          use_container_width=True, hide_index=True,
                          column_config=_NUMCOL)
 
@@ -12195,7 +12220,7 @@ elif page == "원가 확인":
                              "matched_pn":"매칭품번",
                              "category":"분류","qty":"수량","unit":"단위",
                              "unit_price":"단가","kg_price":"KG단가","ea_price":"EA단가"})
-                st.dataframe(show, use_container_width=True,
+                toss_df(show, use_container_width=True,
                              hide_index=True, height=280)
                 if len(pl_rows) >= 3:
                     # 월별 추이 (시간순)
@@ -12224,7 +12249,7 @@ elif page == "원가 확인":
                                  .head(5))
                     by_vendor["평균단가"] = by_vendor["평균단가"].apply(
                         lambda v: f"{v:,.0f}" if pd.notna(v) else "-")
-                    st.dataframe(by_vendor.rename(columns={
+                    toss_df(by_vendor.rename(columns={
                         "vendor_normalized":"거래처(정규)"}),
                         use_container_width=True, hide_index=True)
 
@@ -12303,7 +12328,7 @@ elif page == "원가 확인":
                 df_b["추정원가"] = df_b["estimated_cost_per_pc"].apply(_money)
                 df_b["마진율"] = df_b["margin_pct"].apply(_pct)
                 df_b["12M매출"] = df_b["total_sales_12m"].apply(_money)
-                st.dataframe(
+                toss_df(
                     df_b[["pn", "customer", "판매가", "추정원가", "마진율",
                           "12M매출", "abc_grade", "activity_trend"]]
                     .rename(columns={"pn": "품번", "customer": "고객사",
@@ -12326,7 +12351,7 @@ elif page == "원가 확인":
                 df_t["추정원가"] = df_t["estimated_cost_per_pc"].apply(_money)
                 df_t["마진율"] = df_t["margin_pct"].apply(_pct)
                 df_t["12M매출"] = df_t["total_sales_12m"].apply(_money)
-                st.dataframe(
+                toss_df(
                     df_t[["pn", "customer", "판매가", "추정원가", "마진율",
                           "12M매출", "abc_grade", "activity_trend"]]
                     .rename(columns={"pn": "품번", "customer": "고객사",
@@ -12433,7 +12458,7 @@ elif page == "원가 확인":
                         ("소재 KG단가", _money(row.get("material_kg_price"))),
                     ]
                     info_df = pd.DataFrame(info_rows, columns=["항목", "값"])
-                    st.dataframe(info_df, hide_index=True, use_container_width=True)
+                    toss_df(info_df, hide_index=True, use_container_width=True)
 
                     # ── 📊 BOM 자재의 매입 단가 변동 추이 ──
                     try:
@@ -12554,7 +12579,7 @@ elif page == "원가 확인":
                                     df_show["unit_price"] = df_show["unit_price"].apply(
                                         lambda v: f"{v:,.0f}"
                                         if pd.notna(v) else "-")
-                                    st.dataframe(
+                                    toss_df(
                                         df_show[["trade_date","vendor","item",
                                                  "qty","unit_price"]].rename(
                                             columns={"trade_date":"거래일",
@@ -12648,7 +12673,7 @@ elif page == "원가 확인":
                             lambda v: f"{v:,.0f}" if pd.notna(v) else "-")
                         df_show["qty"] = df_show["qty"].apply(
                             lambda v: f"{v:,.0f}" if pd.notna(v) else "-")
-                        st.dataframe(
+                        toss_df(
                             df_show[["item_date","customer","qty","unit",
                                      "unit_price","amount","remark"]].rename(
                                 columns={"item_date":"거래일","customer":"고객사",
@@ -12997,7 +13022,7 @@ elif page == "원가 확인":
                          "shared_factor(최대)", "재산정_단순", "재산정_BOM",
                          "12M매출", "마진율"]
             disp = disp.rename(columns={"pn": "품번", "customer": "고객사"})
-            st.dataframe(
+            toss_df(
                 disp[[("품번" if c == "pn" else "고객사" if c == "customer" else c)
                       for c in show_cols]],
                 use_container_width=True, hide_index=True, height=480
@@ -13107,7 +13132,7 @@ elif page == "원가 확인":
                         else:
                             st.markdown("##### BOM 행")
                             bdf = pd.DataFrame(bs)
-                            st.dataframe(bdf, use_container_width=True, hide_index=True)
+                            toss_df(bdf, use_container_width=True, hide_index=True)
 
                             max_sf = max(float(b.get("shared_factor") or 1) for b in bs)
                             sum_qpc = sum(float(b.get("qty_per_pc") or 1) for b in bs)
@@ -13469,7 +13494,7 @@ elif page == "원가 확인":
                 "pn": "품번", "customer": "고객사",
                 "bom_row_count": "BOM행수", "abc_grade": "ABC"
             })
-            st.dataframe(disp_v, use_container_width=True,
+            toss_df(disp_v, use_container_width=True,
                          hide_index=True, height=520)
 
             st.caption(

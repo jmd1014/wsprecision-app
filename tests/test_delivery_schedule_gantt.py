@@ -268,4 +268,7 @@ def test_each_view_renders(sched_db, view, want_gantt, min_df):
     at.run()
     assert not at.exception, [str(e.value) for e in at.exception]
     assert bool(_gantt_html(at)) is want_gantt
-    assert len(at.dataframe) >= min_df
+    # 표는 토스 스타일 HTML(toss_table/toss_df) 또는 data_editor 로
+    # 렌더된다 (2026-08-19 표 통일)
+    _tt_tables = sum('<table class="tt"' in m.value for m in at.markdown)
+    assert (len(at.dataframe) + _tt_tables) >= min_df
