@@ -1200,11 +1200,53 @@ elif page == "마스터 관리":
     # 점검)은 2026-08-05 제거 — 제외 규칙 자체는 DB 뷰에 내장되어
     # 계속 적용된다. 중복 자재 병합 도구는 자재 편집 하단으로 이동.
     (tab_fit, tab1, tab_prod, tab_mat, tab_bom, tab_rout,
-     tab_acct, tab_dsn) = st.tabs([
+     tab_dq, tab_acct, tab_dsn) = st.tabs([
         "품번별 맞추기",
         "거래처 편집", "제품 편집", "자재 편집", "BOM 편집", "공정 라우팅",
-        "계정 관리", "디자인 데이터 내보내기"
+        "정합 점검", "계정 관리", "디자인 데이터 내보내기"
     ])
+
+    # ─── Tab: 정합 점검 (Migration 038, 2026-08-19) ───
+    # "진실 한 곳" 원칙의 감시 장치 — 데이터가 규칙을 벗어나면 여기에
+    # 나타난다. 전부 0건 유지가 목표.
+    with tab_dq:
+        st.markdown("**데이터 정합 점검** — 스케줄 대사·품번·BOM 연결·"
+                    "매핑 상태를 상시 감시합니다. **전부 0건이 정상**입니다.")
+        st.caption(
+            "대사 규칙: 회차 납품합 = 라인 기납품 − 스케줄 이전 기납품 · "
+            "소재 정보의 진실은 BOM(자재 연결), 제품의 소재 표기는 "
+            "표시용(자동 동기화) · 품번의 진실은 product_id.")
+        try:
+            _dq_rows = fetch("data_quality_v", "*", "order=code",
+                             limit=2000)
+        except Exception as e:
+            st.error(f"점검 조회 실패: {e}")
+            _dq_rows = []
+        if not _dq_rows:
+            st.success("✅ 모든 점검 통과 — 발견된 문제가 없습니다.")
+        else:
+            _dq_by = {}
+            for r in _dq_rows:
+                _dq_by.setdefault(r["check_name"], []).append(r)
+            # 요약 표
+            toss_table([{
+                "점검 항목": k, "건수": float(len(v)),
+            } for k, v in sorted(_dq_by.items(),
+                                 key=lambda x: -len(x[1]))],
+                num_cols=("건수",), strong_cols=("점검 항목",))
+            for _k, _v in sorted(_dq_by.items(),
+                                 key=lambda x: -len(x[1])):
+                with st.expander(f"{_k} — {len(_v)}건"):
+                    toss_table([{
+                        "대상": r["ref"],
+                        "내용": r["detail"],
+                    } for r in _v], strong_cols=("대상",),
+                        scroll=len(_v) > 15)
+            st.caption(
+                "처리 안내 — 소재 미연결: BOM 편집·공정 라우팅에서 연결 / "
+                "자재 미매핑: 입고 처리에서 최초 1회 지정 / 회차 대사 "
+                "불일치: 납품 스케줄에서 회차·기납품 확인 / 품번 문제: "
+                "제품 편집에서 정정.")
 
     # ─── Tab: 공정 라우팅 (Migration 036, 2026-08-12) ───
     # 라우팅 = 제품별 공정 '순서'. 공정 '원가'는 BOM(process_type 행)이
@@ -1731,6 +1773,16 @@ elif page == "마스터 관리":
                                     **_pay, "product_id": _pid,
                                     "material_id": _mpick["material_id"]}])
                                 st.success("BOM 등록 완료")
+                            if _mpick.get("raw_name"):
+                                try:  # 제품 소재 표기 동기화 (진실=BOM)
+                                    _db.update("products",
+                                        f"product_id=eq.{_pid}",
+                                        {"raw_material_name":
+                                             _mpick["raw_name"],
+                                         "bom_material_name":
+                                             _mpick["raw_name"]})
+                                except Exception:
+                                    pass
                             st.rerun()
                         except Exception as e:
                             st.error(f"저장 실패: {e}")
@@ -2198,7 +2250,11 @@ elif page == "마스터 관리":
                     "material": st.column_config.TextColumn("재질",
                         width="small"),
                     "raw_material_name": st.column_config.TextColumn(
-                        "자재명", width="medium"),
+                        "자재명 (BOM 동기화)", width="medium",
+                        disabled=True,
+                        help="소재 정보의 진실은 BOM — BOM 편집에서 "
+                             "자재를 연결하면 여기 자동 반영됩니다 "
+                             "(2026-08-19 정합 원칙)"),
                     "raw_material_spec": st.column_config.TextColumn(
                         "규격", width="small"),
                     "procurement_type": st.column_config.SelectboxColumn("조달",
@@ -2988,6 +3044,21 @@ elif page == "마스터 관리":
                             if _db.update("bom",
                                 f"bom_id=eq.{bom_id}", upd):
                                 chg += 1
+                                # 소재 행 자재명 변경 → 제품 소재 표기
+                                # 자동 동기화 (진실=BOM, 2026-08-19)
+                                if (is_material
+                                        and upd.get("raw_material_name")
+                                        and orig_row.get("product_id")):
+                                    try:
+                                        _db.update("products",
+                                            "product_id=eq."
+                                            f"{orig_row['product_id']}",
+                                            {"raw_material_name":
+                                                 upd["raw_material_name"],
+                                             "bom_material_name":
+                                                 upd["raw_material_name"]})
+                                    except Exception:
+                                        pass
                             else:
                                 fail += 1
                                 st.warning(f"BOM #{bom_id} 저장 실패: {upd}")
@@ -3107,6 +3178,13 @@ elif page == "마스터 관리":
                             f"✅ 자재행 추가: **{p_pick_pn}** ↔ **{m_pick_name}** "
                             f"(qty/PC={new_qpc}, 분할={new_sf})"
                         )
+                        try:  # 제품 소재 표기 동기화 (진실=BOM)
+                            _db.update("products",
+                                f"product_id=eq.{p_pick_pid}",
+                                {"raw_material_name": m_pick_name,
+                                 "bom_material_name": m_pick_name})
+                        except Exception:
+                            pass
                         st.rerun()
                     except Exception as e:
                         st.error(f"추가 실패: {e}")
@@ -5189,6 +5267,30 @@ elif page == "수주 관리":
                     m2.metric("계획 합계", f"{_plan:,.0f}")
                     m3.metric("납품 완료", f"{_done:,.0f}")
                     m4.metric("계획 잔량", f"{_plan - _done:,.0f}")
+                    # 대사 불변식: 회차 납품합 = 기납품 − 스케줄 이전
+                    # 기납품(presched). 어긋나면 이관 선점·충당 누락 등
+                    # 이상 신호 (Migration 038, 2026-08-19)
+                    try:
+                        _ln9 = _db.fetch_one("sales_order_items",
+                            f"soi_id=eq.{_li['soi_id']}",
+                            "received_qty,presched_qty") or {}
+                        _rcv9 = float(_ln9.get("received_qty") or 0)
+                        _ps9 = float(_ln9.get("presched_qty") or 0)
+                        if abs(_done - (_rcv9 - _ps9)) > 0.5:
+                            st.warning(
+                                f"회차 대사 불일치 — 회차 납품합 "
+                                f"{_done:,.0f} vs 기대 "
+                                f"{_rcv9 - _ps9:,.0f} (기납품 "
+                                f"{_rcv9:,.0f} − 스케줄 이전 "
+                                f"{_ps9:,.0f}). 마스터 관리 → 정합 "
+                                "점검에서 확인하세요.")
+                        else:
+                            st.caption(
+                                f"대사 일치 — 기납품 {_rcv9:,.0f} = "
+                                f"스케줄 이전 {_ps9:,.0f} + 회차 충당 "
+                                f"{_done:,.0f}")
+                    except Exception:
+                        pass
                     # 비교는 '계획 잔량'(합계 − 납품완료) 기준 — 계획
                     # 합계에는 이미 납품된 회차가 포함되므로 미납과 직접
                     # 비교하면 기납품만큼 어긋나 보인다 (2026-08-06 확인)

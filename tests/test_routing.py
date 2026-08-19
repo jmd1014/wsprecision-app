@@ -130,6 +130,10 @@ def _fetch(table, select="*", filter_query="", limit=1000):
         return []
     if table == "wo_batches":
         return [dict(b) for b in WO_BATCHES]
+    if table == "data_quality_v":
+        return [{"code": "MAT_TEXT",
+                 "check_name": "제품 소재 표기 ≠ BOM 자재명",
+                 "ref": "MRG6-07", "detail": "H11 vs S630"}]
     return []
 
 
@@ -185,6 +189,10 @@ def test_routing_editor_tab(routing_db):
     assert not at.exception, [str(e.value) for e in at.exception]
     btn_labels = [b.label for b in at.button]
     assert any("라우팅 저장" in l for l in btn_labels)
+
+    # 정합 점검 탭 — 점검 항목 요약 렌더 (Migration 038)
+    md = " ".join(m.value for m in at.markdown)
+    assert "제품 소재 표기 ≠ BOM 자재명" in md, "정합 점검 요약 미렌더"
 
 
 def test_process_stepper_follows_routing(routing_db):
