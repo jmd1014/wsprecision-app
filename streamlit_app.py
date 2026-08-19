@@ -8623,45 +8623,11 @@ elif page == "발주/입고":
                     key="dr_mp")
                 _dr_pick = _dr_cands[_dr_labels.index(_dr_sel)]
             elif (_dr_kw or "").strip():
-                # 일치 자재 없음 → 즉석 등록 (플랜지 등 미등록 소재도
-                # 이 화면에서 바로 등록하고 이어서 입고)
-                st.warning("일치 자재 없음 — 아래에서 즉석 등록하면 "
-                           "바로 입고할 수 있습니다.")
-                dq1, dq2, dq3, dq4 = st.columns([2, 1, 1, 1])
-                _dq_name = dq1.text_input("자재명 *",
-                    value=_dr_kw.strip(), key="dr_new_name")
-                _dq_type = dq2.text_input("재질", key="dr_new_type")
-                _dq_spec = dq3.text_input("규격", key="dr_new_spec")
-                _dq_proc = dq4.selectbox("조달", ["", "도급", "사급"],
-                                         key="dr_new_proc")
-                if st.button("자재 즉석 등록", key="dr_new_btn",
-                             disabled=not (_dq_name or "").strip()):
-                    _dq_sim = similar_materials(_dq_name, _dq_spec)
-                    if _dq_sim:
-                        st.error(
-                            "같은 자재로 보이는 항목이 이미 있습니다 — "
-                            "위 검색에 아래 이름을 넣어 선택하세요: "
-                            + " · ".join(
-                                f"{m['material_id']} {m['raw_name']}"
-                                for m in _dq_sim))
-                    else:
-                        try:
-                            _dq_mid = next_material_id()
-                            _db.insert("materials", [{
-                                "material_id": _dq_mid,
-                                "raw_name": _dq_name.strip(),
-                                "material_type":
-                                    (_dq_type or "").strip() or None,
-                                "spec": (_dq_spec or "").strip() or None,
-                                "unit": "EA", "stock_qty": 0,
-                                "procurement_type": _dq_proc or None,
-                            }])
-                            st.success(f"✅ 자재 등록: {_dq_mid} | "
-                                       f"{_dq_name.strip()} — 위 검색에서 "
-                                       "선택 후 입고를 진행하세요.")
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"등록 실패: {e}")
+                # 자재 등록 경로는 마스터·발주 입고 매핑 2곳으로 통일
+                # (2026-08-19 사용자 확정 — 중구난방 등록 방지)
+                st.warning("일치 자재 없음 — 신규 자재는 **마스터 관리 → "
+                           "자재 편집 → 신규 자재 등록**에서 추가한 뒤 "
+                           "여기서 검색해 입고하세요.")
         with dr2:
             _dr_qty = st.number_input("입고 수량", min_value=0.0,
                 step=1.0, key="dr_qty")
