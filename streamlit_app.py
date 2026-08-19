@@ -7961,19 +7961,40 @@ elif page == "발주/입고":
                             _db.insert("purchase_orders", [_po_record])
                         po_row = _db.fetch_one("purchase_orders", f"po_number=eq.{po_no}", "po_id")
                         if po_row:
+                            # 발주 시점 자재 사전 연결 — 제품 BOM 소재를
+                            # 라인에 저장해 입고 매핑 단계를 없앤다
+                            # (Migration 040, 2026-08-19)
+                            _bom_map = {}
+                            _pids9 = {it.get("product_id")
+                                      for it in st.session_state.po_items
+                                      if it.get("product_id")}
+                            if _pids9:
+                                try:
+                                    _pstr9 = ",".join(f'"{p}"'
+                                                      for p in _pids9)
+                                    for _b9 in fetch("bom",
+                                            "product_id,material_id",
+                                            f"product_id=in.({_pstr9})"
+                                            "&material_id=not.is.null",
+                                            limit=300):
+                                        _bom_map.setdefault(
+                                            _b9["product_id"],
+                                            _b9["material_id"])
+                                except Exception:
+                                    pass
                             _db.insert("purchase_order_items", [{
                                 "po_id": po_row["po_id"], "line_no": i + 1,
                                 "item_name": it["item_name"], "spec": it.get("spec") or None,
                                 "product_id": it.get("product_id"),
+                                "material_id": _bom_map.get(
+                                    it.get("product_id")),
+                                "material": (it.get("material")
+                                             or "").strip() or None,
                                 "qty": it["qty"], "unit": "EA",
                                 "unit_price": it["unit_price"],
                                 "amount": it["qty"] * it["unit_price"],
-                                # 메모 + 재질 합쳐 remark에 저장
-                                "remark": (
-                                    (it.get("memo") or "") +
-                                    (" / " + it["material"] if it.get("memo") and it.get("material") else "") +
-                                    (it.get("material") or "" if not it.get("memo") else "")
-                                ) or None,
+                                "remark": (it.get("memo") or "").strip()
+                                          or None,
                             } for i, it in enumerate(st.session_state.po_items)])
                             st.info(f"💾 발주 이력 저장 (po_id={po_row['po_id']})")
                     except Exception as e:
@@ -8072,6 +8093,7 @@ elif page == "발주/입고":
                 item_df = pd.DataFrame([{
                     "NO": i.get("line_no"),
                     "품명": i.get("item_name"),
+                    "재질": i.get("material") or "-",
                     "규격": i.get("spec") or "-",
                     "수량": i.get("qty"),
                     "단가": int(i.get("unit_price") or 0),
