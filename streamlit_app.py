@@ -5897,8 +5897,14 @@ elif page == "출고 관리":
                     _by_soi = {}
                     for _x, _q in _cf_rows:
                         _e = _by_soi.setdefault(_x["soi_id"],
-                                                {"x": _x, "q": 0.0})
+                                                {"x": _x, "q": 0.0,
+                                                 "scheds": {}})
                         _e["q"] += _q
+                        # 등록 때 지정한 회차 — 확정 충당에서 우선 존중
+                        if _x.get("sched_id"):
+                            _e["scheds"][_x["sched_id"]] = (
+                                _e["scheds"].get(_x["sched_id"], 0.0)
+                                + float(_q))
                     _sois_str = ",".join(str(s) for s in _by_soi)
                     _fresh = {l["soi_id"]: l for l in fetch(
                         "sales_order_items",
@@ -5938,7 +5944,34 @@ elif page == "출고 관리":
                             _prev6 = {r["sched_id"]:
                                       float(r.get("delivered_qty") or 0)
                                       for r in _rr}
-                            _al6 = _cf_alloc(_rr, _q5, _cf_date)
+                            # ① 등록 때 지정한 회차부터 충당 — 출고
+                            # 리스트가 스케줄 기반이면 그 회차를 존중.
+                            # (확정이 날짜 재배분만 해서 지정 회차가
+                            # 선점돼 있으면 미래 회차로 밀리던 문제,
+                            # 2026-08-19 MRG6-07)
+                            _rr2 = [dict(r) for r in _rr]
+                            _rr2_by = {r["sched_id"]: r for r in _rr2}
+                            _left6, _al6 = _q5, {}
+                            for _psid, _pq in (_e.get("scheds")
+                                               or {}).items():
+                                _r6 = _rr2_by.get(_psid)
+                                if not _r6 or _left6 <= 0:
+                                    continue
+                                _room6 = (float(_r6.get("qty") or 0)
+                                          - float(_r6.get(
+                                              "delivered_qty") or 0))
+                                _take6 = min(_room6, float(_pq), _left6)
+                                if _take6 > 0:
+                                    _r6["delivered_qty"] = (
+                                        float(_r6.get("delivered_qty")
+                                              or 0) + _take6)
+                                    _al6[_psid] = _r6["delivered_qty"]
+                                    _left6 -= _take6
+                            # ② 잔여는 기존 규칙 (당일 회차 → 오래된
+                            # 미충당 회차)
+                            if _left6 > 0:
+                                _al6.update(_cf_alloc(_rr2, _left6,
+                                                      _cf_date))
                             for _sid6, _nd in _al6.items():
                                 _db.update("so_delivery_schedule",
                                            f"sched_id=eq.{_sid6}",
