@@ -776,6 +776,39 @@ def routing_out_steps(routing, stage="PRODUCT"):
             if s.get("step_kind") == "OUTSOURCE" and s.get("stage") == stage]
 
 
+def similar_materials(name=None, spec=None, limit=5):
+    """기존 자재 중복 후보 탐지 — 신규 등록 전 확인용 (2026-08-19).
+
+    매입 명칭('STS316L환봉 125￠16ℓ')과 마스터 명칭('S316 Ø125*16')이
+    달라도 규격(φ/Ø/￠·공백·끝 L 정규화)이 같으면 같은 자재일 가능성이
+    높다 (M222↔M060 사례). 규격 일치를 우선, 이름 포함관계는 보조.
+    """
+    def _nk(x):
+        x = (x or "").strip().lower()
+        for a, b in (("￠", "ø"), ("φ", "ø"), ("¢", "ø"), ("ℓ", "l"),
+                     ("×", "*"), (" ", "")):
+            x = x.replace(a, b)
+        return x.rstrip("l")
+
+    _ks, _kn = _nk(spec), _nk(name)
+    if len(_ks) < 4 and len(_kn) < 6:
+        return []
+    try:
+        _rows = fetch("materials",
+                      "material_id,raw_name,material_type,spec",
+                      "archived_at=is.null", limit=3000)
+    except Exception:
+        return []
+    _out = []
+    for m in _rows:
+        _ms, _mn = _nk(m.get("spec")), _nk(m.get("raw_name"))
+        if ((len(_ks) >= 4 and _ms and _ks == _ms)
+                or (len(_kn) >= 6 and _mn
+                    and (_kn in _mn or _mn in _kn))):
+            _out.append(m)
+    return _out[:limit]
+
+
 def next_material_id():
     """자재 ID 자동 채번 — M### (기존 최대 번호 +1)"""
     try:
@@ -2650,11 +2683,20 @@ elif page == "마스터 관리":
                     f"pn=eq.{_pn_new}", "product_id,pn")
             except Exception:
                 existing = None
+            _np_sim = (similar_materials(_np_newmat["raw_name"],
+                                         _np_newmat.get("spec"))
+                       if _np_newmat else [])
             if existing:
                 st.error(f"⚠️ 품번 '{_pn_new}' 이 이미 존재합니다. "
                          f"(product_id={existing['product_id']})")
             elif _np_mode == "신규 자재 등록" and not _np_newmat:
                 st.error("신규 자재명을 입력하세요.")
+            elif _np_sim:
+                st.error(
+                    "같은 자재로 보이는 항목이 이미 있습니다 — "
+                    "'기존 자재 검색'으로 바꿔 선택하세요: "
+                    + " · ".join(f"{m['material_id']} {m['raw_name']}"
+                                 for m in _np_sim))
             else:
                 try:
                     latest = fetch("products", "product_id",
@@ -2800,6 +2842,9 @@ elif page == "마스터 관리":
                                      key="nm_proc")
             _nm_stock = nm6.number_input("초기 재고 (EA)", 0.0,
                 step=1.0, key="nm_stock")
+            _nm_force = st.checkbox(
+                "유사 자재 경고 무시하고 등록 (다른 자재임을 확인함)",
+                key="nm_force")
             if st.button("💾 자재 등록", type="primary", key="nm_btn",
                          disabled=not (_nm_name or "").strip()):
                 _nn = _nm_name.strip()
@@ -2811,11 +2856,24 @@ elif page == "마스터 관리":
                         limit=1)
                 except Exception:
                     _dup = []
+                _sim = ([] if _nm_force
+                        else similar_materials(_nn, _nm_spec))
                 if _dup:
                     st.error(f"이미 등록된 자재입니다: "
                              f"{_dup[0]['material_id']} | "
                              f"{_dup[0]['raw_name']} | "
                              f"{_dup[0].get('spec') or '-'}")
+                elif _sim:
+                    st.error(
+                        "같은 자재로 보이는 항목이 있습니다 — 표기만 "
+                        "다른 중복이면 기존 자재를 쓰세요 (매입 명칭 vs "
+                        "마스터 명칭 사례): "
+                        + " · ".join(
+                            f"{m['material_id']} {m['raw_name']} "
+                            f"({m.get('material_type') or '-'})"
+                            for m in _sim)
+                        + " — 정말 다른 자재면 위 '경고 무시' 체크 후 "
+                        "다시 등록하세요.")
                 else:
                     try:
                         _all_mid = fetch("materials", "material_id",
@@ -8370,22 +8428,34 @@ elif page == "발주/입고":
                                      key=f"rcvp_new_b_{_r['poi_id']}",
                                      disabled=not (_rq_name
                                                    or "").strip()):
-                            try:
-                                _rq_mid = next_material_id()
-                                _db.insert("materials", [{
-                                    "material_id": _rq_mid,
-                                    "raw_name": _rq_name.strip(),
-                                    "spec": (_rq_spec or "").strip()
-                                            or None,
-                                    "unit": "EA", "stock_qty": 0,
-                                    "procurement_type": _rq_proc
-                                                        or None,
-                                }])
-                                st.success(f"✅ 자재 등록: {_rq_mid} — "
-                                           "자동으로 다시 매핑됩니다.")
-                                st.rerun()
-                            except Exception as e:
-                                st.error(f"등록 실패: {e}")
+                            _rq_sim = similar_materials(_rq_name,
+                                                        _rq_spec)
+                            if _rq_sim:
+                                st.error(
+                                    "같은 자재로 보이는 항목이 이미 "
+                                    "있습니다 — 검색에서 선택하세요: "
+                                    + " · ".join(
+                                        f"{m['material_id']} "
+                                        f"{m['raw_name']}"
+                                        for m in _rq_sim))
+                            else:
+                                try:
+                                    _rq_mid = next_material_id()
+                                    _db.insert("materials", [{
+                                        "material_id": _rq_mid,
+                                        "raw_name": _rq_name.strip(),
+                                        "spec": (_rq_spec or "").strip()
+                                                or None,
+                                        "unit": "EA", "stock_qty": 0,
+                                        "procurement_type": _rq_proc
+                                                            or None,
+                                    }])
+                                    st.success(
+                                        f"✅ 자재 등록: {_rq_mid} — "
+                                        "자동으로 다시 매핑됩니다.")
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"등록 실패: {e}")
 
                 # 발주 초과 경고 (차단 없음 — 실입고 그대로 기록)
                 _over = [(r, q) for r, q in _todo
@@ -8566,23 +8636,32 @@ elif page == "발주/입고":
                                          key="dr_new_proc")
                 if st.button("자재 즉석 등록", key="dr_new_btn",
                              disabled=not (_dq_name or "").strip()):
-                    try:
-                        _dq_mid = next_material_id()
-                        _db.insert("materials", [{
-                            "material_id": _dq_mid,
-                            "raw_name": _dq_name.strip(),
-                            "material_type":
-                                (_dq_type or "").strip() or None,
-                            "spec": (_dq_spec or "").strip() or None,
-                            "unit": "EA", "stock_qty": 0,
-                            "procurement_type": _dq_proc or None,
-                        }])
-                        st.success(f"✅ 자재 등록: {_dq_mid} | "
-                                   f"{_dq_name.strip()} — 위 검색에서 "
-                                   "선택 후 입고를 진행하세요.")
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"등록 실패: {e}")
+                    _dq_sim = similar_materials(_dq_name, _dq_spec)
+                    if _dq_sim:
+                        st.error(
+                            "같은 자재로 보이는 항목이 이미 있습니다 — "
+                            "위 검색에 아래 이름을 넣어 선택하세요: "
+                            + " · ".join(
+                                f"{m['material_id']} {m['raw_name']}"
+                                for m in _dq_sim))
+                    else:
+                        try:
+                            _dq_mid = next_material_id()
+                            _db.insert("materials", [{
+                                "material_id": _dq_mid,
+                                "raw_name": _dq_name.strip(),
+                                "material_type":
+                                    (_dq_type or "").strip() or None,
+                                "spec": (_dq_spec or "").strip() or None,
+                                "unit": "EA", "stock_qty": 0,
+                                "procurement_type": _dq_proc or None,
+                            }])
+                            st.success(f"✅ 자재 등록: {_dq_mid} | "
+                                       f"{_dq_name.strip()} — 위 검색에서 "
+                                       "선택 후 입고를 진행하세요.")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"등록 실패: {e}")
         with dr2:
             _dr_qty = st.number_input("입고 수량", min_value=0.0,
                 step=1.0, key="dr_qty")
