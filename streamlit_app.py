@@ -605,6 +605,18 @@ def routing_out_steps(routing, stage="PRODUCT"):
             if s.get("step_kind") == "OUTSOURCE" and s.get("stage") == stage]
 
 
+def next_material_id():
+    """자재 ID 자동 채번 — M### (기존 최대 번호 +1)"""
+    try:
+        _rows = fetch("materials", "material_id",
+                      "material_id=like.M*", limit=5000)
+        _mx = max((int(r["material_id"][1:]) for r in _rows
+                   if r["material_id"][1:].isdigit()), default=0)
+    except Exception:
+        _mx = 0
+    return f"M{_mx + 1:03d}"
+
+
 def wo_stage_qty(t):
     """wo_tracking 행 → 단계별 수량. 상태는 행위의 부산물 원칙 —
     모든 단계 수량은 누적 필드에서 유도 (직접 저장 없음)."""
@@ -2306,137 +2318,184 @@ elif page == "마스터 관리":
 
         st.divider()
         st.markdown("##### ➕ 신규 제품 추가")
-        with st.form("new_prod_form"):
-            npc1, npc2, npc3 = st.columns(3)
-            with npc1:
-                new_pn = st.text_input("품번 * (고유)",
-                    placeholder="예: MRG6-07")
-            with npc2:
-                new_cust = st.text_input("고객사",
-                    placeholder="예: 미진정밀")
-            with npc3:
-                new_iname = st.text_input("품명",
-                    placeholder="예: 40A BELLOWS VALVE GLAND NUT")
+        npc1, npc2, npc3 = st.columns(3)
+        with npc1:
+            new_pn = st.text_input("품번 * (고유)", key="np_pn",
+                placeholder="예: MRG6-07")
+        with npc2:
+            # 고객사 — 기존 거래처에서 검색 선택(입력하면 필터됨),
+            # 목록에 없으면 직접 입력
+            try:
+                _np_custs = fetch("vendors", "name",
+                    'trade_type=in.("매출","혼합")'
+                    "&archived_at=is.null&order=name", limit=300)
+            except Exception:
+                _np_custs = []
+            _np_c_opts = (["(없음)"]
+                          + [v["name"] for v in _np_custs]
+                          + ["(직접 입력)"])
+            _np_c_pick = st.selectbox("고객사 — 선택 (입력하면 검색)",
+                                      _np_c_opts, key="np_cust_pick")
+            if _np_c_pick == "(직접 입력)":
+                new_cust = st.text_input("고객사 직접 입력",
+                                         key="np_cust_free")
+            else:
+                new_cust = ("" if _np_c_pick == "(없음)" else _np_c_pick)
+        with npc3:
+            new_iname = st.text_input("품명", key="np_iname",
+                placeholder="예: 40A BELLOWS VALVE GLAND NUT")
 
-            npc4, npc5, npc6 = st.columns(3)
-            with npc4:
-                new_subclass = st.text_input("제품군",
-                    placeholder="예: YPBV, LJF, ABV")
-            with npc5:
-                new_mat = st.text_input("재질",
-                    placeholder="예: STS630, SCM440")
-            with npc6:
-                new_proc = st.selectbox("조달", ["", "도급", "사급"],
-                    key="new_prod_proc")
+        npc4, npc5, npc6 = st.columns(3)
+        with npc4:
+            new_subclass = st.text_input("제품군", key="np_sub",
+                placeholder="예: YPBV, LJF, ABV")
+        with npc5:
+            new_mat = st.text_input("재질", key="np_mat",
+                placeholder="예: STS630, SCM440")
+        with npc6:
+            new_proc = st.selectbox("조달", ["", "도급", "사급"],
+                key="new_prod_proc")
 
-            npc7, npc8 = st.columns([2, 1])
-            with npc7:
-                new_spec = st.text_input("자재 규격",
-                    placeholder="예: ⌀25 × 400, S630")
-            with npc8:
-                new_drawing = st.text_input("도면번호 (선택)")
+        npc7, npc8 = st.columns([2, 1])
+        with npc7:
+            new_spec = st.text_input("자재 규격", key="np_spec",
+                placeholder="예: ⌀25 × 400, S630")
+        with npc8:
+            new_drawing = st.text_input("도면번호 (선택)", key="np_drw")
 
-            new_caution = st.text_input("주의사항 (선택)",
-                placeholder="예: 진공열처리 필수")
-            new_matname = st.text_input(
-                "기존 자재 연결 (선택 — 자재명이 정확히 일치하면 BOM "
-                "자동 생성)",
-                placeholder="예: 20AHYBV-X1413 — 자재 편집의 자재명 그대로",
-                help="공용 자재를 쓰는 신제품이면 여기에 자재명을 넣으세요. "
-                     "1개당 1EA 로 BOM 이 생성되며, 환산이 다르면 BOM "
-                     "편집에서 수량을 조정하면 됩니다.")
+        new_caution = st.text_input("주의사항 (선택)", key="np_caution",
+            placeholder="예: 진공열처리 필수")
 
-            if st.form_submit_button("➕ 제품 추가", type="primary"):
-                if not new_pn:
-                    st.error("품번은 필수입니다.")
+        # ── 자재 연결 — 검색 선택 / 신규 등록 / 나중에 (2026-08-12) ──
+        _np_mode = st.radio("자재 연결",
+            ["기존 자재 검색", "신규 자재 등록", "연결 안 함"],
+            horizontal=True, key="np_mat_mode",
+            help="공용 자재면 검색해서 선택 — BOM(1EA/개)이 자동 생성"
+                 "됩니다. 새 소재면 여기서 바로 등록됩니다.")
+        _np_matrow, _np_newmat = None, None
+        if _np_mode == "기존 자재 검색":
+            _np_mq = st.text_input("자재 검색", key="np_mq",
+                placeholder="자재명 / 재질 / 규격 — 예: 20AHYBV, S45C")
+            if (_np_mq or "").strip():
+                _np_kw = _np_mq.strip()
+                try:
+                    _np_cands = fetch("materials",
+                        "material_id,raw_name,material_type,spec",
+                        f"or=(raw_name.ilike.*{_np_kw}*,"
+                        f"material_type.ilike.*{_np_kw}*,"
+                        f"spec.ilike.*{_np_kw}*)"
+                        "&archived_at=is.null&order=raw_name", limit=15)
+                except Exception:
+                    _np_cands = []
+                if _np_cands:
+                    _np_lbls = [
+                        f"{m['material_id']} | {m['raw_name']}"
+                        + (f" | {m['spec']}" if m.get("spec") else "")
+                        for m in _np_cands]
+                    _np_msel = st.selectbox(
+                        f"자재 선택 ({len(_np_cands)}건)", _np_lbls,
+                        key="np_msel")
+                    _np_matrow = _np_cands[_np_lbls.index(_np_msel)]
                 else:
-                    # 중복 체크
-                    try:
-                        existing = _db.fetch_one("products",
-                            f"pn=eq.{new_pn.strip()}",
-                            "product_id,pn")
-                    except Exception:
-                        existing = None
-                    if existing:
-                        st.error(f"⚠️ 품번 '{new_pn}' 이 이미 존재합니다. "
-                                 f"(product_id={existing['product_id']})")
-                    else:
-                        # 자동 product_id 생성 — P + 다음 번호
-                        try:
-                            latest = fetch("products", "product_id",
-                                "product_id=like.P*&order=product_id.desc",
-                                limit=1)
-                        except Exception:
-                            latest = []
-                        if latest and latest[0]["product_id"].startswith("P"):
-                            try:
-                                next_n = int(latest[0]["product_id"][1:]) + 1
-                            except Exception:
-                                next_n = 9000
-                        else:
-                            next_n = 1
-                        new_pid = f"P{next_n:04d}"
+                    st.warning("일치 자재 없음 — '신규 자재 등록'으로 "
+                               "바꾸면 여기서 바로 만들 수 있습니다.")
+        elif _np_mode == "신규 자재 등록":
+            nq1, nq2 = st.columns([2, 1])
+            _np_nm_name = nq1.text_input("자재명 * (신규)",
+                key="np_nm_name", placeholder="예: 150AHYBV-X1413")
+            _np_nm_sup = nq2.text_input("주공급사", key="np_nm_sup")
+            st.caption("재질·규격·조달은 위 제품 입력값을 그대로 "
+                       "사용합니다. 등록 후 BOM(1EA/개)이 자동 연결됩니다.")
+            if (_np_nm_name or "").strip():
+                _np_newmat = {
+                    "raw_name": _np_nm_name.strip(),
+                    "material_type": (new_mat or "").strip() or None,
+                    "spec": (new_spec or "").strip() or None,
+                    "main_supplier": (_np_nm_sup or "").strip() or None,
+                    "procurement_type": new_proc or None,
+                }
 
-                        try:
-                            _db.insert("products", [{
-                                "product_id": new_pid,
-                                "pn": new_pn.strip(),
-                                "customer": new_cust.strip() or None,
-                                "item_name": new_iname.strip() or None,
-                                "sub_class": new_subclass.strip() or None,
-                                "material": new_mat.strip() or None,
-                                "raw_material_spec": new_spec.strip() or None,
-                                "procurement_type": new_proc or None,
-                                "drawing_no": new_drawing.strip() or None,
-                                "caution": new_caution.strip() or None,
-                                "active": "1",
-                            }])
-                            # 기존 자재 자동 연결 → BOM 생성 (선택)
-                            _bom_msg = " · 원가 분석에서 비용 정보 입력"
-                            _mn = (new_matname or "").strip()
-                            if _mn:
-                                try:
-                                    _mrow = _db.fetch_one("materials",
-                                        f"raw_name=eq.{_mn}"
-                                        "&archived_at=is.null",
-                                        "material_id,raw_name")
-                                except Exception:
-                                    _mrow = None
-                                if _mrow:
-                                    try:
-                                        _db.insert("bom", [{
-                                            "product_id": new_pid,
-                                            "material_id":
-                                                _mrow["material_id"],
-                                            "raw_material_name":
-                                                _mrow["raw_name"],
-                                            "qty_per_pc": 1.0,
-                                            "shared_factor": 1,
-                                            "process_type": "MATERIAL",
-                                            "source": "신규 제품 자동 연결",
-                                        }])
-                                        _db.update("products",
-                                            f"product_id=eq.{new_pid}",
-                                            {"raw_material_name":
-                                                 _mrow["raw_name"],
-                                             "bom_material_name":
-                                                 _mrow["raw_name"]})
-                                        _bom_msg = (
-                                            f" · 자재 {_mrow['material_id']}"
-                                            f" ({_mrow['raw_name']}) BOM "
-                                            "자동 연결됨 (1EA/개 — 환산이 "
-                                            "다르면 BOM 편집에서 조정)")
-                                    except Exception as e2:
-                                        _bom_msg = f" · BOM 연결 실패: {e2}"
-                                else:
-                                    _bom_msg = (f" · 자재 '{_mn}' 일치 "
-                                                "없음 — BOM 편집에서 "
-                                                "연결하세요")
-                            st.success(f"✅ 제품 추가: **{new_pid}** | "
-                                       f"{new_pn}{_bom_msg}")
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"추가 실패: {e}")
+        if st.button("➕ 제품 추가", type="primary", key="np_add_btn",
+                     disabled=not (new_pn or "").strip()):
+            _pn_new = new_pn.strip()
+            try:
+                existing = _db.fetch_one("products",
+                    f"pn=eq.{_pn_new}", "product_id,pn")
+            except Exception:
+                existing = None
+            if existing:
+                st.error(f"⚠️ 품번 '{_pn_new}' 이 이미 존재합니다. "
+                         f"(product_id={existing['product_id']})")
+            elif _np_mode == "신규 자재 등록" and not _np_newmat:
+                st.error("신규 자재명을 입력하세요.")
+            else:
+                try:
+                    latest = fetch("products", "product_id",
+                        "product_id=like.P*&order=product_id.desc",
+                        limit=1)
+                except Exception:
+                    latest = []
+                if latest and latest[0]["product_id"].startswith("P"):
+                    try:
+                        next_n = int(latest[0]["product_id"][1:]) + 1
+                    except Exception:
+                        next_n = 9000
+                else:
+                    next_n = 1
+                new_pid = f"P{next_n:04d}"
+                try:
+                    _db.insert("products", [{
+                        "product_id": new_pid,
+                        "pn": _pn_new,
+                        "customer": (new_cust or "").strip() or None,
+                        "item_name": (new_iname or "").strip() or None,
+                        "sub_class":
+                            (new_subclass or "").strip() or None,
+                        "material": (new_mat or "").strip() or None,
+                        "raw_material_spec":
+                            (new_spec or "").strip() or None,
+                        "procurement_type": new_proc or None,
+                        "drawing_no":
+                            (new_drawing or "").strip() or None,
+                        "caution": (new_caution or "").strip() or None,
+                        "active": "1",
+                    }])
+                    # 자재 연결 (선택 자재 or 신규 등록) → BOM 자동 생성
+                    _bom_msg = " · 자재 연결 없음 — BOM 편집에서 연결 가능"
+                    if _np_newmat is not None:
+                        _new_mid = next_material_id()
+                        _db.insert("materials", [{
+                            "material_id": _new_mid, "unit": "EA",
+                            "stock_qty": 0, **_np_newmat}])
+                        _np_matrow = {"material_id": _new_mid,
+                                      "raw_name": _np_newmat["raw_name"]}
+                        _bom_msg = f" · 신규 자재 {_new_mid} 등록"
+                    if _np_matrow is not None:
+                        _db.insert("bom", [{
+                            "product_id": new_pid,
+                            "material_id": _np_matrow["material_id"],
+                            "raw_material_name": _np_matrow["raw_name"],
+                            "qty_per_pc": 1.0,
+                            "shared_factor": 1,
+                            "process_type": "MATERIAL",
+                            "source": "신규 제품 자동 연결",
+                        }])
+                        _db.update("products",
+                            f"product_id=eq.{new_pid}",
+                            {"raw_material_name": _np_matrow["raw_name"],
+                             "bom_material_name": _np_matrow["raw_name"]})
+                        _bom_msg = (f" · 자재 {_np_matrow['material_id']} "
+                                    f"({_np_matrow['raw_name']}) BOM 자동 "
+                                    "연결 (1EA/개 — 환산 다르면 BOM "
+                                    "편집에서 조정)")
+                    for _k in ("np_pn", "np_iname", "np_mq",
+                               "np_nm_name"):
+                        st.session_state.pop(_k, None)
+                    st.success(f"✅ 제품 추가: **{new_pid}** | "
+                               f"{_pn_new}{_bom_msg}")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"추가 실패: {e}")
 
 
     # ─── Tab: 자재 편집 ───
@@ -8110,8 +8169,36 @@ elif page == "발주/입고":
                     key="dr_mp")
                 _dr_pick = _dr_cands[_dr_labels.index(_dr_sel)]
             elif (_dr_kw or "").strip():
-                st.warning("일치 자재 없음 — 신규 자재는 마스터 관리 → "
-                           "자재 편집에서 먼저 등록하세요.")
+                # 일치 자재 없음 → 즉석 등록 (플랜지 등 미등록 소재도
+                # 이 화면에서 바로 등록하고 이어서 입고)
+                st.warning("일치 자재 없음 — 아래에서 즉석 등록하면 "
+                           "바로 입고할 수 있습니다.")
+                dq1, dq2, dq3, dq4 = st.columns([2, 1, 1, 1])
+                _dq_name = dq1.text_input("자재명 *",
+                    value=_dr_kw.strip(), key="dr_new_name")
+                _dq_type = dq2.text_input("재질", key="dr_new_type")
+                _dq_spec = dq3.text_input("규격", key="dr_new_spec")
+                _dq_proc = dq4.selectbox("조달", ["", "도급", "사급"],
+                                         key="dr_new_proc")
+                if st.button("자재 즉석 등록", key="dr_new_btn",
+                             disabled=not (_dq_name or "").strip()):
+                    try:
+                        _dq_mid = next_material_id()
+                        _db.insert("materials", [{
+                            "material_id": _dq_mid,
+                            "raw_name": _dq_name.strip(),
+                            "material_type":
+                                (_dq_type or "").strip() or None,
+                            "spec": (_dq_spec or "").strip() or None,
+                            "unit": "EA", "stock_qty": 0,
+                            "procurement_type": _dq_proc or None,
+                        }])
+                        st.success(f"✅ 자재 등록: {_dq_mid} | "
+                                   f"{_dq_name.strip()} — 위 검색에서 "
+                                   "선택 후 입고를 진행하세요.")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"등록 실패: {e}")
         with dr2:
             _dr_qty = st.number_input("입고 수량", min_value=0.0,
                 step=1.0, key="dr_qty")
