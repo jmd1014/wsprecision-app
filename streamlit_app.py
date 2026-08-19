@@ -5657,6 +5657,14 @@ elif page == "출고 관리":
             "정정 저장 → 출고 확정** 순서로 진행합니다. 확정된 전표는 "
             "언제든 출고 리스트·거래명세서를 다시 발행할 수 있습니다.")
 
+        # 확정 시 감지된 미래 회차 충당 경고 (rerun 후에도 표시)
+        if st.session_state.get("cf_alloc_warn"):
+            for _w9 in st.session_state["cf_alloc_warn"]:
+                st.warning(_w9)
+            if st.button("경고 확인 (닫기)", key="cf_warn_x"):
+                st.session_state.pop("cf_alloc_warn", None)
+                st.rerun()
+
         _cf_filter = st.radio("전표 상태", ["작성중", "확정", "전체"],
                               horizontal=True, key="cf_filter",
                               label_visibility="collapsed")
@@ -5927,11 +5935,33 @@ elif page == "출고 관리":
                                 "sched_id,due_date,qty,delivered_qty",
                                 f"soi_id=eq.{_soi5}"
                                 "&order=due_date.asc,seq.asc", limit=100)
-                            for _sid6, _nd in _cf_alloc(
-                                    _rr, _q5, _cf_date).items():
+                            _prev6 = {r["sched_id"]:
+                                      float(r.get("delivered_qty") or 0)
+                                      for r in _rr}
+                            _al6 = _cf_alloc(_rr, _q5, _cf_date)
+                            for _sid6, _nd in _al6.items():
                                 _db.update("so_delivery_schedule",
                                            f"sched_id=eq.{_sid6}",
                                            {"delivered_qty": _nd})
+                            # 미래 회차 충당 감지 — 오늘 이전 회차가 이미
+                            # 완료(이관 기납품 선점 등)라 이번 출고가
+                            # 미래 회차로 흘러가면 확정 후 경고로 표시
+                            # (MRG6-07 8/19 회차 잠식, 2026-08-19 사례)
+                            _fut6 = [str(r["due_date"])[:10]
+                                     for r in _rr
+                                     if r["sched_id"] in _al6
+                                     and str(r["due_date"])[:10]
+                                     > str(_cf_date)[:10]
+                                     and _al6[r["sched_id"]]
+                                     > _prev6.get(r["sched_id"], 0)]
+                            if _fut6:
+                                st.session_state.setdefault(
+                                    "cf_alloc_warn", []).append(
+                                    f"{_x5.get('pn')} — 이번 출고가 미래 "
+                                    f"회차({', '.join(_fut6)})로 "
+                                    "충당됐습니다. 선납이 아니라면 이전 "
+                                    "회차의 납품완료가 과대(이관 기납품 "
+                                    "선점)인지 납품 스케줄에서 확인하세요.")
                         except Exception:
                             pass
                         _pid5 = _x5.get("product_id")
