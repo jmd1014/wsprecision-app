@@ -7956,17 +7956,39 @@ elif page == "발주/입고":
                     st.markdown(f"**자재 매핑 — {_r.get('item_name')}** "
                                 "(최초 1회, 이후 재사용)")
                     _bm = None
+                    _inm = (_r.get("item_name") or "").strip()
+                    # ① 같은 품명으로 과거 발주에서 매핑된 자재 재사용
                     try:
-                        _ph = fetch("products", "product_id",
-                            f"pn=eq.{_r.get('item_name', '')}", limit=1)
-                        if _ph:
-                            _bh = fetch("bom", "material_id",
-                                f"product_id=eq.{_ph[0]['product_id']}"
-                                "&material_id=not.is.null", limit=1)
-                            if _bh:
-                                _bm = _bh[0]["material_id"]
+                        _prev = fetch("purchase_order_items",
+                            "material_id",
+                            f"item_name=eq.{_inm}"
+                            "&material_id=not.is.null", limit=1)
+                        if _prev:
+                            _bm = _prev[0]["material_id"]
                     except Exception:
                         pass
+                    # ② 품명이 제품 품번이면 BOM 자재 추천 — 발주 품명에
+                    #    규격이 붙는 관례('32LJF-M (Ø135*16L)') 대응으로
+                    #    괄호 앞부분으로도 매칭 시도
+                    if not _bm:
+                        _png = _inm.split("(")[0].strip()
+                        for _try_pn in dict.fromkeys([_inm, _png]):
+                            if not _try_pn:
+                                continue
+                            try:
+                                _ph = fetch("products", "product_id",
+                                    f"pn=eq.{_try_pn}", limit=1)
+                                if _ph:
+                                    _bh = fetch("bom", "material_id",
+                                        f"product_id="
+                                        f"eq.{_ph[0]['product_id']}"
+                                        "&material_id=not.is.null",
+                                        limit=1)
+                                    if _bh:
+                                        _bm = _bh[0]["material_id"]
+                                        break
+                            except Exception:
+                                pass
                     _mk = st.text_input(
                         "자재 검색", key=f"rcvp_mq_{_r['poi_id']}",
                         label_visibility="collapsed",
@@ -8000,8 +8022,38 @@ elif page == "발주/입고":
                         _map_pick[_r["poi_id"]] = \
                             _mc[_ml.index(_mp)]["material_id"]
                     else:
-                        st.caption("일치 자재 없음 — 다른 키워드를 넣거나 "
-                                   "마스터 관리 → 자재 편집에서 등록하세요.")
+                        # 일치 자재 없음 → 즉석 등록 (발주 품명 프리필)
+                        st.caption("일치 자재 없음 — 아래에서 즉석 등록 "
+                                   "후 이어서 매핑하세요.")
+                        rq1, rq2, rq3 = st.columns([2, 1, 1])
+                        _rq_name = rq1.text_input("자재명 *",
+                            value=(_mk or "").strip() or _inm,
+                            key=f"rcvp_new_n_{_r['poi_id']}")
+                        _rq_spec = rq2.text_input("규격",
+                            key=f"rcvp_new_s_{_r['poi_id']}")
+                        _rq_proc = rq3.selectbox("조달",
+                            ["", "도급", "사급"],
+                            key=f"rcvp_new_p_{_r['poi_id']}")
+                        if st.button("자재 즉석 등록",
+                                     key=f"rcvp_new_b_{_r['poi_id']}",
+                                     disabled=not (_rq_name
+                                                   or "").strip()):
+                            try:
+                                _rq_mid = next_material_id()
+                                _db.insert("materials", [{
+                                    "material_id": _rq_mid,
+                                    "raw_name": _rq_name.strip(),
+                                    "spec": (_rq_spec or "").strip()
+                                            or None,
+                                    "unit": "EA", "stock_qty": 0,
+                                    "procurement_type": _rq_proc
+                                                        or None,
+                                }])
+                                st.success(f"✅ 자재 등록: {_rq_mid} — "
+                                           "자동으로 다시 매핑됩니다.")
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"등록 실패: {e}")
 
                 # 발주 초과 경고 (차단 없음 — 실입고 그대로 기록)
                 _over = [(r, q) for r, q in _todo
