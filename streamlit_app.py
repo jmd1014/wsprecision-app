@@ -568,6 +568,145 @@ def toss_table(rows, columns=None, *, badge_cols=(), num_cols=(),
         unsafe_allow_html=True)
 
 
+# ─── 토스 스타일 선택 그리드 (2026-08-19) ───
+# toss_table(HTML)은 보기 전용이라 클릭을 못 받는다 — 선택이 필요한
+# 리스트는 이 그리드로 통일: 토스 CSS를 입힌 AgGrid(DOM), 행 클릭 =
+# 선택. 반환값은 선택된 행의 인덱스 (미선택·미탑재 시 0 = 첫 행).
+_TOSS_GRID_CSS = {
+    ".ag-root-wrapper": {
+        "border": "none", "border-radius": "16px",
+        "box-shadow": "0 1px 3px rgba(2,32,71,.05), "
+                      "0 5px 14px rgba(2,32,71,.06)",
+        "font-family": "Pretendard, 'Malgun Gothic', sans-serif",
+        "background": "#ffffff"},
+    ".ag-header": {"background": "#ffffff",
+                   "border-bottom": "1px solid #f2f4f6"},
+    ".ag-header-cell-text": {"color": "#8b95a1", "font-size": "12.5px",
+                             "font-weight": "600"},
+    ".ag-row": {"border-bottom": "1px solid #f7f8fa",
+                "background": "#ffffff", "cursor": "pointer"},
+    ".ag-row-hover": {"background": "#fafbfc !important"},
+    ".ag-row-selected": {"background": "#e8f3ff !important"},
+    ".ag-cell": {"font-size": "13.5px", "color": "#333d4b",
+                 "display": "flex", "align-items": "center",
+                 "border": "none"},
+    ".ag-cell.tt-num": {"justify-content": "flex-end",
+                        "font-variant-numeric": "tabular-nums"},
+    ".ag-header-cell.tt-num-h .ag-header-cell-label":
+        {"justify-content": "flex-end"},
+    ".ag-cell.tt-strong": {"font-weight": "700", "color": "#191f28"},
+    ".tt-badge": {"display": "inline-block", "font-size": "12px",
+                  "font-weight": "600", "padding": "2px 10px",
+                  "border-radius": "7px", "line-height": "1.7"},
+    ".b-red": {"background": "#fdecec", "color": "#f04452"},
+    ".b-green": {"background": "#e6f9f1", "color": "#01a76b"},
+    ".b-amber": {"background": "#fff3e0", "color": "#dd6b02"},
+    ".b-blue": {"background": "#e8f3ff", "color": "#1b64da"},
+    ".b-gray": {"background": "#f2f4f6", "color": "#8b95a1"},
+}
+
+
+def toss_grid(rows, *, key, badge_cols=(), num_cols=(), strong_cols=(),
+              columns=None, height=None):
+    """토스 스타일 선택 그리드 — 선택된 행 인덱스 반환 (기본 0).
+
+    rows: list[dict]. 표시 순서는 columns 로 지정 가능.
+    badge_cols: 상태 배지 / num_cols: 우측 정렬·콤마 / strong_cols: 굵게.
+    행을 클릭하면 rerun 되어 그 행 인덱스가 반환된다. AgGrid 미탑재
+    (테스트 등) 시 st.dataframe 행 선택으로 폴백 — 동작 동일.
+    """
+    if hasattr(rows, "to_dict"):
+        rows = rows.to_dict("records")
+    if not rows:
+        return None
+    _cols = ([c for c in columns if c in rows[0]] if columns
+             else list(rows[0].keys()))
+    _df = pd.DataFrame([{**{c: r.get(c) for c in _cols},
+                         "_i": i} for i, r in enumerate(rows)])
+    try:
+        from st_aggrid import AgGrid, GridOptionsBuilder, JsCode
+        # AG Grid 신버전은 문자열 반환을 텍스트로 이스케이프하므로
+        # DOM 을 직접 만드는 클래스형 렌더러 사용 (2026-08-19 확인)
+        _badge_js = JsCode("""
+            class BadgeRenderer {
+              init(params) {
+                this.eGui = document.createElement('span');
+                const v = params.value == null ? ''
+                                               : String(params.value);
+                this.eGui.innerText = v;
+                if (!v || v === '-') return;
+                const has = a => a.some(k => v.includes(k));
+                let cls = 'b-gray';
+                if (has(['지연','불합','폐기','취소','부족','반품',
+                         '미납'])) cls = 'b-red';
+                else if (has(['완납','입고완료','합격','완료','전량',
+                              '종결','완성'])) cls = 'b-green';
+                else if (has(['대기','부분','외주','재작업']))
+                  cls = 'b-amber';
+                else if (has(['생산중','확정','발송','진행']))
+                  cls = 'b-blue';
+                this.eGui.className = 'tt-badge ' + cls;
+              }
+              getGui() { return this.eGui; }
+              refresh() { return false; }
+            }""")
+        _num_js = JsCode("""
+            function(p){
+              if (p.value == null || p.value === '') return '';
+              const n = Number(p.value);
+              return isNaN(n) ? String(p.value) : n.toLocaleString();
+            }""")
+        gb = GridOptionsBuilder.from_dataframe(_df)
+        gb.configure_default_column(resizable=True, sortable=True,
+                                    filter=False, suppressMovable=True,
+                                    flex=1, minWidth=88)
+        gb.configure_column("_i", hide=True)
+        for c in _cols:
+            _kw = {}
+            _cls = []
+            if c in num_cols:
+                _cls.append("tt-num")
+                _kw["valueFormatter"] = _num_js
+                _kw["headerClass"] = "tt-num-h"
+            if c in strong_cols:
+                _cls.append("tt-strong")
+            if _cls:
+                _kw["cellClass"] = _cls
+            if c in badge_cols:
+                _kw["cellRenderer"] = _badge_js
+            if _kw:
+                gb.configure_column(c, **_kw)
+        gb.configure_selection("single")
+        _auto = height is None and len(rows) <= 12
+        gb.configure_grid_options(
+            headerHeight=42, rowHeight=42, suppressCellFocus=True,
+            suppressColumnVirtualisation=True,
+            **({"domLayout": "autoHeight"} if _auto else {}))
+        _kw2 = {} if _auto else {"height": height or 520}
+        _g = AgGrid(_df, gridOptions=gb.build(),
+                    update_on=["selectionChanged"],
+                    allow_unsafe_jscode=True,
+                    custom_css=_TOSS_GRID_CSS, theme="alpine",
+                    key=key, **_kw2)
+        _sel = _g.selected_rows
+        if _sel is not None:
+            if hasattr(_sel, "to_dict"):
+                _recs = _sel.to_dict("records")
+            else:
+                _recs = list(_sel)
+            if _recs and _recs[0].get("_i") is not None:
+                return int(_recs[0]["_i"])
+        return 0
+    except Exception:
+        # 폴백 — st.dataframe 행 선택 (AppTest·미설치 환경)
+        _ev = st.dataframe(_df.drop(columns=["_i"]), hide_index=True,
+                           use_container_width=True, on_select="rerun",
+                           selection_mode="single-row", key=f"{key}_fb")
+        _r = (getattr(getattr(_ev, "selection", None), "rows", None)
+              or [0])
+        return min(_r[0], len(rows) - 1)
+
+
 # ─── 공정 라우팅 (Migration 036, 2026-08-12) ───
 # 라우팅 = 제품별 공정 '순서' 마스터. 공정 '원가'는 BOM(process_type 행).
 # 라우팅 행이 없는 제품은 기본 플로우로 동작한다.
@@ -4054,7 +4193,8 @@ elif page == "수주 관리":
                 avg_match = sum(s.get("match_rate_pct") or 0 for s in sos) / len(sos)
                 sc4.metric("평균 매칭률", f"{avg_match:.1f}%")
                 st.divider()
-                toss_table([{
+                # 토스 스타일 선택 그리드 — 행 클릭 = 상세 열기
+                _so_i = toss_grid([{
                     "수주번호": s["so_number"], "거래처": s["customer"],
                     "수주일": s.get("so_date"), "납기": s.get("due_date"),
                     "품목수": s.get("item_count"),
@@ -4066,37 +4206,16 @@ elif page == "수주 관리":
                     "매칭률": f"{s.get('match_rate_pct') or 0:.0f}%",
                     "상태": status_ko(s["status"]),
                 } for s in sos],
+                    key="so_grid",
                     badge_cols=("납품상태", "상태"),
                     num_cols=("품목수", "총수량", "납품", "미납",
                               "총액 (원)", "매칭률"),
-                    strong_cols=("수주번호",),
-                    scroll=len(sos) > 15)
+                    strong_cols=("수주번호",))
 
                 st.divider()
-                st.markdown("##### 🔍 수주 상세")
-                # 리스트에서 행 선택 → 상세 (스크롤 선택 대체)
-                _so_ev = st.dataframe(
-                    pd.DataFrame([{
-                        "수주번호": s["so_number"],
-                        "거래처": s["customer"],
-                        "미납": int(s.get("total_pending_qty") or 0),
-                        "총액 (원)": int(s.get("total_amount") or 0),
-                        "상태": status_ko(s["status"]),
-                    } for s in sos]),
-                    hide_index=True, use_container_width=True,
-                    on_select="rerun", selection_mode="single-row",
-                    key="so_detail_list",
-                    column_config={c: st.column_config.NumberColumn(
-                        format="localized")
-                        for c in ("미납", "총액 (원)")})
-                _so_rows = (getattr(getattr(_so_ev, "selection", None),
-                                    "rows", None) or [])
-                if not _so_rows:
-                    _so_rows = [0]
-                    if len(sos) > 1:
-                        st.caption("행을 체크하면 그 수주의 상세가 "
-                                   "열립니다 — 지금은 첫 수주 표시 중.")
-                so = sos[min(_so_rows[0], len(sos) - 1)]
+                so = sos[_so_i if _so_i is not None else 0]
+                st.markdown(f"##### 수주 상세 — {so['so_number']} · "
+                            f"{so['customer']}")
                 if so:
                     sitems = fetch("sales_order_items", "*",
                                    f"so_id=eq.{so['so_id']}&order=line_no", limit=200)
@@ -7812,6 +7931,7 @@ elif page == "발주/입고":
                             _db.insert("purchase_order_items", [{
                                 "po_id": po_row["po_id"], "line_no": i + 1,
                                 "item_name": it["item_name"], "spec": it.get("spec") or None,
+                                "product_id": it.get("product_id"),
                                 "qty": it["qty"], "unit": "EA",
                                 "unit_price": it["unit_price"],
                                 "amount": it["qty"] * it["unit_price"],
@@ -7912,27 +8032,18 @@ elif page == "발주/입고":
 
             st.divider()
             st.markdown("##### 🔍 발주서 상세 / 재발급")
-            # 리스트에서 행 선택 → 상세/재발급 (스크롤 선택 대체)
-            _po_ev = st.dataframe(
-                pd.DataFrame([{
-                    "발주번호": r["po_number"],
-                    "거래처": r["_vname"],
-                    "총액 (원)": int(r.get("total_amount") or 0),
-                    "상태": status_ko(r.get("status")),
-                } for r in history]),
-                hide_index=True, use_container_width=True,
-                on_select="rerun", selection_mode="single-row",
-                key="po_hist_list",
-                column_config={"총액 (원)": st.column_config.NumberColumn(
-                    format="localized")})
-            _po_rows = (getattr(getattr(_po_ev, "selection", None),
-                                "rows", None) or [])
-            if not _po_rows:
-                _po_rows = [0]
-                if len(history) > 1:
-                    st.caption("행을 체크하면 그 발주서의 상세가 열립니다 "
-                               "— 지금은 첫 발주서 표시 중.")
-            po = history[min(_po_rows[0], len(history) - 1)]
+            # 토스 스타일 선택 그리드 — 행 클릭 = 상세/재발급 열기
+            _po_i = toss_grid([{
+                "발주번호": r["po_number"],
+                "거래처": r["_vname"],
+                "총액 (원)": int(r.get("total_amount") or 0),
+                "상태": status_ko(r.get("status")),
+            } for r in history],
+                key="po_grid",
+                badge_cols=("상태",),
+                num_cols=("총액 (원)",),
+                strong_cols=("발주번호",))
+            po = history[_po_i if _po_i is not None else 0]
             if po:
                 items = fetch("purchase_order_items", "*",
                               f"po_id=eq.{po['po_id']}&order=line_no", limit=50)
@@ -8122,16 +8233,28 @@ elif page == "발주/입고":
                                 "(최초 1회, 이후 재사용)")
                     _bm = None
                     _inm = (_r.get("item_name") or "").strip()
+                    # ⓪ 발주 라인의 제품 ID → BOM 자재 (Migration 039 —
+                    #    텍스트 매칭 없이 ID 로 직결)
+                    if _r.get("product_id"):
+                        try:
+                            _bh0 = fetch("bom", "material_id",
+                                f"product_id=eq.{_r['product_id']}"
+                                "&material_id=not.is.null", limit=1)
+                            if _bh0:
+                                _bm = _bh0[0]["material_id"]
+                        except Exception:
+                            pass
                     # ① 같은 품명으로 과거 발주에서 매핑된 자재 재사용
-                    try:
-                        _prev = fetch("purchase_order_items",
-                            "material_id",
-                            f"item_name=eq.{_inm}"
-                            "&material_id=not.is.null", limit=1)
-                        if _prev:
-                            _bm = _prev[0]["material_id"]
-                    except Exception:
-                        pass
+                    if not _bm:
+                        try:
+                            _prev = fetch("purchase_order_items",
+                                "material_id",
+                                f"item_name=eq.{_inm}"
+                                "&material_id=not.is.null", limit=1)
+                            if _prev:
+                                _bm = _prev[0]["material_id"]
+                        except Exception:
+                            pass
                     # ② 품명이 제품 품번이면 BOM 자재 추천 — 발주 품명에
                     #    규격이 붙는 관례('32LJF-M (Ø135*16L)') 대응으로
                     #    괄호 앞부분으로도 매칭 시도
@@ -8777,21 +8900,11 @@ elif page == "공정 관리":
                     "자재": _mn_map.get(b.material_id, b.material_id),
                     "잔여": float(b.qty),
                 } for b in _bal.itertuples()])
-                _w_ev = st.dataframe(
-                    _w_df, hide_index=True, use_container_width=True,
-                    on_select="rerun", selection_mode="single-row",
-                    key="pe_w_list",
-                    column_config={"잔여": st.column_config.NumberColumn(
-                        format="localized")})
-                _w_rows = (getattr(getattr(_w_ev, "selection", None),
-                                   "rows", None) or [])
-                if not _w_rows:
-                    _w_rows = [0]     # 미선택 시 첫 LOT 표시
-                    if len(_bal) > 1:
-                        st.caption("리스트에서 행을 체크하면 그 소재로 "
-                                   "투입을 진행합니다 — 지금은 첫 번째 "
-                                   "LOT 이 선택되어 있습니다.")
-                _sel = _bal.iloc[min(_w_rows[0], len(_bal) - 1)]
+                _w_i = toss_grid(_w_df.to_dict("records"),
+                                 key="pe_w_grid",
+                                 num_cols=("잔여",),
+                                 strong_cols=("식별 번호",))
+                _sel = _bal.iloc[_w_i if _w_i is not None else 0]
                 _sel_lot, _sel_mid = _sel["lot_number"], _sel["material_id"]
                 _sel_bal = float(_sel["qty"])
                 st.caption(f"선택: **{_sel_lot}** · "
@@ -9348,7 +9461,7 @@ elif page == "공정 관리":
                     return "완성 확정"
                 return "-"
 
-            _p_df = pd.DataFrame([{
+            _p_i = toss_grid([{
                 "지시번호": t1["wo_number"],
                 "품번": t1.get("pn") or "-",
                 "소재 LOT": t1.get("w_lot") or "-",
@@ -9358,23 +9471,12 @@ elif page == "공정 관리":
                 "완성": float(wo_stage_qty(t1)["완성"]),
                 "상태": status_ko(wo_derive_status(t1)),
                 "다음 처리": _next_hint(t1),
-            } for t1 in _pe_pool])
-            _p_ev = st.dataframe(
-                _p_df, hide_index=True, use_container_width=True,
-                on_select="rerun", selection_mode="single-row",
-                key="pe_proc_list",
-                column_config={c: st.column_config.NumberColumn(
-                    format="localized") for c in
-                    ("생산중", "외주중", "검사대기", "완성")})
-            _p_rows = (getattr(getattr(_p_ev, "selection", None),
-                               "rows", None) or [])
-            if not _p_rows:
-                _p_rows = [0]     # 미선택 시 첫 지시 표시
-                if len(_pe_pool) > 1:
-                    st.caption("리스트에서 행을 체크하면 그 작업지시가 "
-                               "아래에 열립니다 — 지금은 첫 번째 지시가 "
-                               "표시되고 있습니다.")
-            _t = _pe_pool[min(_p_rows[0], len(_pe_pool) - 1)]
+            } for t1 in _pe_pool],
+                key="pe_proc_grid",
+                badge_cols=("상태",),
+                num_cols=("생산중", "외주중", "검사대기", "완성"),
+                strong_cols=("지시번호",))
+            _t = _pe_pool[_p_i if _p_i is not None else 0]
             _q = wo_stage_qty(_t)
 
             # 라우팅 기반 동적 스테퍼 — 제품의 공정 순서대로 칸 구성,
@@ -9635,27 +9737,17 @@ elif page == "공정 관리":
                         "<span>행 선택 → 진행 · 부분 수량은 자동 분기(새 "
                         "가지 번호) · 계보 기록으로 회차·LOT 추적 유지"
                         "</span></div>", unsafe_allow_html=True)
-                    _bt_ev = st.dataframe(
-                        pd.DataFrame([{
-                            "배치": b["batch_no"],
-                            "수량": float(b.get("qty") or 0),
-                            "공정": b.get("step_name") or "-",
-                            "위치": b.get("location") or "사내",
-                            "다음 처리": _b_action(b),
-                        } for b in _bat_open]),
-                        hide_index=True, use_container_width=True,
-                        on_select="rerun", selection_mode="single-row",
-                        key=f"bt_list_{_t['wo_id']}",
-                        column_config={"수량": st.column_config.NumberColumn(
-                            format="localized")})
-                    _bt_rows = (getattr(getattr(_bt_ev, "selection", None),
-                                        "rows", None) or [])
-                    if not _bt_rows:
-                        _bt_rows = [0]
-                        if len(_bat_open) > 1:
-                            st.caption("행을 체크하면 그 배치를 처리합니다 — "
-                                       "지금은 첫 배치가 선택되어 있습니다.")
-                    _sb = _bat_open[min(_bt_rows[0], len(_bat_open) - 1)]
+                    _bt_i = toss_grid([{
+                        "배치": b["batch_no"],
+                        "수량": float(b.get("qty") or 0),
+                        "공정": b.get("step_name") or "-",
+                        "위치": b.get("location") or "사내",
+                        "다음 처리": _b_action(b),
+                    } for b in _bat_open],
+                        key=f"bt_grid_{_t['wo_id']}",
+                        num_cols=("수량",),
+                        strong_cols=("배치",))
+                    _sb = _bat_open[_bt_i if _bt_i is not None else 0]
                     _sb_qty = float(_sb.get("qty") or 0)
                     _sb_act = _b_action(_sb)
                     st.markdown(
@@ -12270,31 +12362,20 @@ elif page == "원가 확인":
             if not rows:
                 st.info("검색 결과 없음")
             else:
-                # 리스트에서 행 선택 → 분석 (스크롤 선택 대체)
-                _cq_ev = st.dataframe(
-                    pd.DataFrame([{
-                        "품번": r.get("pn"),
-                        "고객사": r.get("customer") or "-",
-                        "제품군": r.get("sub_class") or "-",
-                        "판매가": float(r.get("avg_unit_price") or 0),
-                        "추정원가": float(r.get("estimated_cost_per_pc")
-                                          or 0),
-                        "마진율(%)": float(r.get("margin_pct") or 0),
-                    } for r in rows]),
-                    hide_index=True, use_container_width=True,
-                    on_select="rerun", selection_mode="single-row",
-                    key="cost_pick_list",
-                    column_config={c: st.column_config.NumberColumn(
-                        format="localized")
-                        for c in ("판매가", "추정원가")})
-                _cq_rows = (getattr(getattr(_cq_ev, "selection", None),
-                                    "rows", None) or [])
-                if not _cq_rows:
-                    _cq_rows = [0]
-                    if len(rows) > 1:
-                        st.caption("행을 체크하면 그 품목의 원가 분석이 "
-                                   "열립니다 — 지금은 첫 품목 표시 중.")
-                row = dict(rows[min(_cq_rows[0], len(rows) - 1)])
+                # 토스 스타일 선택 그리드 — 행 클릭 = 원가 분석 열기
+                _cq_i = toss_grid([{
+                    "품번": r.get("pn"),
+                    "고객사": r.get("customer") or "-",
+                    "제품군": r.get("sub_class") or "-",
+                    "판매가": float(r.get("avg_unit_price") or 0),
+                    "추정원가": float(r.get("estimated_cost_per_pc")
+                                      or 0),
+                    "마진율(%)": float(r.get("margin_pct") or 0),
+                } for r in rows],
+                    key="cost_grid",
+                    num_cols=("판매가", "추정원가", "마진율(%)"),
+                    strong_cols=("품번",))
+                row = dict(rows[_cq_i if _cq_i is not None else 0])
 
                 if row:
                     st.divider()
