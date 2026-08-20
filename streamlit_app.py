@@ -1607,9 +1607,19 @@ elif page == "마스터 관리":
                              if (b.get("process_type") or "MATERIAL")
                              in ("HEAT", "SURFACE", "OUTSOURCE")]
 
+                # 스텝 라벨 = 공정명 (BOM 항목 ID 는 노출하지 않음 —
+                # 같은 이름이 둘일 때만 구분자로 붙인다)
+                _pb_nm_cnt = {}
+                for _b8 in _proc_bom:
+                    _n8 = (_b8.get("raw_material_name")
+                           or _b8.get("process_type"))
+                    _pb_nm_cnt[_n8] = _pb_nm_cnt.get(_n8, 0) + 1
+
                 def _pb_lbl(b):
-                    return (f"{b.get('raw_material_name') or b['process_type']}"
-                            f" [BOM #{b['bom_id']}]")
+                    _n8 = (b.get("raw_material_name")
+                           or b.get("process_type"))
+                    return (_n8 if _pb_nm_cnt.get(_n8, 0) == 1
+                            else f"{_n8} (#{b['bom_id']})")
 
                 _pb_by_lbl = {_pb_lbl(b): b for b in _proc_bom}
                 _pb_by_id = {b["bom_id"]: b for b in _proc_bom}
@@ -2486,7 +2496,11 @@ elif page == "마스터 관리":
                     },
                     hide_index=True,
                     use_container_width=True,
-                    key="vendor_editor",
+                    # 행 집합 지문 키 — 필터가 바뀌면 편집 상태 리셋
+                    # (이전 편집이 다른 행에 겹쳐 보이거나 잘못
+                    # 저장되는 것 방지, 2026-08-20)
+                    key="vendor_editor_{}".format(abs(hash(tuple(
+                        r["vendor_id"] for r in rows))) % 10**8),
                     num_rows="fixed",
                 )
 
@@ -2758,7 +2772,10 @@ elif page == "마스터 관리":
                         width="medium"),
                 },
                 hide_index=True, use_container_width=True,
-                num_rows="fixed", key="prod_editor", height=440
+                num_rows="fixed", height=440,
+                # 행 집합 지문 키 — 필터 변경 시 편집 상태 리셋
+                key="prod_editor_{}".format(abs(hash(tuple(
+                    r["product_id"] for r in prows))) % 10**8),
                 )
 
                     st.caption("품번(pn) 변경은 매출/매입 매핑에 영향 — "
@@ -3130,7 +3147,10 @@ elif page == "마스터 관리":
                         "procurement_type": st.column_config.TextColumn("조달유형", width="small"),
                     },
                     hide_index=True, use_container_width=True,
-                    num_rows="fixed", key="mat_editor",
+                    num_rows="fixed",
+                    # 행 집합 지문 키 — 필터 변경 시 편집 상태 리셋
+                    key="mat_editor_{}".format(abs(hash(tuple(
+                        r["material_id"] for r in mrows))) % 10**8),
                 )
                     _mb_save = st.form_submit_button(
                         "자재 변경 저장 (일괄)", type="primary")
@@ -3384,133 +3404,110 @@ elif page == "마스터 관리":
 
     # ─── Tab: BOM 일괄 편집 (BOM·공정 하위) ───
     with tab_bom_bulk:
-        st.caption("BOM = 제품-자재 + 공정 **수량 관계** 만 관리. "
-                   "**qty_per_pc**=제품 1EA당 자재 EA수, **shared_factor**=분할가공 N제품 "
-                   "또는 1LOT 처리수량. 단가 정보는 모두 **원가 확인** 페이지에서 관리.")
-        bc1, bc2 = st.columns([3, 1])
-        with bc1:
-            bom_q = st.text_input("제품 또는 자재 검색", placeholder="예: 8HFDV, M001")
-        with bc2:
-            bom_limit = st.number_input("행수", 20, 500, 100, 20, key="bom_lim")
-
-        # ── 2단계 검색: 검색어가 있으면 먼저 products.pn 으로 product_id 후보 추출 ──
-        bfq_parts = ["order=product_id.asc,bom_id.asc"]
+        # ── 품번 기준 전개 (2026-08-20 사용자 확정: BOM = 제품의 bill.
+        # 항목이 아니라 제품 단위로 다루고, 그 행들에 라우팅을 부여) ──
+        st.caption("**제품을 고르면 그 제품의 BOM 이 전개됩니다** — "
+                   "qty_per_pc=제품 1EA당 자재 EA수, shared_factor=분할"
+                   "가공 N제품 또는 1LOT 처리수량. 단가는 원가 확인에서.")
+        bom_q = st.text_input(
+            "제품 검색 (품번·품명·고객사·자재)", key="bom_pq",
+            placeholder="예: MRG6-07, 플랜지, S304 — 자재명으로도 "
+                        "제품을 찾습니다")
+        _bp = None
         brows = []
-        diag = {}  # 디버그용 카운트
-        try:
-            if bom_q:
-                qq = bom_q.strip()
-                # (a) products: pn / product_id / 품명 / customer 매칭 (archived 포함)
-                try:
-                    pmatch = fetch("products", "product_id,pn,sub_class,item_name,customer,archived_at",
-                        f"or=(pn.ilike.*{qq}*,product_id.ilike.*{qq}*,"
-                        f"item_name.ilike.*{qq}*,customer.ilike.*{qq}*)"
-                        f"&order=pn.asc",
-                        limit=2000)
-                except Exception as e:
-                    diag["products_err"] = str(e)[:120]; pmatch = []
-                diag["products_matched"] = len(pmatch)
-                pid_candidates = [p['product_id'] for p in pmatch if p.get('product_id')]
-                archived_n = sum(1 for p in pmatch if p.get('archived_at'))
-                if archived_n:
-                    diag["products_archived"] = archived_n
-
-                # (b) materials: material_id / raw_name / type / spec
-                try:
-                    mmatch = fetch("materials", "material_id,raw_name",
-                        f"or=(material_id.ilike.*{qq}*,raw_name.ilike.*{qq}*,"
-                        f"material_type.ilike.*{qq}*,spec.ilike.*{qq}*)",
-                        limit=2000)
-                except Exception as e:
-                    diag["materials_err"] = str(e)[:120]; mmatch = []
-                diag["materials_matched"] = len(mmatch)
-                mid_candidates = [m['material_id'] for m in mmatch if m.get('material_id')]
-
-                # (c) bom: product_id IN 또는 material_id IN 또는 raw_material_name ilike
-                bom_filters = []
-                if pid_candidates:
-                    pids_in = ",".join(f'"{p}"' for p in pid_candidates[:200])
-                    bom_filters.append(f"product_id.in.({pids_in})")
-                if mid_candidates:
-                    mids_in = ",".join(f'"{m}"' for m in mid_candidates[:200])
-                    bom_filters.append(f"material_id.in.({mids_in})")
-                bom_filters.append(f"raw_material_name.ilike.*{qq}*")
-
-                if bom_filters:
-                    bfq_parts.append(f"or=({','.join(bom_filters)})")
-            # 007 적용 후 사용 가능한 컬럼들 (process_type/unit_price/lot_label)
-            # 마이그레이션 미적용 시 → 기존 컬럼만 fallback
-            full_select = ("bom_id,product_id,material_id,raw_material_name,"
-                           "qty_per_pc,shared_factor,source,verification_status,"
+        if (bom_q or "").strip():
+            qq = bom_q.strip()
+            try:
+                pmatch = fetch("products",
+                    "product_id,pn,item_name,customer,sub_class",
+                    f"or=(pn.ilike.*{qq}*,product_id.ilike.*{qq}*,"
+                    f"item_name.ilike.*{qq}*,customer.ilike.*{qq}*)"
+                    "&archived_at=is.null&order=pn", limit=30)
+            except Exception:
+                pmatch = []
+            # 자재 역검색 — 그 자재를 쓰는 제품도 후보에
+            try:
+                mmatch = fetch("materials", "material_id",
+                    f"or=(material_id.ilike.*{qq}*,raw_name.ilike.*{qq}*,"
+                    f"material_type.ilike.*{qq}*,spec.ilike.*{qq}*)",
+                    limit=50)
+                _mids9 = [m["material_id"] for m in mmatch]
+                if _mids9:
+                    _bl9 = fetch("bom", "product_id",
+                        "material_id=in.({})".format(
+                            ",".join(f'"{m}"' for m in _mids9)),
+                        limit=300)
+                    _rev9 = ({b["product_id"] for b in _bl9
+                              if b.get("product_id")}
+                             - {p["product_id"] for p in pmatch})
+                    if _rev9:
+                        pmatch += fetch("products",
+                            "product_id,pn,item_name,customer,sub_class",
+                            "product_id=in.({})".format(
+                                ",".join(f'"{p}"' for p in _rev9))
+                            + "&archived_at=is.null&order=pn", limit=50)
+            except Exception:
+                pass
+            if not pmatch:
+                st.info("일치하는 제품 없음 — 품번·품명·자재명으로 "
+                        "검색하세요. 신규 제품은 제품 편집에서 먼저 "
+                        "등록합니다.")
+            else:
+                _bp_lbls = [
+                    p["pn"]
+                    + (f" | {p['item_name']}" if p.get("item_name")
+                       else "")
+                    + (f" | {p['customer']}" if p.get("customer")
+                       else "")
+                    for p in pmatch]
+                _bp_sel = st.selectbox(
+                    f"제품 선택 ({len(pmatch)}건)", _bp_lbls,
+                    key="bom_ppick")
+                _bp = pmatch[_bp_lbls.index(_bp_sel)]
+        if _bp:
+            full_select = ("bom_id,product_id,material_id,"
+                           "raw_material_name,qty_per_pc,shared_factor,"
+                           "source,verification_status,"
                            "process_type,unit_price,lot_label")
             try:
                 brows = fetch("bom", full_select,
-                    "&".join(bfq_parts), limit=bom_limit)
-            except Exception:
-                # 007 미적용 환경 fallback
-                try:
-                    brows = fetch("bom",
-                        "bom_id,product_id,material_id,raw_material_name,"
-                        "qty_per_pc,shared_factor,source,verification_status",
-                        "&".join(bfq_parts), limit=bom_limit)
-                    # process_type 기본값 채움
-                    for b in brows:
-                        b.setdefault("process_type", "MATERIAL")
-                        b.setdefault("unit_price", None)
-                        b.setdefault("lot_label", None)
-                except Exception as e:
-                    st.error(f"BOM 검색 실패: {e}"); brows = []
-        except Exception as e:
-            st.error(f"검색 처리 오류: {e}"); brows = []
-
-        # 제품 정보 join (품번, 제품군)
-        if brows:
-            pids = list({b['product_id'] for b in brows if b.get('product_id')})
-            if pids:
-                pids_q = ",".join(f'"{p}"' for p in pids)
-                try:
-                    prows = fetch("products", "product_id,pn,sub_class",
-                                  f"product_id=in.({pids_q})", limit=1500)
-                except Exception: prows = []
-                pmap = {p['product_id']: p for p in prows}
-                for b in brows:
-                    p = pmap.get(b['product_id'], {})
-                    b['_pn'] = p.get('pn', '')
-                    b['_group'] = p.get('sub_class', '')
-
-        st.caption(f"검색 결과: **{len(brows)}건**")
-
-        # 검색어 입력했는데 0건이면 진단 정보 표시
-        if bom_q and len(brows) == 0:
-            with st.expander("검색 진단 (왜 0건일까?)", expanded=True):
-                st.write(diag if diag else "(진단 정보 없음)")
-                st.caption(
-                    "- `products_matched=0` → 검색어가 어떤 제품과도 안 맞음 "
-                    "(품번 정확히 확인. 예: MRG6-07 vs MRG607 vs mrg6-07)\n"
-                    "- `products_matched>0 이지만 BOM 0건` → 해당 제품에 BOM 행이 아직 없음 "
-                    "(자재행 추가 영역에서 신규 BOM 등록)\n"
-                    "- `materials_matched>0 이지만 BOM 0건` → 해당 자재를 쓰는 제품이 BOM 에 없음\n"
-                    "- 모두 0 이면 → 키워드를 더 짧게 / 일부만 (예: 'MRG' 'STS' '환봉')"
-                )
+                    f"product_id=eq.{_bp['product_id']}"
+                    "&order=bom_id.asc", limit=100)
+            except Exception as e:
+                st.error(f"BOM 조회 실패: {e}"); brows = []
+            for b in brows:
+                b["_pn"] = _bp["pn"]
+                b["_group"] = _bp.get("sub_class") or ""
+            brows.sort(key=lambda b: (
+                (b.get("process_type") or "MATERIAL") != "MATERIAL",
+                b["bom_id"]))
+            st.markdown(f"##### {_bp['pn']} — BOM 전개 "
+                        f"({len(brows)}행)")
+            if not brows:
+                st.info("이 제품의 BOM 이 아직 없습니다 — 아래에서 "
+                        "자재행/공정행을 추가하세요.")
 
         if brows:
             bdf = pd.DataFrame(brows)
-            # 컬럼 순서 재배치 — process_type/unit_price/lot_label 포함
-            preferred_cols = ['bom_id', 'product_id', '_pn', '_group',
+            # 컬럼 순서 재배치 — 품번 기준 전개라 제품 컬럼은 생략
+            preferred_cols = ['bom_id',
                               'process_type', 'material_id', 'raw_material_name',
                               'qty_per_pc', 'shared_factor', 'unit_price', 'lot_label',
                               'source', 'verification_status']
             preferred_cols = [c for c in preferred_cols if c in bdf.columns]
             bdf = bdf[preferred_cols]
-            # st.form — 셀 편집마다 rerun 하지 않고 저장 때 한 번만
+            # st.form — 셀 편집마다 rerun 하지 않고 저장 때 한 번만.
+            # 편집 표의 화면 상태는 저장 전에도 세션에 남으므로(삭제된
+            # 것처럼 보이는 착시) [편집 취소]로 키를 바꿔 리셋한다
+            # 키에 product_id 포함 — 제품을 바꿀 때 이전 제품의 편집
+            # 상태가 새 표에 겹쳐 보이는 착시 방지
+            _bom_ed_key = (f"bom_editor_{_bp['product_id']}_"
+                           f"{st.session_state.get('bom_ed_nonce', 0)}")
             with st.form("bom_bulk_form"):
                 bedited = st.data_editor(
                 bdf,
                 column_config={
                     "bom_id": st.column_config.NumberColumn("ID", disabled=True, width="small"),
-                    "product_id": st.column_config.TextColumn("제품ID", disabled=True, width="small"),
-                    "_pn": st.column_config.TextColumn("품번", disabled=True, width="medium"),
-                    "_group": st.column_config.TextColumn("제품군", disabled=True, width="small"),
                     "process_type": st.column_config.SelectboxColumn("구분",
                         options=["MATERIAL","HEAT","SURFACE","OUTSOURCE","PACKING","LABOR","OTHER"],
                         width="small",
@@ -3533,34 +3530,29 @@ elif page == "마스터 관리":
                         width="small"),
                 },
                 hide_index=True, use_container_width=True,
-                num_rows="fixed", key="bom_editor",
+                num_rows="fixed", key=_bom_ed_key,
             )
-                save_clicked = st.form_submit_button("BOM 변경 저장",
-                                                     type="primary")
-            show_debug = st.checkbox("변경 내역 확인",
-                value=False, key="bom_save_debug",
-                help="저장 직후 감지된 변경 내역을 표시합니다.")
+                fb1, fb2 = st.columns([1, 1])
+                save_clicked = fb1.form_submit_button(
+                    "BOM 변경 저장", type="primary",
+                    use_container_width=True)
+                if fb2.form_submit_button("편집 취소",
+                        use_container_width=True,
+                        help="저장하지 않은 편집을 모두 버리고 표를 "
+                             "원래대로 되돌립니다"):
+                    st.session_state["bom_ed_nonce"] = \
+                        st.session_state.get("bom_ed_nonce", 0) + 1
+                    st.rerun()
 
             # Streamlit data_editor 의 edited_rows API 로 정확한 변경 감지
             # (PostgREST 의 NUMERIC 문자열 ↔ data_editor float 비교 회피)
-            editor_state = st.session_state.get("bom_editor", {})
+            editor_state = st.session_state.get(_bom_ed_key, {})
             edited_rows = editor_state.get("edited_rows", {}) if isinstance(editor_state, dict) else {}
 
             # 편집 가능 컬럼 (자재행 unit_price 는 무시)
             editable_keys = {"qty_per_pc", "shared_factor", "verification_status",
                              "process_type", "lot_label", "raw_material_name",
                              "unit_price"}
-
-            if show_debug and edited_rows:
-                st.caption(f"감지된 변경: {len(edited_rows)} 행")
-                for row_idx, changes in edited_rows.items():
-                    try:
-                        orig_row = brows[int(row_idx)]
-                        bom_id = orig_row.get("bom_id")
-                        pn = orig_row.get("_pn") or "?"
-                        st.caption(f"  • BOM #{bom_id} ({pn}): {changes}")
-                    except Exception:
-                        st.caption(f"  • row_idx={row_idx}: {changes}")
 
             if save_clicked:
                 if not edited_rows:
@@ -3569,6 +3561,7 @@ elif page == "마스터 관리":
                     chg = 0
                     fail = 0
                     ignored_mat_unit_price = 0
+                    _applied = []      # 저장 직후 적용 내역 표시용
                     for row_idx, changes in edited_rows.items():
                         try:
                             orig_row = brows[int(row_idx)]
@@ -3603,6 +3596,12 @@ elif page == "마스터 관리":
                             if _db.update("bom",
                                 f"bom_id=eq.{bom_id}", upd):
                                 chg += 1
+                                _applied.append("#{} {}: {}".format(
+                                    bom_id,
+                                    orig_row.get("raw_material_name")
+                                    or "?",
+                                    ", ".join(f"{k}={v}" for k, v
+                                              in upd.items())))
                                 # 소재 행 자재명 변경 → 제품 소재 표기
                                 # 자동 동기화 (진실=BOM, 2026-08-19)
                                 if (is_material
@@ -3645,6 +3644,12 @@ elif page == "마스터 관리":
                         if ignored_mat_unit_price:
                             msg += f" / 자재행 단가 무시 {ignored_mat_unit_price}건"
                         st.success(msg)
+                        # 적용 내역 자동 표시 (구 '변경 내역 확인' 대체)
+                        for _ap9 in _applied[:10]:
+                            st.caption(f"• {_ap9}")
+                        # 편집 표 상태 리셋 — 저장분이 원본에 반영됨
+                        st.session_state["bom_ed_nonce"] = \
+                            st.session_state.get("bom_ed_nonce", 0) + 1
                         if not _renamed_linked:
                             st.rerun()
                     elif fail:
@@ -3668,8 +3673,6 @@ elif page == "마스터 관리":
                         "바꾸려면 여기서 교체하세요. 새 자재가 목록에 "
                         "없으면 마스터 관리 > 자재에서 먼저 등록.")
                     _sw_opts = [
-                        f"BOM #{b.get('bom_id')} · "
-                        f"{b.get('_pn') or b.get('product_id') or '?'} — "
                         f"{b.get('raw_material_name') or '-'} "
                         f"({b.get('material_id') or '미연결'})"
                         for b in _mat_rows]
@@ -3741,37 +3744,20 @@ elif page == "마스터 관리":
                             except Exception as e:
                                 st.error(f"자재 교체 오류: {e}")
 
+        # 추가 폼 — BOM 이 없는 제품에도 첫 행을 넣을 수 있게 if brows 밖 (품번 기준 전개)
+        if _bp:
             st.divider()
-            st.markdown("##### 신규 BOM 자재행 추가")
-            st.caption("**제품은 품번**, **자재는 자재명**으로 검색하세요. "
-                       "BOM 은 수량 정보만 관리. 가격은 매입/원가에서 자동 산정.")
+            st.markdown(f"##### 신규 BOM 자재행 추가 — {_bp['pn']}")
+            st.caption("자재를 검색해 선택하면 위에서 고른 제품의 BOM "
+                       "에 추가됩니다. BOM 은 수량 정보만 관리 — 가격은 "
+                       "매입/원가에서 자동 산정.")
 
             ar1, ar2 = st.columns(2)
             with ar1:
-                p_search = st.text_input("제품 검색 (품번/품명/고객사)",
-                    placeholder="예: MRG6-07 또는 FLANGE 또는 명진",
-                    key="bom_new_p_search")
-                p_pick_pid = None
-                p_pick_pn = None
-                if p_search:
-                    qq = p_search.strip()
-                    try:
-                        p_found = fetch("products", "product_id,pn,customer",
-                            f"or=(pn.ilike.*{qq}*,item_name.ilike.*{qq}*,"
-                            f"customer.ilike.*{qq}*)"
-                            f"&archived_at=is.null&order=pn.asc", limit=30)
-                    except Exception:
-                        p_found = []
-                    if p_found:
-                        p_labels = [f"{p['pn']}  |  {p.get('customer','-')}" for p in p_found]
-                        p_sel = st.selectbox(f"제품 선택 ({len(p_found)}건)",
-                            p_labels, key="bom_new_p_pick")
-                        if p_sel:
-                            picked = p_found[p_labels.index(p_sel)]
-                            p_pick_pid = picked["product_id"]
-                            p_pick_pn = picked["pn"]
-                    else:
-                        st.warning("일치하는 제품 없음")
+                st.text_input("제품 (선택됨)", value=_bp["pn"],
+                              disabled=True, key="bom_new_p_fixed")
+                p_pick_pid = _bp["product_id"]
+                p_pick_pn = _bp["pn"]
 
             with ar2:
                 m_search = st.text_input("자재 검색 (자재명/규격/재질)",
@@ -3865,29 +3851,10 @@ elif page == "마스터 관리":
 
             pr1, pr2 = st.columns(2)
             with pr1:
-                pp_search = st.text_input("제품 검색",
-                    placeholder="예: MRG6-07",
-                    key="bom_proc_p_search")
-                pp_pick_pid = None
-                pp_pick_pn = None
-                if pp_search:
-                    qq = pp_search.strip()
-                    try:
-                        pp_found = fetch("products", "product_id,pn,customer",
-                            f"or=(pn.ilike.*{qq}*,customer.ilike.*{qq}*)"
-                            f"&archived_at=is.null&order=pn.asc", limit=30)
-                    except Exception:
-                        pp_found = []
-                    if pp_found:
-                        pp_labels = [f"{p['pn']}  |  {p.get('customer','-')}" for p in pp_found]
-                        pp_sel = st.selectbox(f"제품 선택 ({len(pp_found)}건)",
-                            pp_labels, key="bom_proc_p_pick")
-                        if pp_sel:
-                            picked = pp_found[pp_labels.index(pp_sel)]
-                            pp_pick_pid = picked["product_id"]
-                            pp_pick_pn = picked["pn"]
-                    else:
-                        st.warning("일치하는 제품 없음")
+                st.text_input("제품 (선택됨)", value=_bp["pn"],
+                              disabled=True, key="bom_proc_p_fixed")
+                pp_pick_pid = _bp["product_id"]
+                pp_pick_pn = _bp["pn"]
 
             with pr2:
                 proc_type = st.selectbox("공정 종류 *",
@@ -7920,6 +7887,9 @@ elif page == "발주/입고":
                                    "숫자만 입력 — 예: 1010 → W1010")
                         _rn_v = st.text_input(
                             "새 식별 번호",
+                            value="".join(
+                                ch for ch in str(_ln9 or "")
+                                if ch.isdigit()),
                             key=f"rcv_wid_{_r9['txn_id']}",
                             placeholder="예: 1010")
                         _dg = "".join(ch for ch in (_rn_v or "")
