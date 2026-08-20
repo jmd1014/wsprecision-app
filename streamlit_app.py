@@ -5087,22 +5087,23 @@ elif page == "수주 관리":
                         use_container_width=True, hide_index=True,
                         height=min(320, 60 + len(_st_df) * 35))
 
-                    # ── 대상 라인 선택 (단발·반복 공통) ──
+                    # ── 대상 라인 선택 — 행 클릭 = 아래에 납기 편집기
+                    # (2026-08-19 공통 문법)
                     st.divider()
                     st.markdown("##### 납기 만들기")
-                    _li_map = {}
-                    for i in _all_items:
-                        _c = _sc_cnt.get(i["soi_id"], {})
-                        _li_map[
-                            f"{_so_lbl.get(i['so_id'], {}).get('so_number','-')}"
-                            f" · {i.get('canonical_pn') or i.get('customer_part_no') or '-'}"
-                            f" | 미납 {float(i.get('pending_qty') or 0):,.0f}"
-                            + (f" · 회차 {_c['n']}개" if _c.get("n")
-                               else " · 회차 없음")] = i
-                    _li_pick = st.selectbox(
-                        f"대상 라인 ({len(_li_map)}건)", list(_li_map.keys()),
-                        key="sch_line_pick")
-                    _li = _li_map[_li_pick]
+                    _li_i = toss_grid([{
+                        "수주번호": _so_lbl.get(i["so_id"], {}
+                                                ).get("so_number", "-"),
+                        "품번": (i.get("canonical_pn")
+                                 or i.get("customer_part_no") or "-"),
+                        "미납": float(i.get("pending_qty") or 0),
+                        "회차": (_sc_cnt.get(i["soi_id"], {}).get("n")
+                                 or 0),
+                    } for i in _all_items],
+                        key="sch_line_grid",
+                        num_cols=("미납", "회차"),
+                        strong_cols=("품번",))
+                    _li = _all_items[_li_i if _li_i is not None else 0]
                     _s_so = _so_lbl.get(_li["so_id"], {"so_id": _li["so_id"]})
                     _li_qty = float(_li.get("qty") or 0)
                     _li_rcv = float(_li.get("received_qty") or 0)
@@ -6562,29 +6563,25 @@ elif page == "출고 관리":
                                      str(r.get("ship_date") or ""))
                     if r.get("customer"):
                         _a["cust"].add(r["customer"])
-                toss_df(pd.DataFrame([{
+                # 품목별 집계 = 선택 그리드 — 행 클릭 시 아래에 상세
+                # (요약 표 + 상세 선택 중복 제거, 2026-08-19)
+                _dv_list = sorted(_dv_agg.items(),
+                                  key=lambda kv: -kv[1]["qty"])
+                _dv_i = toss_grid([{
                     "품번": pn,
                     "품명": _dv_pn_nm.get(pn) or "-",
                     "거래처": ", ".join(sorted(a["cust"])) or "-",
                     "출고 수량": a["qty"],
                     "횟수": a["n"],
                     "최근 출고일": a["last"] or "-",
-                } for pn, a in sorted(_dv_agg.items(),
-                                      key=lambda kv: -kv[1]["qty"])]),
-                    use_container_width=True, hide_index=True,
-                    height=min(400, 60 + len(_dv_agg) * 35),
-                    column_config={
-                        "출고 수량": st.column_config.NumberColumn(
-                            format="localized"),
-                        "횟수": st.column_config.NumberColumn(
-                            width="small")})
-
-                # ── 품번 상세: 출고 라인 + 수주별 대사 ──
-                _dv_pick = st.selectbox(
-                    "품번 상세", sorted(_dv_agg),
-                    format_func=lambda p: "{} · {}".format(
-                        p, _dv_pn_nm.get(p) or "-"),
-                    key="dstat_pick")
+                } for pn, a in _dv_list],
+                    key="dstat_grid",
+                    num_cols=("출고 수량", "횟수"),
+                    strong_cols=("품번",))
+                _dv_pick = _dv_list[_dv_i if _dv_i is not None
+                                    else 0][0]
+                st.markdown(f"##### 품번 상세 — {_dv_pick} · "
+                            f"{_dv_pn_nm.get(_dv_pick) or '-'}")
                 if _dv_pick:
                     _dv_det = [r for r in _dv_rows
                                if r.get("pn") == _dv_pick]
@@ -7321,11 +7318,10 @@ elif page == "발주/입고":
                 elif _bal9 <= 0:
                     _stat9 = "전량 투입"
                 else:
-                    _stat9 = "일부 투입"
+                    _stat9 = "부분 투입"
                 _poi9 = _poi_m.get(r.get("ref_id"), {})
                 _po9 = _po_hdr9.get(_poi9.get("po_id"), {})
                 _pairs.append((r, {
-                    "선택": False,
                     "입고일": r.get("txn_date"),
                     "식별 번호": _ln if _is_w else "(미부여)",
                     "자재": _m_name.get(r["material_id"])
@@ -7346,163 +7342,85 @@ elif page == "발주/입고":
             if not _pairs:
                 st.info("검색 결과 없음.")
             else:
-                _ed9 = st.data_editor(
-                    pd.DataFrame([d for _, d in _pairs]),
-                    hide_index=True, use_container_width=True,
-                    key="rcv_recv_ed_{}_{}".format(
-                        len(_pairs), (_bq or "").strip()),
-                    height=min(430, 60 + len(_pairs) * 35),
-                    column_config={
-                        "선택": st.column_config.CheckboxColumn(
-                            "선택", width="small"),
-                        "식별 번호": st.column_config.TextColumn(
-                            "식별 번호", width="small",
-                            help="공정 진행 전에만 수정 가능 — 고쳐 쓰고 "
-                                 "아래 변경 저장. 예: 1010 또는 W1010"),
-                        **{c: st.column_config.Column(disabled=True)
-                           for c in ("입고일", "자재", "발주 품명",
-                                     "상태", "공정 투입", "발주")},
-                        **{c: st.column_config.NumberColumn(
-                            format="localized", width="small",
-                            disabled=True) for c in ("입고", "잔량")},
-                    })
-                _sel9 = [t for t, (_, er) in zip(_pairs, _ed9.iterrows())
-                         if bool(er.get("선택"))]
-                st.caption("상태: 투입 대기 → 일부 투입 → 전량 투입. "
-                           "**공정 진행 전 LOT 은 식별 번호를 표에서 고쳐 "
-                           "저장할 수 있습니다.** 잘못 입고한 라인은 선택 "
-                           "후 입고 취소 — 투입이 시작된 LOT 은 취소·수정 "
-                           "불가 (공정 쪽 정리 먼저). 취소하면 발주 "
-                           "미입고가 되살아나 입고 처리 탭에 다시 뜹니다.")
+                # 리스트에서 행 선택 → 아래에 라벨 재발행·입고 취소·
+                # 식별 번호 변경 (2026-08-19 공통 문법 개편)
+                _rs_i = toss_grid([d for _, d in _pairs],
+                    key="rcv_recv_grid",
+                    badge_cols=("상태",),
+                    num_cols=("입고", "잔량"),
+                    strong_cols=("식별 번호",))
+                _r9, _d9 = _pairs[_rs_i if _rs_i is not None else 0]
+                st.markdown(
+                    f"##### {_d9['식별 번호']} · {_d9['자재']} — "
+                    f"입고 {_d9['입고']:,.0f} · {_d9['상태']}"
+                    + (f" · 공정: {_d9['공정 투입']}"
+                       if _d9["공정 투입"] != "-" else ""))
 
-                # 식별 번호 변경 감지 → 저장 (공정 진행 전 한정)
-                _rn9 = []
-                for (r, d), (_, er) in zip(_pairs, _ed9.iterrows()):
-                    _nv = str(er.get("식별 번호") or "").strip()
-                    if _nv != str(d["식별 번호"]):
-                        _rn9.append((r, d, _nv))
-                if _rn9:
-                    if st.button(f"식별 번호 변경 저장 ({len(_rn9)}건)",
-                                 type="primary", key="rcv_wid_save"):
-                        _errs9, _okr9 = [], 0
-                        _batch9 = set()
-                        for r, d, _nv in _rn9:
-                            _lbl0 = d["식별 번호"]
-                            if d["상태"] not in ("투입 대기", "번호 미부여"):
-                                _errs9.append(f"{_lbl0}: 공정 진행 중 — "
-                                              "변경 불가")
-                                continue
-                            _dg = "".join(ch for ch in _nv
-                                          if ch.isdigit())
-                            if not _dg:
-                                _errs9.append(f"{_lbl0}: 새 번호를 숫자로 "
-                                              "입력하세요 (예: 1010)")
-                                continue
-                            _nw = f"W{int(_dg):04d}"
-                            if _nw == r.get("lot_number"):
-                                continue
-                            if _nw in _batch9:
-                                _errs9.append(f"{_nw}: 같은 저장에서 중복")
-                                continue
-                            try:
-                                _dupx = fetch("inventory_transactions",
-                                              "txn_id",
-                                              f"lot_number=eq.{_nw}",
-                                              limit=1)
-                            except Exception:
-                                _dupx = [1]
-                            if _dupx:
-                                _errs9.append(f"{_nw}: 이미 사용 중 — "
-                                              "다른 번호를 쓰세요")
-                                continue
-                            try:
-                                _db.update("inventory_transactions",
-                                           f"txn_id=eq.{r['txn_id']}",
-                                           {"lot_number": _nw})
-                                _batch9.add(_nw)
-                                _okr9 += 1
-                            except Exception as e:
-                                _errs9.append(f"{_nw}: {e}")
-                        # 카운터를 원장 최대 번호로 동기화 — 위로
-                        # 고치면 상향, 최신 번호를 아래로 고치면 복귀
-                        if _okr9:
-                            w_lot_sync_counter()
-                        for _e9 in _errs9:
-                            st.warning(_e9)
-                        if _okr9:
-                            st.success(f"식별 번호 변경 {_okr9}건 — "
-                                       "라벨은 선택 후 재발행으로 "
-                                       "출력하세요.")
-                            st.rerun()
-                if _sel9:
-                    from utils.label_generator import receipt_labels
+                from utils.label_generator import receipt_labels
 
-                    def _lbl9(r):
-                        _poi = _poi_m.get(r.get("ref_id"), {})
-                        _po = _po_hdr9.get(_poi.get("po_id"), {})
-                        return {
-                            "w_lot": r.get("lot_number") or "(식별 번호 없음)",
-                            "pn": _poi.get("item_name") or "-",
-                            "material_name":
-                                _m_name.get(r.get("material_id"))
-                                or r.get("material_id") or "-",
-                            "spec": _poi.get("spec") or "-",
-                            "qty": float(r.get("qty") or 0),
-                            "unit": r.get("unit") or "EA",
-                            "po_number": _po.get("po_number") or "-",
-                            "vendor": _v_nm9.get(
-                                _po.get("vendor_id")) or "-",
-                            "date": r.get("txn_date") or "",
-                        }
+                def _lbl9(r):
+                    _poi = _poi_m.get(r.get("ref_id"), {})
+                    _po = _po_hdr9.get(_poi.get("po_id"), {})
+                    return {
+                        "w_lot": r.get("lot_number")
+                                 or "(식별 번호 없음)",
+                        "pn": _poi.get("item_name") or "-",
+                        "material_name":
+                            _m_name.get(r.get("material_id"))
+                            or r.get("material_id") or "-",
+                        "spec": _poi.get("spec") or "-",
+                        "qty": float(r.get("qty") or 0),
+                        "unit": r.get("unit") or "EA",
+                        "po_number": _po.get("po_number") or "-",
+                        "vendor": _v_nm9.get(
+                            _po.get("vendor_id")) or "-",
+                        "date": r.get("txn_date") or "",
+                    }
 
-                    _items9 = [_lbl9(r) for r, _ in _sel9]
-                    ab1, ab2, ab3 = st.columns(3)
-                    ab1.download_button(
-                        f"라벨 재발행 · 단표 ({len(_sel9)})",
-                        data=receipt_labels(_items9, mode="label"),
-                        file_name=("입고라벨_재발행_"
-                                   f"{_items9[0]['w_lot']}.html"),
-                        mime="text/html", use_container_width=True,
-                        key="rcv_recv_dl1")
-                    ab2.download_button(
-                        "A4 배치",
-                        data=receipt_labels(_items9, mode="a4"),
-                        file_name=("입고라벨_재발행_A4_"
-                                   f"{_items9[0]['w_lot']}.html"),
-                        mime="text/html", use_container_width=True,
-                        key="rcv_recv_dl2")
-                    if ab3.button(f"입고 취소 ({len(_sel9)})",
-                                  key="rcv_recv_cancel",
-                                  use_container_width=True):
-                        _blocked, _done9, _aff9 = [], 0, set()
-                        for r, d in _sel9:
-                            _ln = r.get("lot_number")
-                            _is_w = str(_ln or "").startswith("W")
-                            _used = (_is_w and (
-                                _wo_by_lot.get(_ln)
-                                or _lot_bal.get(
-                                    _ln, float(r.get("qty") or 0))
-                                < float(r.get("qty") or 0) - 1e-9))
-                            if _used:
-                                _blocked.append(_ln or "-")
-                                continue
-                            try:
-                                _db.delete("inventory_transactions",
-                                           f"txn_id=eq.{r['txn_id']}")
-                                _poi9 = _poi_m.get(r.get("ref_id"), {})
-                                if _poi9.get("po_id"):
-                                    _aff9.add(_poi9["po_id"])
-                                _done9 += 1
-                            except Exception as e:
-                                st.warning(f"{_ln or r['txn_id']} 취소 "
-                                           f"실패: {e}")
-                        # 발주 헤더 상태 재계산 (취소로 되돌아간 발주)
-                        for _pid9 in _aff9:
+                _items9 = [_lbl9(_r9)]
+                ab1, ab2, ab3 = st.columns(3)
+                ab1.download_button(
+                    "라벨 재발행 · 단표",
+                    data=receipt_labels(_items9, mode="label"),
+                    file_name=("입고라벨_재발행_"
+                               f"{_items9[0]['w_lot']}.html"),
+                    mime="text/html", use_container_width=True,
+                    key=f"rcv_recv_dl1_{_r9['txn_id']}")
+                ab2.download_button(
+                    "A4 배치",
+                    data=receipt_labels(_items9, mode="a4"),
+                    file_name=("입고라벨_재발행_A4_"
+                               f"{_items9[0]['w_lot']}.html"),
+                    mime="text/html", use_container_width=True,
+                    key=f"rcv_recv_dl2_{_r9['txn_id']}")
+                _ln9 = _r9.get("lot_number")
+                _is_w9 = str(_ln9 or "").startswith("W")
+                _used9 = (_is_w9 and (
+                    _wo_by_lot.get(_ln9)
+                    or _lot_bal.get(_ln9, float(_r9.get("qty") or 0))
+                    < float(_r9.get("qty") or 0) - 1e-9))
+                if ab3.button("입고 취소",
+                              disabled=bool(_used9),
+                              help=("투입이 시작된 LOT 은 취소 불가 — "
+                                    "공정 쪽 정리 먼저"
+                                    if _used9 else
+                                    "취소하면 발주 미입고가 되살아나 "
+                                    "입고 처리 탭에 다시 뜹니다"),
+                              use_container_width=True,
+                              key=f"rcv_recv_cancel_{_r9['txn_id']}"):
+                    try:
+                        _db.delete("inventory_transactions",
+                                   f"txn_id=eq.{_r9['txn_id']}")
+                        _poi9c = _poi_m.get(_r9.get("ref_id"), {})
+                        if _poi9c.get("po_id"):
                             try:
                                 _fr9 = fetch("po_item_receipt_v",
                                              "receipt_status",
-                                             f"po_id=eq.{_pid9}", limit=50)
-                                _st9 = [f["receipt_status"] for f in _fr9]
+                                             "po_id=eq."
+                                             f"{_poi9c['po_id']}",
+                                             limit=50)
+                                _st9 = [f["receipt_status"]
+                                        for f in _fr9]
                                 if _st9 and all(s == "RECEIVED"
                                                 for s in _st9):
                                     _h9 = "RECEIVED"
@@ -7512,24 +7430,61 @@ elif page == "발주/입고":
                                 else:
                                     _h9 = "SENT"
                                 _db.update("purchase_orders",
-                                           f"po_id=eq.{_pid9}",
+                                           "po_id=eq."
+                                           f"{_poi9c['po_id']}",
                                            {"status": _h9})
                             except Exception:
                                 pass
-                        # 카운터를 원장 최대 번호로 동기화 — 최신 번호
-                        # 취소 시 다음 입고가 그 번호를 다시 받는다
-                        _mx9c = w_lot_sync_counter() if _done9 else None
-                        if _blocked:
-                            st.warning("투입이 시작된 LOT 은 취소 불가: "
-                                       + ", ".join(_blocked))
-                        if _done9:
-                            st.success(
-                                f"입고 취소 {_done9}건 — 발주 미입고가 "
-                                "복구되었습니다."
-                                + (f" 다음 입고는 W{_mx9c + 1:04d} 부터 "
-                                   "발급됩니다."
-                                   if _mx9c is not None else ""))
-                            st.rerun()
+                        _mx9c = w_lot_sync_counter()
+                        st.success(
+                            "입고 취소 — 발주 미입고가 복구되었습니다."
+                            + (f" 다음 입고는 W{_mx9c + 1:04d} 부터 "
+                               "발급됩니다."
+                               if _mx9c is not None else ""))
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"취소 실패: {e}")
+
+                # ── 식별 번호 변경 (공정 진행 전 한정) ──
+                if _d9["상태"] in ("투입 대기", "번호 미부여"):
+                    with st.expander("식별 번호 변경"):
+                        st.caption("공정 진행 전에만 변경할 수 있습니다. "
+                                   "숫자만 입력 — 예: 1010 → W1010")
+                        _rn_v = st.text_input(
+                            "새 식별 번호",
+                            key=f"rcv_wid_{_r9['txn_id']}",
+                            placeholder="예: 1010")
+                        _dg = "".join(ch for ch in (_rn_v or "")
+                                      if ch.isdigit())
+                        if st.button("변경 저장",
+                                     disabled=not _dg,
+                                     key=f"rcv_wid_go_{_r9['txn_id']}"):
+                            _nw = f"W{int(_dg):04d}"
+                            try:
+                                _dupx = fetch("inventory_transactions",
+                                              "txn_id",
+                                              f"lot_number=eq.{_nw}",
+                                              limit=1)
+                            except Exception:
+                                _dupx = [1]
+                            if _nw == _ln9:
+                                st.info("같은 번호입니다.")
+                            elif _dupx:
+                                st.error(f"{_nw}: 이미 사용 중 — 다른 "
+                                         "번호를 쓰세요")
+                            else:
+                                try:
+                                    _db.update(
+                                        "inventory_transactions",
+                                        f"txn_id=eq.{_r9['txn_id']}",
+                                        {"lot_number": _nw})
+                                    w_lot_sync_counter()
+                                    st.success(f"식별 번호 변경 → {_nw} "
+                                               "— 라벨을 재발행해 "
+                                               "부착하세요.")
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"변경 실패: {e}")
 
         # ── 자재별 현재고 요약 ──
         with st.expander("자재별 현재고 요약", expanded=False):
@@ -12055,6 +12010,8 @@ elif page == "영업 보고":
                            (x.get("customer") or "-") == _r_cu
                            for x in _r_bysh.get(s["shipment_id"], []))]
 
+            # 전표 요약 = 선택 그리드 — 행 클릭 시 아래에서 재발행
+            # (요약 표 + 선택 중복 제거, 2026-08-19)
             _r_sum = []
             for s in _r_view:
                 _xs = _r_bysh.get(s["shipment_id"], [])
@@ -12065,18 +12022,12 @@ elif page == "영업 보고":
                     "품목수": _ag["all"]["lines"],
                     "수량": _ag["all"]["qty"],
                     "합계": _ag["all"]["total"]})
-            toss_df(_sr_pd.DataFrame(_r_sum),
-                         use_container_width=True, hide_index=True,
-                         column_config=_NUMCOL)
-
-            _r_pick = st.selectbox(
-                "재발행할 전표", _r_view,
-                format_func=lambda s: "{} | {} | {}".format(
-                    s["ship_no"], s.get("ship_date"),
-                    ", ".join(sorted({
-                        x.get("customer") or "-"
-                        for x in _r_bysh.get(s["shipment_id"], [])}))),
-                key="sr_re_pick")
+            _r_i = toss_grid(_r_sum, key="sr_re_grid",
+                             num_cols=("품목수", "수량", "합계"),
+                             strong_cols=("전표",))
+            _r_pick = _r_view[_r_i if _r_i is not None else 0]
+            st.markdown(f"##### 재발행 — {_r_pick['ship_no']} · "
+                        f"{_r_pick.get('ship_date')}")
             _r_items = _r_bysh.get(_r_pick["shipment_id"], [])
             from utils.ship_lots import names_and_lots as _sr_nl
             _r_names, _r_lots = _sr_nl(fetch, _r_items, confirmed=True)
