@@ -3155,7 +3155,7 @@ elif page == "마스터 관리":
 
         # 검색어 입력했는데 0건이면 진단 정보 표시
         if bom_q and len(brows) == 0:
-            with st.expander("🔍 검색 진단 (왜 0건일까?)", expanded=True):
+            with st.expander("검색 진단 (왜 0건일까?)", expanded=True):
                 st.write(diag if diag else "(진단 정보 없음)")
                 st.caption(
                     "- `products_matched=0` → 검색어가 어떤 제품과도 안 맞음 "
@@ -3210,7 +3210,7 @@ elif page == "마스터 관리":
             with sc1:
                 save_clicked = st.button("BOM 변경 저장", type="primary")
             with sc2:
-                show_debug = st.checkbox("🔍 변경 내역 확인",
+                show_debug = st.checkbox("변경 내역 확인",
                     value=False, key="bom_save_debug",
                     help="저장 전에 변경 내역을 미리 확인합니다.")
 
@@ -3225,7 +3225,7 @@ elif page == "마스터 관리":
                              "unit_price"}
 
             if show_debug and edited_rows:
-                st.caption(f"🔍 감지된 변경: {len(edited_rows)} 행")
+                st.caption(f"감지된 변경: {len(edited_rows)} 행")
                 for row_idx, changes in edited_rows.items():
                     try:
                         orig_row = brows[int(row_idx)]
@@ -3298,6 +3298,19 @@ elif page == "마스터 관리":
                             fail += 1
                             st.warning(f"BOM #{bom_id} 저장 오류: {e}")
 
+                    # 자재행 이름 텍스트만 수정한 경우 — 표기만 바뀌고
+                    # 자재 연결(material_id)은 그대로임을 안내
+                    _renamed_linked = sum(
+                        1 for row_idx, changes in edited_rows.items()
+                        if "raw_material_name" in changes
+                        and brows[int(row_idx)].get("material_id"))
+                    if _renamed_linked:
+                        st.warning(
+                            f"자재명 텍스트 변경 {_renamed_linked}건은 "
+                            "표기만 바뀝니다 — 투입·발주·원가가 보는 "
+                            "자재 연결(material_id)은 그대로입니다. "
+                            "자재 자체를 바꾸려면 아래 [자재 교체]를 "
+                            "사용하세요.")
                     if chg:
                         msg = f"{chg}건 저장 완료"
                         if fail:
@@ -3305,15 +3318,104 @@ elif page == "마스터 관리":
                         if ignored_mat_unit_price:
                             msg += f" / 자재행 단가 무시 {ignored_mat_unit_price}건"
                         st.success(msg)
-                        st.rerun()
+                        if not _renamed_linked:
+                            st.rerun()
                     elif fail:
                         st.error(f"❌ 모든 변경 저장 실패 ({fail}건). "
                                  "로그 확인 필요.")
                     else:
                         st.info("변경 사항 없음 (편집 가능 컬럼 외 수정만 시도됨)")
 
+            # ── 자재 교체 — 소재행의 자재 연결(material_id) 변경 ──
+            # 자재/공정명 텍스트 수정은 표기만 바꾼다. 진실(material_id)
+            # 을 바꾸는 유일한 경로 (제품 소재 표기 자동 동기화)
+            _mat_rows = [b for b in brows
+                         if (b.get("process_type") or "MATERIAL")
+                         == "MATERIAL"]
+            if _mat_rows:
+                with st.expander("자재 교체 — 소재행의 자재 연결 변경"):
+                    st.caption(
+                        "위 표에서 자재/공정명을 텍스트로 고치면 표기만 "
+                        "바뀌고, 투입·발주·원가가 보는 자재 연결"
+                        "(material_id)은 그대로입니다. 다른 자재로 "
+                        "바꾸려면 여기서 교체하세요. 새 자재가 목록에 "
+                        "없으면 마스터 관리 > 자재에서 먼저 등록.")
+                    _sw_opts = [
+                        f"BOM #{b.get('bom_id')} · "
+                        f"{b.get('_pn') or b.get('product_id') or '?'} — "
+                        f"{b.get('raw_material_name') or '-'} "
+                        f"({b.get('material_id') or '미연결'})"
+                        for b in _mat_rows]
+                    _sw_i = st.selectbox(
+                        "대상 소재행", range(len(_sw_opts)),
+                        format_func=lambda i: _sw_opts[i],
+                        key="bom_sw_row")
+                    _sw_b = _mat_rows[_sw_i]
+                    _sw_q = st.text_input(
+                        "새 자재 검색", key="bom_sw_q",
+                        placeholder="자재명 · 재질 · 규격 — 예: S316 140")
+                    _sw_mc = []
+                    if (_sw_q or "").strip():
+                        _sw_kw = _sw_q.strip()
+                        try:
+                            _sw_mc = fetch("materials",
+                                "material_id,raw_name,spec",
+                                f"or=(raw_name.ilike.*{_sw_kw}*,"
+                                f"material_type.ilike.*{_sw_kw}*,"
+                                f"spec.ilike.*{_sw_kw}*)&order=raw_name",
+                                limit=15)
+                        except Exception:
+                            _sw_mc = []
+                        if not _sw_mc:
+                            st.info("일치 자재 없음 — 마스터 관리 > "
+                                    "자재에서 먼저 등록하세요.")
+                    if _sw_mc:
+                        _sw_ml = [f"{m['material_id']} | {m['raw_name']}"
+                                  f" ({m.get('spec') or '-'})"
+                                  for m in _sw_mc]
+                        _sw_pick = st.selectbox("새 자재", _sw_ml,
+                                                key="bom_sw_m")
+                        _sw_m = _sw_mc[_sw_ml.index(_sw_pick)]
+                        if st.button(
+                                f"자재 교체 "
+                                f"({_sw_b.get('material_id') or '미연결'}"
+                                f" → {_sw_m['material_id']})",
+                                type="primary", key="bom_sw_go",
+                                help="BOM 자재 연결과 자재명 표기, 제품 "
+                                     "마스터의 소재 표기까지 함께 "
+                                     "바뀝니다"):
+                            try:
+                                if _db.update("bom",
+                                        f"bom_id=eq.{_sw_b['bom_id']}",
+                                        {"material_id":
+                                             _sw_m["material_id"],
+                                         "raw_material_name":
+                                             _sw_m["raw_name"]}):
+                                    if _sw_b.get("product_id"):
+                                        try:
+                                            _db.update("products",
+                                                "product_id=eq."
+                                                f"{_sw_b['product_id']}",
+                                                {"raw_material_name":
+                                                     _sw_m["raw_name"],
+                                                 "bom_material_name":
+                                                     _sw_m["raw_name"]})
+                                        except Exception:
+                                            pass
+                                    st.success(
+                                        f"자재 교체 완료 — "
+                                        f"{_sw_m['material_id']} "
+                                        f"{_sw_m['raw_name']} (제품 소재 "
+                                        "표기 동기화)")
+                                    st.rerun()
+                                else:
+                                    st.error("자재 교체 실패 — DB 가 "
+                                             "변경을 거부했습니다.")
+                            except Exception as e:
+                                st.error(f"자재 교체 오류: {e}")
+
             st.divider()
-            st.markdown("##### ➕ 신규 BOM 자재행 추가")
+            st.markdown("##### 신규 BOM 자재행 추가")
             st.caption("**제품은 품번**, **자재는 자재명**으로 검색하세요. "
                        "BOM 은 수량 정보만 관리. 가격은 매입/원가에서 자동 산정.")
 
@@ -7192,7 +7294,8 @@ elif page == "발주/입고":
             st.error(f"입고 현황 조회 실패: {e}"); _rs = []
         try:
             _ms = fetch("material_stock",
-                "material_id,raw_name,main_supplier,current_stock,"
+                "material_id,raw_name,material_type,spec,"
+                "main_supplier,current_stock,"
                 "total_received,total_consumed,last_txn_date",
                 "order=material_id", limit=1000)
         except Exception:
@@ -7229,6 +7332,7 @@ elif page == "발주/입고":
         _lots_open = [l for l in _lots_w
                       if float(l.get("lot_balance") or 0) > 0]
         _m_name = {m["material_id"]: m.get("raw_name") for m in _ms}
+        _m_info = {m["material_id"]: m for m in _ms}
 
         def _rk(label, value, sub="", tone="primary"):
             _v = value if isinstance(value, str) else f"{value:,.0f}"
@@ -7362,14 +7466,17 @@ elif page == "발주/입고":
                 def _lbl9(r):
                     _poi = _poi_m.get(r.get("ref_id"), {})
                     _po = _po_hdr9.get(_poi.get("po_id"), {})
+                    _mi9 = _m_info.get(r.get("material_id"), {})
                     return {
                         "w_lot": r.get("lot_number")
                                  or "(식별 번호 없음)",
                         "pn": _poi.get("item_name") or "-",
+                        "material_type": _mi9.get("material_type"),
                         "material_name":
                             _m_name.get(r.get("material_id"))
                             or r.get("material_id") or "-",
-                        "spec": _poi.get("spec") or "-",
+                        "spec": _mi9.get("spec")
+                                or _poi.get("spec") or "-",
                         "qty": float(r.get("qty") or 0),
                         "unit": r.get("unit") or "EA",
                         "po_number": _po.get("po_number") or "-",
@@ -8521,12 +8628,21 @@ elif page == "발주/입고":
                                            {"status": "PARTIAL"})
                         except Exception:
                             pass
+                        try:
+                            _mrow8 = _db.fetch_one("materials",
+                                f"material_id=eq.{_mid8}",
+                                "material_type,spec") or {}
+                        except Exception:
+                            _mrow8 = {}
                         st.session_state["rcv_labels"] = [{
                             "w_lot": _w or "(식별 번호 없음)",
                             "pn": _r.get("item_name") or "-",
+                            "material_type":
+                                _mrow8.get("material_type"),
                             "material_name":
                                 _r.get("material_name") or _mid8,
-                            "spec": _r.get("spec") or "-",
+                            "spec": _mrow8.get("spec")
+                                    or _r.get("spec") or "-",
                             "qty": _q8,
                             "unit": _r.get("unit") or "EA",
                             "po_number": _r.get("po_number") or "-",
@@ -8543,11 +8659,16 @@ elif page == "발주/입고":
                 # ── 발주 종결 (협의 short-close, 041/042) ──
                 # 마지막 부분 입고 후 협의로 발주를 끝낼 때 — 문서·원장
                 # 보존, 잔량만 종결되어 입고 대기에서 사라진다
+                _sc_lbl = (f"발주 종결 (전체 미입고 {_sc_pend:,.0f} · "
+                           f"{len(_scl)}개 라인)"
+                           if len(_scl) > 1 else
+                           f"발주 종결 (잔량 {_sc_pend:,.0f})")
                 if _sc_pend > 0 and go2.button(
-                        f"발주 종결 (잔량 {_sc_pend:,.0f})",
-                        help="협의로 발주를 끝냅니다 — 발주 수량(문서)과 "
-                             "입고 기록은 그대로 보존되고, 남은 잔량 "
-                             "전체가 종결되어 입고 대기에서 사라집니다. "
+                        _sc_lbl,
+                        help="이 발주서 전체를 협의로 끝냅니다 — 선택한 "
+                             "라인만이 아니라 발주의 모든 미입고 잔량이 "
+                             "함께 종결됩니다. 발주 수량(문서)과 입고 "
+                             "기록은 그대로 보존됩니다. "
                              "잔량: " + " · ".join(
                                  f"{x['item_name']} "
                                  f"{float(x['pending_qty']):,.0f}"

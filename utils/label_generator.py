@@ -100,13 +100,30 @@ def labels_html(labels: list, mode: str = "label",
 
 def receipt_labels(items: list, mode: str = "label") -> str:
     """소재 입고 라벨 — 타이틀=품번 (2026-07-24 사용자 확정).
-    items: [{w_lot, pn, material_name, spec, qty, po_number, vendor, date}]"""
+    재질=소재 재질(material_type), 사이즈=소재 규격(spec),
+    품번 뒤 괄호 규격은 제거 (2026-08-20 사용자 확정).
+    items: [{w_lot, pn, material_type, material_name, spec, qty,
+             po_number, vendor, date}]"""
+    import re as _re
+    def _pn_only(v):
+        return (_re.sub(r"\s*\([^)]*\)\s*$", "", str(v or "")).strip()
+                or "-")
+    def _grade(it):
+        # 재질 미기재 자재는 자재명 첫 토큰(S304/SCM440 등 재질
+        # 형태일 때)으로 폴백, 아니면 자재명 전체
+        t = (it.get("material_type") or "").strip()
+        if t:
+            return t
+        n = str(it.get("material_name") or "").strip()
+        tok = n.split()[0] if " " in n else ""
+        return tok if _re.fullmatch(r"[A-Za-z]{1,4}\d{2,4}[A-Za-z]?",
+                                    tok) else (n or "-")
     labels = [{
         "title": "소재 입고",
-        "big": it.get("pn") or "-",
+        "big": _pn_only(it.get("pn")),
         "rows": [
             ("식별 번호", it.get("w_lot")),
-            ("재질", it.get("material_name")),
+            ("재질", _grade(it)),
             ("사이즈", it.get("spec")),
             ("수량", f"{it.get('qty', 0):,.0f} {it.get('unit', 'EA')}"),
             ("발주번호", it.get("po_number")),
