@@ -7158,16 +7158,16 @@ elif page == "발주/입고":
     import pandas as pd
 
     PURCHASE_GROUPS = {
-        "MAT_STS": "🟦 소재 STS (명진/유성)",
-        "MAT_CARBON": "🟦 소재 탄소강 (혜성)",
-        "MAT_FORGING": "🟦 단조품",
-        "MAT_CASTING": "🟦 주조품",
-        "MAT_OTHER": "🟦 기타 소재",
-        "MAT_CONSUMABLES": "🟨 유류·소모성 자재",
-        "OUTSOURCE": "🟩 외주 (가공·연마·전조)",
-        "HEAT_TREAT": "🟩 열처리",
-        "SURFACE": "🟩 표면처리",
-        "TOOL": "🟨 공구·소모품",
+        "MAT_STS": "소재 STS (명진/유성)",
+        "MAT_CARBON": "소재 탄소강 (혜성)",
+        "MAT_FORGING": "단조품",
+        "MAT_CASTING": "주조품",
+        "MAT_OTHER": "기타 소재",
+        "MAT_CONSUMABLES": "유류·소모성 자재",
+        "OUTSOURCE": "외주 (가공·연마·전조)",
+        "HEAT_TREAT": "열처리",
+        "SURFACE": "표면처리",
+        "TOOL": "공구·소모품",
     }
 
     tab_new, tab_hist, tab_rcv_proc, tab_rstat = st.tabs(
@@ -7569,10 +7569,18 @@ elif page == "발주/입고":
                 ]
 
         st.markdown("##### ① 거래처 선택")
-        group_options = ["전체 (매입)"] + list(PURCHASE_GROUPS.values())
-        sel_group_label = st.selectbox("발주 그룹", group_options, index=0)
-        selected_groups = list(PURCHASE_GROUPS.keys()) if sel_group_label == "전체 (매입)" else \
-            [k for k, v in PURCHASE_GROUPS.items() if v == sel_group_label]
+        # 발주 그룹은 3버킷 — 외주(가공·열처리·표면)는 공정 관리의
+        # 의뢰서로 처리하므로 단독 발주 없음 (2026-08-20 사용자 확정)
+        _PO_BUCKETS = {
+            "소재": ["MAT_STS", "MAT_CARBON", "MAT_FORGING",
+                     "MAT_CASTING", "MAT_OTHER"],
+            "소모성": ["MAT_CONSUMABLES"],
+            "공구": ["TOOL"],
+        }
+        sel_bucket = st.radio("발주 그룹", list(_PO_BUCKETS),
+                              horizontal=True, key="po_bucket",
+                              label_visibility="collapsed")
+        selected_groups = _PO_BUCKETS[sel_bucket]
         groups_str = ",".join(selected_groups)
         fq = f"vendor_group=in.({groups_str})&in_use=eq.true&order=name"
         try:
@@ -7594,8 +7602,16 @@ elif page == "발주/입고":
                 nv_ceo = st.text_input("대표자명", key="nv_ceo")
                 nv_phone = st.text_input("전화", key="nv_phone")
             with ec2:
-                nv_group = st.selectbox("그룹 *", options=["선택"] + list(PURCHASE_GROUPS.keys()),
-                                        key="nv_group")
+                # 발주용 거래처 그룹만 (외주 업체는 마스터 거래처
+                # 편집에서 등록 — 공정 라우팅용)
+                _nv_groups = [k for k in PURCHASE_GROUPS
+                              if k not in ("OUTSOURCE", "HEAT_TREAT",
+                                           "SURFACE")]
+                nv_group = st.selectbox(
+                    "그룹 *", options=["선택"] + _nv_groups,
+                    format_func=lambda k: (
+                        PURCHASE_GROUPS.get(k, k) if k != "선택" else k),
+                    key="nv_group")
                 nv_pay = st.text_input("결제조건", key="nv_pay",
                                        value="말일 마감 60일 현금")
                 nv_address = st.text_input("주소", key="nv_addr")
@@ -7725,18 +7741,26 @@ elif page == "발주/입고":
 
             # ─── 거래처별 단가 자동 채움 helper ───
             @st.cache_data(ttl=60)
-            def _get_vendor_recent_price(vid, item_name):
-                """이 거래처에서 같은 품목 최근 발주 단가"""
+            def _get_vendor_recent_line(vid, item_name):
+                """이 거래처에서 같은 품목 최근 발주 단가·수량 —
+                반복 발주가 대부분이라 담을 때 함께 프리필한다"""
                 try:
                     pos = fetch("purchase_orders", "po_id",
                                 f"vendor_id=eq.{vid}&order=po_date.desc", limit=20)
-                    if not pos: return None
+                    if not pos: return None, None
                     po_ids = ",".join(str(p["po_id"]) for p in pos)
-                    items = fetch("purchase_order_items", "unit_price,po_id",
+                    items = fetch("purchase_order_items",
+                                  "unit_price,qty,po_id",
                                   f"po_id=in.({po_ids})&item_name=eq.{item_name}&order=po_id.desc",
                                   limit=1)
-                    return int(items[0]["unit_price"]) if items else None
-                except: return None
+                    if not items:
+                        return None, None
+                    return (int(items[0]["unit_price"] or 0) or None,
+                            int(float(items[0].get("qty") or 0)) or None)
+                except: return None, None
+
+            def _get_vendor_recent_price(vid, item_name):
+                return _get_vendor_recent_line(vid, item_name)[0]
 
             st.divider()
             st.markdown("##### ② 품목 추가")
@@ -7802,12 +7826,16 @@ elif page == "발주/입고":
                         cols[0].write(f"**{p['pn']}**")
                         cols[1].write(p.get("material") or "-")
                         cols[2].write(p.get("raw_material_spec") or p.get("bom_material_name") or "-")
-                        # 거래처별 최근 단가 우선, 없으면 마스터 단가
-                        vendor_price = _get_vendor_recent_price(vendor["vendor_id"], p["pn"])
+                        # 거래처별 최근 단가·수량 프리필 (반복 발주 대응)
+                        vendor_price, vendor_qty = _get_vendor_recent_line(
+                            vendor["vendor_id"], p["pn"])
                         upd = vendor_price or int(p.get("material_unit_price") or 0)
                         if vendor_price:
-                            cols[3].markdown(f"₩{upd:,} <small>(이전)</small>",
-                                              unsafe_allow_html=True)
+                            cols[3].markdown(
+                                f"₩{upd:,} <small>(이전"
+                                + (f" · {vendor_qty:,}개" if vendor_qty
+                                   else "") + ")</small>",
+                                unsafe_allow_html=True)
                         else:
                             cols[3].write(f"₩{upd:,}" if upd else "-")
                         if cols[4].button("➕", key=f"add_{p['product_id']}"):
@@ -7817,7 +7845,8 @@ elif page == "발주/입고":
                                 "product_id": p["product_id"], "item_name": p["pn"],
                                 "material": p.get("material") or "",
                                 "spec": p.get("raw_material_spec") or "",
-                                "qty": 0, "unit_price": upd, "memo": "",
+                                "qty": vendor_qty or 0,
+                                "unit_price": upd, "memo": "",
                             })
                             st.rerun()
 
@@ -7839,14 +7868,15 @@ elif page == "발주/입고":
                         if not r:
                             notfound.append(pn); continue
                         p = r[0]
-                        vp = _get_vendor_recent_price(vendor["vendor_id"], p["pn"])
+                        vp, vq = _get_vendor_recent_line(
+                            vendor["vendor_id"], p["pn"])
                         upd = vp or int(p.get("material_unit_price") or 0)
                         st.session_state.po_items.append({
                             "_uid": str(_uuid_bulk.uuid4())[:8],
                             "product_id": p["product_id"], "item_name": p["pn"],
                             "material": p.get("material") or "",
                             "spec": p.get("raw_material_spec") or "",
-                            "qty": 0, "unit_price": upd, "memo": "",
+                            "qty": vq or 0, "unit_price": upd, "memo": "",
                         })
                         added += 1
                     msg = f"✅ {added}개 추가"
@@ -7929,8 +7959,17 @@ elif page == "발주/입고":
 
             st.divider()
 
+            _zero_q = [it["item_name"]
+                       for it in st.session_state.po_items
+                       if not it.get("qty")]
+            if _zero_q:
+                st.warning("수량이 0인 품목이 있습니다 — 위 표에서 "
+                           "수량을 입력하세요: "
+                           + ", ".join(_zero_q[:5])
+                           + ("…" if len(_zero_q) > 5 else ""))
             if st.button("📄 발주서 xlsx 생성", type="primary", use_container_width=True,
-                         disabled=not st.session_state.po_items):
+                         disabled=(not st.session_state.po_items
+                                   or bool(_zero_q))):
                 try:
                     po_no = generate_po_number(_db)
                 except Exception:
