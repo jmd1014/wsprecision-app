@@ -8071,7 +8071,7 @@ elif page == "발주/입고":
         with c1:
             period = st.selectbox("기간", ["이번달", "최근 3개월", "올해", "전체"], index=1)
         with c2:
-            status_f = st.selectbox("상태", ["전체", "DRAFT", "SENT", "RECEIVED", "CANCELLED"])
+            status_f = st.selectbox("상태", ["전체", "DRAFT", "SENT", "RECEIVED", "CLOSED", "CANCELLED"])
         with c3:
             v_search = st.text_input("거래처", placeholder="이름 검색")
 
@@ -8192,7 +8192,10 @@ elif page == "발주/입고":
                     try:
                         xb = fill_po_template(re_po_data, [{
                             "item_name": i.get("item_name"),
-                            "material": i.get("remark") or "",
+                            # 재질은 정식 컬럼 우선 (Migration 040),
+                            # 구발주는 remark 에 남아있어 폴백
+                            "material": (i.get("material")
+                                         or i.get("remark") or ""),
                             "spec": i.get("spec") or "",
                             "qty": int(i.get("qty") or 0),
                             "unit_price": int(i.get("unit_price") or 0),
@@ -8215,6 +8218,59 @@ elif page == "발주/입고":
                     if _db.update("purchase_orders", f"po_id=eq.{po['po_id']}",
                                   {"status": new_status}):
                         st.success(f"상태를 {new_status}로 변경"); st.rerun()
+
+                # ── 잔량 종결 (협의 short-close, Migration 041) ──
+                # 소재 협의로 발주 수량보다 적게 받고 끝내는 경우 —
+                # 발주 문서·입고 원장은 그대로 두고 잔량만 종결한다.
+                if po.get("status") not in ("CLOSED", "CANCELLED"):
+                    try:
+                        _scl = fetch("po_item_receipt_v",
+                            "item_name,ordered_qty,received_qty,"
+                            "pending_qty",
+                            f"po_id=eq.{po['po_id']}&pending_qty=gt.0",
+                            limit=50)
+                    except Exception:
+                        _scl = []
+                    _sc_pend = sum(float(x.get("pending_qty") or 0)
+                                   for x in _scl)
+                    if _sc_pend > 0:
+                        with st.expander(
+                                f"잔량 종결 — 미입고 {_sc_pend:,.0f} "
+                                "(협의로 발주 종료)"):
+                            st.caption(
+                                "발주 수량(문서)과 입고 기록은 그대로 "
+                                "보존되고, 이 발주의 잔량만 종결 처리되어 "
+                                "입고 대기에서 사라집니다. 잔량 내역: "
+                                + " · ".join(
+                                    f"{x['item_name']} "
+                                    f"{float(x['pending_qty']):,.0f}"
+                                    for x in _scl[:5]))
+                            _sc_reason = st.text_input(
+                                "종결 사유 *", key=f"po_scl_r_{po['po_id']}",
+                                placeholder="예: 소재 잔재 부족 — 89개로 "
+                                            "협의 종료 (명진메탈)")
+                            if st.button(
+                                    f"잔량 {_sc_pend:,.0f} 종결 확정",
+                                    type="primary",
+                                    disabled=not (_sc_reason
+                                                  or "").strip(),
+                                    key=f"po_scl_go_{po['po_id']}"):
+                                from datetime import date as _scl_d
+                                _scl_note = (
+                                    f"잔량 종결 {_sc_pend:,.0f}: "
+                                    f"{_sc_reason.strip()} "
+                                    f"({_scl_d.today().isoformat()}, "
+                                    f"{current_user_name()})")
+                                _old_rmk = (po.get("remark") or "").strip()
+                                if _db.update("purchase_orders",
+                                        f"po_id=eq.{po['po_id']}",
+                                        {"status": "CLOSED",
+                                         "remark": (_old_rmk + " / "
+                                                    if _old_rmk else "")
+                                                   + _scl_note}):
+                                    st.success("발주 종결 — 잔량이 입고 "
+                                               "대기에서 제외됩니다.")
+                                    st.rerun()
 
                 st.divider()
                 st.caption("입고 처리는 [입고 처리] 탭에서 진행합니다 (2026-07-23 분리).")
