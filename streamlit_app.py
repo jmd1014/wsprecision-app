@@ -1176,12 +1176,15 @@ if page == "홈":
     hc1, hc2 = st.columns(2)
 
     with hc1:
+        # 타이틀을 먼저 그려 우측 컬럼 타이틀과 줄을 맞춘다
+        # (선택 라디오는 타이틀 아래, 2026-08-19 정렬 개선)
+        _h_view = st.session_state.get("home_so_view", "품번별")
+        st.markdown(f"##### 수주 진행 ({_h_view} · 미납 · 납기순)")
         # 품번별 = 생산 일정 관리 단위 (같은 품번에 수주가 계속
         # 추가되므로 실무 기본값). 수주별은 문서 단위 확인용.
         _h_view = st.radio("수주 진행 보기", ["품번별", "수주별"],
                            horizontal=True, key="home_so_view",
                            label_visibility="collapsed")
-        st.markdown(f"##### 수주 진행 ({_h_view} · 미납 · 납기순)")
 
     if _h_view == "품번별":
         with hc1:
@@ -8219,59 +8222,6 @@ elif page == "발주/입고":
                                   {"status": new_status}):
                         st.success(f"상태를 {new_status}로 변경"); st.rerun()
 
-                # ── 잔량 종결 (협의 short-close, Migration 041) ──
-                # 소재 협의로 발주 수량보다 적게 받고 끝내는 경우 —
-                # 발주 문서·입고 원장은 그대로 두고 잔량만 종결한다.
-                if po.get("status") not in ("CLOSED", "CANCELLED"):
-                    try:
-                        _scl = fetch("po_item_receipt_v",
-                            "item_name,ordered_qty,received_qty,"
-                            "pending_qty",
-                            f"po_id=eq.{po['po_id']}&pending_qty=gt.0",
-                            limit=50)
-                    except Exception:
-                        _scl = []
-                    _sc_pend = sum(float(x.get("pending_qty") or 0)
-                                   for x in _scl)
-                    if _sc_pend > 0:
-                        with st.expander(
-                                f"잔량 종결 — 미입고 {_sc_pend:,.0f} "
-                                "(협의로 발주 종료)"):
-                            st.caption(
-                                "발주 수량(문서)과 입고 기록은 그대로 "
-                                "보존되고, 이 발주의 잔량만 종결 처리되어 "
-                                "입고 대기에서 사라집니다. 잔량 내역: "
-                                + " · ".join(
-                                    f"{x['item_name']} "
-                                    f"{float(x['pending_qty']):,.0f}"
-                                    for x in _scl[:5]))
-                            _sc_reason = st.text_input(
-                                "종결 사유 *", key=f"po_scl_r_{po['po_id']}",
-                                placeholder="예: 소재 잔재 부족 — 89개로 "
-                                            "협의 종료 (명진메탈)")
-                            if st.button(
-                                    f"잔량 {_sc_pend:,.0f} 종결 확정",
-                                    type="primary",
-                                    disabled=not (_sc_reason
-                                                  or "").strip(),
-                                    key=f"po_scl_go_{po['po_id']}"):
-                                from datetime import date as _scl_d
-                                _scl_note = (
-                                    f"잔량 종결 {_sc_pend:,.0f}: "
-                                    f"{_sc_reason.strip()} "
-                                    f"({_scl_d.today().isoformat()}, "
-                                    f"{current_user_name()})")
-                                _old_rmk = (po.get("remark") or "").strip()
-                                if _db.update("purchase_orders",
-                                        f"po_id=eq.{po['po_id']}",
-                                        {"status": "CLOSED",
-                                         "remark": (_old_rmk + " / "
-                                                    if _old_rmk else "")
-                                                   + _scl_note}):
-                                    st.success("발주 종결 — 잔량이 입고 "
-                                               "대기에서 제외됩니다.")
-                                    st.rerun()
-
                 st.divider()
                 st.caption("입고 처리는 [입고 처리] 탭에서 진행합니다 (2026-07-23 분리).")
 
@@ -8329,8 +8279,6 @@ elif page == "발주/입고":
                 _h = _po_h.get(r["po_id"], {})
                 _due = _h.get("delivery_date")
                 _rows.append((r, {
-                    "전량": False,
-                    "이번 입고": 0.0,
                     "발주": r.get("po_number") or str(r["po_id"]),
                     "거래처": _po_v.get(_h.get("vendor_id")) or "-",
                     "예정": ((str(_due) + " ⚠")
@@ -8345,54 +8293,39 @@ elif page == "발주/입고":
                     "미입고": float(r.get("pending_qty") or 0),
                 }))
             if (_rq or "").strip():
-                _q2 = _rq.strip().lower()
-                _rows = [t for t in _rows if any(
-                    _q2 in str(t[1][k]).lower()
-                    for k in ("발주", "거래처", "품명", "자재"))]
+                _k8 = _rq.strip().lower()
+                _rows = [(r, d) for r, d in _rows
+                         if _k8 in " ".join(str(v)
+                                            for v in d.values()).lower()]
             if not _rows:
-                st.info("검색 결과 없음 — 검색어를 줄여보세요.")
+                st.info("검색 결과 없음")
             else:
-                _ed = st.data_editor(
-                    pd.DataFrame([d for _, d in _rows]),
-                    hide_index=True, use_container_width=True,
-                    key="rcvp_ed_{}_{}".format(
-                        len(_rows), (_rq or "").strip()),
-                    height=min(430, 60 + len(_rows) * 35),
-                    column_config={
-                        "전량": st.column_config.CheckboxColumn(
-                            "전량", width="small",
-                            help="체크하면 미입고 전량 입고"),
-                        "이번 입고": st.column_config.NumberColumn(
-                            "이번 입고", min_value=0, step=1,
-                            help="실입고 수량 — 발주 초과 입력 가능 "
-                                 "(잔재 협의 등)"),
-                        **{c: st.column_config.Column(disabled=True)
-                           for c in ("발주", "거래처", "예정", "품명",
-                                     "자재", "발주수량", "기입고",
-                                     "미입고")},
-                    })
+                # 리스트에서 행 선택 → 아래에 입고·매핑·종결 기능
+                # (2026-08-19 개편 — 일괄 수량 입력 표 대체)
+                _rcv_i = toss_grid([d for _, d in _rows],
+                    key="rcvp_grid",
+                    num_cols=("발주수량", "기입고", "미입고"),
+                    strong_cols=("품명",))
+                _r = _rows[_rcv_i if _rcv_i is not None else 0][0]
+                _rh = _po_h.get(_r["po_id"], {})
+                _r_vendor = _po_v.get(_rh.get("vendor_id")) or "-"
+                _pend8 = float(_r.get("pending_qty") or 0)
+                st.markdown(
+                    f"##### {_r.get('item_name')} — "
+                    f"{_r.get('po_number') or _r['po_id']} · "
+                    f"{_r_vendor} · 미입고 {_pend8:,.0f}")
 
-                # 처리 대상 계산 — 전량 체크 또는 수량 입력
-                _todo = []
-                for (_r, _), (_bi, _brow) in zip(_rows, _ed.iterrows()):
-                    _q3 = float(pd.to_numeric(
-                        _brow.get("이번 입고"), errors="coerce") or 0)
-                    if bool(_brow.get("전량")):
-                        _q3 = max(_q3, float(_r.get("pending_qty") or 0))
-                    if _q3 > 0:
-                        _todo.append((_r, _q3))
-
-                # 미매핑 자재 — 처음 입고하는 품목만 1회 지정 (재사용)
-                _map_pick = {}
-                _need_map = [(_r, q) for _r, q in _todo
-                             if not _r.get("material_id")]
-                for _r, _q4 in _need_map:
-                    st.markdown(f"**자재 매핑 — {_r.get('item_name')}** "
-                                "(최초 1회, 이후 재사용)")
+                # ── 자재 매핑 (미매핑 라인만 — 최초 1회, 이후 재사용) ──
+                _mid8 = _r.get("material_id")
+                if _mid8:
+                    st.caption("자재: **"
+                               + (_r.get("material_name") or _mid8)
+                               + "** (매핑됨)")
+                else:
+                    st.markdown("**자재 매핑** — 최초 1회, 이후 재사용")
                     _bm = None
                     _inm = (_r.get("item_name") or "").strip()
-                    # ⓪ 발주 라인의 제품 ID → BOM 자재 (Migration 039 —
-                    #    텍스트 매칭 없이 ID 로 직결)
+                    # ⓪ 발주 라인의 제품 ID → BOM 자재
                     if _r.get("product_id"):
                         try:
                             _bh0 = fetch("bom", "material_id",
@@ -8413,9 +8346,7 @@ elif page == "발주/입고":
                                 _bm = _prev[0]["material_id"]
                         except Exception:
                             pass
-                    # ② 품명이 제품 품번이면 BOM 자재 추천 — 발주 품명에
-                    #    규격이 붙는 관례('32LJF-M (Ø135*16L)') 대응으로
-                    #    괄호 앞부분으로도 매칭 시도
+                    # ② 품명(규격 괄호 제거)이 품번이면 BOM 자재
                     if not _bm:
                         _png = _inm.split("(")[0].strip()
                         for _try_pn in dict.fromkeys([_inm, _png]):
@@ -8465,10 +8396,9 @@ elif page == "발주/입고":
                         _mp = st.selectbox(
                             "자재 선택", _ml,
                             key=f"rcvp_mp_{_r['poi_id']}")
-                        _map_pick[_r["poi_id"]] = \
-                            _mc[_ml.index(_mp)]["material_id"]
+                        _mid8 = _mc[_ml.index(_mp)]["material_id"]
                     else:
-                        # 일치 자재 없음 → 즉석 등록 (발주 품명 프리필)
+                        # 일치 자재 없음 → 즉석 등록 (발주 흐름 경로)
                         st.caption("일치 자재 없음 — 아래에서 즉석 등록 "
                                    "후 이어서 매핑하세요.")
                         rq1, rq2, rq3 = st.columns([2, 1, 1])
@@ -8489,7 +8419,8 @@ elif page == "발주/입고":
                             if _rq_sim:
                                 st.error(
                                     "같은 자재로 보이는 항목이 이미 "
-                                    "있습니다 — 검색에서 선택하세요: "
+                                    "있습니다 — 위 검색에 아래 이름을 "
+                                    "넣어 선택하세요: "
                                     + " · ".join(
                                         f"{m['material_id']} "
                                         f"{m['raw_name']}"
@@ -8513,115 +8444,140 @@ elif page == "발주/입고":
                                 except Exception as e:
                                     st.error(f"등록 실패: {e}")
 
-                # 발주 초과 경고 (차단 없음 — 실입고 그대로 기록)
-                _over = [(r, q) for r, q in _todo
-                         if q > float(r.get("pending_qty") or 0) + 1e-9]
-                if _over:
-                    st.warning("발주 초과 입고 {}건 — {} (잔재 협의 등, "
-                               "실입고 그대로 기록되고 원장에 초과분 "
-                               "표시)".format(
-                        len(_over), ", ".join(
-                            "{} +{:,.0f}".format(
-                                r.get("item_name") or "-",
-                                q - float(r.get("pending_qty") or 0))
-                            for r, q in _over[:5])))
-
-                _tot = sum(q for _, q in _todo)
-                _unmapped = [r for r, q in _todo
-                             if not r.get("material_id")
-                             and r["poi_id"] not in _map_pick]
-                if _unmapped:
-                    st.warning("자재 미매핑 {}건 — 위에서 자재를 선택해야 "
-                               "입고할 수 있습니다.".format(len(_unmapped)))
-                if st.button(
-                        f"입고 처리 ({_tot:,.0f} · {len(_todo)}개 라인)",
-                        type="primary", key="rcvp_go",
-                        disabled=(_tot <= 0 or bool(_unmapped))
-                        ) and click_guard("rcvp_go"):
+                # ── 입고 수량 + 처리 ──
+                rcv1, rcv2 = st.columns([1, 2])
+                with rcv1:
+                    _q8 = st.number_input("이번 입고 수량",
+                        min_value=0.0, value=_pend8, step=1.0,
+                        key=f"rcvp_qty_{_r['poi_id']}")
+                if _q8 > _pend8 + 1e-9:
+                    st.warning(f"발주 초과 +{_q8 - _pend8:,.0f} — 잔재 "
+                               "협의 등, 실입고 그대로 기록됩니다.")
+                if not _mid8:
+                    st.warning("자재를 선택(또는 등록)해야 입고할 수 "
+                               "있습니다.")
+                if st.button(f"입고 처리 ({_q8:,.0f}) — 식별 번호 발급 "
+                             "+ 라벨", type="primary",
+                             disabled=(_q8 <= 0 or not _mid8),
+                             key=f"rcvp_go_{_r['poi_id']}") \
+                        and click_guard(f"rcvp_go_{_r['poi_id']}"):
                     from datetime import date as _rcv_date
-                    _wls = w_lot_next(len(_todo))
+                    _wls = w_lot_next(1)
                     if _wls is None:
-                        st.warning(
-                            "⚠️ 식별 번호 카운터 미설정 — 이번 입고는 식별 번호 "
-                            "없이 기록됩니다. 아래 채번 설정을 먼저 "
-                            "저장하세요.")
-                    _lbl, _okn, _failn, _aff_po = [], 0, 0, set()
-                    for _wi, (_r, _q5) in enumerate(_todo):
-                        _mid = (_r.get("material_id")
-                                or _map_pick.get(_r["poi_id"]))
-                        _w = _wls[_wi] if _wls else None
-                        _pend5 = float(_r.get("pending_qty") or 0)
-                        _rmk = "발주 입고: {}".format(
-                            _r.get("po_number") or _r["po_id"])
-                        if _q5 > _pend5:
-                            _rmk += f" · 발주 초과 +{_q5 - _pend5:,.0f}"
-                        try:
-                            _db.insert("inventory_transactions", [{
-                                "material_id": _mid,
-                                "txn_type": "RECEIPT",
-                                "qty": _q5,
-                                "unit": _r.get("unit") or "EA",
-                                "lot_number": _w,
-                                "ref_table": "purchase_order_items",
-                                "ref_id": _r["poi_id"],
-                                "txn_date":
-                                    _rcv_date.today().isoformat(),
-                                "remark": _rmk,
-                                "created_by": current_user_name(),
-                            }])
-                            if not _r.get("material_id") and _mid:
-                                _db.update("purchase_order_items",
-                                           f"poi_id=eq.{_r['poi_id']}",
-                                           {"material_id": _mid})
-                            _h5 = _po_h.get(_r["po_id"], {})
-                            _lbl.append({
-                                "w_lot": _w or "(식별 번호 없음)",
-                                "pn": _r.get("item_name") or "-",
-                                "material_name":
-                                    _r.get("material_name") or _mid,
-                                "spec": _r.get("spec") or "-",
-                                "qty": _q5,
-                                "unit": _r.get("unit") or "EA",
-                                "po_number": _r.get("po_number") or "-",
-                                "vendor": _po_v.get(
-                                    _h5.get("vendor_id")) or "-",
-                                "date": _rcv_date.today().isoformat(),
-                            })
-                            _aff_po.add(_r["po_id"])
-                            _okn += 1
-                        except Exception as e:
-                            _failn += 1
-                            st.warning("{} 입고 실패: {}".format(
-                                _r.get("item_name") or _r["poi_id"], e))
-                    # 발주 헤더 상태 자동 갱신 (영향 발주만)
-                    for _pid5 in _aff_po:
+                        st.warning("⚠️ 식별 번호 카운터 미설정 — 이번 "
+                                   "입고는 식별 번호 없이 기록됩니다.")
+                    _w = _wls[0] if _wls else None
+                    _rmk = "발주 입고: {}".format(
+                        _r.get("po_number") or _r["po_id"])
+                    if _q8 > _pend8:
+                        _rmk += f" · 발주 초과 +{_q8 - _pend8:,.0f}"
+                    try:
+                        _db.insert("inventory_transactions", [{
+                            "material_id": _mid8,
+                            "txn_type": "RECEIPT",
+                            "qty": _q8,
+                            "unit": _r.get("unit") or "EA",
+                            "lot_number": _w,
+                            "ref_table": "purchase_order_items",
+                            "ref_id": _r["poi_id"],
+                            "txn_date": _rcv_date.today().isoformat(),
+                            "remark": _rmk,
+                            "created_by": current_user_name(),
+                        }])
+                        if not _r.get("material_id"):
+                            _db.update("purchase_order_items",
+                                       f"poi_id=eq.{_r['poi_id']}",
+                                       {"material_id": _mid8})
+                        # 발주 헤더 상태 자동 갱신
                         try:
                             _fr5 = fetch("po_item_receipt_v",
                                          "receipt_status",
-                                         f"po_id=eq.{_pid5}", limit=50)
+                                         f"po_id=eq.{_r['po_id']}",
+                                         limit=50)
                             _sts5 = [f["receipt_status"] for f in _fr5]
                             if _sts5 and all(s == "RECEIVED"
                                              for s in _sts5):
-                                _hdr5 = "RECEIVED"
+                                _db.update("purchase_orders",
+                                           f"po_id=eq.{_r['po_id']}",
+                                           {"status": "RECEIVED"})
                             elif any(s in ("PARTIAL", "RECEIVED")
                                      for s in _sts5):
-                                _hdr5 = "PARTIAL"
-                            else:
-                                _hdr5 = None
-                            if _hdr5:
                                 _db.update("purchase_orders",
-                                           f"po_id=eq.{_pid5}",
-                                           {"status": _hdr5})
+                                           f"po_id=eq.{_r['po_id']}",
+                                           {"status": "PARTIAL"})
                         except Exception:
                             pass
-                    if _okn:
-                        st.session_state["rcv_labels"] = _lbl
-                        st.success(
-                            f"✅ 입고 처리 완료 — {_okn}개 라인 · "
-                            f"{_tot:,.0f}개 (실재고 자동 반영)"
-                            + (f" / 실패 {_failn}" if _failn else ""))
+                        st.session_state["rcv_labels"] = [{
+                            "w_lot": _w or "(식별 번호 없음)",
+                            "pn": _r.get("item_name") or "-",
+                            "material_name":
+                                _r.get("material_name") or _mid8,
+                            "spec": _r.get("spec") or "-",
+                            "qty": _q8,
+                            "unit": _r.get("unit") or "EA",
+                            "po_number": _r.get("po_number") or "-",
+                            "vendor": _r_vendor,
+                            "date": _rcv_date.today().isoformat(),
+                        }]
+                        st.success(f"✅ 입고 처리 — {_q8:,.0f}개 "
+                                   f"(식별 번호 {_w or '-'}, 실재고 "
+                                   "자동 반영)")
                         st.rerun()
+                    except Exception as e:
+                        st.error(f"입고 실패: {e}")
 
+                # ── 이 발주 잔량 종결 (협의 short-close, 041) ──
+                # 마지막 부분 입고 후 협의로 발주를 끝낼 때 — 문서·원장
+                # 보존, 잔량만 종결되어 입고 대기에서 사라진다
+                try:
+                    _scl = fetch("po_item_receipt_v",
+                        "item_name,pending_qty",
+                        f"po_id=eq.{_r['po_id']}&pending_qty=gt.0",
+                        limit=50)
+                except Exception:
+                    _scl = []
+                _sc_pend = sum(float(x.get("pending_qty") or 0)
+                               for x in _scl)
+                if _sc_pend > 0:
+                    with st.expander(
+                            f"이 발주 잔량 종결 — 미입고 {_sc_pend:,.0f} "
+                            "(협의로 발주 종료)"):
+                        st.caption(
+                            "발주 수량(문서)과 입고 기록은 그대로 "
+                            "보존되고, 이 발주의 남은 잔량 전체가 "
+                            "종결되어 입고 대기에서 사라집니다. 잔량: "
+                            + " · ".join(
+                                f"{x['item_name']} "
+                                f"{float(x['pending_qty']):,.0f}"
+                                for x in _scl[:5]))
+                        _sc_reason = st.text_input(
+                            "종결 사유 *",
+                            key=f"rcvp_scl_r_{_r['po_id']}",
+                            placeholder="예: 소재 잔재 부족 — 89개로 "
+                                        "협의 종료 (명진메탈)")
+                        if st.button(
+                                f"잔량 {_sc_pend:,.0f} 종결 확정",
+                                type="primary",
+                                disabled=not (_sc_reason or "").strip(),
+                                key=f"rcvp_scl_go_{_r['po_id']}"):
+                            from datetime import date as _scl_d
+                            _scl_note = (
+                                f"잔량 종결 {_sc_pend:,.0f}: "
+                                f"{_sc_reason.strip()} "
+                                f"({_scl_d.today().isoformat()}, "
+                                f"{current_user_name()})")
+                            _old_rmk = (_rh.get("remark")
+                                        or "").strip() \
+                                if isinstance(_rh, dict) else ""
+                            if _db.update("purchase_orders",
+                                    f"po_id=eq.{_r['po_id']}",
+                                    {"status": "CLOSED",
+                                     "remark": (_old_rmk + " / "
+                                                if _old_rmk else "")
+                                               + _scl_note}):
+                                st.success("발주 종결 — 잔량이 입고 "
+                                           "대기에서 제외됩니다.")
+                                st.rerun()
         if st.session_state.get("rcv_labels"):
             from utils.label_generator import receipt_labels
             _lbs = st.session_state["rcv_labels"]
