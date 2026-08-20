@@ -39,6 +39,11 @@
 ## 공정 라우팅·배치 (2026-08-12 확정)
 
 - `product_routing` = 공정 '순서', BOM = 공정 '원가', `default_vendor` = PPAP 승인 업체 고정(마스터에서만 변경)
+- **이중 관리 통합 (2026-08-20)**: 공정 편집의 단일 창구는 마스터 관리 > 제품 구성 (라우팅) 탭.
+  라우팅 저장 시 BOM 미연결 외주 스텝은 원가행(BOM, process_type=OUTSOURCE, source=ROUTING)
+  자동 생성·연결. 라우팅 있는 제품의 HEAT/SURFACE/OUTSOURCE 원가행이 미연결이면
+  정합 점검 `ROUTE_COST_ORPHAN`(Migration 044)에 표기. BOM 편집의 공정행 추가 폼은
+  원가 전용 행(포장·노무 등)만
 - 기본 플로우: 소재입고 → 생산 → 검사 → 완성 (외주 없음). 외주 있는 제품만 라우팅 정의
 - 순차 강제: 라우팅 제품은 스텝별 출고/회수 누계 기준 — 인수 전량 통과 전 검사 잠금
 - **배치(wo_batches)**: 공정을 흐르는 수량의 정체성. 배치번호 = `지시번호-가지`(예: 20260812-003-A),
@@ -57,6 +62,9 @@
 - **수주 진행 대사 불변식**: 회차 delivered 합 = 라인 received_qty − presched_qty(스케줄 이전
   기납품, Migration 038). 출고 확정은 등록 때 지정한 회차를 우선 충당
 - **품번의 진실 = product_id** (pn은 사람용 표기 — 저장 시 공백 자동 제거). 텍스트 조인 지양
+- **발주 잔량 종결은 라인(제품) 단위** — `purchase_order_items.closed_at`(Migration 043).
+  뷰 `po_item_receipt_v`가 라인 종결·발주 CLOSED 모두 pending 0 처리. 전 라인 완료 시
+  발주 헤더 자동 승격(RECEIVED/CLOSED), 해제는 발주 이력 > 종결 해제
 - **정합 감시 = `data_quality_v`** → 마스터 관리 > 정합 점검 탭. 전 항목 0건 유지가 목표.
   새 규칙을 만들면 검사도 이 뷰에 추가할 것
 - 상태값은 코드화: active '1'/'0', 조달 '도급'/'사급'

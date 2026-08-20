@@ -1409,7 +1409,8 @@ elif page == "마스터 관리":
     (tab_fit, tab1, tab_prod, tab_mat, tab_bom, tab_rout,
      tab_dq, tab_acct, tab_dsn) = st.tabs([
         "품번별 맞추기",
-        "거래처 편집", "제품 편집", "자재 편집", "BOM 편집", "공정 라우팅",
+        "거래처 편집", "제품 편집", "자재 편집", "BOM 편집",
+        "제품 구성 (라우팅)",
         "정합 점검", "계정 관리", "디자인 데이터 내보내기"
     ])
 
@@ -1450,7 +1451,9 @@ elif page == "마스터 관리":
                     } for r in _v], strong_cols=("대상",),
                         scroll=len(_v) > 15)
             st.caption(
-                "처리 안내 — 소재 미연결: BOM 편집·공정 라우팅에서 연결 / "
+                "처리 안내 — 소재 미연결: BOM 편집·제품 구성에서 연결 / "
+                "공정 원가행 라우팅 미연결: 제품 구성 탭에서 스텝에 "
+                "BOM 연결 / "
                 "자재 미매핑: 입고 처리에서 최초 1회 지정 / 회차 대사 "
                 "불일치: 납품 스케줄에서 회차·기납품 확인 / 품번 문제: "
                 "제품 편집에서 정정.")
@@ -1459,12 +1462,16 @@ elif page == "마스터 관리":
     # 라우팅 = 제품별 공정 '순서'. 공정 '원가'는 BOM(process_type 행)이
     # 담당하고, 외주 스텝은 bom_id 로 원가 행과 연결된다.
     with tab_rout:
-        st.markdown("**제품별 공정 순서(라우팅)를 정의합니다** — "
-                    "공정 관리의 스테퍼·외주 공정 선택이 이 순서를 따릅니다.")
+        st.markdown("**제품 구성을 한 화면에서 봅니다** — 소재·공정 "
+                    "원가(BOM)와 공정 순서(라우팅)를 함께 확인·정의. "
+                    "공정 관리의 스테퍼·외주 공정 선택이 이 순서를 "
+                    "따릅니다.")
         st.caption(
-            "라우팅이 없는 제품은 기본 플로우(소재입고 → 생산 → 외주 → "
-            "검사 → 완성)로 동작하므로, 외주 공정이 있는 제품만 정의하면 "
-            "됩니다. **단계=소재**는 투입 전 외주(소재열처리 등), "
+            "역할 분담 — **원가·소재의 진실 = BOM**, **순서의 진실 = "
+            "라우팅**, 연결 = 스텝의 BOM 연결. 외주 스텝을 추가하고 "
+            "저장하면 원가행(BOM)이 자동 생성·연결됩니다. 라우팅이 "
+            "없는 제품은 기본 플로우(소재입고 → 생산 → 검사 → 완성)로 "
+            "동작합니다. **단계=소재**는 투입 전 외주(소재열처리 등), "
             "**단계=제품**은 가공 후 외주입니다.")
 
         # 순서 확정 대기 (BOM 공정에서 자동 생성된 라우팅)
@@ -1519,13 +1526,43 @@ elif page == "마스터 관리":
                 # '라우팅 = BOM 정보가 공정 순서 위에 완성된 그림'이 되게
                 try:
                     _pbom = fetch("bom",
-                        "bom_id,process_type,raw_material_name,unit_price",
+                        "bom_id,process_type,raw_material_name,"
+                        "material_id,qty_per_pc,shared_factor,"
+                        "unit_price,lot_label",
                         f"product_id=eq.{_rp_id}", limit=50)
                 except Exception:
                     _pbom = []
                 _pbom.sort(key=lambda b: (
                     (b.get("process_type") or "MATERIAL") != "MATERIAL",
                     b["bom_id"]))
+
+                # ── 제품 구성 요약 — BOM(원가·소재)을 순서 편집 위에
+                # 함께 보여 한 화면에서 구성 전체를 파악 (2026-08-20)
+                if _pbom:
+                    toss_table([{
+                        "구분": ("소재"
+                                 if (b.get("process_type") or "MATERIAL")
+                                 == "MATERIAL"
+                                 else b.get("process_type") or "-"),
+                        "자재/공정": b.get("raw_material_name") or "-",
+                        "자재ID": b.get("material_id") or "-",
+                        "수량/PC": float(b.get("qty_per_pc") or 0),
+                        "분할/LOT": float(b.get("shared_factor") or 1),
+                        "단가 (원)": (float(b["unit_price"])
+                                      if b.get("unit_price") else None),
+                    } for b in _pbom],
+                        badge_cols=("구분",),
+                        num_cols=("수량/PC", "분할/LOT", "단가 (원)"),
+                        strong_cols=("자재/공정",))
+                    st.caption(
+                        "소재·공정 원가행(BOM) — 수량 수정은 BOM 편집, "
+                        "단가는 원가 확인 > 단가 관리, 자재 변경은 BOM "
+                        "편집 > 자재 교체에서. 아래 공정 순서의 [BOM "
+                        "연결]로 이 행들을 스텝에 붙입니다.")
+                else:
+                    st.info("이 제품의 BOM 이 아직 없습니다 — BOM 편집 "
+                            "탭에서 소재를 연결하세요. 외주 공정 원가행은 "
+                            "아래 라우팅 저장 시 자동 생성됩니다.")
 
                 def _bom_lbl(b):
                     _is_mat = ((b.get("process_type") or "MATERIAL")
@@ -1651,11 +1688,46 @@ elif page == "마스터 관리":
                                 "confirmed": True,
                             })
                         try:
+                            # 외주 스텝 BOM 원가행 자동 생성·연결 —
+                            # 공정은 라우팅 한 곳에서만 관리하고, 원가
+                            # 행(BOM)은 자동 유지 (이중 관리 통합,
+                            # 2026-08-20). 단가는 원가 확인 > 단가 관리.
+                            _auto9 = 0
+                            for _s9 in _ins:
+                                if (_s9["step_kind"] == "OUTSOURCE"
+                                        and not _s9.get("bom_id")):
+                                    _db.insert("bom", [{
+                                        "product_id": _rp_id,
+                                        "raw_material_name":
+                                            _s9["step_name"],
+                                        "qty_per_pc": 1,
+                                        "shared_factor": 1,
+                                        "process_type": "OUTSOURCE",
+                                        "source": "ROUTING",
+                                        "verification_status":
+                                            "확인완료",
+                                    }])
+                                    # 방금 삽입한 행 = 이 제품 OUTSOURCE
+                                    # 최신 bom_id (스텝마다 삽입 직후 조회)
+                                    _nb9 = fetch("bom", "bom_id",
+                                        f"product_id=eq.{_rp_id}"
+                                        "&process_type=eq.OUTSOURCE"
+                                        "&order=bom_id.desc", limit=1)
+                                    if _nb9:
+                                        _s9["bom_id"] = \
+                                            _nb9[0]["bom_id"]
+                                        _auto9 += 1
                             _db.delete("product_routing",
                                        f"product_id=eq.{_rp_id}")
                             _db.insert("product_routing", _ins)
-                            st.success(f"라우팅 저장: {_rp_pick} — "
-                                       f"{len(_ins)}개 공정")
+                            _msg9 = (f"라우팅 저장: {_rp_pick} — "
+                                     f"{len(_ins)}개 공정")
+                            if _auto9:
+                                _msg9 += (f" · 외주 원가행(BOM) "
+                                          f"{_auto9}건 자동 생성 — "
+                                          "단가는 원가 확인 > 단가 "
+                                          "관리에서 입력하세요")
+                            st.success(_msg9)
                             st.rerun()
                         except Exception as e:
                             st.error(f"저장 실패: {e}")
@@ -2175,7 +2247,7 @@ elif page == "마스터 관리":
         ]
 
         # ── 필터 영역 (다중 컬럼) ──
-        with st.expander("🔍 상세 필터 / 정렬", expanded=True):
+        with st.expander("상세 필터 / 정렬", expanded=True):
             r1c1, r1c2, r1c3, r1c4 = st.columns(4)
             with r1c1:
                 f_name = st.text_input("거래처명", placeholder="예: 명진, 미진, 두리")
@@ -2360,7 +2432,7 @@ elif page == "마스터 관리":
                    "분류·재질·조달·상태 등 일반 정보만.")
 
         # ── 검색 / 필터 ──
-        with st.expander("🔍 검색 / 필터", expanded=True):
+        with st.expander("검색 / 필터", expanded=True):
             pfc1, pfc2, pfc3, pfc4 = st.columns(4)
             with pfc1:
                 fpn = st.text_input("품번", placeholder="MRG6, 8HFDV",
@@ -2580,7 +2652,7 @@ elif page == "마스터 관리":
                             st.error(f"처리 오류: {e}")
 
         st.divider()
-        st.markdown("##### ➕ 신규 제품 추가")
+        st.markdown("##### 신규 제품 추가")
         npc1, npc2, npc3 = st.columns(3)
         with npc1:
             new_pn = st.text_input("품번 * (고유)", key="np_pn",
@@ -3321,7 +3393,7 @@ elif page == "마스터 관리":
                         if not _renamed_linked:
                             st.rerun()
                     elif fail:
-                        st.error(f"❌ 모든 변경 저장 실패 ({fail}건). "
+                        st.error(f"모든 변경 저장 실패 ({fail}건). "
                                  "로그 확인 필요.")
                     else:
                         st.info("변경 사항 없음 (편집 가능 컬럼 외 수정만 시도됨)")
@@ -3421,7 +3493,7 @@ elif page == "마스터 관리":
 
             ar1, ar2 = st.columns(2)
             with ar1:
-                p_search = st.text_input("🔍 제품 검색 (품번/품명/고객사)",
+                p_search = st.text_input("제품 검색 (품번/품명/고객사)",
                     placeholder="예: MRG6-07 또는 FLANGE 또는 명진",
                     key="bom_new_p_search")
                 p_pick_pid = None
@@ -3447,7 +3519,7 @@ elif page == "마스터 관리":
                         st.warning("일치하는 제품 없음")
 
             with ar2:
-                m_search = st.text_input("🔍 자재 검색 (자재명/규격/재질)",
+                m_search = st.text_input("자재 검색 (자재명/규격/재질)",
                     placeholder="예: 환봉 또는 STS304 또는 SCM440",
                     key="bom_new_m_search")
                 m_pick_mid = None
@@ -3524,7 +3596,13 @@ elif page == "마스터 관리":
                         st.error(f"추가 실패: {e}")
 
             st.divider()
-            st.markdown("##### ➕ 신규 공정행 추가 (열처리/외주/표면 등)")
+            st.markdown("##### 신규 공정행 추가 (열처리/외주/표면 등)")
+            st.info(
+                "**공정의 순서·거래처는 라우팅 탭이 기준입니다** — "
+                "라우팅에 외주 스텝을 추가하면 원가행(BOM)이 자동 "
+                "생성·연결됩니다. 이 폼은 라우팅 스텝이 아닌 원가 전용 "
+                "행(포장·노무 등)이나 LOT 처리수량이 특수한 경우에만 "
+                "쓰세요. (이중 관리 통합, 2026-08-20)")
             st.caption(
                 "공정행 = **수량 관계** 만 입력 (어떤 공정 + LOT 처리수량). "
                 "**LOT 단가는 원가 확인 → 단가 관리** 에서 입력하세요. "
@@ -3533,7 +3611,7 @@ elif page == "마스터 관리":
 
             pr1, pr2 = st.columns(2)
             with pr1:
-                pp_search = st.text_input("🔍 제품 검색",
+                pp_search = st.text_input("제품 검색",
                     placeholder="예: MRG6-07",
                     key="bom_proc_p_search")
                 pp_pick_pid = None
@@ -3561,12 +3639,12 @@ elif page == "마스터 관리":
                 proc_type = st.selectbox("공정 종류 *",
                     ["HEAT", "SURFACE", "OUTSOURCE", "PACKING", "LABOR", "OTHER"],
                     format_func=lambda v: {
-                        "HEAT": "🔥 HEAT (열처리)",
-                        "SURFACE": "💎 SURFACE (표면처리)",
-                        "OUTSOURCE": "🏭 OUTSOURCE (외주가공)",
-                        "PACKING": "📦 PACKING (포장)",
-                        "LABOR": "👷 LABOR (직접노무)",
-                        "OTHER": "❔ OTHER (기타)",
+                        "HEAT": "HEAT (열처리)",
+                        "SURFACE": "SURFACE (표면처리)",
+                        "OUTSOURCE": "OUTSOURCE (외주가공)",
+                        "PACKING": "PACKING (포장)",
+                        "LABOR": "LABOR (직접노무)",
+                        "OTHER": "OTHER (기타)",
                     }.get(v, v),
                     key="bom_proc_type")
 
@@ -4187,7 +4265,7 @@ elif page == "수주 관리":
             if "m_so_items" not in st.session_state:
                 st.session_state.m_so_items = []
 
-            with st.expander("➕ 품목 추가", expanded=True):
+            with st.expander("품목 추가", expanded=True):
                 # 수주는 등록된 품목만 가능 (2026-07-24 확정) — 오타
                 # 품번이 수주에 들어와 재고/산출 연동이 끊기는 것 방지.
                 # 미등록 품번은 아래 '신규 품목 등록'으로 먼저 추가.
@@ -4343,7 +4421,7 @@ elif page == "수주 관리":
     # ════════ TAB 2: 수주 목록 (다중 뷰) ════════
     with tab_list:
         view_mode = st.radio("뷰",
-            ["📋 수주별 (헤더)", "📦 품목별", "🏢 거래처별", "📅 납기 임박순", "❌ 매칭 안된 품목"],
+            ["수주별 (헤더)", "품목별", "거래처별", "납기 임박순", "매칭 안된 품목"],
             horizontal=True)
 
         fc1, fc2 = st.columns(2)
@@ -4375,7 +4453,7 @@ elif page == "수주 관리":
         if sl_status != "전체": common_fq.append(f"status=eq.{sl_status}")
 
         # ── 뷰 1: 수주별 ──
-        if view_mode == "📋 수주별 (헤더)":
+        if view_mode == "수주별 (헤더)":
             fq = ["order=so_date.desc"] + common_fq
             try: sos = fetch("sales_order_stats", "*", "&".join(fq), limit=300)
             except Exception as e: st.error(e); sos = []
@@ -4444,7 +4522,7 @@ elif page == "수주 관리":
                         "바꾸거나, 새 수주 입력 탭에서 업로드하세요.")
 
         # ── 뷰 2: 품목별 ──
-        elif view_mode == "📦 품목별":
+        elif view_mode == "품목별":
             fq = ["order=so_date.desc"] + common_fq
             try: sos = fetch("sales_orders", "so_id,so_number,customer,so_date,status",
                               "&".join(fq), limit=500)
@@ -4491,7 +4569,7 @@ elif page == "수주 관리":
                 st.info("수주 데이터 없음")
 
         # ── 뷰 3: 거래처별 ──
-        elif view_mode == "🏢 거래처별":
+        elif view_mode == "거래처별":
             fq = ["order=customer.asc"] + common_fq
             try: sos = fetch("sales_order_stats", "*", "&".join(fq), limit=500)
             except Exception as e: st.error(e); sos = []
@@ -4536,7 +4614,7 @@ elif page == "수주 관리":
                 st.info("결과 없음")
 
         # ── 뷰 4: 납기 임박순 ──
-        elif view_mode == "📅 납기 임박순":
+        elif view_mode == "납기 임박순":
             fq = ["order=so_date.desc"] + common_fq
             try: sos = fetch("sales_orders", "so_id,so_number,customer,so_date,status",
                               "&".join(fq), limit=500)
@@ -4609,7 +4687,7 @@ elif page == "수주 관리":
                 st.info("결과 없음")
 
         # ── 뷰 5: 매칭 안된 품목 ──
-        elif view_mode == "❌ 매칭 안된 품목":
+        elif view_mode == "매칭 안된 품목":
             fq = ["order=so_date.desc"] + common_fq
             try: sos = fetch("sales_orders", "so_id,so_number,customer,so_date,status",
                               "&".join(fq), limit=500)
@@ -6886,7 +6964,7 @@ elif page == "생산 계획":
     # ── 3) BOM 조회 (제품별 자재 매핑) ──
     pids = list({i["product_id"] for i in sois if i.get("product_id")})
     if not pids:
-        st.warning("매칭된 product_id가 없습니다. 수주 → ❌ 매칭 안된 품목에서 매핑 필요.")
+        st.warning("매칭된 product_id가 없습니다. 수주 → 매칭 안된 품목에서 매핑 필요.")
         st.stop()
 
     pids_str = ",".join(f'"{p}"' for p in pids)
@@ -7059,7 +7137,7 @@ elif page == "생산 계획":
 
         for so_id, items in list(by_so.items())[:30]:  # 최대 30개 수주
             so = so_map.get(so_id, {})
-            so_label = f"📋 {so.get('so_number')} | {so.get('customer')} | 납기: {so.get('due_date') or '-'}"
+            so_label = f"{so.get('so_number')} | {so.get('customer')} | 납기: {so.get('due_date') or '-'}"
             with st.expander(so_label):
                 so_rows = []
                 for soi in items:
@@ -7251,7 +7329,7 @@ elif page == "생산 계획":
 
 
 elif page == "발주/입고":
-    st.subheader("📋 발주 관리")
+    st.subheader("발주 관리")
     if not DB_AVAILABLE:
         st.error("DB 연결 필요"); st.stop()
 
@@ -7811,7 +7889,7 @@ elif page == "발주/입고":
                     st.write(f"**담당자**: {vendor.get('contact_person') or '-'}")
 
             # ─── ② 최근 발주 복사 (이 거래처의 과거 발주 5건) ───
-            with st.expander("📋 최근 발주에서 복사 (이 거래처)"):
+            with st.expander("최근 발주에서 복사 (이 거래처)"):
                 try:
                     recent_pos = fetch("purchase_orders",
                         "po_id,po_number,po_date,total_amount",
@@ -7960,7 +8038,7 @@ elif page == "발주/입고":
                             st.rerun()
 
             # ─── ④ 품번 일괄 추가 ───
-            with st.expander("📋 품번 일괄 추가 (콤마/줄바꿈 구분)"):
+            with st.expander("품번 일괄 추가 (콤마/줄바꿈 구분)"):
                 bulk_txt = st.text_area("품번 목록",
                     placeholder="8HFDV-VM-05\n4PDVN-02\nMRG6-07\n또는 콤마 구분: 8HFDV-VM-05, 4PDVN-02",
                     key="bulk_pn")
@@ -8012,7 +8090,7 @@ elif page == "발주/입고":
             st.markdown("##### ③ 품목 표 (수량·단가 편집)")
             total = 0
             if not st.session_state.po_items:
-                st.info("위에서 ➕ 버튼으로 품목을 추가하세요.")
+                st.info("위에서 [추가] 버튼으로 품목을 추가하세요.")
             else:
                 # UID 부여 (기존 데이터에 _uid 없을 수도)
                 import uuid as _uuid_local
@@ -8160,7 +8238,7 @@ elif page == "발주/입고":
                                 "remark": (it.get("memo") or "").strip()
                                           or None,
                             } for i, it in enumerate(st.session_state.po_items)])
-                            st.info(f"💾 발주 이력 저장 (po_id={po_row['po_id']})")
+                            st.info(f"발주 이력 저장 (po_id={po_row['po_id']})")
                     except Exception as e:
                         st.warning(f"⚠️ DB 저장 실패 (xlsx는 정상): {e}")
                     # on_click 콜백 필수 — 이 버튼은 생성 직후 run 에만
@@ -8328,6 +8406,37 @@ elif page == "발주/입고":
                     if _db.update("purchase_orders", f"po_id=eq.{po['po_id']}",
                                   {"status": new_status}):
                         st.success(f"상태를 {new_status}로 변경"); st.rerun()
+
+                # 품목별 잔량 종결 표시 + 해제 (043)
+                _cl_items = [i for i in items if i.get("closed_at")]
+                if _cl_items:
+                    st.warning(
+                        "잔량 종결된 품목: " + " · ".join(
+                            str(i.get("item_name") or "-")
+                            for i in _cl_items[:5])
+                        + (f" 외 {len(_cl_items) - 5}건"
+                           if len(_cl_items) > 5 else "")
+                        + " — 미입고가 입고 대기에서 제외되어 "
+                          "있습니다.")
+                    if st.button(f"종결 해제 ({len(_cl_items)}건)",
+                                 help="이 발주의 품목별 잔량 종결을 "
+                                      "모두 되돌립니다 — 미입고가 입고 "
+                                      "대기에 다시 나타납니다.",
+                                 key=f"po_unclose_{po['po_id']}"):
+                        if _db.update("purchase_order_items",
+                                f"po_id=eq.{po['po_id']}"
+                                "&closed_at=not.is.null",
+                                {"closed_at": None}):
+                            if po["status"] == "CLOSED":
+                                _db.update("purchase_orders",
+                                    f"po_id=eq.{po['po_id']}",
+                                    {"status": "SENT"})
+                            st.success("종결 해제 — 미입고가 입고 "
+                                       "대기에 복구되었습니다.")
+                            st.rerun()
+                        else:
+                            st.error("종결 해제 실패 — 다시 시도해 "
+                                     "주세요.")
 
                 st.divider()
                 st.caption("입고 처리는 [입고 처리] 탭에서 진행합니다 (2026-07-23 분리).")
@@ -8563,16 +8672,6 @@ elif page == "발주/입고":
                 if not _mid8:
                     st.warning("자재를 선택(또는 등록)해야 입고할 수 "
                                "있습니다.")
-                # 이 발주 전체의 남은 잔량 (종결 버튼용, 041/042)
-                try:
-                    _scl = fetch("po_item_receipt_v",
-                        "item_name,pending_qty",
-                        f"po_id=eq.{_r['po_id']}&pending_qty=gt.0",
-                        limit=50)
-                except Exception:
-                    _scl = []
-                _sc_pend = sum(float(x.get("pending_qty") or 0)
-                               for x in _scl)
                 go1, go2 = st.columns(2)
                 if go1.button(f"입고 처리 ({_q8:,.0f})",
                              type="primary",
@@ -8656,51 +8755,67 @@ elif page == "발주/입고":
                     except Exception as e:
                         st.error(f"입고 실패: {e}")
 
-                # ── 발주 종결 (협의 short-close, 041/042) ──
-                # 마지막 부분 입고 후 협의로 발주를 끝낼 때 — 문서·원장
-                # 보존, 잔량만 종결되어 입고 대기에서 사라진다
-                _sc_lbl = (f"발주 종결 (전체 미입고 {_sc_pend:,.0f} · "
-                           f"{len(_scl)}개 라인)"
-                           if len(_scl) > 1 else
-                           f"발주 종결 (잔량 {_sc_pend:,.0f})")
-                if _sc_pend > 0 and go2.button(
-                        _sc_lbl,
-                        help="이 발주서 전체를 협의로 끝냅니다 — 선택한 "
-                             "라인만이 아니라 발주의 모든 미입고 잔량이 "
-                             "함께 종결됩니다. 발주 수량(문서)과 입고 "
-                             "기록은 그대로 보존됩니다. "
-                             "잔량: " + " · ".join(
-                                 f"{x['item_name']} "
-                                 f"{float(x['pending_qty']):,.0f}"
-                                 for x in _scl[:5])
-                             + " / 되돌리려면 발주 이력에서 상태를 "
-                               "바꾸세요.",
+                # ── 잔량 종결 (라인 단위 협의 short-close, 043) ──
+                # 제품별로 협의 종결 — 이 품목의 미입고만 종결되고
+                # 발주의 다른 품목은 그대로 남는다
+                if go2.button(
+                        f"잔량 종결 ({_pend8:,.0f})",
+                        help="이 품목만 협의로 끝냅니다 — 발주 수량"
+                             "(문서)과 입고 기록은 보존되고, 이 품목의 "
+                             "미입고 잔량이 입고 대기에서 사라집니다. "
+                             "발주의 다른 품목은 그대로 남습니다. "
+                             "되돌리기는 발주 이력에서 [종결 해제].",
                         use_container_width=True,
-                        key=f"rcvp_scl_go_{_r['po_id']}") \
-                        and click_guard(f"rcvp_scl_go_{_r['po_id']}"):
-                    from datetime import date as _scl_d
-                    _scl_note = (
-                        f"잔량 종결 {_sc_pend:,.0f} — 협의 종결 "
-                        f"({_scl_d.today().isoformat()}, "
-                        f"{current_user_name()})")
-                    try:
-                        _rh2 = _db.fetch_one(
-                            "purchase_orders",
-                            f"po_id=eq.{_r['po_id']}", "remark") or {}
-                    except Exception:
-                        _rh2 = {}
-                    _old_rmk = (_rh2.get("remark") or "").strip()
-                    if _db.update("purchase_orders",
-                            f"po_id=eq.{_r['po_id']}",
-                            {"status": "CLOSED",
-                             "remark": (_old_rmk + " / "
-                                        if _old_rmk else "")
-                                       + _scl_note}):
-                        st.success("발주 종결 — 잔량이 입고 대기에서 "
-                                   "제외됩니다.")
+                        key=f"rcvp_scl_go_{_r['poi_id']}") \
+                        and click_guard(f"rcvp_scl_go_{_r['poi_id']}"):
+                    from datetime import datetime as _scl_dt
+                    if _db.update("purchase_order_items",
+                            f"poi_id=eq.{_r['poi_id']}",
+                            {"closed_at":
+                                 _scl_dt.now().isoformat()}):
+                        # 발주 헤더 자동 승격 — 전 라인이 끝났으면
+                        try:
+                            _fr6 = fetch("po_item_receipt_v",
+                                "receipt_status,pending_qty",
+                                f"po_id=eq.{_r['po_id']}", limit=50)
+                            if _fr6 and all(
+                                    float(x.get("pending_qty") or 0)
+                                    <= 0 for x in _fr6):
+                                _all_rc = all(
+                                    x["receipt_status"] == "RECEIVED"
+                                    for x in _fr6)
+                                _db.update("purchase_orders",
+                                    f"po_id=eq.{_r['po_id']}",
+                                    {"status": "RECEIVED" if _all_rc
+                                               else "CLOSED"})
+                        except Exception:
+                            pass
+                        # 발주 비고에 자동 기록
+                        try:
+                            _rh2 = _db.fetch_one(
+                                "purchase_orders",
+                                f"po_id=eq.{_r['po_id']}",
+                                "remark") or {}
+                            _old_rmk = (_rh2.get("remark")
+                                        or "").strip()
+                            _scl_note = (
+                                f"잔량 종결 {_r.get('item_name')} "
+                                f"{_pend8:,.0f} "
+                                f"({_scl_dt.now().date().isoformat()}"
+                                f", {current_user_name()})")
+                            _db.update("purchase_orders",
+                                f"po_id=eq.{_r['po_id']}",
+                                {"remark": (_old_rmk + " / "
+                                            if _old_rmk else "")
+                                           + _scl_note})
+                        except Exception:
+                            pass
+                        st.success(f"잔량 종결 — {_r.get('item_name')}"
+                                   f" 미입고 {_pend8:,.0f}이 입고 "
+                                   "대기에서 제외됩니다.")
                         st.rerun()
                     else:
-                        st.error("발주 종결 실패 — DB 가 변경을 "
+                        st.error("잔량 종결 실패 — DB 가 변경을 "
                                  "거부했습니다. 반복되면 관리자에게 "
                                  "알려주세요.")
         if st.session_state.get("rcv_labels"):
@@ -9518,7 +9633,7 @@ elif page == "공정 관리":
                         st.rerun()
                     except Exception as e:
                         if "duplicate" in str(e).lower() or "23505" in str(e):
-                            st.error(f"❌ 이미 등록된 조합입니다: {_wo_no} + "
+                            st.error(f"이미 등록된 조합입니다: {_wo_no} + "
                                      f"{_sel_lot} — 공정 현황판에서 확인하세요.")
                         else:
                             st.error(f"등록 실패: {e}")
@@ -10045,7 +10160,7 @@ elif page == "공정 관리":
                                     [v["name"] for v in _bov]
                                     or ["(거래처 없음)"],
                                     key=f"bt_vs_{_sb['batch_id']}")
-                                st.caption("마스터 관리 → 공정 라우팅에서 "
+                                st.caption("마스터 관리 → 제품 구성 (라우팅)에서 "
                                            "승인 업체를 고정할 수 있습니다.")
                         with bc2:
                             _bq = st.number_input("출고 수량", 0.0, _sb_qty,
@@ -10480,7 +10595,7 @@ elif page == "공정 관리":
                                 or ["(거래처 없음)"],
                                 key="pe_o_vendor")
                             if _routed and _pending_out is not None:
-                                st.caption("마스터 관리 → 공정 라우팅에서 "
+                                st.caption("마스터 관리 → 제품 구성 (라우팅)에서 "
                                            "이 공정의 승인 업체를 고정할 "
                                            "수 있습니다.")
                         # 라우팅이 정의된 제품은 다음 외주 공정으로 고정
@@ -11247,7 +11362,7 @@ elif page == "생산 보고":
             st.divider()
 
             # ── 설비별 요약 (텍스트) ──
-            st.markdown("##### 🏭 설비별 요약")
+            st.markdown("##### 설비별 요약")
             by_m = (ddf.groupby(["machine", "pn", "process"], as_index=False)
                     .agg(생산=("total_qty", "sum"),
                          불량=("defect_qty", "sum"),
@@ -11311,7 +11426,7 @@ elif page == "생산 보고":
             st.divider()
 
             # ── 작업지시서별 공정 진행 현황 ──
-            st.markdown("##### 📋 작업지시서별 공정 진행 현황")
+            st.markdown("##### 작업지시서별 공정 진행 현황")
             st.caption(
                 "기간 내 MES 실적 누적 (작업지시 번호 = 소재 입고 기반 발행). "
                 "MES 작지 화면에 export 가 없어 앱에서 실적 기준으로 집계 — "
@@ -11456,7 +11571,7 @@ elif page == "생산 보고":
                         "stock": float(stk.get("current_stock") or 0),
                     })
 
-            st.markdown("##### 📦 자재 차감 미리보기")
+            st.markdown("##### 자재 차감 미리보기")
             if not pb_mat_rows:
                 st.warning(
                     "⚠️ 이 제품의 BOM 자재행이 없거나 material_id 미매핑 — "
@@ -11668,7 +11783,7 @@ elif page == "생산 보고":
                         "'포함'이 자동 해제되어 있습니다 (이중 등록 방지).")
 
                 # ── 4) 검수 그리드 ──
-                st.markdown("##### 🔍 검수 (수정 가능: 포함 / 교대 / 매칭 품번 / 생산 / 불량)")
+                st.markdown("##### 검수 (수정 가능: 포함 / 교대 / 매칭 품번 / 생산 / 불량)")
                 edited = st.data_editor(
                     pd.DataFrame(review),
                     use_container_width=True, hide_index=True, height=420,
@@ -11854,7 +11969,7 @@ elif page == "생산 보고":
 
         # 제품 완성 재고 현황
         st.divider()
-        st.markdown("##### 📦 제품 완성 재고 (product_stock_v)")
+        st.markdown("##### 제품 완성 재고 (product_stock_v)")
         try:
             pstock = fetch("product_stock_v",
                 "pn,customer,produced_qty,issued_qty,current_stock,last_txn_date",
@@ -12896,7 +13011,7 @@ elif page == "원가 확인":
 
                     # ── 📋 BOM 행 + 공정행 단가 인라인 편집 ──
                     st.divider()
-                    st.markdown("##### 📋 BOM 행 / 공정행 단가 편집")
+                    st.markdown("##### BOM 행 / 공정행 단가 편집")
                     try:
                         bom_rows = fetch("bom",
                             "bom_id,process_type,material_id,raw_material_name,"
@@ -13135,7 +13250,7 @@ elif page == "원가 확인":
         # ── 모드 선택 ──
         mode = st.radio("분석 범위", [
             "🎯 의심 품목 자동 추출 (소재비 > 판매가 × 50%)",
-            "🔍 품번 검색 (단일 제품 상세)",
+            "품번 검색 (단일 제품 상세)",
         ], horizontal=True, key="bom_recalc_mode")
 
         # ════════════════════
