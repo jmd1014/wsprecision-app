@@ -1430,7 +1430,7 @@ elif page == "마스터 관리":
             st.error(f"점검 조회 실패: {e}")
             _dq_rows = []
         if not _dq_rows:
-            st.success("✅ 모든 점검 통과 — 발견된 문제가 없습니다.")
+            st.success("모든 점검 통과 — 발견된 문제가 없습니다.")
         else:
             _dq_by = {}
             for r in _dq_rows:
@@ -2254,10 +2254,10 @@ elif page == "마스터 관리":
             # 마지막 등록 결과 표시 (rerun 후에도 보존)
             if "m_last_registered" in st.session_state:
                 lr = st.session_state.m_last_registered
-                st.success(f"✅ **{lr['name']}** 등록 완료 (ID: {lr['id']}, 그룹: {lr['group']})")
+                st.success(f"**{lr['name']}** 등록 완료 (ID: {lr['id']}, 그룹: {lr['group']})")
                 st.caption("💡 위 표 새로고침하려면 필터를 한 번 변경하거나 페이지를 다시 여세요.")
 
-            if st.button("💾 신규 등록", type="primary", key="m_new_btn"):
+            if st.button("신규 등록", type="primary", key="m_new_btn"):
                 if not new_name or new_group == "선택":
                     st.error("거래처명과 그룹은 필수입니다.")
                 else:
@@ -2300,7 +2300,7 @@ elif page == "마스터 관리":
                             st.session_state.m_last_registered = {
                                 "name": cleaned, "id": new_id, "group": new_group
                             }
-                            st.toast(f"✅ '{cleaned}' 등록 완료!", icon="🎉")
+                            st.toast(f"'{cleaned}' 등록 완료!", icon="🎉")
                             st.balloons()
                             st.rerun()
                         except Exception as e:
@@ -2336,7 +2336,7 @@ elif page == "마스터 관리":
                 num_rows="fixed",
             )
 
-            if st.button("💾 변경 저장", type="primary"):
+            if st.button("변경 저장", type="primary"):
                 changed = 0
                 editable_fields = ["vendor_group", "ceo_name", "phone", "address", "payment_terms", "in_use"]
                 for orig, new in zip(rows, edited.to_dict("records")):
@@ -2348,7 +2348,7 @@ elif page == "마스터 관리":
                         if _db.update("vendors", f"vendor_id=eq.{orig['vendor_id']}", updates):
                             changed += 1
                 if changed:
-                    st.success(f"✅ {changed}건 업데이트")
+                    st.success(f"{changed}건 업데이트")
                     st.rerun()
                 else:
                     st.info("변경 사항 없음")
@@ -2485,7 +2485,7 @@ elif page == "마스터 관리":
 
             psv1, psv2 = st.columns([1, 4])
             with psv1:
-                save_prod = st.button("💾 변경 저장", type="primary",
+                save_prod = st.button("변경 저장", type="primary",
                                        key="prod_save")
             with psv2:
                 st.caption("⚠️ 품번(pn) 변경은 매출/매입 매핑에 영향 — "
@@ -2521,7 +2521,7 @@ elif page == "마스터 관리":
                         except Exception:
                             pass
                 if chg:
-                    st.success(f"✅ {chg}건 변경 저장")
+                    st.success(f"{chg}건 변경 저장")
                     st.rerun()
                 else:
                     st.info("변경 사항 없음")
@@ -2572,7 +2572,7 @@ elif page == "마스터 관리":
                             if _db.update("products",
                                 f"product_id=eq.{target_pid}", payload):
                                 st.success(
-                                    f"✅ {target_pid} {ar_action} 완료")
+                                    f"{target_pid} {ar_action} 완료")
                                 st.rerun()
                             else:
                                 st.error("처리 실패")
@@ -2678,7 +2678,7 @@ elif page == "마스터 관리":
                     "procurement_type": new_proc or None,
                 }
 
-        if st.button("➕ 제품 추가", type="primary", key="np_add_btn",
+        if st.button("제품 추가", type="primary", key="np_add_btn",
                      disabled=not (new_pn or "").strip()):
             _pn_new = new_pn.strip()
             try:
@@ -2763,7 +2763,7 @@ elif page == "마스터 관리":
                     for _k in ("np_pn", "np_iname", "np_mq",
                                "np_nm_name"):
                         st.session_state.pop(_k, None)
-                    st.success(f"✅ 제품 추가: **{new_pid}** | "
+                    st.success(f"제품 추가: **{new_pid}** | "
                                f"{_pn_new}{_bom_msg}")
                     st.rerun()
                 except Exception as e:
@@ -2816,7 +2816,7 @@ elif page == "마스터 관리":
                 hide_index=True, use_container_width=True,
                 num_rows="fixed", key="mat_editor",
             )
-            if st.button("💾 자재 변경 저장", type="primary"):
+            if st.button("자재 변경 저장", type="primary"):
                 chg = 0
                 for orig, new in zip(mrows, mediated.to_dict("records")):
                     upd = {k: new[k] for k in ("raw_name","material_type","spec","stock_qty","procurement_type")
@@ -2824,7 +2824,7 @@ elif page == "마스터 관리":
                     if upd:
                         if _db.update("materials", f"material_id=eq.{orig['material_id']}", upd):
                             chg += 1
-                if chg: st.success(f"✅ {chg}건 update"); st.rerun()
+                if chg: st.success(f"{chg}건 update"); st.rerun()
                 else: st.info("변경 사항 없음")
 
         # ── 신규 자재 등록 (2026-08-12 — 기능 공백 보완) ──
@@ -2848,7 +2848,7 @@ elif page == "마스터 관리":
             _nm_force = st.checkbox(
                 "유사 자재 경고 무시하고 등록 (다른 자재임을 확인함)",
                 key="nm_force")
-            if st.button("💾 자재 등록", type="primary", key="nm_btn",
+            if st.button("자재 등록", type="primary", key="nm_btn",
                          disabled=not (_nm_name or "").strip()):
                 _nn = _nm_name.strip()
                 try:
@@ -2899,7 +2899,7 @@ elif page == "마스터 관리":
                                 (_nm_sup or "").strip() or None,
                             "procurement_type": _nm_proc or None,
                         }])
-                        st.success(f"✅ 자재 등록: {_new_mid} | {_nn}"
+                        st.success(f"자재 등록: {_new_mid} | {_nn}"
                                    + (f" | {_nm_spec}"
                                       if (_nm_spec or "").strip()
                                       else "")
@@ -3208,7 +3208,7 @@ elif page == "마스터 관리":
             )
             sc1, sc2 = st.columns([1, 4])
             with sc1:
-                save_clicked = st.button("💾 BOM 변경 저장", type="primary")
+                save_clicked = st.button("BOM 변경 저장", type="primary")
             with sc2:
                 show_debug = st.checkbox("🔍 변경 내역 확인",
                     value=False, key="bom_save_debug",
@@ -3299,7 +3299,7 @@ elif page == "마스터 관리":
                             st.warning(f"BOM #{bom_id} 저장 오류: {e}")
 
                     if chg:
-                        msg = f"✅ {chg}건 저장 완료"
+                        msg = f"{chg}건 저장 완료"
                         if fail:
                             msg += f" / 실패 {fail}건"
                         if ignored_mat_unit_price:
@@ -3391,7 +3391,7 @@ elif page == "마스터 관리":
 
             # 단가/원가 미리보기는 💰 원가 분석 페이지에서 확인하세요.
 
-            if st.button("➕ 자재행 추가", key="bom_new_btn", type="primary"):
+            if st.button("자재행 추가", key="bom_new_btn", type="primary"):
                 if not p_pick_pid or not m_pick_mid:
                     st.error("제품과 자재를 모두 선택해주세요.")
                 else:
@@ -3407,7 +3407,7 @@ elif page == "마스터 관리":
                             "verification_status": "확인완료",
                         }])
                         st.success(
-                            f"✅ 자재행 추가: **{p_pick_pn}** ↔ **{m_pick_name}** "
+                            f"자재행 추가: **{p_pick_pn}** ↔ **{m_pick_name}** "
                             f"(qty/PC={new_qpc}, 분할={new_sf})"
                         )
                         try:  # 제품 소재 표기 동기화 (진실=BOM)
@@ -3501,7 +3501,7 @@ elif page == "마스터 관리":
                 v_pick = st.selectbox("공정 거래처 (선택)",
                     v_labels, key="bom_proc_vendor_pick")
 
-            if st.button("➕ 공정행 추가", key="bom_proc_btn", type="primary"):
+            if st.button("공정행 추가", key="bom_proc_btn", type="primary"):
                 if not pp_pick_pid:
                     st.error("제품을 선택해주세요.")
                 else:
@@ -3524,7 +3524,7 @@ elif page == "마스터 관리":
                     try:
                         _db.insert("bom", [record])
                         st.success(
-                            f"✅ {proc_type} 공정행 추가: **{pp_pick_pn}** "
+                            f"{proc_type} 공정행 추가: **{pp_pick_pn}** "
                             f"(LOT 처리 {proc_lot_size}EA). "
                             f"단가는 원가 확인 → 단가 관리에서 입력하세요."
                         )
@@ -3852,7 +3852,7 @@ elif page == "수주 관리":
                         except Exception as e: st.error(e); items = []
 
                 if items:
-                    st.success(f"✅ {len(items)}개 품목 파싱 완료")
+                    st.success(f"{len(items)}개 품목 파싱 완료")
 
                     # ── 중복 수주번호 검증 (DB 기존 데이터 vs 파싱 결과) ──
                     customer_name = items[0]["customer"]
@@ -3988,7 +3988,7 @@ elif page == "수주 관리":
                         "라인": it.get("line_no"),
                         "거래처 자재": it.get("customer_part_no"),
                         "거래처 품명": (it.get("customer_item_name") or "")[:30],
-                        "✅ 우성정밀 품번": it.get("matched_pn") or "❌ 미매칭",
+                        "우성정밀 품번": it.get("matched_pn") or "미매칭",
                         "수량": int(it.get("qty") or 0),
                         "단가": int(it.get("unit_price") or 0),
                         "금액": int(it.get("amount") or 0),
@@ -4005,7 +4005,7 @@ elif page == "수주 관리":
                         st.warning(f"⚠️ 매칭 안 된 {len(items) - matched_count}개 품목은 customer_part_no만 저장됩니다. 추후 마스터 관리에서 매핑 가능.")
 
                     # DB 저장
-                    if st.button("💾 수주 DB 저장", type="primary", use_container_width=True):
+                    if st.button("수주 DB 저장", type="primary", use_container_width=True):
                         groups = group_by_so_number(items)
 
                         # 거래처 vendor_id 조회
@@ -4068,7 +4068,7 @@ elif page == "수주 관리":
                             except Exception as e:
                                 st.warning(f"⚠️ 수주 {header['so_number']} 저장 실패: {e}")
 
-                        st.success(f"✅ 수주 {saved_so}건 / 품목 {saved_items}개 저장 완료")
+                        st.success(f"수주 {saved_so}건 / 품목 {saved_items}개 저장 완료")
                         st.balloons()
 
         else:  # 수기 입력
@@ -4121,7 +4121,7 @@ elif page == "수주 관리":
                 m_qty = ic2.number_input("수량", 0, step=10, key="m_qty")
                 m_up = ic3.number_input("단가", 0, step=100, key="m_up")
                 m_due_item = ic4.date_input("품목 납기", value=_date.today() + _td(days=14), key="m_due_item")
-                if st.button("➕ 추가", key="m_add_item",
+                if st.button("추가", key="m_add_item",
                              disabled=not (_m_prod and m_qty)):
                     st.session_state.m_so_items.append({
                         "line_no": len(st.session_state.m_so_items) + 1,
@@ -4183,7 +4183,7 @@ elif page == "수주 관리":
                                 "active": "1",
                             }])
                             st.session_state["m_pn_q_seed"] = _mq_pn
-                            st.success(f"✅ 품목 등록: {_mq_pid} | "
+                            st.success(f"품목 등록: {_mq_pid} | "
                                        f"{_mq_pn} — 위 검색에서 "
                                        "선택하세요.")
                             st.rerun()
@@ -4196,7 +4196,7 @@ elif page == "수주 관리":
                 total = sum(it["amount"] for it in st.session_state.m_so_items)
                 st.markdown(f"**총액**: ₩{total:,}")
 
-            if st.button("💾 수주 저장", type="primary",
+            if st.button("수주 저장", type="primary",
                          disabled=not (m_so_no and m_cust and st.session_state.m_so_items)):
                 # 중복 체크
                 try:
@@ -4232,7 +4232,7 @@ elif page == "수주 관리":
                                 "due_date": it["due_date"].isoformat() if it.get("due_date") else None,
                                 "status": "PENDING",
                             }])
-                    st.success(f"✅ 수주 '{m_so_no}' 저장 완료")
+                    st.success(f"수주 '{m_so_no}' 저장 완료")
                     st.session_state.m_so_items = []
                     st.balloons()
                 except Exception as e:
@@ -4334,7 +4334,7 @@ elif page == "수주 관리":
                     new_st = rc1.selectbox("상태 변경", statuses,
                         format_func=status_ko,
                         index=statuses.index(so["status"]) if so["status"] in statuses else 0)
-                    if rc2.button("💾 상태 저장"):
+                    if rc2.button("상태 저장"):
                         if _db.update("sales_orders", f"so_id=eq.{so['so_id']}", {"status": new_st}):
                             st.success(f"상태 변경: {status_ko(new_st)}"); st.rerun()
             else:
@@ -4536,7 +4536,7 @@ elif page == "수주 관리":
                                  use_container_width=True, hide_index=True)
                     st.caption("💡 거래처 자재코드 → 우성정밀 품번 매핑은 마스터 관리에서 추가 가능 (다음 push)")
                 else:
-                    st.success("✅ 모든 품목이 매칭되었습니다")
+                    st.success("모든 품목이 매칭되었습니다")
             else:
                 st.info("결과 없음")
 
@@ -6203,8 +6203,9 @@ elif page == "출고 관리":
                           "체크하세요.")
                 if st.button(
                         f"출고 확정 ({_cf_total:,.0f} · "
-                        f"{len(_cf_rows)}건) — 수주 반영·재고 차감·"
-                        "명세서 발행",
+                        f"{len(_cf_rows)}건)",
+                        help="수주 납품 반영 · 완성 재고 차감 · "
+                             "거래명세서 발행까지 자동",
                         type="primary", key="cf_go",
                         disabled=(_cf_total <= 0 or bool(_cf_short))
                         ) and click_guard("cf_go"):
@@ -6944,7 +6945,7 @@ elif page == "생산 계획":
             if shortage_rows:
                 st.warning(f"🔴 자재 부족 {len(shortage_rows)}건 — '발주 자동 제안' 탭에서 발주서 생성 가능")
             else:
-                st.success("✅ 전 자재 소재 재고로 충당 가능 — 발주 필요 "
+                st.success("전 자재 소재 재고로 충당 가능 — 발주 필요 "
                            "없음.")
 
     # ─── 탭 2: 수주별 BOM 전개 ───
@@ -7028,7 +7029,7 @@ elif page == "생산 계획":
                 })
 
         if not shortage_list:
-            st.success("✅ 자재 부족 없음 — 발주 제안 사항 없습니다.")
+            st.success("자재 부족 없음 — 발주 제안 사항 없습니다.")
         else:
             # 최근 발주 이력에서 자재별 실제 거래처 역산 (2026-07-28)
             # — materials.main_supplier 는 대부분 비어 있어(308중 88)
@@ -7118,7 +7119,7 @@ elif page == "생산 계획":
                             "발주할 거래처 선택", ["(선택하세요)"] + _vopts,
                             key=f"po_vsel_{supplier}")
 
-                    if st.button(f"➕ 발주서 작성 화면으로 (이 {len(mats)}건)",
+                    if st.button(f"발주서 작성 화면으로 (이 {len(mats)}건)",
                                  key=f"go_po_{supplier}",
                                  disabled=_target in ("(선택하세요)",
                                                       "(미정)")):
@@ -7142,7 +7143,7 @@ elif page == "생산 계획":
                             for sid in src_so_ids
                         })
                         st.session_state["po_prefill_source_so"] = ", ".join(src_so_numbers[:10])
-                        st.success(f"✅ '{_target}'의 {len(mats)}개 품목이 발주서 작성에 임시 저장됨. "
+                        st.success(f"'{_target}'의 {len(mats)}개 품목이 발주서 작성에 임시 저장됨. "
                                    f"좌측 **발주/입고** 메뉴로 이동해서 검토하세요. "
                                    f"(출처 수주: {len(src_so_numbers)}건)")
 
@@ -7380,14 +7381,14 @@ elif page == "발주/입고":
                 _items9 = [_lbl9(_r9)]
                 ab1, ab2, ab3 = st.columns(3)
                 ab1.download_button(
-                    "라벨 재발행 · 단표",
+                    "라벨 재발행 (단표)",
                     data=receipt_labels(_items9, mode="label"),
                     file_name=("입고라벨_재발행_"
                                f"{_items9[0]['w_lot']}.html"),
                     mime="text/html", use_container_width=True,
                     key=f"rcv_recv_dl1_{_r9['txn_id']}")
                 ab2.download_button(
-                    "A4 배치",
+                    "라벨 재발행 (A4)",
                     data=receipt_labels(_items9, mode="a4"),
                     file_name=("입고라벨_재발행_A4_"
                                f"{_items9[0]['w_lot']}.html"),
@@ -7555,7 +7556,8 @@ elif page == "발주/입고":
                 f"**생산 계획에서 자동 제안 받은 발주 데이터**: 거래처 '{pv}', 품목 {len(pi)}개"
                 + (f" · 출처 수주: {src_so}" if src_so else "")
             )
-            if st.button("🔄 자동 제안 + 품목표 모두 초기화"):
+            if st.button("모두 초기화",
+                         help="자동 제안과 품목표를 모두 비웁니다"):
                 st.session_state.po_prefill_vendor_name = None
                 st.session_state.po_prefill_items = None
                 st.session_state.po_prefill_source_so = None
@@ -7624,9 +7626,9 @@ elif page == "발주/입고":
             # 마지막 등록 결과 표시
             if "po_last_registered" in st.session_state:
                 lr = st.session_state.po_last_registered
-                st.success(f"✅ **{lr['name']}** 등록 완료 (ID: {lr['id']}, 그룹: {lr['group']})")
+                st.success(f"**{lr['name']}** 등록 완료 (ID: {lr['id']}, 그룹: {lr['group']})")
 
-            if st.button("💾 신규 거래처 저장", type="primary"):
+            if st.button("신규 거래처 저장", type="primary"):
                 if not nv_name or nv_group == "선택":
                     st.error("거래처명과 그룹은 필수입니다.")
                 else:
@@ -7670,7 +7672,7 @@ elif page == "발주/입고":
                             st.session_state.po_last_registered = {
                                 "name": cleaned, "id": new_id, "group": nv_group
                             }
-                            st.toast(f"✅ '{cleaned}' 등록 완료!", icon="🎉")
+                            st.toast(f"'{cleaned}' 등록 완료!", icon="🎉")
                             st.balloons()
                             st.rerun()
                         except Exception as e:
@@ -7717,7 +7719,7 @@ elif page == "발주/입고":
                         rc1, rc2, rc3 = st.columns([3, 2, 1])
                         rc1.write(f"**{po['po_number']}** · {po.get('po_date','')}")
                         rc2.write(f"₩{int(po.get('total_amount') or 0):,}")
-                        if rc3.button("📋 복사", key=f"copy_po_{po['po_id']}"):
+                        if rc3.button("복사", key=f"copy_po_{po['po_id']}"):
                             try:
                                 copied = fetch("purchase_order_items",
                                     "item_name,spec,qty,unit_price,remark",
@@ -7734,7 +7736,7 @@ elif page == "발주/입고":
                                         "unit_price": int(it.get("unit_price") or 0),
                                         "memo": it.get("remark") or "",
                                     })
-                                st.success(f"✅ {po['po_number']}의 {len(copied)}개 품목 복사")
+                                st.success(f"{po['po_number']}의 {len(copied)}개 품목 복사")
                                 st.rerun()
                             except Exception as e:
                                 st.error(f"복사 실패: {e}")
@@ -7838,7 +7840,7 @@ elif page == "발주/입고":
                                 unsafe_allow_html=True)
                         else:
                             cols[3].write(f"₩{upd:,}" if upd else "-")
-                        if cols[4].button("➕", key=f"add_{p['product_id']}"):
+                        if cols[4].button("추가", key=f"add_{p['product_id']}"):
                             import uuid as _uuid
                             st.session_state.po_items.append({
                                 "_uid": str(_uuid.uuid4())[:8],
@@ -7855,7 +7857,7 @@ elif page == "발주/입고":
                 bulk_txt = st.text_area("품번 목록",
                     placeholder="8HFDV-VM-05\n4PDVN-02\nMRG6-07\n또는 콤마 구분: 8HFDV-VM-05, 4PDVN-02",
                     key="bulk_pn")
-                if st.button("📋 일괄 추가", key="bulk_add_btn") and bulk_txt:
+                if st.button("일괄 추가", key="bulk_add_btn") and bulk_txt:
                     import re as _re_bulk, uuid as _uuid_bulk
                     pns = [x.strip() for x in _re_bulk.split(r'[,\n]+', bulk_txt) if x.strip()]
                     added = 0; notfound = []
@@ -7879,7 +7881,7 @@ elif page == "발주/입고":
                             "qty": vq or 0, "unit_price": upd, "memo": "",
                         })
                         added += 1
-                    msg = f"✅ {added}개 추가"
+                    msg = f"{added}개 추가"
                     if notfound: msg += f"\n⚠️ 미발견: {', '.join(notfound[:10])}"
                     if added: st.success(msg); st.rerun()
                     else: st.warning(msg)
@@ -7890,7 +7892,7 @@ elif page == "발주/입고":
                 nm = c2.text_input("재질", key="nx_mat")
                 ns = c3.text_input("규격", key="nx_spec")
                 np_ = c4.number_input("단가", min_value=0, step=100, key="nx_price")
-                if st.button("➕ 추가 (즉석)") and nx:
+                if st.button("추가 (즉석)") and nx:
                     import uuid as _uuid
                     st.session_state.po_items.append({
                         "_uid": str(_uuid.uuid4())[:8],
@@ -7935,7 +7937,7 @@ elif page == "발주/입고":
                     it["memo"] = cols[6].text_input("메모", value=it.get("memo") or "",
                         key=f"memo_{uid}", label_visibility="collapsed",
                         placeholder="예: 6/15 납기, 검수 후 입고")
-                    if cols[7].button("🗑", key=f"del_{uid}"):
+                    if cols[7].button("삭제", key=f"del_{uid}"):
                         for k in (f"qty_{uid}", f"up_{uid}", f"memo_{uid}"):
                             if k in st.session_state: del st.session_state[k]
                         st.session_state.po_items = [
@@ -7967,7 +7969,7 @@ elif page == "발주/입고":
                            "수량을 입력하세요: "
                            + ", ".join(_zero_q[:5])
                            + ("…" if len(_zero_q) > 5 else ""))
-            if st.button("📄 발주서 xlsx 생성", type="primary", use_container_width=True,
+            if st.button("발주서 xlsx 생성", type="primary", use_container_width=True,
                          disabled=(not st.session_state.po_items
                                    or bool(_zero_q))):
                 try:
@@ -7988,7 +7990,7 @@ elif page == "발주/입고":
                 }
                 try:
                     xlsx_bytes = fill_po_template(po_data, st.session_state.po_items, vendor_info)
-                    st.success(f"✅ 발주서 생성 완료: **{po_no}**")
+                    st.success(f"발주서 생성 완료: **{po_no}**")
                     st.download_button("⬇ 다운로드", data=xlsx_bytes,
                         file_name=f"{po_no}_{vendor['name']}.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -8057,7 +8059,7 @@ elif page == "발주/입고":
                     # on_click 콜백 필수 — 이 버튼은 생성 직후 run 에만
                     # 렌더되는 조건부 버튼이라 if st.button() 방식으로는
                     # 클릭 처리가 실행되지 않음 (품목 표 리셋 누락 버그)
-                    st.button("🔄 새 발주서 시작",
+                    st.button("새 발주서 시작",
                         on_click=lambda: st.session_state.update(po_items=[]))
                 except Exception as e:
                     st.error(f"발주서 생성 실패: {e}")
@@ -8068,7 +8070,7 @@ elif page == "발주/입고":
         with c1:
             period = st.selectbox("기간", ["이번달", "최근 3개월", "올해", "전체"], index=1)
         with c2:
-            status_f = st.selectbox("상태", ["전체", "DRAFT", "SENT", "RECEIVED", "CLOSED", "CANCELLED"])
+            status_f = st.selectbox("상태", ["전체", "DRAFT", "SENT", "PARTIAL", "RECEIVED", "CLOSED", "CANCELLED"], format_func=lambda s: s if s == "전체" else status_ko(s))
         with c3:
             v_search = st.text_input("거래처", placeholder="이름 검색")
 
@@ -8164,7 +8166,7 @@ elif page == "발주/입고":
                                  })
 
                 rc1, rc2 = st.columns(2)
-                if rc1.button("📄 xlsx 재발급", use_container_width=True):
+                if rc1.button("xlsx 재발급", use_container_width=True):
                     # 재발급 시 거래처 상세 다시 조회
                     full_vendor = _db.fetch_one(
                         "vendors",
@@ -8204,14 +8206,18 @@ elif page == "발주/입고":
                     except Exception as e:
                         st.error(f"재발급 실패: {e}")
 
+                _po_sts = ["DRAFT", "SENT", "PARTIAL", "RECEIVED",
+                           "CLOSED", "CANCELLED"]
                 new_status = rc2.selectbox(
                     "상태 변경",
-                    ["DRAFT", "SENT", "RECEIVED", "CANCELLED"],
+                    _po_sts,
                     format_func=status_ko,
-                    index=["DRAFT", "SENT", "RECEIVED", "CANCELLED"].index(po["status"])
-                          if po["status"] in ["DRAFT","SENT","RECEIVED","CANCELLED"] else 0
+                    index=_po_sts.index(po["status"])
+                          if po["status"] in _po_sts else 0,
+                    help="종결(CLOSED)을 되돌리려면 발주중(SENT)으로 "
+                         "바꾸면 잔량이 입고 대기에 다시 나타납니다"
                 )
-                if rc2.button("💾 상태 저장", use_container_width=True):
+                if rc2.button("상태 저장", use_container_width=True):
                     if _db.update("purchase_orders", f"po_id=eq.{po['po_id']}",
                                   {"status": new_status}):
                         st.success(f"상태를 {new_status}로 변경"); st.rerun()
@@ -8432,7 +8438,7 @@ elif page == "발주/입고":
                                                             or None,
                                     }])
                                     st.success(
-                                        f"✅ 자재 등록: {_rq_mid} — "
+                                        f"자재 등록: {_rq_mid} — "
                                         "자동으로 다시 매핑됩니다.")
                                     st.rerun()
                                 except Exception as e:
@@ -8450,8 +8456,22 @@ elif page == "발주/입고":
                 if not _mid8:
                     st.warning("자재를 선택(또는 등록)해야 입고할 수 "
                                "있습니다.")
-                if st.button(f"입고 처리 ({_q8:,.0f}) — 식별 번호 발급 "
-                             "+ 라벨", type="primary",
+                # 이 발주 전체의 남은 잔량 (종결 버튼용, 041/042)
+                try:
+                    _scl = fetch("po_item_receipt_v",
+                        "item_name,pending_qty",
+                        f"po_id=eq.{_r['po_id']}&pending_qty=gt.0",
+                        limit=50)
+                except Exception:
+                    _scl = []
+                _sc_pend = sum(float(x.get("pending_qty") or 0)
+                               for x in _scl)
+                go1, go2 = st.columns(2)
+                if go1.button(f"입고 처리 ({_q8:,.0f})",
+                             type="primary",
+                             help="식별 번호 자동 발급 · 실재고 반영 · "
+                                  "입고 라벨 생성까지 자동",
+                             use_container_width=True,
                              disabled=(_q8 <= 0 or not _mid8),
                              key=f"rcvp_go_{_r['poi_id']}") \
                         and click_guard(f"rcvp_go_{_r['poi_id']}"):
@@ -8513,65 +8533,55 @@ elif page == "발주/입고":
                             "vendor": _r_vendor,
                             "date": _rcv_date.today().isoformat(),
                         }]
-                        st.success(f"✅ 입고 처리 — {_q8:,.0f}개 "
+                        st.success(f"입고 처리 — {_q8:,.0f}개 "
                                    f"(식별 번호 {_w or '-'}, 실재고 "
                                    "자동 반영)")
                         st.rerun()
                     except Exception as e:
                         st.error(f"입고 실패: {e}")
 
-                # ── 이 발주 잔량 종결 (협의 short-close, 041) ──
+                # ── 발주 종결 (협의 short-close, 041/042) ──
                 # 마지막 부분 입고 후 협의로 발주를 끝낼 때 — 문서·원장
                 # 보존, 잔량만 종결되어 입고 대기에서 사라진다
-                try:
-                    _scl = fetch("po_item_receipt_v",
-                        "item_name,pending_qty",
-                        f"po_id=eq.{_r['po_id']}&pending_qty=gt.0",
-                        limit=50)
-                except Exception:
-                    _scl = []
-                _sc_pend = sum(float(x.get("pending_qty") or 0)
-                               for x in _scl)
-                if _sc_pend > 0:
-                    with st.expander(
-                            f"이 발주 잔량 종결 — 미입고 {_sc_pend:,.0f} "
-                            "(협의로 발주 종료)"):
-                        st.caption(
-                            "발주 수량(문서)과 입고 기록은 그대로 "
-                            "보존되고, 이 발주의 남은 잔량 전체가 "
-                            "종결되어 입고 대기에서 사라집니다. 잔량: "
-                            + " · ".join(
-                                f"{x['item_name']} "
-                                f"{float(x['pending_qty']):,.0f}"
-                                for x in _scl[:5]))
-                        _sc_reason = st.text_input(
-                            "종결 사유 *",
-                            key=f"rcvp_scl_r_{_r['po_id']}",
-                            placeholder="예: 소재 잔재 부족 — 89개로 "
-                                        "협의 종료 (명진메탈)")
-                        if st.button(
-                                f"잔량 {_sc_pend:,.0f} 종결 확정",
-                                type="primary",
-                                disabled=not (_sc_reason or "").strip(),
-                                key=f"rcvp_scl_go_{_r['po_id']}"):
-                            from datetime import date as _scl_d
-                            _scl_note = (
-                                f"잔량 종결 {_sc_pend:,.0f}: "
-                                f"{_sc_reason.strip()} "
-                                f"({_scl_d.today().isoformat()}, "
-                                f"{current_user_name()})")
-                            _old_rmk = (_rh.get("remark")
-                                        or "").strip() \
-                                if isinstance(_rh, dict) else ""
-                            if _db.update("purchase_orders",
-                                    f"po_id=eq.{_r['po_id']}",
-                                    {"status": "CLOSED",
-                                     "remark": (_old_rmk + " / "
-                                                if _old_rmk else "")
-                                               + _scl_note}):
-                                st.success("발주 종결 — 잔량이 입고 "
-                                           "대기에서 제외됩니다.")
-                                st.rerun()
+                if _sc_pend > 0 and go2.button(
+                        f"발주 종결 (잔량 {_sc_pend:,.0f})",
+                        help="협의로 발주를 끝냅니다 — 발주 수량(문서)과 "
+                             "입고 기록은 그대로 보존되고, 남은 잔량 "
+                             "전체가 종결되어 입고 대기에서 사라집니다. "
+                             "잔량: " + " · ".join(
+                                 f"{x['item_name']} "
+                                 f"{float(x['pending_qty']):,.0f}"
+                                 for x in _scl[:5])
+                             + " / 되돌리려면 발주 이력에서 상태를 "
+                               "바꾸세요.",
+                        use_container_width=True,
+                        key=f"rcvp_scl_go_{_r['po_id']}") \
+                        and click_guard(f"rcvp_scl_go_{_r['po_id']}"):
+                    from datetime import date as _scl_d
+                    _scl_note = (
+                        f"잔량 종결 {_sc_pend:,.0f} — 협의 종결 "
+                        f"({_scl_d.today().isoformat()}, "
+                        f"{current_user_name()})")
+                    try:
+                        _rh2 = _db.fetch_one(
+                            "purchase_orders",
+                            f"po_id=eq.{_r['po_id']}", "remark") or {}
+                    except Exception:
+                        _rh2 = {}
+                    _old_rmk = (_rh2.get("remark") or "").strip()
+                    if _db.update("purchase_orders",
+                            f"po_id=eq.{_r['po_id']}",
+                            {"status": "CLOSED",
+                             "remark": (_old_rmk + " / "
+                                        if _old_rmk else "")
+                                       + _scl_note}):
+                        st.success("발주 종결 — 잔량이 입고 대기에서 "
+                                   "제외됩니다.")
+                        st.rerun()
+                    else:
+                        st.error("발주 종결 실패 — DB 가 변경을 "
+                                 "거부했습니다. 반복되면 관리자에게 "
+                                 "알려주세요.")
         if st.session_state.get("rcv_labels"):
             from utils.label_generator import receipt_labels
             _lbs = st.session_state["rcv_labels"]
@@ -8583,13 +8593,16 @@ elif page == "발주/입고":
             lc1, lc2, lc3 = st.columns([1, 1, 1])
             with lc1:
                 st.download_button(
-                    "라벨 프린터용 (단표)",
+                    "단표 라벨",
+                    help="라벨 프린터용 — 열면 인쇄 창이 자동으로 "
+                         "뜹니다",
                     data=receipt_labels(_lbs, mode="label"),
                     file_name=f"입고라벨_{_lbs[0]['w_lot']}.html",
                     mime="text/html", use_container_width=True)
             with lc2:
                 st.download_button(
-                    "A4 배치 (예비)",
+                    "A4 라벨",
+                    help="라벨 프린터가 없을 때 A4 인쇄용",
                     data=receipt_labels(_lbs, mode="a4"),
                     file_name=f"입고라벨_A4_{_lbs[0]['w_lot']}.html",
                     mime="text/html", use_container_width=True)
@@ -9307,8 +9320,10 @@ elif page == "공정 관리":
                              "(예: 20260723-001)")
 
                 if st.button(
-                        f"투입 등록 (소재 {_in_qty:,.0f} → 제품 "
-                        f"{_in_prod_qty:,.0f})", type="primary",
+                        f"투입 등록 (제품 {_in_prod_qty:,.0f})",
+                        help=f"소재 {_in_qty:,.0f} 소모 — 환산 계수를 "
+                             "반영해 제품 수량으로 기록됩니다",
+                        type="primary",
                         disabled=not (_wo_ok and _in_qty > 0
                                       and _in_prod_qty > 0
                                       and (_mat_ok or _mat_override)),
@@ -9376,7 +9391,7 @@ elif page == "공정 관리":
                         except Exception:
                             pass
                         st.success(
-                            f"✅ 투입 등록: {_wo} · {_sel_lot} · 소재 "
+                            f"투입 등록: {_wo} · {_sel_lot} · 소재 "
                             f"{_in_qty:,.0f} → 제품 {_in_prod_qty:,.0f}"
                             "EA → 생산중")
                         st.rerun()
@@ -9875,7 +9890,7 @@ elif page == "공정 관리":
                                 event={"event_type": "RECEIVE", "qty": _bq,
                                        "batch_id": _nid,
                                        "detail": {"batch_no": _no}},
-                                msg=f"✅ {_no} 인수 {_bq:,.0f} EA → "
+                                msg=f"{_no} 인수 {_bq:,.0f} EA → "
                                     f"{_nx['step_name']} 대기")
 
                     # ── 외주 출고 (배치: 공정 대기 → 거래처) ──
@@ -10020,8 +10035,11 @@ elif page == "공정 관리":
                         if _i_done > 0 and not _f_pid:
                             st.error("품번이 제품 마스터와 연결되지 않아 "
                                      "완성 재고 등록이 불가합니다.")
-                        if st.button(f"검사 등록 (판정 {_i_sum:,.0f} · "
-                                     f"완성 {_i_done:,.0f})", type="primary",
+                        if st.button(f"검사 등록 ({_i_sum:,.0f})",
+                                     type="primary",
+                                     help=f"판정 {_i_sum:,.0f} 중 완성(합격) "
+                                          f"{_i_done:,.0f} — 합격분은 즉시 "
+                                          "완성 재고로 확정 + LOT 라벨",
                                      disabled=not (0 < _i_sum <= _sb_qty
                                                    and (_i_done <= 0
                                                         or bool(_f_pid))),
@@ -10291,7 +10309,7 @@ elif page == "공정 관리":
                 _acts.append("투입 취소")
 
             if not _acts and not _bat_open:
-                st.success("✅ 이 작업지시는 모든 수량이 처리되었습니다.")
+                st.success("이 작업지시는 모든 수량이 처리되었습니다.")
             else:
                 st.divider()
                 _act = st.radio("처리 선택", _acts, horizontal=True,
@@ -10310,7 +10328,7 @@ elif page == "공정 관리":
                             {"received_qty":
                              float(_t.get("received_qty") or 0) + _rq},
                             event={"event_type": "RECEIVE", "qty": _rq},
-                            msg=f"✅ 인수 {_rq:,.0f} EA → 검사 대기")
+                            msg=f"인수 {_rq:,.0f} EA → 검사 대기")
 
                 # ── 2. 외주 출고 (+의뢰서) ──
                 elif _act == "외주 출고":
@@ -10371,8 +10389,9 @@ elif page == "공정 관리":
                                                key="pe_o_due")
                     _o_note = st.text_input("특기사항 (선택)",
                                             key="pe_o_note")
-                    if st.button(f"외주 출고 ({_o_qty:,.0f}) + 의뢰서 발행",
+                    if st.button(f"외주 출고 ({_o_qty:,.0f})",
                                  type="primary",
+                                 help="외주 의뢰서(문서)가 자동 발행됩니다",
                                  disabled=not (_o_qty > 0 and _o_proc),
                                  key="pe_o_btn"):
                         from utils.label_generator import (
@@ -10478,9 +10497,11 @@ elif page == "공정 관리":
                                  "재고 등록이 불가합니다 — 마스터 관리에서 "
                                  f"품번 '{_t.get('pn') or '?'}' 확인 후 "
                                  "다시 시도하세요.")
-                    if st.button(f"검사 등록 (판정 {_i_sum:,.0f} · "
-                                 f"완성 {_i_done:,.0f})",
+                    if st.button(f"검사 등록 ({_i_sum:,.0f})",
                                  type="primary",
+                                 help=f"판정 {_i_sum:,.0f} 중 완성(합격) "
+                                      f"{_i_done:,.0f} — 합격분은 즉시 "
+                                      "완성 재고로 확정 + LOT 라벨",
                                  disabled=not (
                                      0 < _i_sum <= _q["검사대기"]
                                      and (_i_done <= 0 or bool(_f_pid))),
@@ -11397,7 +11418,7 @@ elif page == "생산 보고":
                     if txns:
                         _db.insert("inventory_transactions", txns)
                     st.success(
-                        f"✅ 생산 보고 저장: {sel_prod['pn']} "
+                        f"생산 보고 저장: {sel_prod['pn']} "
                         f"양품 {pb_qty:,.0f} / 불량 {pb_defect:,.0f}"
                         + (f" · 자재 {len(consumption)}종 차감" if consumption else
                            " · 자재 차감 없음 (BOM 미매핑)")
@@ -11628,7 +11649,7 @@ elif page == "생산 보고":
                         _db.insert("production_log", recs)
                         _d = sum(1 for r in recs if r["shift"] == "주간")
                         st.success(
-                            f"✅ MES 실적 {len(recs)}행 저장 — {mes_date} · "
+                            f"MES 실적 {len(recs)}행 저장 — {mes_date} · "
                             f"주간 {_d} / 야간 {len(recs) - _d} · "
                             f"생산 {sum(r['total_qty'] for r in recs):,.0f} / "
                             f"불량 {sum(r['defect_qty'] for r in recs):,.0f} "
@@ -12162,7 +12183,7 @@ elif page == "원가 확인":
 
     if USE_V2:
         st.success(
-            "✅ `product_cost_full_v` 사용 중 — BOM 변경이 즉시 반영됩니다."
+            "`product_cost_full_v` 사용 중 — BOM 변경이 즉시 반영됩니다."
         )
     else:
         st.warning(
@@ -12817,7 +12838,7 @@ elif page == "원가 확인":
                             num_rows="fixed",
                             key=f"cost_bom_editor_{row['product_id']}")
 
-                        if st.button("💾 BOM 단가 저장",
+                        if st.button("BOM 단가 저장",
                                      type="primary",
                                      key=f"cost_bom_save_{row['product_id']}"):
                             chg = 0
@@ -12836,7 +12857,7 @@ elif page == "원가 확인":
                                     except Exception:
                                         pass
                             if chg:
-                                st.success(f"✅ {chg}건 단가 변경 저장")
+                                st.success(f"{chg}건 단가 변경 저장")
                                 st.rerun()
                             else:
                                 st.info("변경 사항 없음")
@@ -13115,7 +13136,9 @@ elif page == "원가 확인":
                     "(= 신_소재비 + 외주 + 열처리 + 표면)",
                     value=True, key="recalc_update_est")
 
-            if st.button("✅ 검토 완료 — 위 추출 결과에 일괄 적용",
+            if st.button("일괄 적용",
+                          help="위 추출 결과를 검토했다면 눌러 "
+                               "일괄 적용합니다",
                           type="primary", key="recalc_apply_btn"):
                 target = df_r.copy()
                 if only_sf_gt1:
@@ -13149,7 +13172,7 @@ elif page == "원가 확인":
                         except Exception:
                             fail_n += 1
                     st.success(
-                        f"✅ 적용 완료: {ok_n}건"
+                        f"적용 완료: {ok_n}건"
                         + (f" / 실패 {fail_n}건" if fail_n else ""))
                     st.rerun()
 
@@ -13247,7 +13270,7 @@ elif page == "원가 확인":
                                             f"product_id=eq.{m['product_id']}",
                                             payload):
                                             st.success(
-                                                f"✅ {m['pn']} 소재비 → "
+                                                f"{m['pn']} 소재비 → "
                                                 f"{int(new_mat):,}원 적용 완료")
                                             st.rerun()
                                         else:
@@ -13325,7 +13348,7 @@ elif page == "원가 확인":
                                 "추정원가를 (소재+외주+열처리+표면) 합계로 자동계산",
                                 value=False)
 
-                            submit = st.form_submit_button("💾 저장",
+                            submit = st.form_submit_button("저장",
                                 use_container_width=True, type="primary")
 
                             if submit:
@@ -13343,7 +13366,7 @@ elif page == "원가 확인":
                                     ok = _db.update("products",
                                         f"product_id=eq.{r['product_id']}", payload)
                                     if ok:
-                                        st.success(f"✅ {r['pn']} 원가 저장 완료")
+                                        st.success(f"{r['pn']} 원가 저장 완료")
                                         st.rerun()
                                     else:
                                         st.error("저장 실패")
@@ -13420,7 +13443,7 @@ elif page == "원가 확인":
                                                 value=False, key="bulk_confirm",
                                                 help="2단계 확인. 체크해야 저장 버튼 활성화.")
                 with cc3:
-                    save_btn = st.button("💾 변경분 일괄 저장",
+                    save_btn = st.button("변경분 일괄 저장",
                                          type="primary", use_container_width=False,
                                          disabled=not confirm_save)
 
@@ -13473,7 +13496,7 @@ elif page == "원가 확인":
                                     fail_n += 1
                             except Exception:
                                 fail_n += 1
-                        st.success(f"✅ 저장 완료: {ok_n}건"
+                        st.success(f"저장 완료: {ok_n}건"
                                    + (f" / 실패 {fail_n}건" if fail_n else ""))
                         st.rerun()
 

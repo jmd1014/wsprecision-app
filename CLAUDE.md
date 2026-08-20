@@ -63,6 +63,9 @@
 
 ## DB 작업 규칙
 
-- 스키마 변경은 Supabase MCP `apply_migration`으로 (이력 유지). 2026-08-12 기준 마이그레이션 035까지
+- 스키마 변경은 Supabase MCP `apply_migration`으로 (이력 유지). 2026-08-20 기준 마이그레이션 042까지
+- **CHECK 제약과 뷰를 함께 확인**: 상태값을 새로 쓰기 전에 해당 컬럼의 CHECK 제약에 값이 있는지
+  확인할 것 — 041에서 뷰만 CLOSED를 알고 제약이 거부해 종결이 조용히 실패했던 사례(042에서 수정).
+  `db.update`는 실패 시 False만 반환하므로 앱에서는 else 분기로 오류를 반드시 표출
 - **새 테이블은 반드시 `ENABLE ROW LEVEL SECURITY`**, **새 뷰는 `WITH (security_invoker = true)`** — 정책은 만들지 않음 (anon 차단이 목적, 앱은 service_role)
 - 파괴적 변경 전 백업 테이블(`*_backup_MMDD`) 생성 관례 유지
