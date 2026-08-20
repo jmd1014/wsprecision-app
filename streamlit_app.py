@@ -351,6 +351,34 @@ def click_guard(name, ttl=5.0):
     return True
 
 
+def confirm_gate(key, message):
+    """되돌리기 어려운 액션의 2단계 확인 게이트 (2026-08-20).
+
+    잔량 종결처럼 클릭 즉시 실행되면 위험한 버튼에 사용. 사용법:
+
+        if st.button("위험 액션", key="x"):
+            st.session_state["cfm_x"] = True
+        if st.session_state.get("cfm_x") and confirm_gate("x", "경고문"):
+            ... 실행 ...
+
+    첫 클릭은 플래그만 세우고, 경고문 + [실행 확정]/[돌아가기] 를
+    띄운 뒤 [실행 확정] 클릭인 런에서만 True 를 반환한다.
+    """
+    _fk = f"cfm_{key}"
+    st.warning(message)
+    _c1, _c2 = st.columns(2)
+    _ok = _c1.button("실행 확정", type="primary",
+                     key=f"{key}_cfm_ok", use_container_width=True)
+    if _c2.button("돌아가기", key=f"{key}_cfm_no",
+                  use_container_width=True):
+        st.session_state.pop(_fk, None)
+        st.rerun()
+    if _ok:
+        st.session_state.pop(_fk, None)
+        return True
+    return False
+
+
 def _cookie_js(script: str):
     """쿠키 기록·삭제용 JS 실행.
 
@@ -1406,13 +1434,17 @@ elif page == "마스터 관리":
     # 개발기 정비용 탭(데이터 제외 규칙·매입↔자재 매핑·마스터/연결
     # 점검)은 2026-08-05 제거 — 제외 규칙 자체는 DB 뷰에 내장되어
     # 계속 적용된다. 중복 자재 병합 도구는 자재 편집 하단으로 이동.
-    (tab_fit, tab1, tab_prod, tab_mat, tab_bom, tab_rout,
+    (tab_fit, tab1, tab_prod, tab_mat, tab_bom,
      tab_dq, tab_acct, tab_dsn) = st.tabs([
         "품번별 맞추기",
-        "거래처 편집", "제품 편집", "자재 편집", "BOM 편집",
-        "제품 구성 (라우팅)",
+        "거래처 편집", "제품 편집", "자재 편집", "BOM·공정",
         "정합 점검", "계정 관리", "디자인 데이터 내보내기"
     ])
+    # BOM·공정 = 하위 2단 — 제품별 구성(라우팅)이 기본, 일괄 편집은
+    # 보조 (2026-08-20 이중 관리 통합: 공정 편집의 단일 창구)
+    with tab_bom:
+        tab_rout, tab_bom_bulk = st.tabs(
+            ["제품 구성 (라우팅)", "BOM 일괄 편집 / 행 추가"])
 
     # ─── Tab: 정합 점검 (Migration 038, 2026-08-19) ───
     # "진실 한 곳" 원칙의 감시 장치 — 데이터가 규칙을 벗어나면 여기에
@@ -1451,7 +1483,7 @@ elif page == "마스터 관리":
                     } for r in _v], strong_cols=("대상",),
                         scroll=len(_v) > 15)
             st.caption(
-                "처리 안내 — 소재 미연결: BOM 편집·제품 구성에서 연결 / "
+                "처리 안내 — 소재 미연결: BOM·공정 탭에서 연결 / "
                 "공정 원가행 라우팅 미연결: 제품 구성 탭에서 스텝에 "
                 "BOM 연결 / "
                 "자재 미매핑: 입고 처리에서 최초 1회 지정 / 회차 대사 "
@@ -1555,12 +1587,12 @@ elif page == "마스터 관리":
                         num_cols=("수량/PC", "분할/LOT", "단가 (원)"),
                         strong_cols=("자재/공정",))
                     st.caption(
-                        "소재·공정 원가행(BOM) — 수량 수정은 BOM 편집, "
+                        "소재·공정 원가행(BOM) — 수량 수정은 BOM 일괄 편집, "
                         "단가는 원가 확인 > 단가 관리, 자재 변경은 BOM "
                         "편집 > 자재 교체에서. 아래 공정 순서의 [BOM "
                         "연결]로 이 행들을 스텝에 붙입니다.")
                 else:
-                    st.info("이 제품의 BOM 이 아직 없습니다 — BOM 편집 "
+                    st.info("이 제품의 BOM 이 아직 없습니다 — BOM 일괄 편집 "
                             "탭에서 소재를 연결하세요. 외주 공정 원가행은 "
                             "아래 라우팅 저장 시 자동 생성됩니다.")
 
@@ -1734,6 +1766,12 @@ elif page == "마스터 관리":
                 if _has_custom and rc2.button(
                         "기본 플로우로 되돌리기 (라우팅 삭제)",
                         key="rout_reset"):
+                    st.session_state["cfm_rout_reset"] = True
+                if st.session_state.get("cfm_rout_reset") \
+                        and confirm_gate("rout_reset",
+                            f"{_rp_pick} 의 라우팅 전체를 삭제하고 기본 "
+                            "플로우로 되돌립니다 — 스텝 구성·거래처 "
+                            "고정이 사라집니다. 실행할까요?"):
                     try:
                         _db.delete("product_routing",
                                    f"product_id=eq.{_rp_id}")
@@ -2378,57 +2416,121 @@ elif page == "마스터 관리":
                         except Exception as e:
                             st.error(f"등록 실패: {e}")
 
-        # ── 표 표시 + 인라인 편집 ──
+        # ── 리스트에서 행 선택 → 아래 상세 편집 (2026-08-20 공통 문법,
+        # 일괄 수정용 편집 표는 expander 로 보조 유지) ──
         if not rows:
             st.info("필터 조건에 맞는 거래처 없음. 위에서 신규 등록하세요.")
         else:
-            df = pd.DataFrame(rows)
-            edited = st.data_editor(
-                df,
-                column_config={
-                    "vendor_id": st.column_config.NumberColumn("ID", width="small", disabled=True),
-                    "name": st.column_config.TextColumn("거래처명", width="medium", disabled=True),
-                    "vendor_group": st.column_config.SelectboxColumn(
-                        "그룹", options=[None] + VENDOR_GROUPS, width="medium"
-                    ),
-                    "category": st.column_config.TextColumn("카테고리(자동)", disabled=True, width="small"),
-                    "trade_type": st.column_config.TextColumn("구분", width="small", disabled=True),
-                    "business_no": st.column_config.TextColumn("사업자번호", disabled=True, width="small"),
-                    "ceo_name": st.column_config.TextColumn("대표자"),
-                    "phone": st.column_config.TextColumn("전화"),
-                    "address": st.column_config.TextColumn("주소", width="medium"),
-                    "business_type": st.column_config.TextColumn("업태", disabled=True),
-                    "business_item": st.column_config.TextColumn("종목", disabled=True),
-                    "payment_terms": st.column_config.TextColumn("결제조건"),
-                    "in_use": st.column_config.CheckboxColumn("사용", width="small"),
-                },
-                hide_index=True,
-                use_container_width=True,
-                key="vendor_editor",
-                num_rows="fixed",
-            )
-
-            if st.button("변경 저장", type="primary"):
-                changed = 0
-                editable_fields = ["vendor_group", "ceo_name", "phone", "address", "payment_terms", "in_use"]
-                for orig, new in zip(rows, edited.to_dict("records")):
-                    updates = {}
-                    for f in editable_fields:
-                        if orig.get(f) != new.get(f):
-                            updates[f] = new.get(f)
-                    if updates:
-                        if _db.update("vendors", f"vendor_id=eq.{orig['vendor_id']}", updates):
-                            changed += 1
-                if changed:
-                    st.success(f"{changed}건 업데이트")
+            _vd_i = toss_grid([{
+                "ID": r["vendor_id"],
+                "거래처명": r["name"],
+                "그룹": r.get("vendor_group") or "-",
+                "구분": r.get("trade_type") or "-",
+                "사업자번호": r.get("business_no") or "-",
+                "대표자": r.get("ceo_name") or "-",
+                "결제조건": r.get("payment_terms") or "-",
+                "사용": "사용" if r.get("in_use") else "중지",
+            } for r in rows], key="vendor_grid",
+                badge_cols=("사용",), strong_cols=("거래처명",))
+            _vd = rows[_vd_i if _vd_i is not None else 0]
+            _vid = _vd["vendor_id"]
+            st.markdown(f"##### {_vd['name']} — 상세 편집")
+            st.caption(
+                f"사업자번호 {_vd.get('business_no') or '-'} · 업태 "
+                f"{_vd.get('business_type') or '-'} · 종목 "
+                f"{_vd.get('business_item') or '-'} (수정은 관리자 문의)")
+            ve1, ve2, ve3 = st.columns(3)
+            _vg_opts = [None] + VENDOR_GROUPS
+            _vd_group = ve1.selectbox(
+                "그룹", _vg_opts,
+                index=(_vg_opts.index(_vd.get("vendor_group"))
+                       if _vd.get("vendor_group") in _vg_opts else 0),
+                format_func=lambda v: v or "(미지정)",
+                key=f"vd_grp_{_vid}")
+            _vd_ceo = ve2.text_input("대표자",
+                value=_vd.get("ceo_name") or "", key=f"vd_ceo_{_vid}")
+            _vd_phone = ve3.text_input("전화",
+                value=_vd.get("phone") or "", key=f"vd_ph_{_vid}")
+            ve4, ve5, ve6 = st.columns([2, 2, 1])
+            _vd_addr = ve4.text_input("주소",
+                value=_vd.get("address") or "", key=f"vd_ad_{_vid}")
+            _vd_pay = ve5.text_input("결제조건",
+                value=_vd.get("payment_terms") or "",
+                key=f"vd_pay_{_vid}")
+            _vd_use = ve6.toggle("사용중",
+                value=bool(_vd.get("in_use")), key=f"vd_use_{_vid}")
+            if st.button("변경 저장", type="primary",
+                         key=f"vd_save_{_vid}"):
+                _vupd = {}
+                for _f9, _nv9 in (
+                        ("vendor_group", _vd_group),
+                        ("ceo_name", (_vd_ceo or "").strip() or None),
+                        ("phone", (_vd_phone or "").strip() or None),
+                        ("address", (_vd_addr or "").strip() or None),
+                        ("payment_terms",
+                         (_vd_pay or "").strip() or None),
+                        ("in_use", bool(_vd_use))):
+                    if _vd.get(_f9) != _nv9:
+                        _vupd[_f9] = _nv9
+                if not _vupd:
+                    st.info("변경 사항 없음")
+                elif _db.update("vendors", f"vendor_id=eq.{_vid}",
+                                _vupd):
+                    st.success(f"{_vd['name']} — {len(_vupd)}개 항목 "
+                               "저장")
                     st.rerun()
                 else:
-                    st.info("변경 사항 없음")
+                    st.error("저장 실패 — 다시 시도해 주세요.")
+
+            with st.expander("일괄 편집 (표) — 여러 행을 한 번에 수정"):
+                df = pd.DataFrame(rows)
+                edited = st.data_editor(
+                    df,
+                    column_config={
+                        "vendor_id": st.column_config.NumberColumn("ID", width="small", disabled=True),
+                        "name": st.column_config.TextColumn("거래처명", width="medium", disabled=True),
+                        "vendor_group": st.column_config.SelectboxColumn(
+                            "그룹", options=[None] + VENDOR_GROUPS, width="medium"
+                        ),
+                        "category": st.column_config.TextColumn("카테고리(자동)", disabled=True, width="small"),
+                        "trade_type": st.column_config.TextColumn("구분", width="small", disabled=True),
+                        "business_no": st.column_config.TextColumn("사업자번호", disabled=True, width="small"),
+                        "ceo_name": st.column_config.TextColumn("대표자"),
+                        "phone": st.column_config.TextColumn("전화"),
+                        "address": st.column_config.TextColumn("주소", width="medium"),
+                        "business_type": st.column_config.TextColumn("업태", disabled=True),
+                        "business_item": st.column_config.TextColumn("종목", disabled=True),
+                        "payment_terms": st.column_config.TextColumn("결제조건"),
+                        "in_use": st.column_config.CheckboxColumn("사용", width="small"),
+                    },
+                    hide_index=True,
+                    use_container_width=True,
+                    key="vendor_editor",
+                    num_rows="fixed",
+                )
+
+                if st.button("변경 저장 (일괄)", type="primary",
+                             key="vendor_bulk_save"):
+                    changed = 0
+                    editable_fields = ["vendor_group", "ceo_name", "phone", "address", "payment_terms", "in_use"]
+                    for orig, new in zip(rows, edited.to_dict("records")):
+                        updates = {}
+                        for f in editable_fields:
+                            if orig.get(f) != new.get(f):
+                                updates[f] = new.get(f)
+                        if updates:
+                            if _db.update("vendors", f"vendor_id=eq.{orig['vendor_id']}", updates):
+                                changed += 1
+                    if changed:
+                        st.success(f"{changed}건 업데이트")
+                        st.rerun()
+                    else:
+                        st.info("변경 사항 없음")
 
     # ─── Tab: 제품 편집 ───
     with tab_prod:
-        st.caption("📌 제품 마스터 편집. **비용 컬럼 (소재비/외주/열처리/표면) 은 "
-                   "💰 원가 분석 → ✏️ 원가 편집** 에서 관리. 여기서는 "
+        st.caption("제품 마스터 편집. **비용 컬럼 (소재비/외주/열처리/표면) 은 "
+                   "원가 확인 → 단가 관리** 에서 관리. 여기서는 "
                    "분류·재질·조달·상태 등 일반 정보만.")
 
         # ── 검색 / 필터 ──
@@ -2500,16 +2602,129 @@ elif page == "마스터 관리":
         st.caption(f"검색 결과: **{len(prows)}건**")
 
         if prows:
-            pdf = pd.DataFrame(prows)
-            # 표시할 컬럼 (편집/조회용)
-            show_cols = ["product_id","pn","item_name","customer","sub_class",
-                         "material","raw_material_name","raw_material_spec",
-                         "procurement_type","caution","active","archived_at",
-                         "archive_reason","drawing_no","alias_list"]
-            show_cols = [c for c in show_cols if c in pdf.columns]
-            pdf = pdf[show_cols]
+            # ── 리스트에서 행 선택 → 아래 상세 편집 (2026-08-20 공통
+            # 문법, 일괄 수정용 편집 표는 expander 보조) ──
+            _pd_i = toss_grid([{
+                "품번": r["pn"],
+                "품명": r.get("item_name") or "-",
+                "고객사": r.get("customer") or "-",
+                "제품군": r.get("sub_class") or "-",
+                "재질": r.get("material") or "-",
+                "자재 (BOM)": r.get("raw_material_name") or "-",
+                "조달": r.get("procurement_type") or "-",
+                "상태": "휴면" if r.get("archived_at") else "활성",
+            } for r in prows], key="prod_grid",
+                badge_cols=("상태",), strong_cols=("품번",))
+            _pd = prows[_pd_i if _pd_i is not None else 0]
+            _pid = _pd["product_id"]
+            st.markdown(
+                f"##### {_pd['pn']} — 상세 편집"
+                + (f" · 휴면 ({_pd.get('archive_reason') or '사유 없음'})"
+                   if _pd.get("archived_at") else ""))
+            st.caption(
+                f"자재명 (BOM 동기화): **"
+                f"{_pd.get('raw_material_name') or '(미연결)'}** — 소재 "
+                "정보의 진실은 BOM. 자재 변경은 BOM·공정 탭의 [자재 "
+                "교체]에서.")
+            pe1, pe2, pe3, pe4 = st.columns(4)
+            _pd_pn = pe1.text_input("품번 *",
+                value=_pd.get("pn") or "", key=f"pd_pn_{_pid}",
+                help="중복 금지 — 변경 시 매출/매입 매핑에 영향")
+            _pd_inm = pe2.text_input("품명",
+                value=_pd.get("item_name") or "", key=f"pd_inm_{_pid}")
+            _pd_cust = pe3.text_input("고객사",
+                value=_pd.get("customer") or "", key=f"pd_cu_{_pid}")
+            _pd_sub = pe4.text_input("제품군",
+                value=_pd.get("sub_class") or "", key=f"pd_sub_{_pid}")
+            pe5, pe6, pe7, pe8 = st.columns(4)
+            _pd_mat = pe5.text_input("재질",
+                value=_pd.get("material") or "", key=f"pd_mat_{_pid}")
+            _pd_spec = pe6.text_input("자재 규격",
+                value=_pd.get("raw_material_spec") or "",
+                key=f"pd_sp_{_pid}")
+            _pd_proc_opts = ["", "도급", "사급"]
+            _pd_proc = pe7.selectbox("조달", _pd_proc_opts,
+                index=(_pd_proc_opts.index(_pd.get("procurement_type"))
+                       if _pd.get("procurement_type") in _pd_proc_opts
+                       else 0),
+                key=f"pd_pr_{_pid}")
+            _pd_drw = pe8.text_input("도면번호",
+                value=_pd.get("drawing_no") or "", key=f"pd_dw_{_pid}")
+            pe9, pe10 = st.columns(2)
+            _pd_caut = pe9.text_input("주의사항",
+                value=_pd.get("caution") or "", key=f"pd_ct_{_pid}")
+            _pd_alias = pe10.text_input("별칭 (콤마 구분)",
+                value=_pd.get("alias_list") or "", key=f"pd_al_{_pid}")
+            pb1, pb2, pb3 = st.columns([1, 1, 2])
+            if pb1.button("변경 저장", type="primary",
+                          use_container_width=True,
+                          key=f"pd_save_{_pid}"):
+                _pupd = {}
+                for _f9, _nv9 in (
+                        ("pn", (_pd_pn or "").strip()),
+                        ("item_name", (_pd_inm or "").strip() or None),
+                        ("customer", (_pd_cust or "").strip() or None),
+                        ("sub_class", (_pd_sub or "").strip() or None),
+                        ("material", (_pd_mat or "").strip() or None),
+                        ("raw_material_spec",
+                         (_pd_spec or "").strip() or None),
+                        ("procurement_type", _pd_proc or None),
+                        ("drawing_no", (_pd_drw or "").strip() or None),
+                        ("caution", (_pd_caut or "").strip() or None),
+                        ("alias_list",
+                         (_pd_alias or "").strip() or None)):
+                    if _pd.get(_f9) != _nv9:
+                        _pupd[_f9] = _nv9
+                if not (_pd_pn or "").strip():
+                    st.error("품번은 비울 수 없습니다.")
+                elif not _pupd:
+                    st.info("변경 사항 없음")
+                elif _db.update("products",
+                                f"product_id=eq.{_pid}", _pupd):
+                    st.success(f"{_pd['pn']} — {len(_pupd)}개 항목 저장")
+                    st.rerun()
+                else:
+                    st.error("저장 실패 — 다시 시도해 주세요.")
+            # 휴면 처리/해제 — 선택 제품 대상 (구 pid 입력 폼 대체)
+            if _pd.get("archived_at"):
+                if pb2.button("휴면 해제", use_container_width=True,
+                              key=f"pd_unarch_{_pid}"):
+                    if _db.update("products", f"product_id=eq.{_pid}",
+                                  {"archived_at": None,
+                                   "archive_reason": None}):
+                        st.success(f"{_pd['pn']} 휴면 해제")
+                        st.rerun()
+            else:
+                _pd_ar = pb3.text_input(
+                    "휴면 사유", key=f"pd_arr_{_pid}",
+                    label_visibility="collapsed",
+                    placeholder="휴면 사유 — 예: 단종, 12개월 거래 없음")
+                if pb2.button("휴면 처리", use_container_width=True,
+                              disabled=not (_pd_ar or "").strip(),
+                              help="사유를 적어야 처리됩니다 — 휴면 "
+                                   "제품은 검색 기본값에서 숨겨집니다",
+                              key=f"pd_arch_{_pid}"):
+                    if _db.update("products", f"product_id=eq.{_pid}",
+                                  {"archived_at": "now()",
+                                   "archive_reason": _pd_ar.strip()}):
+                        st.success(f"{_pd['pn']} 휴면 처리")
+                        st.rerun()
 
-            edited_p = st.data_editor(
+            _prod_bulk = st.expander(
+                "일괄 편집 (표) — 여러 행을 한 번에 수정")
+
+        if prows and _prod_bulk:
+            with _prod_bulk:
+                pdf = pd.DataFrame(prows)
+                # 표시할 컬럼 (편집/조회용)
+                show_cols = ["product_id","pn","item_name","customer","sub_class",
+                             "material","raw_material_name","raw_material_spec",
+                             "procurement_type","caution","active","archived_at",
+                             "archive_reason","drawing_no","alias_list"]
+                show_cols = [c for c in show_cols if c in pdf.columns]
+                pdf = pdf[show_cols]
+
+                edited_p = st.data_editor(
                 pdf,
                 column_config={
                     "product_id": st.column_config.TextColumn("PID",
@@ -2531,7 +2746,7 @@ elif page == "마스터 관리":
                     "raw_material_name": st.column_config.TextColumn(
                         "자재명 (BOM 동기화)", width="medium",
                         disabled=True,
-                        help="소재 정보의 진실은 BOM — BOM 편집에서 "
+                        help="소재 정보의 진실은 BOM — BOM·공정 탭에서 "
                              "자재를 연결하면 여기 자동 반영됩니다 "
                              "(2026-08-19 정합 원칙)"),
                     "raw_material_spec": st.column_config.TextColumn(
@@ -2553,103 +2768,45 @@ elif page == "마스터 관리":
                 },
                 hide_index=True, use_container_width=True,
                 num_rows="fixed", key="prod_editor", height=440
-            )
+                )
 
-            psv1, psv2 = st.columns([1, 4])
-            with psv1:
-                save_prod = st.button("변경 저장", type="primary",
-                                       key="prod_save")
-            with psv2:
-                st.caption("⚠️ 품번(pn) 변경은 매출/매입 매핑에 영향 — "
+                st.caption("품번(pn) 변경은 매출/매입 매핑에 영향 — "
                            "변경 시 sales_ledger / purchase_ledger 의 "
                            "관련 행 재매핑 검토 필요")
-
-            if save_prod:
-                chg = 0
-                editable_keys = ("pn", "item_name", "customer", "sub_class",
-                                 "material", "raw_material_name", "raw_material_spec",
-                                 "procurement_type", "caution", "active",
-                                 "archive_reason", "drawing_no", "alias_list")
-                for orig, new in zip(prows, edited_p.to_dict("records")):
-                    upd = {}
-                    for k in editable_keys:
-                        if k in new:
-                            ov = orig.get(k)
-                            nv = new.get(k)
-                            if isinstance(nv, float) and pd.isna(nv):
-                                nv = None
-                            if isinstance(nv, str):
-                                # 앞뒤 공백 품번(' H11SDF-…') 재발 방지
-                                nv = nv.strip()
-                            if nv == "":
-                                nv = None
-                            if ov != nv:
-                                upd[k] = nv
-                    if upd:
-                        try:
-                            if _db.update("products",
-                                f"product_id=eq.{orig['product_id']}", upd):
-                                chg += 1
-                        except Exception:
-                            pass
-                if chg:
-                    st.success(f"{chg}건 변경 저장")
-                    st.rerun()
-                else:
-                    st.info("변경 사항 없음")
-
-            # ── 휴면 처리 / 휴면 해제 ──
-            st.divider()
-            with st.expander("🟡 휴면 처리 / 해제", expanded=False):
-                ar1, ar2 = st.columns([2, 1])
-                with ar1:
-                    ar_pid = st.text_input(
-                        "처리할 product_id (또는 pn)",
-                        key="prod_arch_pid",
-                        help="예: P0001 또는 품번 직접")
-                with ar2:
-                    ar_action = st.radio("작업",
-                        ["휴면 처리", "휴면 해제"], horizontal=True,
-                        key="prod_arch_action")
-                ar_reason = st.text_input("휴면 사유 (휴면 처리 시)",
-                    placeholder="예: 12개월 이상 거래 없음, 단종, EOS",
-                    key="prod_arch_reason")
-                if st.button("실행", key="prod_arch_btn"):
-                    if not ar_pid:
-                        st.error("product_id / pn 입력 필요")
-                    else:
-                        target_pid = ar_pid.strip()
-                        # pn 으로 입력했으면 product_id 조회
-                        if not target_pid.startswith("P"):
+                if st.button("변경 저장 (일괄)", type="primary",
+                             key="prod_save"):
+                    chg = 0
+                    editable_keys = ("pn", "item_name", "customer", "sub_class",
+                                     "material", "raw_material_name", "raw_material_spec",
+                                     "procurement_type", "caution", "active",
+                                     "archive_reason", "drawing_no", "alias_list")
+                    for orig, new in zip(prows, edited_p.to_dict("records")):
+                        upd = {}
+                        for k in editable_keys:
+                            if k in new:
+                                ov = orig.get(k)
+                                nv = new.get(k)
+                                if isinstance(nv, float) and pd.isna(nv):
+                                    nv = None
+                                if isinstance(nv, str):
+                                    # 앞뒤 공백 품번(' H11SDF-…') 재발 방지
+                                    nv = nv.strip()
+                                if nv == "":
+                                    nv = None
+                                if ov != nv:
+                                    upd[k] = nv
+                        if upd:
                             try:
-                                lookup = _db.fetch_one("products",
-                                    f"pn=eq.{target_pid}",
-                                    "product_id")
-                                if lookup:
-                                    target_pid = lookup["product_id"]
-                                else:
-                                    st.error(f"품번 '{ar_pid}' 못 찾음"); st.stop()
-                            except Exception as e:
-                                st.error(f"조회 실패: {e}"); st.stop()
-
-                        if ar_action == "휴면 처리":
-                            payload = {
-                                "archived_at": "now()",
-                                "archive_reason": ar_reason or "운영자 수동 처리"
-                            }
-                        else:
-                            payload = {"archived_at": None,
-                                       "archive_reason": None}
-                        try:
-                            if _db.update("products",
-                                f"product_id=eq.{target_pid}", payload):
-                                st.success(
-                                    f"{target_pid} {ar_action} 완료")
-                                st.rerun()
-                            else:
-                                st.error("처리 실패")
-                        except Exception as e:
-                            st.error(f"처리 오류: {e}")
+                                if _db.update("products",
+                                    f"product_id=eq.{orig['product_id']}", upd):
+                                    chg += 1
+                            except Exception:
+                                pass
+                    if chg:
+                        st.success(f"{chg}건 변경 저장")
+                        st.rerun()
+                    else:
+                        st.info("변경 사항 없음")
 
         st.divider()
         st.markdown("##### 신규 제품 추가")
@@ -2805,7 +2962,7 @@ elif page == "마스터 관리":
                         "active": "1",
                     }])
                     # 자재 연결 (선택 자재 or 신규 등록) → BOM 자동 생성
-                    _bom_msg = " · 자재 연결 없음 — BOM 편집에서 연결 가능"
+                    _bom_msg = " · 자재 연결 없음 — BOM·공정 탭에서 연결 가능"
                     if _np_newmat is not None:
                         _new_mid = next_material_id()
                         _db.insert("materials", [{
@@ -2844,7 +3001,7 @@ elif page == "마스터 관리":
 
     # ─── Tab: 자재 편집 ───
     with tab_mat:
-        st.caption("📌 모든 자재 단위는 **EA**로 통일됨 (수주·발주·생산·출고 일관성)")
+        st.caption("모든 자재 단위는 **EA**로 통일됨 (수주·발주·생산·출고 일관성)")
         mc1, mc2, mc3 = st.columns([2, 2, 1])
         with mc1:
             mat_q = st.text_input("자재 검색", placeholder="예: STS304, 환봉, 8HFDV")
@@ -2872,32 +3029,122 @@ elif page == "마스터 관리":
         st.caption(f"검색 결과: **{len(mrows)}건**")
 
         if mrows:
-            mdf = pd.DataFrame(mrows)
-            mediated = st.data_editor(
-                mdf,
-                column_config={
-                    "material_id": st.column_config.TextColumn("자재ID", disabled=True, width="small"),
-                    "raw_name": st.column_config.TextColumn("자재명", width="large"),
-                    "material_type": st.column_config.TextColumn("재질"),
-                    "spec": st.column_config.TextColumn("규격"),
-                    "unit": st.column_config.TextColumn("단위", disabled=True, width="small"),
-                    "stock_qty": st.column_config.NumberColumn("재고 (EA)", format="%.2f"),
-                    "main_supplier": st.column_config.TextColumn("주공급사", disabled=True, width="medium"),
-                    "procurement_type": st.column_config.TextColumn("조달유형", width="small"),
-                },
-                hide_index=True, use_container_width=True,
-                num_rows="fixed", key="mat_editor",
-            )
-            if st.button("자재 변경 저장", type="primary"):
-                chg = 0
-                for orig, new in zip(mrows, mediated.to_dict("records")):
-                    upd = {k: new[k] for k in ("raw_name","material_type","spec","stock_qty","procurement_type")
-                           if orig.get(k) != new.get(k)}
-                    if upd:
-                        if _db.update("materials", f"material_id=eq.{orig['material_id']}", upd):
-                            chg += 1
-                if chg: st.success(f"{chg}건 update"); st.rerun()
-                else: st.info("변경 사항 없음")
+            # ── 리스트에서 행 선택 → 아래 상세 편집 (2026-08-20 공통
+            # 문법, 일괄 수정용 편집 표는 expander 보조) ──
+            _md_i = toss_grid([{
+                "자재ID": r["material_id"],
+                "자재명": r.get("raw_name") or "-",
+                "재질": r.get("material_type") or "-",
+                "규격": r.get("spec") or "-",
+                "재고": float(r.get("stock_qty") or 0),
+                "주공급사": r.get("main_supplier") or "-",
+                "조달": r.get("procurement_type") or "-",
+            } for r in mrows], key="mat_grid",
+                num_cols=("재고",), strong_cols=("자재명",))
+            _md = mrows[_md_i if _md_i is not None else 0]
+            _mid = _md["material_id"]
+            st.markdown(f"##### {_md['raw_name']} ({_mid}) — 상세 편집")
+            st.caption(
+                f"재고 {float(_md.get('stock_qty') or 0):,.1f} "
+                f"{_md.get('unit') or 'EA'} — 재고의 진실은 원장"
+                "(입고·투입·조정). 직접 정정이 필요하면 일괄 편집 표 "
+                "또는 품번별 맞추기에서.")
+            me1, me2, me3 = st.columns(3)
+            _md_name = me1.text_input("자재명 *",
+                value=_md.get("raw_name") or "", key=f"md_nm_{_mid}")
+            _md_type = me2.text_input("재질",
+                value=_md.get("material_type") or "",
+                key=f"md_ty_{_mid}",
+                help="입고 라벨의 '재질' 칸에 그대로 인쇄됩니다 — "
+                     "예: S304, SUS630")
+            _md_spec = me3.text_input("규격",
+                value=_md.get("spec") or "", key=f"md_sp_{_mid}",
+                help="입고 라벨의 '사이즈' 칸에 그대로 인쇄됩니다")
+            me4, me5 = st.columns([1, 2])
+            _md_proc_opts = ["", "도급", "사급"]
+            _md_proc = me4.selectbox("조달유형", _md_proc_opts,
+                index=(_md_proc_opts.index(_md.get("procurement_type"))
+                       if _md.get("procurement_type") in _md_proc_opts
+                       else 0),
+                key=f"md_pr_{_mid}")
+            _md_sup = me5.text_input("주공급사",
+                value=_md.get("main_supplier") or "",
+                key=f"md_su_{_mid}")
+            if st.button("변경 저장", type="primary",
+                         key=f"md_save_{_mid}"):
+                _mupd = {}
+                for _f9, _nv9 in (
+                        ("raw_name", (_md_name or "").strip()),
+                        ("material_type",
+                         (_md_type or "").strip() or None),
+                        ("spec", (_md_spec or "").strip() or None),
+                        ("procurement_type", _md_proc or None),
+                        ("main_supplier",
+                         (_md_sup or "").strip() or None)):
+                    if _md.get(_f9) != _nv9:
+                        _mupd[_f9] = _nv9
+                if not (_md_name or "").strip():
+                    st.error("자재명은 비울 수 없습니다.")
+                elif not _mupd:
+                    st.info("변경 사항 없음")
+                elif _db.update("materials",
+                                f"material_id=eq.{_mid}", _mupd):
+                    # 자재명 변경 → BOM 표기·제품 소재 표기 동기화
+                    # (진실=BOM material_id, 표기는 자동 유지)
+                    if "raw_name" in _mupd:
+                        try:
+                            _db.update("bom",
+                                f"material_id=eq.{_mid}",
+                                {"raw_material_name":
+                                     _mupd["raw_name"]})
+                            for _b9 in fetch("bom", "product_id",
+                                    f"material_id=eq.{_mid}"
+                                    "&process_type=eq.MATERIAL",
+                                    limit=100):
+                                _db.update("products",
+                                    "product_id=eq."
+                                    f"{_b9['product_id']}",
+                                    {"raw_material_name":
+                                         _mupd["raw_name"],
+                                     "bom_material_name":
+                                         _mupd["raw_name"]})
+                        except Exception:
+                            pass
+                    st.success(f"{_mid} — {len(_mupd)}개 항목 저장"
+                               + (" (BOM·제품 표기 동기화)"
+                                  if "raw_name" in _mupd else ""))
+                    st.rerun()
+                else:
+                    st.error("저장 실패 — 다시 시도해 주세요.")
+
+            with st.expander("일괄 편집 (표) — 여러 행을 한 번에 수정"):
+                mdf = pd.DataFrame(mrows)
+                mediated = st.data_editor(
+                    mdf,
+                    column_config={
+                        "material_id": st.column_config.TextColumn("자재ID", disabled=True, width="small"),
+                        "raw_name": st.column_config.TextColumn("자재명", width="large"),
+                        "material_type": st.column_config.TextColumn("재질"),
+                        "spec": st.column_config.TextColumn("규격"),
+                        "unit": st.column_config.TextColumn("단위", disabled=True, width="small"),
+                        "stock_qty": st.column_config.NumberColumn("재고 (EA)", format="%.2f"),
+                        "main_supplier": st.column_config.TextColumn("주공급사", disabled=True, width="medium"),
+                        "procurement_type": st.column_config.TextColumn("조달유형", width="small"),
+                    },
+                    hide_index=True, use_container_width=True,
+                    num_rows="fixed", key="mat_editor",
+                )
+                if st.button("자재 변경 저장 (일괄)", type="primary",
+                             key="mat_bulk_save"):
+                    chg = 0
+                    for orig, new in zip(mrows, mediated.to_dict("records")):
+                        upd = {k: new[k] for k in ("raw_name","material_type","spec","stock_qty","procurement_type")
+                               if orig.get(k) != new.get(k)}
+                        if upd:
+                            if _db.update("materials", f"material_id=eq.{orig['material_id']}", upd):
+                                chg += 1
+                    if chg: st.success(f"{chg}건 update"); st.rerun()
+                    else: st.info("변경 사항 없음")
 
         # ── 신규 자재 등록 (2026-08-12 — 기능 공백 보완) ──
         with st.expander("신규 자재 등록"):
@@ -2975,7 +3222,7 @@ elif page == "마스터 관리":
                                    + (f" | {_nm_spec}"
                                       if (_nm_spec or "").strip()
                                       else "")
-                                   + " — BOM 연결은 BOM 편집에서.")
+                                   + " — BOM 연결은 BOM·공정 탭에서.")
                         st.rerun()
                     except Exception as e:
                         st.error(f"등록 실패: {e}")
@@ -3066,6 +3313,15 @@ elif page == "마스터 관리":
                             for m in _drop))
                         if st.button("병합 실행", type="primary",
                                      key=f"mg_go_{_kk}"):
+                            st.session_state[f"cfm_mg_go_{_kk}"] = True
+                        if st.session_state.get(f"cfm_mg_go_{_kk}") \
+                                and confirm_gate(f"mg_go_{_kk}",
+                                    "BOM·재고 원장·매입 매핑을 "
+                                    f"{_keep['raw_name']} "
+                                    f"({_keep['material_id']}) 로 옮기고 "
+                                    "흡수된 자재를 휴면 처리합니다 — "
+                                    "간단히 되돌릴 수 없습니다. "
+                                    "실행할까요?"):
                             from datetime import date as _mg_date
                             _kid = _keep["material_id"]
                             _today = _mg_date.today().isoformat()
@@ -3127,11 +3383,11 @@ elif page == "마스터 관리":
                                 st.error(f"병합 실패: {e}")
 
 
-    # ─── Tab: BOM 편집 ───
-    with tab_bom:
-        st.caption("📌 BOM = 제품-자재 + 공정 **수량 관계** 만 관리. "
+    # ─── Tab: BOM 일괄 편집 (BOM·공정 하위) ───
+    with tab_bom_bulk:
+        st.caption("BOM = 제품-자재 + 공정 **수량 관계** 만 관리. "
                    "**qty_per_pc**=제품 1EA당 자재 EA수, **shared_factor**=분할가공 N제품 "
-                   "또는 1LOT 처리수량. 단가 정보는 모두 **💰 원가 분석** 페이지에서 관리.")
+                   "또는 1LOT 처리수량. 단가 정보는 모두 **원가 확인** 페이지에서 관리.")
         bc1, bc2 = st.columns([3, 1])
         with bc1:
             bom_q = st.text_input("제품 또는 자재 검색", placeholder="예: 8HFDV, M001")
@@ -3563,7 +3819,7 @@ elif page == "마스터 관리":
                     f"자재: **{m_pick_name or '(미선택)'}**"
                 )
 
-            # 단가/원가 미리보기는 💰 원가 분석 페이지에서 확인하세요.
+            # 단가/원가 미리보기는 원가 확인 페이지에서 확인하세요.
 
             if st.button("자재행 추가", key="bom_new_btn", type="primary"):
                 if not p_pick_pid or not m_pick_mid:
@@ -3818,6 +4074,11 @@ elif page == "마스터 관리":
                 if st.button("계정 삭제", key="acct_del",
                              disabled=_is_me or _is_last_admin,
                              use_container_width=True):
+                    st.session_state["cfm_acct_del"] = True
+                if st.session_state.get("cfm_acct_del") \
+                        and confirm_gate("acct_del",
+                            f"계정 {_ae_id} 를 삭제합니다 — 로그인이 "
+                            "즉시 불가해집니다. 실행할까요?"):
                     _ac_users.pop(_ae_id, None)
                     if _auth.save_users(_db, _ac_users):
                         st.success(f"삭제 완료 — {_ae_id}")
@@ -3992,7 +4253,7 @@ elif page == "수주 관리":
                         horizontal=True)
 
         if mode == "파일 업로드 자동 파싱":
-            st.caption("📌 양식은 파일을 보고 자동으로 인식합니다 (HDX / 미진정밀 / 엠제이티 PDF)")
+            st.caption("양식은 파일을 보고 자동으로 인식합니다 (HDX / 미진정밀 / 엠제이티 PDF)")
             uploaded = st.file_uploader("파일 선택",
                 type=['xlsx','xls','pdf'],
                 help="여러 거래처 양식 자동 인식")
@@ -6590,7 +6851,22 @@ elif page == "출고 관리":
                             f"{_cf_total:,.0f}개. 아래에서 거래명세서를 "
                             "발행하세요.")
                         st.rerun()
+                # 작성중 전표는 원클릭 취소(라인이 다시 풀릴 뿐),
+                # 확정 전표는 수주 반영·재고 차감이 끝난 상태라 확인 요구
+                _cfx_go = False
                 if st.button("전표 취소", key="cf_cancel"):
+                    if _cf_pick.get("status") == "CONFIRMED":
+                        st.session_state["cfm_cf_cancel"] = True
+                    else:
+                        _cfx_go = True
+                if st.session_state.get("cfm_cf_cancel") \
+                        and confirm_gate("cf_cancel",
+                            "확정된 전표 {}를 취소합니다 — 수주 반영과 "
+                            "재고 차감이 이미 이뤄진 전표입니다. "
+                            "실행할까요?".format(
+                                _cf_pick.get("ship_no") or "")):
+                    _cfx_go = True
+                if _cfx_go:
                     try:
                         _db.update("shipments",
                                    "shipment_id=eq.{}".format(
@@ -6929,7 +7205,7 @@ elif page == "생산 계획":
     from collections import defaultdict as _dd
     from datetime import date as _d2
 
-    st.caption("📌 활성 수주(미납 품목)의 BOM을 조회해 자재 필요량을 산출합니다. "
+    st.caption("활성 수주(미납 품목)의 BOM을 조회해 자재 필요량을 산출합니다. "
                "**모든 단위 EA 통일** — 제품 EA × BOM.qty_per_pc (자재 EA/PC) ÷ shared_factor")
 
     # ── 1) 미납 수주 품목 조회 ──
@@ -7585,6 +7861,7 @@ elif page == "발주/입고":
                     _wo_by_lot.get(_ln9)
                     or _lot_bal.get(_ln9, float(_r9.get("qty") or 0))
                     < float(_r9.get("qty") or 0) - 1e-9))
+                _rcx_k = f"rcv_recv_cancel_{_r9['txn_id']}"
                 if ab3.button("입고 취소",
                               disabled=bool(_used9),
                               help=("투입이 시작된 LOT 은 취소 불가 — "
@@ -7593,7 +7870,14 @@ elif page == "발주/입고":
                                     "취소하면 발주 미입고가 되살아나 "
                                     "입고 처리 탭에 다시 뜹니다"),
                               use_container_width=True,
-                              key=f"rcv_recv_cancel_{_r9['txn_id']}"):
+                              key=_rcx_k):
+                    st.session_state[f"cfm_{_rcx_k}"] = True
+                if st.session_state.get(f"cfm_{_rcx_k}") \
+                        and confirm_gate(_rcx_k,
+                            f"입고 기록 {_d9['식별 번호']} · "
+                            f"{_d9['자재']} · {_d9['입고']:,.0f}을 "
+                            "삭제합니다 — 발주 미입고가 되살아나고 "
+                            "이 식별 번호는 사라집니다. 실행할까요?"):
                     try:
                         _db.delete("inventory_transactions",
                                    f"txn_id=eq.{_r9['txn_id']}")
@@ -8391,21 +8675,54 @@ elif page == "발주/입고":
                     except Exception as e:
                         st.error(f"재발급 실패: {e}")
 
-                _po_sts = ["DRAFT", "SENT", "PARTIAL", "RECEIVED",
-                           "CLOSED", "CANCELLED"]
-                new_status = rc2.selectbox(
-                    "상태 변경",
-                    _po_sts,
-                    format_func=status_ko,
-                    index=_po_sts.index(po["status"])
-                          if po["status"] in _po_sts else 0,
-                    help="종결(CLOSED)을 되돌리려면 발주중(SENT)으로 "
-                         "바꾸면 잔량이 입고 대기에 다시 나타납니다"
-                )
-                if rc2.button("상태 저장", use_container_width=True):
-                    if _db.update("purchase_orders", f"po_id=eq.{po['po_id']}",
-                                  {"status": new_status}):
-                        st.success(f"상태를 {new_status}로 변경"); st.rerun()
+                # 상태는 자동 관리 — 입고(부분/완료)·잔량 종결·취소가
+                # 상태를 결정하므로 수기 변경 UI 제거 (2026-08-20)
+                with rc2:
+                    st.caption(
+                        f"상태: **{status_ko(po['status'])}** — 입고·"
+                        "잔량 종결에 따라 자동 갱신됩니다.")
+                    try:
+                        _po_rcv9 = fetch("po_item_receipt_v",
+                            "received_qty",
+                            f"po_id=eq.{po['po_id']}", limit=50)
+                    except Exception:
+                        _po_rcv9 = []
+                    _has_rcv9 = any(float(x.get("received_qty") or 0) > 0
+                                    for x in _po_rcv9)
+                    if po["status"] == "CANCELLED":
+                        if st.button("취소 해제 (발주중으로)",
+                                     use_container_width=True,
+                                     key=f"po_uncancel_{po['po_id']}"):
+                            if _db.update("purchase_orders",
+                                    f"po_id=eq.{po['po_id']}",
+                                    {"status": "SENT"}):
+                                st.success("취소 해제 — 발주중으로 "
+                                           "복구되었습니다.")
+                                st.rerun()
+                    else:
+                        _cx_k = f"po_cancel_{po['po_id']}"
+                        if st.button("발주 취소",
+                                disabled=_has_rcv9,
+                                help=("입고 기록이 있는 발주는 취소할 수 "
+                                      "없습니다 — 입고 현황에서 입고를 "
+                                      "먼저 취소하세요"
+                                      if _has_rcv9 else
+                                      "잘못 만든 발주를 무효화합니다 — "
+                                      "입고 대기에서 사라지고 문서는 "
+                                      "취소 상태로 남습니다"),
+                                use_container_width=True,
+                                key=_cx_k):
+                            st.session_state[f"cfm_{_cx_k}"] = True
+                        if st.session_state.get(f"cfm_{_cx_k}") \
+                                and confirm_gate(_cx_k,
+                                    f"{po['po_number']} 발주 전체를 "
+                                    "취소합니다 — 모든 라인이 입고 "
+                                    "대기에서 사라집니다. 실행할까요?"):
+                            if _db.update("purchase_orders",
+                                    f"po_id=eq.{po['po_id']}",
+                                    {"status": "CANCELLED"}):
+                                st.success("발주 취소 완료")
+                                st.rerun()
 
                 # 품목별 잔량 종결 표시 + 해제 (043)
                 _cl_items = [i for i in items if i.get("closed_at")]
@@ -8758,6 +9075,7 @@ elif page == "발주/입고":
                 # ── 잔량 종결 (라인 단위 협의 short-close, 043) ──
                 # 제품별로 협의 종결 — 이 품목의 미입고만 종결되고
                 # 발주의 다른 품목은 그대로 남는다
+                _scl_k = f"rcvp_scl_go_{_r['poi_id']}"
                 if go2.button(
                         f"잔량 종결 ({_pend8:,.0f})",
                         help="이 품목만 협의로 끝냅니다 — 발주 수량"
@@ -8766,8 +9084,14 @@ elif page == "발주/입고":
                              "발주의 다른 품목은 그대로 남습니다. "
                              "되돌리기는 발주 이력에서 [종결 해제].",
                         use_container_width=True,
-                        key=f"rcvp_scl_go_{_r['poi_id']}") \
-                        and click_guard(f"rcvp_scl_go_{_r['poi_id']}"):
+                        key=_scl_k):
+                    st.session_state[f"cfm_{_scl_k}"] = True
+                if st.session_state.get(f"cfm_{_scl_k}") \
+                        and confirm_gate(_scl_k,
+                            f"{_r.get('item_name')} 의 미입고 "
+                            f"{_pend8:,.0f}을 협의 종결합니다 — 입고 "
+                            "대기에서 사라집니다. 실행할까요? (되돌리기: "
+                            "발주 이력 > 종결 해제)"):
                     from datetime import datetime as _scl_dt
                     if _db.update("purchase_order_items",
                             f"poi_id=eq.{_r['poi_id']}",
@@ -9325,7 +9649,7 @@ elif page == "공정 관리":
                         "품번 (BOM 연결 없음 — 직접 입력)",
                         key="pe_in_pn",
                         help="이 소재를 쓰는 제품이 BOM 에 없습니다. "
-                             "마스터 관리 → BOM 편집에서 등록하면 "
+                             "마스터 관리 → BOM·공정에서 등록하면 "
                              "다음부터 자동 제안됩니다.")
 
                 # BOM 분할 환산 — 소재 수량 → 예상 생산 수량 (제품 EA)
@@ -11576,7 +11900,7 @@ elif page == "생산 보고":
                 st.warning(
                     "⚠️ 이 제품의 BOM 자재행이 없거나 material_id 미매핑 — "
                     "**자재 차감 없이** 생산 기록만 저장됩니다. "
-                    "(마스터 관리 → BOM 편집에서 보완 가능)")
+                    "(마스터 관리 → BOM·공정에서 보완 가능)")
             elif total_produced <= 0:
                 st.caption("생산/불량 수량 입력 시 차감량이 계산됩니다.")
             else:
@@ -12379,7 +12703,7 @@ elif page == "영업 보고":
 elif page == "원가 확인":
     st.subheader("원가 확인")
     st.caption(
-        "**가격·원가·마진만 다루는 화면**. BOM 구조 편집은 마스터 관리 → BOM 편집 에서. "
+        "**가격·원가·마진만 다루는 화면**. BOM 구조 편집은 마스터 관리 → BOM·공정 에서. "
         "**자동 반영 / 자동 overwrite 없음** — 후보 확인 → 사용자 직접 반영."
     )
 
@@ -13024,7 +13348,7 @@ elif page == "원가 확인":
 
                     if not bom_rows:
                         st.info("이 제품에 등록된 BOM 행이 없습니다. "
-                                "🚀 BOM 빠른 정비 또는 BOM 편집에서 등록.")
+                                "BOM 빠른 정비 또는 BOM·공정에서 등록.")
                     else:
                         bom_df = pd.DataFrame(bom_rows)
                         for c in ["qty_per_pc","shared_factor","unit_price"]:
@@ -13046,7 +13370,7 @@ elif page == "원가 확인":
                                           "lot_label"]].copy()
 
                         st.caption(
-                            "**unit_price (LOT 단가)** 만 편집하세요. 수량 정보는 BOM 편집 화면에서. "
+                            "**unit_price (LOT 단가)** 만 편집하세요. 수량 정보는 BOM·공정 화면에서. "
                             "자재행은 unit_price 비워두면 매입 평균에서 자동 산정됩니다."
                         )
                         edited_bom = st.data_editor(
@@ -13456,7 +13780,7 @@ elif page == "원가 확인":
                             st.error(f"BOM 조회 실패: {e}"); bs = []
 
                         if not bs:
-                            st.warning("이 제품에는 BOM 행이 없습니다. BOM 편집에서 먼저 등록하세요.")
+                            st.warning("이 제품에는 BOM 행이 없습니다. BOM·공정에서 먼저 등록하세요.")
                         else:
                             st.markdown("##### BOM 행")
                             bdf = pd.DataFrame(bs)
@@ -13826,7 +14150,7 @@ elif page == "원가 확인":
                          hide_index=True, height=520)
 
             st.caption(
-                "👉 **BOM_PARTIAL** / **LEGACY_ONLY** 품목을 BOM 편집에서 보완하면 "
+                "**BOM_PARTIAL** / **LEGACY_ONLY** 품목을 BOM·공정에서 보완하면 "
                 "자동으로 BOM_FULL 로 격상됩니다. "
                 "**BOM원가** 와 **legacy원가** 가 크게 다르면 BOM 단가 정확도 점검 필요."
             )
