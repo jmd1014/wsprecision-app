@@ -15,14 +15,14 @@ pytestmark = pytest.mark.skipif(
 APP_FILE = os.path.join(os.path.dirname(os.path.dirname(__file__)),
                         "streamlit_app.py")
 
-# MRG6-07 시나리오 — 소재열처리(고용화, MATERIAL 단계)와
-# 제품열처리(에이징, PRODUCT 단계)가 구분되는 라우팅
+# MRG6-07 시나리오 — 생산 전 외주(고용화)와 생산 후 외주(에이징)가
+# 모두 배치 흐름으로 처리되는 라우팅 (2026-08-20 소재 단계 폐지)
 ROUTING = [
     {"routing_id": 1, "product_id": "P1", "seq": 1, "step_code": "MAT_IN",
      "step_name": "소재입고", "step_kind": "INHOUSE", "stage": "MATERIAL",
      "bom_id": None, "confirmed": False},
     {"routing_id": 2, "product_id": "P1", "seq": 5, "step_code": "OUT",
-     "step_name": "고용화", "step_kind": "OUTSOURCE", "stage": "MATERIAL",
+     "step_name": "고용화", "step_kind": "OUTSOURCE", "stage": "PRODUCT",
      "bom_id": 346, "default_vendor": "성보정밀", "confirmed": False},
     {"routing_id": 3, "product_id": "P1", "seq": 10, "step_code": "PROD",
      "step_name": "생산", "step_kind": "INHOUSE", "stage": "PRODUCT",
@@ -61,6 +61,12 @@ MAT_EVENTS_FULL = [
      "event_date": "2026-08-11", "created_by": "테스트"},
 ]
 MAT_EVENTS = list(MAT_EVENTS_FULL)
+
+# 스테퍼 누계용 — 고용화(routing 2) 출고·회수 완료 (배치 흐름 이벤트)
+OUT_EVENTS = [
+    {"event_type": "OUT_SEND", "qty": 100, "routing_id": 2},
+    {"event_type": "OUT_RETURN", "qty": 100, "routing_id": 2},
+]
 
 # 투입 등록 탭용 — 잔여 소재 W-LOT (RECEIPT 210)
 W_LOT_TXNS = [
@@ -123,6 +129,8 @@ def _fetch(table, select="*", filter_query="", limit=1000):
     if table == "wo_events":
         if "MAT_OUT" in filter_query:
             return [dict(e) for e in MAT_EVENTS]
+        if "OUT_SEND" in filter_query:
+            return [dict(e) for e in OUT_EVENTS]
         return []
     if table == "vendors":
         if "in_use=eq.true" in filter_query:
@@ -196,8 +204,8 @@ def test_routing_editor_tab(routing_db):
 
 
 def test_process_stepper_follows_routing(routing_db):
-    """공정 처리 — 스테퍼가 라우팅 순서를 따르고, 소재 외주(고용화)
-    회수 완료가 반영되며, 외주 출고 공정 선택지가 라우팅에서 온다."""
+    """공정 처리 — 스테퍼가 라우팅 순서를 따르고, 생산 전 외주(고용화)
+    의 출고·회수 누계가 반영되며, 배치 외주 폼이 라우팅을 따른다."""
     at = _boot(routing_db)
     at.sidebar.radio[0].set_value("공정 관리")
     at.sidebar.radio[1].set_value(None)
@@ -227,9 +235,10 @@ def test_process_stepper_follows_routing(routing_db):
         "배치 경로에서 레거시 검사 선택지가 노출됨"
 
 
-def test_material_outsource_gate_blocks_input(routing_db):
-    """소재 외주 미완료면 투입 차단 — 배너에 고정 업체 표시,
-    관리자 우회 체크 시에만 투입 버튼이 열린다."""
+def test_input_not_blocked_without_material_outsource(routing_db):
+    """투입 전 소재 외주 게이트 폐지 (2026-08-20) — 이력이 없어도
+    투입 버튼이 열리고, 구 게이트 UI(우회 체크·배너)는 노출되지
+    않는다. 생산 전 외주는 투입 후 배치 흐름에서 처리."""
     MAT_EVENTS[:] = []          # 소재 외주 이력 없음
     at = _boot(routing_db)
     at.sidebar.radio[0].set_value("공정 관리")
@@ -238,22 +247,16 @@ def test_material_outsource_gate_blocks_input(routing_db):
     assert not at.exception, [str(e.value) for e in at.exception]
 
     _errs = " ".join(e.value for e in at.error)
-    assert "선행 공정 미완료" in _errs and "고용화" in _errs
-    # 작업지시 NO 를 채워도 투입 버튼은 잠겨 있어야 한다
+    assert "선행 공정 미완료" not in _errs, "구 소재 외주 게이트가 남아있음"
     at.text_input(key="pe_wo_no").set_value("20260812-099")
     at.run()
-    assert at.button(key="pe_in_submit").disabled, "소재 외주 차단 실패"
-    # 배너의 공정·업체 고정 표기
-    _bp = [t for t in at.text_input if (t.key or "").startswith("mo2_p_")]
-    assert _bp and _bp[0].value == "고용화"
-    _bv = [t for t in at.text_input if (t.key or "").startswith("mo2_v_")]
-    assert _bv and _bv[0].value == "성보정밀"
-    # 관리자 우회 → 투입 버튼 활성
-    _ov = [c for c in at.checkbox if (c.key or "").startswith("mo2_ov_")]
-    assert _ov, "관리자 우회 체크박스가 없습니다"
-    _ov[0].set_value(True)
-    at.run()
-    assert not at.button(key="pe_in_submit").disabled
+    assert not at.button(key="pe_in_submit").disabled, \
+        "소재 외주 이력 없이 투입이 차단됨 — 게이트 폐지 위반"
+    # 구 게이트 UI 미노출
+    assert not any((c.key or "").startswith("mo2_ov_")
+                   for c in at.checkbox)
+    assert not any((t.key or "").startswith("mo2_p_")
+                   for t in at.text_input)
 
 
 def test_batch_split_on_partial_outsource(routing_db):
