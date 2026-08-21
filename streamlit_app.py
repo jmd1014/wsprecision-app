@@ -3754,41 +3754,81 @@ elif page == "마스터 관리":
                 return s.get("step_name") or "생산"
 
             _cur_lbls = [_step_lbl_of(s) for s in _cur]
+            # 공정 풀 = 생산·검사 + 이 제품 BOM 공정행 전부 — 구성
+            # 선택 없음(BOM 에 있는 공정은 모두 수행, 2026-08-21 확정.
+            # 빼려면 BOM 에서 행 삭제). 소재입고·완성은 처음/끝 고정
+            _mid_pool = ["생산", "검사"] + list(_pb_by_lbl.keys())
             for _l9 in _cur_lbls:
-                if _l9 not in _step_opts:
-                    _step_opts.append(_l9)  # 구버전 스텝 보존
-            # form 밖 — 클릭할 때마다 아래 순서 플로우가 바로 갱신된다
-            _sel = st.multiselect(
-                "공정 구성 — 포함할 공정을 클릭",
-                _step_opts,
-                default=[l for l in _cur_lbls if l in _step_opts],
-                key=f"rout_ms_{_bp['product_id']}",
-                help="여기서는 어떤 공정이 들어가는지만 고릅니다 — "
-                     "순서는 아래 칩을 드래그해서 조정하세요. 외주 "
-                     "스텝의 업체는 BOM 공정행의 매칭 업체를 "
-                     "따릅니다.")
-            # 드래그 순서 조정 (streamlit-sortables — 미탑재 시 클릭
-            # 순서 그대로). 구성(_sel)이 바뀌면 키가 바뀌어 초기화
-            _ordered = list(_sel)
-            if len(_sel) > 1:
+                if (_l9 not in _mid_pool
+                        and _l9 not in ("소재입고", "완성")):
+                    _mid_pool.append(_l9)   # 구버전 스텝 보존
+            # 초기 순서 = 기존 라우팅 순서, 순서 없는 새 공정행은
+            # 검사 바로 앞에
+            _init_mid = list(dict.fromkeys(
+                l for l in _cur_lbls if l in _mid_pool))
+            for _l9 in _mid_pool:
+                if _l9 not in _init_mid:
+                    if "검사" in _init_mid:
+                        _init_mid.insert(_init_mid.index("검사"), _l9)
+                    else:
+                        _init_mid.append(_l9)
+            _FX_CSS = ("display:inline-block;background:#eef1f4;"
+                       "color:#8b95a1;border:1px dashed #c9cfd6;"
+                       "border-radius:8px;padding:7px 14px;"
+                       "font-size:14px;font-weight:600")
+            _SORT_CSS = """
+            .sortable-component { border: none; padding: 0; }
+            .sortable-container { background: transparent;
+              border: none; padding: 0; }
+            .sortable-container-body { display: flex;
+              flex-wrap: wrap; gap: 6px; padding: 0; }
+            .sortable-item, .sortable-item:hover {
+              background: #ffffff; border: 1px solid #e5e8eb;
+              border-radius: 8px; padding: 6px 14px;
+              font-size: 14px; font-weight: 600; color: #191f28;
+              font-family: Pretendard, 'Malgun Gothic', sans-serif;
+              box-shadow: 0 1px 3px rgba(2,32,71,.07);
+              cursor: grab; }
+            """
+            _ordered = list(_init_mid)
+            _fc1, _fc2, _fc3 = st.columns(
+                [1, 5.5, 0.8],
+                vertical_alignment="center")
+            _fc1.markdown(f"<span style='{_FX_CSS}'>소재입고</span>",
+                          unsafe_allow_html=True)
+            with _fc2:
                 try:
                     from streamlit_sortables import sort_items
-                    st.caption("칩을 드래그해서 순서를 바꾸세요:")
-                    _tmp9 = sort_items(
-                        list(_sel), direction="horizontal",
-                        key="rout_sort_{}_{}".format(
-                            _bp["product_id"],
-                            abs(hash(tuple(_sel))) % 10**8))
-                    if _tmp9 and sorted(_tmp9) == sorted(_sel):
+                    _srt_k = "rout_sort_{}_{}".format(
+                        _bp["product_id"],
+                        abs(hash(tuple(sorted(_init_mid)))) % 10**8)
+                    try:
+                        _tmp9 = sort_items(
+                            list(_init_mid), direction="horizontal",
+                            custom_style=_SORT_CSS, key=_srt_k)
+                    except TypeError:
+                        _tmp9 = sort_items(
+                            list(_init_mid), direction="horizontal",
+                            key=_srt_k)
+                    if _tmp9 and sorted(_tmp9) == sorted(_init_mid):
                         _ordered = list(_tmp9)
                 except Exception:
-                    pass
-            _sel = _ordered
+                    st.caption("드래그 컴포넌트 미탑재 — 기존 순서로 "
+                               "표시합니다.")
+            _fc3.markdown(f"<span style='{_FX_CSS}'>완성</span>",
+                          unsafe_allow_html=True)
+            st.caption("가운데 칩을 드래그해서 공정 순서를 정하세요 — "
+                       "소재입고(시작)·완성(끝)은 고정입니다. 공정을 "
+                       "빼려면 위 BOM 에서 행을 삭제하세요.")
+            _sel = (["소재입고"]
+                    + [l for l in _ordered
+                       if l not in ("소재입고", "완성")]
+                    + ["완성"])
             if _sel:
                 _chip = ("<span style='display:inline-block;"
                          "background:{bg};border-radius:8px;"
                          "padding:4px 10px;margin:2px 0;"
-                         "font-size:0.88rem'>"
+                         "font-size:0.88rem;{ex}'>"
                          "<b style='color:#3182f6'>{n}</b> "
                          "{t}{v}</span>")
                 _parts = []
@@ -3796,7 +3836,13 @@ elif page == "마스터 관리":
                     _b9 = _pb_by_lbl.get(_l9)
                     _v9 = ""
                     _bg9 = "#f2f4f6"
-                    if _b9:
+                    _ex9 = ""
+                    if _l9 in ("소재입고", "완성"):
+                        # 고정 항목 — 회색·점선으로 구분
+                        _bg9 = "#eef1f4"
+                        _ex9 = ("color:#8b95a1;"
+                                "border:1px dashed #c9cfd6")
+                    elif _b9:
                         _bg9 = "#e8f3ff"
                         _vn9 = _bb_vnm.get(
                             _b9.get("process_vendor_id"))
@@ -3805,23 +3851,10 @@ elif page == "마스터 관리":
                                " <span style='color:#dd6b02'>· "
                                "업체 미매칭</span>")
                     _parts.append(_chip.format(
-                        n=_i9 + 1, t=_l9, v=_v9, bg=_bg9))
+                        n=_i9 + 1, t=_l9, v=_v9, bg=_bg9, ex=_ex9))
                 st.markdown(
                     " <span style='color:#b0b8c1'>→</span> ".join(
                         _parts), unsafe_allow_html=True)
-
-            _sel_ids = {(_pb_by_lbl.get(l) or {}).get("bom_id")
-                        for l in _sel}
-            _unlinked = [b for b in _proc_bom
-                         if b["bom_id"] not in _sel_ids]
-            if _proc_bom and _unlinked:
-                st.caption(
-                    f"순서 부여 {len(_proc_bom) - len(_unlinked)}"
-                    f"/{len(_proc_bom)} — 순서 미부여 공정행: "
-                    + ", ".join(_pb_lbl(b) for b in _unlinked))
-            elif _proc_bom:
-                st.caption(f"BOM 공정행 {len(_proc_bom)}건 모두 "
-                           "순서가 부여되었습니다.")
 
             _CODE_BY_NAME = {"소재입고": "MAT_IN", "생산": "PROD",
                              "검사": "INSPECT", "완성": "DONE"}
@@ -3829,17 +3862,9 @@ elif page == "마스터 관리":
             if rb1.button("라우팅 저장", type="primary",
                           use_container_width=True,
                           key=f"rout_save_{_bp['product_id']}"):
-                _missing = [b for b in _BASE_STEPS if b not in _sel]
-                if _missing:
-                    st.error("기본 공정이 빠졌습니다: "
-                             + " · ".join(_missing)
-                             + " — 소재입고·생산·검사·완성은 항상 "
-                             "포함되어야 합니다.")
-                elif _sel[0] != "소재입고" or _sel[-1] != "완성":
-                    st.error("소재입고가 맨 앞, 완성이 맨 끝이어야 "
-                             "합니다 — 항목을 뺐다가 순서대로 다시 "
-                             "클릭하세요.")
-                else:
+                # 소재입고/완성 고정 + 공정 풀 자동 포함이라 구성
+                # 검증은 불필요 — 순서만 저장한다
+                if True:
                     _ins = []
                     for _i, _lb in enumerate(_sel):
                         _b9 = _pb_by_lbl.get(_lb)
@@ -5109,7 +5134,8 @@ elif page == "수주 관리":
                     "수주 라인을 골라 회차를 만들면 여기에 표시됩니다.")
 
         # ── 5) 뷰 토글 (회차 간트가 기본) ──
-        _VIEWS = ["회차 간트", "주차별 물량", "납기 입력"]
+        # 주차별 물량 뷰는 회차 간트로 대체되어 제거 (2026-08-21)
+        _VIEWS = ["회차 간트", "납기 입력"]
         # 다른 위젯이 요청한 뷰 전환은 위젯 생성 '전에' 반영해야 한다
         # (생성 후 session_state 수정은 StreamlitAPIException)
         _nx = st.session_state.pop("sch_view_next", None)
@@ -5123,7 +5149,7 @@ elif page == "수주 관리":
             _sv = st.radio("보기", _VIEWS, horizontal=True, key="sch_view",
                            label_visibility="collapsed")
 
-        if _sv in ("회차 간트", "주차별 물량"):
+        if _sv == "회차 간트":
             fg1, fg2, _fg3 = st.columns([1.2, 1, 2])
             _f_cust = fg1.selectbox(
                 "거래처", ["전체"] + sorted({c["거래처"] for c in _g} - {"-"}),
@@ -5270,45 +5296,7 @@ elif page == "수주 관리":
                         n=len(_pns), s=sum(_sums),
                         t=sum(c["잔량"] for c in _live)))
 
-        # ════ 뷰 B: 주차별 물량 ════
-        elif _sv == "주차별 물량":
-            if not _chips:
-                st.info("표시할 납품 회차가 없습니다 — 필터를 조정하세요.")
-            else:
-                _pv = pd.DataFrame(_chips)
-                _pv["주"] = pd.to_datetime(_pv["납기"]).dt.to_period(
-                    "W-SUN").apply(lambda p: p.start_time.strftime("%m/%d"))
-                _piv = _pv.pivot_table(index="품번", columns="주",
-                                       values="잔량", aggfunc="sum",
-                                       fill_value=0)
-                _ordp = (_pv.groupby("품번")["납기"].min()
-                         .sort_values().index.tolist())
-                _piv = _piv.reindex([p for p in _ordp if p in _piv.index])
-                _piv["합계"] = _piv.sum(axis=1)
-                _wk_cols = [c for c in _piv.columns if c != "합계"]
-                _vmax = (float(_piv[_wk_cols].to_numpy().max())
-                         if _wk_cols else 0.0)
-
-                def _heat(v):
-                    try:
-                        v = float(v)
-                    except (TypeError, ValueError):
-                        return ""
-                    if v <= 0 or _vmax <= 0:
-                        return "color:#b0b8c1"
-                    _t = min(v / _vmax, 1.0)
-                    _bg = (f"background-color: rgba(36,64,107,"
-                           f"{0.06 + 0.5 * _t:.2f})")
-                    return (_bg + ";color:#fff;font-weight:600"
-                            if _t > 0.55 else _bg)
-                toss_df(
-                    _piv.style.format("{:,.0f}").map(_heat, subset=_wk_cols),
-                    use_container_width=True,
-                    height=min(460, 60 + len(_piv) * 35))
-                st.caption("열 = 주 시작일(월요일) · 값 = 그 주 납품 예정 "
-                           "잔량 · 생산 계획 수립에 사용하세요.")
-
-        # ── 미계획 물량 배너 (간트·주차 뷰에 상시 노출) ──
+        # ── 미계획 물량 배너 (간트 뷰에 상시 노출) ──
         if _sv != "납기 입력" and _unplan:
             _pend_all = sum(_pend_pn.values()) or 1
             st.markdown(
@@ -9915,38 +9903,83 @@ elif page == "공정 관리":
             def _step_cls(active, done):
                 return "on" if active else ("done" if done else "")
 
+            # 배치가 있는 지시는 '배치 위치'가 진실 — 수량 추정 대신
+            # 열린 배치가 어느 공정에 있는지로 진행/완료를 판정한다
+            # (투입 직후 '생산'이 켜져 보이던 혼선 수정, 2026-08-21)
+            try:
+                _stp_open = fetch("wo_batches",
+                    "batch_no,qty,step_code,step_name,routing_id",
+                    f"wo_id=eq.{_t['wo_id']}&status=eq.OPEN", limit=200)
+            except Exception:
+                _stp_open = []
+
+            def _stp_idx_of(b):
+                if b.get("routing_id"):
+                    for _i9, s in enumerate(_rt):
+                        if s.get("routing_id") == b["routing_id"]:
+                            return _i9
+                for _i9, s in enumerate(_rt):
+                    if s["step_code"] == b.get("step_code"):
+                        return _i9
+                return None
+
             _stp = []
-            for _s in _rt:
-                _sc = _s["step_code"]
-                if _sc == "MAT_IN":
-                    _cls = _step_cls(False,
-                                     float(_t.get("input_qty") or 0) > 0)
-                elif (_s.get("stage") == "MATERIAL"
-                      and _s.get("step_kind") == "OUTSOURCE"):
-                    _ms = sum(float(e.get("qty") or 0) for e in _mat_evs
-                              if e["event_type"] == "MAT_OUT_SEND")
-                    _mr = sum(float(e.get("qty") or 0) for e in _mat_evs
-                              if e["event_type"] == "MAT_OUT_RETURN")
-                    _cls = _step_cls(_ms > _mr, _mr > 0)
-                elif _sc == "PROD":
-                    _cls = _step_cls(_q["생산중"] > 0,
-                                     float(_t.get("received_qty") or 0) > 0)
-                elif _s.get("step_kind") == "OUTSOURCE":
-                    # 완료 = 인수 누계 전량이 이 공정을 통과(회수)했을 때.
-                    # 부분 출고·부분 회수(수량 분기) 중에는 진행 표시.
-                    _sv, _rv = _step_sent(_s), _step_ret(_s)
-                    _cls = _step_cls(_sv > _rv,
-                                     _rcv_cum > 0 and _rv >= _rcv_cum)
-                elif _sc == "INSPECT":
-                    _cls = _step_cls(_q["검사대기"] > 0
-                                     or _q["재작업중"] > 0,
-                                     float(_t.get("pass_qty") or 0) > 0
-                                     or float(_t.get("scrap_qty") or 0) > 0)
-                elif _sc == "DONE":
-                    _cls = _step_cls(False, _q["완성"] > 0)
-                else:  # 사용자 정의 사내 공정 — 수량 추적 없음 (2단계 예정)
-                    _cls = ""
-                _stp.append((_s["step_name"], _cls))
+            if _stp_open:
+                _on_idx = {i for i in (_stp_idx_of(b)
+                                       for b in _stp_open)
+                           if i is not None}
+                _max_on = max(_on_idx) if _on_idx else -1
+                for _i9, _s in enumerate(_rt):
+                    if _s["step_code"] == "MAT_IN":
+                        _cls = _step_cls(
+                            False, float(_t.get("input_qty") or 0) > 0)
+                    elif _i9 in _on_idx:
+                        _cls = "on"
+                    elif _i9 < _max_on:
+                        _cls = "done"
+                    elif (_s["step_code"] == "DONE"
+                          and _q["완성"] > 0):
+                        _cls = "done"
+                    else:
+                        _cls = ""
+                    _stp.append((_s["step_name"], _cls))
+            else:
+                for _s in _rt:
+                    _sc = _s["step_code"]
+                    if _sc == "MAT_IN":
+                        _cls = _step_cls(
+                            False, float(_t.get("input_qty") or 0) > 0)
+                    elif (_s.get("stage") == "MATERIAL"
+                          and _s.get("step_kind") == "OUTSOURCE"):
+                        _ms = sum(float(e.get("qty") or 0)
+                                  for e in _mat_evs
+                                  if e["event_type"] == "MAT_OUT_SEND")
+                        _mr = sum(float(e.get("qty") or 0)
+                                  for e in _mat_evs
+                                  if e["event_type"]
+                                  == "MAT_OUT_RETURN")
+                        _cls = _step_cls(_ms > _mr, _mr > 0)
+                    elif _sc == "PROD":
+                        _cls = _step_cls(
+                            _q["생산중"] > 0,
+                            float(_t.get("received_qty") or 0) > 0)
+                    elif _s.get("step_kind") == "OUTSOURCE":
+                        # 완료 = 인수 누계 전량이 이 공정을 통과(회수).
+                        # 부분 출고·부분 회수 중에는 진행 표시.
+                        _sv, _rv = _step_sent(_s), _step_ret(_s)
+                        _cls = _step_cls(
+                            _sv > _rv,
+                            _rcv_cum > 0 and _rv >= _rcv_cum)
+                    elif _sc == "INSPECT":
+                        _cls = _step_cls(
+                            _q["검사대기"] > 0 or _q["재작업중"] > 0,
+                            float(_t.get("pass_qty") or 0) > 0
+                            or float(_t.get("scrap_qty") or 0) > 0)
+                    elif _sc == "DONE":
+                        _cls = _step_cls(False, _q["완성"] > 0)
+                    else:  # 사용자 정의 사내 공정 — 수량 추적 없음
+                        _cls = ""
+                    _stp.append((_s["step_name"], _cls))
             st.markdown('<div class="stepper">' + "".join(
                 f'<div class="step {c}">{n}</div>' for n, c in _stp)
                 + "</div>", unsafe_allow_html=True)
@@ -10247,13 +10280,12 @@ elif page == "공정 관리":
                                        "detail": {"vendor": _bv,
                                                   "due": str(_bd),
                                                   "batch_no": _no}},
-                                docs={"title": f"외주 의뢰서 — {_bv} "
-                                               f"({_sb.get('step_name')} "
-                                               f"{_bq:,.0f} EA · {_no})",
-                                      "files": [("외주 의뢰서 (A4)",
-                                                 f"외주의뢰서_{_no}_{_bv}"
-                                                 ".html", _doc)]},
-                                msg=f"{_no} 외주 출고 {_bq:,.0f} EA → {_bv}")
+                                # 의뢰서 즉시 다운로드 박스는 이동표와
+                                # 중복이라 제거 (2026-08-21) — 출력은
+                                # 처리 이력 > 라벨·의뢰서 재발행에서
+                                msg=f"{_no} 외주 출고 {_bq:,.0f} EA → "
+                                    f"{_bv} · 의뢰서는 처리 이력 > "
+                                    "재발행에서 출력")
 
                     # ── 외주 입고 (배치: 거래처 → 다음 공정 대기) ──
                     elif _sb_act == "외주 입고":
@@ -10700,13 +10732,11 @@ elif page == "공정 관리":
                                               "process": _o_proc,
                                               "due": str(_o_due),
                                               "note": _o_note}},
-                            docs={"title": f"외주 의뢰서 — {_o_vendor} "
-                                           f"({_o_proc} {_o_qty:,.0f} EA)",
-                                  "files": [("외주 의뢰서 (A4)",
-                                             f"외주의뢰서_{_t['wo_number']}"
-                                             f"_{_o_vendor}.html", _doc)]},
+                            # 의뢰서 즉시 다운로드 박스는 중복 제거
+                            # (2026-08-21) — 처리 이력 > 재발행에서 출력
                             msg=f"외주 출고 {_o_qty:,.0f} EA → "
-                                f"{_o_vendor} ({_o_proc})")
+                                f"{_o_vendor} ({_o_proc}) · 의뢰서는 "
+                                "처리 이력 > 재발행에서 출력")
 
                 # ── 3. 외주 입고 ──
                 elif _act == "외주 입고":

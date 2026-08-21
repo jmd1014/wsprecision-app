@@ -258,7 +258,7 @@ def test_view_toggle_defaults_to_gantt(sched_db):
 
 
 @pytest.mark.parametrize("view,want_gantt,min_df", [
-    ("주차별 물량", False, 1),   # 주차 피벗 1개
+    # 주차별 물량 뷰는 회차 간트로 대체되어 제거 (2026-08-21)
     ("납기 입력", False, 1),     # 라인 현황 표
     ("회차 간트", True, 0),
 ])
