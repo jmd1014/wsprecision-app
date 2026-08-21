@@ -3443,12 +3443,9 @@ elif page == "마스터 관리":
                 if _cur_vnm and _cur_vnm not in _pv_opts:
                     _pv_opts.append(_cur_vnm)  # 계열 밖 기존 매칭 보존
                 st.caption(
-                    "LOT 단가(표준): "
-                    + (f"₩{float(_bd['unit_price']):,.0f}"
-                       if _bd.get("unit_price") else "미입력")
-                    + " — 단가 입력·수정은 원가 확인 > 단가 관리에서. "
                     "원가 산정: per_pc = LOT단가 × qty/PC ÷ "
-                    "LOT처리수량")
+                    "LOT처리수량 — 표준 단가는 아래에서 바로 입력 "
+                    "(원가 확인 > 단가 관리와 같은 값)")
                 with st.form(f"bom_procf_{_bid}"):
                     pc1, pc2 = st.columns([2, 1])
                     _bf_nm = pc1.text_input(
@@ -3477,7 +3474,15 @@ elif page == "마스터 관리":
                         index=(_lot_opts.index(_bd.get("lot_label"))
                                if _bd.get("lot_label") in _lot_opts
                                else 0))
-                    _bf_vend = st.selectbox(
+                    pc6, pc7 = st.columns([1, 2])
+                    _bf_up = pc6.number_input(
+                        "LOT 단가 (원)", min_value=0.0,
+                        value=float(_bd.get("unit_price") or 0),
+                        step=1000.0,
+                        help="표준 단가 — 1 LOT/CH 처리 비용. 0 이면 "
+                             "미입력으로 저장되어 정합 점검에 "
+                             "표시됩니다")
+                    _bf_vend = pc7.selectbox(
                         "업체 (공정 계열 거래처)", _pv_opts,
                         index=(_pv_opts.index(_cur_vnm)
                                if _cur_vnm in _pv_opts else 0),
@@ -3504,6 +3509,9 @@ elif page == "마스터 관리":
                             if (_bd.get("lot_label") or "") \
                                     != (_bf_lbl or ""):
                                 _bupd["lot_label"] = _bf_lbl or None
+                            if float(_bd.get("unit_price") or 0) \
+                                    != _bf_up:
+                                _bupd["unit_price"] = _bf_up or None
                             if _bf_vend == "(미지정)":
                                 if _bd.get("process_vendor_id"):
                                     _bupd["process_vendor_id"] = None
@@ -3650,6 +3658,11 @@ elif page == "마스터 관리":
                     proc_lot_label = ap5.selectbox("LOT 단위",
                         ["", "LOT", "CH", "BATCH"],
                         key="bom_proc_label")
+                    proc_price = st.number_input(
+                        "LOT 단가 (원) — 표준 단가", min_value=0.0,
+                        value=0.0, step=1000.0, key="bom_proc_price",
+                        help="1 LOT/CH 처리 비용. 나중에 카드에서 "
+                             "수정 가능")
                     _agrp = {"HEAT": ("HEAT_TREAT",),
                              "SURFACE": ("SURFACE",),
                              "OUTSOURCE": ("OUTSOURCE",)}.get(
@@ -3683,6 +3696,7 @@ elif page == "마스터 관리":
                             "qty_per_pc": proc_qty,
                             "shared_factor": proc_lot_size,
                             "lot_label": proc_lot_label or None,
+                            "unit_price": proc_price or None,
                             "source": "MANUAL",
                             "verification_status": "확인완료",
                         }
@@ -3745,14 +3759,31 @@ elif page == "마스터 관리":
                     _step_opts.append(_l9)  # 구버전 스텝 보존
             # form 밖 — 클릭할 때마다 아래 순서 플로우가 바로 갱신된다
             _sel = st.multiselect(
-                "공정 순서 — 첫 공정부터 차례대로 클릭",
+                "공정 구성 — 포함할 공정을 클릭",
                 _step_opts,
                 default=[l for l in _cur_lbls if l in _step_opts],
                 key=f"rout_ms_{_bp['product_id']}",
-                help="클릭한 순서가 곧 공정 순서입니다. 순서를 "
-                     "바꾸려면 항목의 ×를 눌러 뺐다가 원하는 차례에 "
-                     "다시 클릭하세요. 외주 스텝의 업체는 BOM "
-                     "공정행의 매칭 업체를 따릅니다.")
+                help="여기서는 어떤 공정이 들어가는지만 고릅니다 — "
+                     "순서는 아래 칩을 드래그해서 조정하세요. 외주 "
+                     "스텝의 업체는 BOM 공정행의 매칭 업체를 "
+                     "따릅니다.")
+            # 드래그 순서 조정 (streamlit-sortables — 미탑재 시 클릭
+            # 순서 그대로). 구성(_sel)이 바뀌면 키가 바뀌어 초기화
+            _ordered = list(_sel)
+            if len(_sel) > 1:
+                try:
+                    from streamlit_sortables import sort_items
+                    st.caption("칩을 드래그해서 순서를 바꾸세요:")
+                    _tmp9 = sort_items(
+                        list(_sel), direction="horizontal",
+                        key="rout_sort_{}_{}".format(
+                            _bp["product_id"],
+                            abs(hash(tuple(_sel))) % 10**8))
+                    if _tmp9 and sorted(_tmp9) == sorted(_sel):
+                        _ordered = list(_tmp9)
+                except Exception:
+                    pass
+            _sel = _ordered
             if _sel:
                 _chip = ("<span style='display:inline-block;"
                          "background:{bg};border-radius:8px;"
@@ -10089,10 +10120,32 @@ elif page == "공정 관리":
                     _sb = _bat_open[_bt_i if _bt_i is not None else 0]
                     _sb_qty = float(_sb.get("qty") or 0)
                     _sb_act = _b_action(_sb)
-                    st.markdown(
+                    _bs1, _bs2 = st.columns([3, 1])
+                    _bs1.markdown(
                         f"**{_sb['batch_no']}** · {_sb_qty:,.0f} EA · "
                         f"{_sb.get('step_name') or '-'} · "
                         f"{_sb.get('location') or '사내'} → **{_sb_act}**")
+                    # 공정 이동표 — 배치 실물 부착용 (2026-08-21)
+                    from utils.label_generator import batch_labels
+                    from datetime import date as _btl_d
+                    _bs2.download_button(
+                        "이동표 발행",
+                        data=batch_labels([{
+                            "batch_no": _sb["batch_no"],
+                            "pn": _t.get("pn") or "-",
+                            "qty": _sb_qty,
+                            "step": _sb.get("step_name") or "-",
+                            "location": _sb.get("location") or "사내",
+                            "wo_number": _t.get("wo_number") or "-",
+                            "w_lot": _t.get("w_lot") or "-",
+                            "date": _btl_d.today().isoformat(),
+                        }]),
+                        file_name=f"이동표_{_sb['batch_no']}.html",
+                        mime="text/html", use_container_width=True,
+                        help="배치 실물에 부착하는 공정 이동표 — 열면 "
+                             "인쇄 창이 자동으로 뜹니다. 공정이 바뀔 "
+                             "때마다 새로 발행해 교체하세요.",
+                        key=f"bt_lbl_{_sb['batch_id']}")
 
                     # ── 완료 인수 (배치: 생산 → 다음 공정 대기) ──
                     if _sb_act == "완료 인수":
@@ -10162,8 +10215,10 @@ elif page == "공정 관리":
                             _bd = st.date_input("납기 요청일",
                                 key=f"bt_od_{_sb['batch_id']}")
                         if st.button(
-                                f"외주 출고 ({_bq:,.0f}) + 의뢰서 발행",
+                                f"외주 출고 ({_bq:,.0f})",
                                 type="primary", disabled=_bq <= 0,
+                                help="외주 의뢰서(문서)가 자동 "
+                                     "발행됩니다",
                                 key=f"bt_o_btn_{_sb['batch_id']}"):
                             from utils.label_generator import (
                                 outsource_request_html)

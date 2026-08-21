@@ -134,6 +134,25 @@ def receipt_labels(items: list, mode: str = "label") -> str:
     return labels_html(labels, mode=mode)
 
 
+def batch_labels(items: list, mode: str = "label") -> str:
+    """공정 이동표 — 배치가 공정을 이동할 때 실물에 부착 (2026-08-21).
+    items: [{batch_no, pn, qty, step, location, wo_number, w_lot, date}]"""
+    labels = [{
+        "title": "공정 이동표",
+        "big": it.get("batch_no") or "-",
+        "rows": [
+            ("품번", it.get("pn")),
+            ("수량", f"{it.get('qty', 0):,.0f} EA"),
+            ("공정", it.get("step")),
+            ("위치", it.get("location")),
+            ("작업지시", it.get("wo_number")),
+            ("소재 LOT", it.get("w_lot")),
+        ],
+        "footer": f"발행일 {it.get('date', '')}",
+    } for it in items]
+    return labels_html(labels, mode=mode)
+
+
 def inspection_labels(items: list, mode: str = "label") -> str:
     """검사 판정 라벨 — 합격/불합격(재작업·폐기)/특채.
     items: [{verdict("합격"/"불합격"/"특채"), pn, wo_number, w_lot, qty,
