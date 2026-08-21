@@ -180,7 +180,8 @@ def _boot(routing_db):
 
 
 def test_routing_editor_tab(routing_db):
-    """마스터 관리 > 공정 라우팅 — 확정 대기 경고 + 편집기 + 저장 버튼."""
+    """마스터 관리 > BOM 편집 — 확정 대기 경고 + 제품 리스트 →
+    공정 순서 편집기 + 저장 버튼 (2026-08-20 한 화면 통합)."""
     at = _boot(routing_db)
     at.sidebar.radio[0].set_value(None)
     at.sidebar.radio[1].set_value("마스터 관리")
@@ -191,12 +192,15 @@ def test_routing_editor_tab(routing_db):
     warns = " ".join(w.value for w in at.warning)
     assert "순서 확정 필요" in warns and "MRG6-07" in warns
 
-    # 제품 검색 → 편집기 + 저장 버튼
-    at.text_input(key="rout_q").set_value("MRG6-07")
+    # 제품 검색 → 리스트 선택(기본 첫 행) → 순서 편집기 + 저장 버튼
+    at.text_input(key="bom_pq").set_value("MRG6-07")
     at.run()
     assert not at.exception, [str(e.value) for e in at.exception]
     btn_labels = [b.label for b in at.button]
     assert any("라우팅 저장" in l for l in btn_labels)
+    # 순서 플로우 미리보기 — 기존 라우팅 순서가 번호로 렌더
+    md = " ".join(m.value for m in at.markdown)
+    assert "고용화" in md and "에이징" in md
 
     # 정합 점검 탭 — 점검 항목 요약 렌더 (Migration 038)
     md = " ".join(m.value for m in at.markdown)

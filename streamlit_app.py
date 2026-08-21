@@ -1445,12 +1445,6 @@ elif page == "마스터 관리":
         "거래처 편집", "제품 편집", "자재 편집", "BOM 편집",
         "정합 점검", "계정 관리", "디자인 데이터 내보내기"
     ])
-    # BOM 편집 = 하위 2단 — BOM(정보의 진실: 소재·공정·수량)이 앞,
-    # 라우팅(그 행들에 순서 부여)이 뒤 (2026-08-20 사용자 확정:
-    # BOM 이 상위 개념, 라우팅은 확장)
-    with tab_bom:
-        tab_bom_bulk, tab_rout = st.tabs(
-            ["BOM", "라우팅 (공정 순서)"])
 
     # ─── Tab: 정합 점검 (Migration 038, 2026-08-19) ───
     # "진실 한 곳" 원칙의 감시 장치 — 데이터가 규칙을 벗어나면 여기에
@@ -1495,284 +1489,6 @@ elif page == "마스터 관리":
                 "자재 미매핑: 입고 처리에서 최초 1회 지정 / 회차 대사 "
                 "불일치: 납품 스케줄에서 회차·기납품 확인 / 품번 문제: "
                 "제품 편집에서 정정.")
-
-    # ─── Tab: 공정 라우팅 (Migration 036, 2026-08-12) ───
-    # 라우팅 = 제품별 공정 '순서'. 공정 '원가'는 BOM(process_type 행)이
-    # 담당하고, 외주 스텝은 bom_id 로 원가 행과 연결된다.
-    with tab_rout:
-        st.markdown("**라우팅 = BOM 행에 순서를 부여합니다** — 정보"
-                    "(소재·공정·수량)는 BOM 한 곳에 있고, 여기서는 그 "
-                    "공정행들이 어떤 순서로 흐르는지만 정합니다. 공정 "
-                    "관리의 스테퍼·배치 처리가 이 순서를 따릅니다.")
-        st.caption(
-            "공정 스텝은 기본 공정(소재입고·생산·검사·완성)과 이 제품 "
-            "BOM 의 공정행(열처리·표면·외주) 중에서 고릅니다 — 새 "
-            "공정이 필요하면 BOM 하위 탭에서 공정행을 먼저 추가하세요. "
-            "라우팅이 없는 제품은 기본 플로우(소재입고 → 생산 → 검사 "
-            "→ 완성)로 동작합니다. 투입 후 모든 공정이 이 순서대로 "
-            "배치 단위로 처리됩니다 (투입 전 소재 외주 개념 폐지, "
-            "2026-08-20).")
-
-        # 순서 확정 대기 (BOM 공정에서 자동 생성된 라우팅)
-        try:
-            _unconf = fetch("product_routing", "product_id",
-                            "confirmed=eq.false", limit=500)
-        except Exception:
-            _unconf = []
-        _unids = sorted({r["product_id"] for r in _unconf})
-        if _unids:
-            _ustr = ",".join(f'"{p}"' for p in _unids)
-            try:
-                _upn = fetch("products", "product_id,pn",
-                             f"product_id=in.({_ustr})", limit=100)
-            except Exception:
-                _upn = []
-            st.warning(
-                "**순서 확정 필요**: "
-                + " · ".join(p["pn"] for p in _upn)
-                + " — BOM 공정 행에서 자동 생성된 라우팅입니다. 공정 "
-                "순서를 확인하고 저장하세요.")
-
-        _rq = st.text_input("제품 검색 (품번/품명)", key="rout_q",
-                            placeholder="예: MRG6-07")
-        if (_rq or "").strip():
-            _kw = _rq.strip()
-            try:
-                _rcand = fetch("products", "product_id,pn,item_name",
-                    f"or=(pn.ilike.*{_kw}*,item_name.ilike.*{_kw}*)"
-                    "&archived_at=is.null&order=pn", limit=30)
-            except Exception as e:
-                st.error(e); _rcand = []
-            if not _rcand:
-                st.info("검색 결과 없음")
-            else:
-                _rp_lbl = [p["pn"] + (f" | {p['item_name']}"
-                                      if p.get("item_name") else "")
-                           for p in _rcand]
-                _rp_pick = st.selectbox("제품 선택", _rp_lbl,
-                                        key="rout_pick")
-                _rp_id = _rcand[_rp_lbl.index(_rp_pick)]["product_id"]
-
-                _cur = get_routing(_rp_id)
-                _has_custom = any(s.get("routing_id") for s in _cur)
-                if not _has_custom:
-                    st.caption("정의된 라우팅 없음 — 기본 플로우입니다. "
-                               "수정 후 저장하면 이 제품 전용 라우팅이 "
-                               "생성됩니다.")
-
-                # 이 제품의 BOM 전체 행 — 소재(MATERIAL)는 소재입고
-                # 스텝에, 공정(HEAT/SURFACE 등)은 외주 스텝에 연결해
-                # '라우팅 = BOM 정보가 공정 순서 위에 완성된 그림'이 되게
-                try:
-                    _pbom = fetch("bom",
-                        "bom_id,process_type,raw_material_name,"
-                        "material_id,qty_per_pc,shared_factor,"
-                        "unit_price,lot_label,process_vendor_id",
-                        f"product_id=eq.{_rp_id}", limit=50)
-                except Exception:
-                    _pbom = []
-                # BOM 공정행에 매칭된 업체명 — 라우팅 외주 스텝은 이
-                # 업체를 그대로 쓴다 (라우팅 = 순서만, 2026-08-20)
-                _rt_vnm = {}
-                try:
-                    _rt_vids = {b.get("process_vendor_id")
-                                for b in _pbom
-                                if b.get("process_vendor_id")}
-                    if _rt_vids:
-                        _rt_vnm = {v["vendor_id"]: v["name"]
-                                   for v in fetch(
-                                       "vendors", "vendor_id,name",
-                                       "vendor_id=in.({})".format(
-                                           ",".join(str(i) for i
-                                                    in _rt_vids)),
-                                       limit=100)}
-                except Exception:
-                    pass
-                _pbom.sort(key=lambda b: (
-                    (b.get("process_type") or "MATERIAL") != "MATERIAL",
-                    b["bom_id"]))
-
-                # ── 제품 구성 요약 — BOM(정보의 진실)을 순서 편집 위에
-                # 함께 표시. 단가는 라우팅에 불필요 (2026-08-20 확정)
-                if _pbom:
-                    toss_table([{
-                        "구분": ("소재"
-                                 if (b.get("process_type") or "MATERIAL")
-                                 == "MATERIAL"
-                                 else b.get("process_type") or "-"),
-                        "자재/공정": b.get("raw_material_name") or "-",
-                        "자재ID": b.get("material_id") or "-",
-                        "수량/PC": float(b.get("qty_per_pc") or 0),
-                        "분할/LOT": float(b.get("shared_factor") or 1),
-                        "업체": _rt_vnm.get(
-                            b.get("process_vendor_id")) or "-",
-                    } for b in _pbom],
-                        badge_cols=("구분",),
-                        num_cols=("수량/PC", "분할/LOT"),
-                        strong_cols=("자재/공정",))
-                    st.caption(
-                        "이 제품의 BOM 행 — 정보 수정·행 추가·업체 "
-                        "매칭은 BOM 하위 탭에서. 아래에서 공정 순서만 "
-                        "정하세요.")
-                else:
-                    st.info("이 제품의 BOM 이 아직 없습니다 — BOM 하위 "
-                            "탭에서 소재·공정 행을 먼저 추가하세요.")
-
-                # 공정 스텝 후보 = 기본 공정 + 이 제품 BOM 의 공정행
-                # (BOM 이 정보의 진실 — 라우팅은 순서만 부여, 자동
-                # 원가행 생성 없음, 2026-08-20)
-                _BASE_STEPS = ["소재입고", "생산", "검사", "완성"]
-                _proc_bom = [b for b in _pbom
-                             if (b.get("process_type") or "MATERIAL")
-                             in ("HEAT", "SURFACE", "OUTSOURCE")]
-
-                # 스텝 라벨 = 공정명 (BOM 항목 ID 는 노출하지 않음 —
-                # 같은 이름이 둘일 때만 구분자로 붙인다)
-                _pb_nm_cnt = {}
-                for _b8 in _proc_bom:
-                    _n8 = (_b8.get("raw_material_name")
-                           or _b8.get("process_type"))
-                    _pb_nm_cnt[_n8] = _pb_nm_cnt.get(_n8, 0) + 1
-
-                def _pb_lbl(b):
-                    _n8 = (b.get("raw_material_name")
-                           or b.get("process_type"))
-                    return (_n8 if _pb_nm_cnt.get(_n8, 0) == 1
-                            else f"{_n8} (#{b['bom_id']})")
-
-                _pb_by_lbl = {_pb_lbl(b): b for b in _proc_bom}
-                _pb_by_id = {b["bom_id"]: b for b in _proc_bom}
-                _step_opts = _BASE_STEPS + list(_pb_by_lbl.keys())
-
-                def _step_lbl_of(s):
-                    """현재 스텝 → 편집기 표시 라벨"""
-                    _b9 = _pb_by_id.get(s.get("bom_id"))
-                    if _b9:
-                        return _pb_lbl(_b9)
-                    return s.get("step_name") or "생산"
-
-                # ── 순서 배열만 — 첫 공정부터 차례대로 클릭 (2026-08-20
-                # 단순화: 거래처는 BOM 공정행의 매칭 업체를 그대로 사용)
-                _cur_lbls = [_step_lbl_of(s) for s in _cur]
-                for _l9 in _cur_lbls:
-                    if _l9 not in _step_opts:
-                        _step_opts.append(_l9)  # 구버전 자유 입력 스텝 보존
-                with st.form(f"rout_form_{_rp_id}"):
-                    _sel = st.multiselect(
-                        "공정 순서 — 첫 공정부터 차례대로 클릭해 "
-                        "배열하세요",
-                        _step_opts,
-                        default=[l for l in _cur_lbls
-                                 if l in _step_opts],
-                        key=f"rout_ms_{_rp_id}",
-                        help="클릭한 순서가 곧 공정 순서입니다. 순서를 "
-                             "바꾸려면 항목의 ×를 눌러 뺐다가 원하는 "
-                             "차례에 다시 클릭하세요. 외주 스텝의 "
-                             "업체는 BOM 상세의 매칭 업체를 따릅니다.")
-                    _rt_save = st.form_submit_button(
-                        "라우팅 저장", type="primary")
-
-                # 순서 부여 완성도 — BOM 공정행이 다 순서를 받았는지
-                _sel_ids = {(_pb_by_lbl.get(l) or {}).get("bom_id")
-                            for l in _sel}
-                _unlinked = [b for b in _proc_bom
-                             if b["bom_id"] not in _sel_ids]
-                if _proc_bom and _unlinked:
-                    st.caption(
-                        f"순서 부여 {len(_proc_bom) - len(_unlinked)}"
-                        f"/{len(_proc_bom)} — 순서 미부여 공정행: "
-                        + ", ".join(_pb_lbl(b) for b in _unlinked))
-                elif _proc_bom:
-                    st.caption(f"BOM 공정행 {len(_proc_bom)}건 모두 "
-                               "순서가 부여되었습니다.")
-
-                _CODE_BY_NAME = {"소재입고": "MAT_IN", "생산": "PROD",
-                                 "검사": "INSPECT", "완성": "DONE"}
-                if _rt_save:
-                    _missing = [b for b in _BASE_STEPS if b not in _sel]
-                    if _missing:
-                        st.error("기본 공정이 빠졌습니다: "
-                                 + " · ".join(_missing)
-                                 + " — 소재입고·생산·검사·완성은 항상 "
-                                 "포함되어야 합니다.")
-                    elif _sel[0] != "소재입고" or _sel[-1] != "완성":
-                        st.error("소재입고가 맨 앞, 완성이 맨 끝이어야 "
-                                 "합니다 — 항목을 뺐다가 순서대로 다시 "
-                                 "클릭하세요.")
-                    else:
-                        _ins = []
-                        for _i, _lb in enumerate(_sel):
-                            _b9 = _pb_by_lbl.get(_lb)
-                            if _b9:
-                                # BOM 공정행 스텝 — 정보·업체는 BOM,
-                                # 여기는 순서만 (외주 흐름으로 처리)
-                                _ins.append({
-                                    "product_id": _rp_id,
-                                    "seq": (_i + 1) * 10,
-                                    "step_code": "OUT",
-                                    "step_name":
-                                        _b9.get("raw_material_name")
-                                        or _lb,
-                                    "step_kind": "OUTSOURCE",
-                                    "stage": "PRODUCT",
-                                    "bom_id": _b9["bom_id"],
-                                    "default_vendor": _rt_vnm.get(
-                                        _b9.get("process_vendor_id")),
-                                    "confirmed": True,
-                                })
-                            else:
-                                _ins.append({
-                                    "product_id": _rp_id,
-                                    "seq": (_i + 1) * 10,
-                                    "step_code": _CODE_BY_NAME.get(
-                                        _lb, "STEP"),
-                                    "step_name": _lb,
-                                    "step_kind": "INHOUSE",
-                                    "stage": ("MATERIAL"
-                                              if _lb == "소재입고"
-                                              else "PRODUCT"),
-                                    "bom_id": None,
-                                    "default_vendor": None,
-                                    "confirmed": True,
-                                })
-                        _no_vend = [
-                            _lb for _lb in _sel
-                            if _pb_by_lbl.get(_lb)
-                            and not _rt_vnm.get(_pb_by_lbl[_lb].get(
-                                "process_vendor_id"))]
-                        try:
-                            _db.delete("product_routing",
-                                       f"product_id=eq.{_rp_id}")
-                            _db.insert("product_routing", _ins)
-                            _msg8 = (f"라우팅 저장: {_rp_pick} — "
-                                     f"{len(_ins)}개 공정")
-                            if _no_vend:
-                                _msg8 += (" · 업체 미매칭 공정 "
-                                          + ", ".join(_no_vend)
-                                          + " — BOM 상세에서 업체 매칭 "
-                                          "후 라우팅을 다시 저장하면 "
-                                          "고정됩니다 (그 전에는 공정 "
-                                          "처리에서 직접 선택)")
-                            st.success(_msg8)
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"저장 실패: {e}")
-                if _has_custom and st.button(
-                        "기본 플로우로 되돌리기 (라우팅 삭제)",
-                        key="rout_reset"):
-                    st.session_state["cfm_rout_reset"] = True
-                if st.session_state.get("cfm_rout_reset") \
-                        and confirm_gate("rout_reset",
-                            f"{_rp_pick} 의 라우팅 전체를 삭제하고 기본 "
-                            "플로우로 되돌립니다 — 스텝 구성·거래처 "
-                            "고정이 사라집니다. 실행할까요?"):
-                    try:
-                        _db.delete("product_routing",
-                                   f"product_id=eq.{_rp_id}")
-                        st.success("라우팅 삭제 — 기본 플로우로 동작합니다.")
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"삭제 실패: {e}")
 
     # ─── Tab: 품번별 맞추기 (2026-07-31) ───
     # 발주서 없이 소재를 먼저 입고하고, 완성재고를 출하 시점에 실사로
@@ -3411,67 +3127,124 @@ elif page == "마스터 관리":
 
 
     # ─── Tab: BOM 일괄 편집 (BOM·공정 하위) ───
-    with tab_bom_bulk:
-        # ── 품번 기준 전개 (2026-08-20 사용자 확정: BOM = 제품의 bill.
-        # 항목이 아니라 제품 단위로 다루고, 그 행들에 라우팅을 부여) ──
-        st.caption("**제품을 고르면 그 제품의 BOM 이 전개됩니다** — "
-                   "qty_per_pc=제품 1EA당 자재 EA수, shared_factor=분할"
-                   "가공 N제품 또는 1LOT 처리수량. 단가는 원가 확인에서.")
+    # ─── Tab: BOM 편집 — 제품 리스트 → BOM 상세 → 공정 순서 ───
+    # (2026-08-20 사용자 확정: 제품 편집과 같은 리스트→상세 문법,
+    #  라우팅은 같은 화면 하단에서 순서만 부여)
+    with tab_bom:
+        st.caption("**제품을 고르면 BOM 전개와 공정 순서(라우팅)를 한 "
+                   "화면에서 편집합니다** — BOM = 정보의 진실(소재·"
+                   "공정·수량·업체), 라우팅 = 그 공정들의 순서. 단가는 "
+                   "원가 확인에서.")
+        # 순서 확정 대기 (예전 데이터에서 자동 생성된 라우팅)
+        try:
+            _unconf = fetch("product_routing", "product_id",
+                            "confirmed=eq.false", limit=500)
+        except Exception:
+            _unconf = []
+        _unids = sorted({r["product_id"] for r in _unconf})
+        if _unids:
+            _ustr = ",".join(f'"{p}"' for p in _unids)
+            try:
+                _upn = fetch("products", "product_id,pn",
+                             f"product_id=in.({_ustr})", limit=100)
+            except Exception:
+                _upn = []
+            st.warning(
+                "**순서 확정 필요**: "
+                + " · ".join(p["pn"] for p in _upn)
+                + " — 예전 데이터에서 자동 생성된 라우팅입니다. 아래 "
+                "공정 순서를 확인하고 저장하세요.")
+
         bom_q = st.text_input(
-            "제품 검색 (품번·품명·고객사·자재)", key="bom_pq",
-            placeholder="예: MRG6-07, 플랜지, S304 — 자재명으로도 "
-                        "제품을 찾습니다")
+            "제품 검색", key="bom_pq", label_visibility="collapsed",
+            placeholder="검색 — 품번 · 품명 · 고객사 · 자재 "
+                        "(자재명으로도 제품을 찾습니다)")
         _bp = None
         brows = []
-        if (bom_q or "").strip():
-            qq = bom_q.strip()
-            try:
+        try:
+            if (bom_q or "").strip():
+                qq = bom_q.strip()
                 pmatch = fetch("products",
                     "product_id,pn,item_name,customer,sub_class",
                     f"or=(pn.ilike.*{qq}*,product_id.ilike.*{qq}*,"
                     f"item_name.ilike.*{qq}*,customer.ilike.*{qq}*)"
-                    "&archived_at=is.null&order=pn", limit=30)
-            except Exception:
-                pmatch = []
-            # 자재 역검색 — 그 자재를 쓰는 제품도 후보에
+                    "&archived_at=is.null&order=pn", limit=100)
+                # 자재 역검색 — 그 자재를 쓰는 제품도 후보에
+                try:
+                    mmatch = fetch("materials", "material_id",
+                        f"or=(material_id.ilike.*{qq}*,"
+                        f"raw_name.ilike.*{qq}*,"
+                        f"material_type.ilike.*{qq}*,"
+                        f"spec.ilike.*{qq}*)", limit=50)
+                    _mids9 = [m["material_id"] for m in mmatch]
+                    if _mids9:
+                        _bl9 = fetch("bom", "product_id",
+                            "material_id=in.({})".format(
+                                ",".join(f'"{m}"' for m in _mids9)),
+                            limit=300)
+                        _rev9 = ({b["product_id"] for b in _bl9
+                                  if b.get("product_id")}
+                                 - {p["product_id"] for p in pmatch})
+                        if _rev9:
+                            pmatch += fetch("products",
+                                "product_id,pn,item_name,customer,"
+                                "sub_class",
+                                "product_id=in.({})".format(
+                                    ",".join(f'"{p}"'
+                                             for p in _rev9))
+                                + "&archived_at=is.null&order=pn",
+                                limit=50)
+                except Exception:
+                    pass
+            else:
+                pmatch = fetch("products",
+                    "product_id,pn,item_name,customer,sub_class",
+                    "archived_at=is.null&order=pn", limit=300)
+        except Exception as e:
+            st.error(f"제품 조회 실패: {e}"); pmatch = []
+        if not pmatch:
+            st.info("일치하는 제품 없음 — 신규 제품은 제품 편집에서 "
+                    "먼저 등록합니다.")
+        else:
+            # 리스트 표시용 BOM·라우팅 요약
+            _sum_mat, _sum_proc = {}, {}
             try:
-                mmatch = fetch("materials", "material_id",
-                    f"or=(material_id.ilike.*{qq}*,raw_name.ilike.*{qq}*,"
-                    f"material_type.ilike.*{qq}*,spec.ilike.*{qq}*)",
-                    limit=50)
-                _mids9 = [m["material_id"] for m in mmatch]
-                if _mids9:
-                    _bl9 = fetch("bom", "product_id",
-                        "material_id=in.({})".format(
-                            ",".join(f'"{m}"' for m in _mids9)),
-                        limit=300)
-                    _rev9 = ({b["product_id"] for b in _bl9
-                              if b.get("product_id")}
-                             - {p["product_id"] for p in pmatch})
-                    if _rev9:
-                        pmatch += fetch("products",
-                            "product_id,pn,item_name,customer,sub_class",
-                            "product_id=in.({})".format(
-                                ",".join(f'"{p}"' for p in _rev9))
-                            + "&archived_at=is.null&order=pn", limit=50)
+                _pl_ids = ",".join(f'"{p["product_id"]}"'
+                                   for p in pmatch)
+                for b in fetch("bom",
+                        "product_id,process_type,raw_material_name",
+                        f"product_id=in.({_pl_ids})", limit=2000):
+                    if (b.get("process_type")
+                            or "MATERIAL") == "MATERIAL":
+                        _sum_mat.setdefault(
+                            b["product_id"],
+                            b.get("raw_material_name") or "-")
+                    else:
+                        _sum_proc[b["product_id"]] = \
+                            _sum_proc.get(b["product_id"], 0) + 1
             except Exception:
                 pass
-            if not pmatch:
-                st.info("일치하는 제품 없음 — 품번·품명·자재명으로 "
-                        "검색하세요. 신규 제품은 제품 편집에서 먼저 "
-                        "등록합니다.")
-            else:
-                _bp_lbls = [
-                    p["pn"]
-                    + (f" | {p['item_name']}" if p.get("item_name")
-                       else "")
-                    + (f" | {p['customer']}" if p.get("customer")
-                       else "")
-                    for p in pmatch]
-                _bp_sel = st.selectbox(
-                    f"제품 선택 ({len(pmatch)}건)", _bp_lbls,
-                    key="bom_ppick")
-                _bp = pmatch[_bp_lbls.index(_bp_sel)]
+            _rt_pids = set()
+            try:
+                _rt_pids = {r["product_id"] for r in fetch(
+                    "product_routing", "product_id",
+                    "order=product_id", limit=2000)}
+            except Exception:
+                pass
+            _bp_i = toss_grid([{
+                "품번": p["pn"],
+                "품명": p.get("item_name") or "-",
+                "고객사": p.get("customer") or "-",
+                "소재 (BOM)": _sum_mat.get(p["product_id"])
+                              or "미연결",
+                "공정": float(_sum_proc.get(p["product_id"], 0)),
+                "라우팅": ("정의됨"
+                           if p["product_id"] in _rt_pids
+                           else "기본"),
+            } for p in pmatch], key="bom_plist_grid",
+                badge_cols=("라우팅",), num_cols=("공정",),
+                strong_cols=("품번",))
+            _bp = pmatch[_bp_i if _bp_i is not None else 0]
         if _bp:
             full_select = ("bom_id,product_id,material_id,"
                            "raw_material_name,qty_per_pc,shared_factor,"
@@ -3728,7 +3501,7 @@ elif page == "마스터 관리":
                                             _bupd):
                                 st.success(
                                     f"{len(_bupd)}개 항목 저장 — "
-                                    "공정 순서는 라우팅 하위 탭에서")
+                                    "공정 순서는 아래에서")
                                 st.rerun()
                             else:
                                 st.error("저장 실패 — 다시 시도해 "
@@ -3905,11 +3678,195 @@ elif page == "마스터 관리":
                             _db.insert("bom", [record])
                             st.success(
                                 f"공정행 추가: {proc_name.strip()} — "
-                                "순서는 라우팅 하위 탭에서 부여, "
+                                "순서는 아래 공정 순서에서 부여, "
                                 "단가는 원가 확인에서.")
                             st.rerun()
                         except Exception as e:
                             st.error(f"추가 실패: {e}")
+
+        # ── 공정 순서 (라우팅) — BOM 공정행 + 기본 공정에 순서만 ──
+        if _bp:
+            st.divider()
+            st.markdown(f"##### 공정 순서 (라우팅) — {_bp['pn']}")
+            _cur = get_routing(_bp["product_id"])
+            _has_custom = any(s.get("routing_id") for s in _cur)
+            if not _has_custom:
+                st.caption("정의된 라우팅 없음 — 기본 플로우(소재입고 "
+                           "→ 생산 → 검사 → 완성)로 동작합니다. "
+                           "순서를 저장하면 이 제품 전용 라우팅이 "
+                           "생성됩니다.")
+            _BASE_STEPS = ["소재입고", "생산", "검사", "완성"]
+            _proc_bom = [b for b in brows
+                         if (b.get("process_type") or "MATERIAL")
+                         in ("HEAT", "SURFACE", "OUTSOURCE")]
+            _pb_nm_cnt = {}
+            for _b8 in _proc_bom:
+                _n8 = (_b8.get("raw_material_name")
+                       or _b8.get("process_type"))
+                _pb_nm_cnt[_n8] = _pb_nm_cnt.get(_n8, 0) + 1
+
+            def _pb_lbl(b):
+                _n8 = (b.get("raw_material_name")
+                       or b.get("process_type"))
+                return (_n8 if _pb_nm_cnt.get(_n8, 0) == 1
+                        else f"{_n8} (#{b['bom_id']})")
+
+            _pb_by_lbl = {_pb_lbl(b): b for b in _proc_bom}
+            _pb_by_id = {b["bom_id"]: b for b in _proc_bom}
+            _step_opts = _BASE_STEPS + list(_pb_by_lbl.keys())
+
+            def _step_lbl_of(s):
+                _b9 = _pb_by_id.get(s.get("bom_id"))
+                if _b9:
+                    return _pb_lbl(_b9)
+                return s.get("step_name") or "생산"
+
+            _cur_lbls = [_step_lbl_of(s) for s in _cur]
+            for _l9 in _cur_lbls:
+                if _l9 not in _step_opts:
+                    _step_opts.append(_l9)  # 구버전 스텝 보존
+            # form 밖 — 클릭할 때마다 아래 순서 플로우가 바로 갱신된다
+            _sel = st.multiselect(
+                "공정 순서 — 첫 공정부터 차례대로 클릭",
+                _step_opts,
+                default=[l for l in _cur_lbls if l in _step_opts],
+                key=f"rout_ms_{_bp['product_id']}",
+                help="클릭한 순서가 곧 공정 순서입니다. 순서를 "
+                     "바꾸려면 항목의 ×를 눌러 뺐다가 원하는 차례에 "
+                     "다시 클릭하세요. 외주 스텝의 업체는 BOM "
+                     "공정행의 매칭 업체를 따릅니다.")
+            if _sel:
+                _chip = ("<span style='display:inline-block;"
+                         "background:{bg};border-radius:8px;"
+                         "padding:4px 10px;margin:2px 0;"
+                         "font-size:0.88rem'>"
+                         "<b style='color:#3182f6'>{n}</b> "
+                         "{t}{v}</span>")
+                _parts = []
+                for _i9, _l9 in enumerate(_sel):
+                    _b9 = _pb_by_lbl.get(_l9)
+                    _v9 = ""
+                    _bg9 = "#f2f4f6"
+                    if _b9:
+                        _bg9 = "#e8f3ff"
+                        _vn9 = _bb_vnm.get(
+                            _b9.get("process_vendor_id"))
+                        _v9 = (" <span style='color:#8b95a1'>· "
+                               f"{_vn9}</span>" if _vn9 else
+                               " <span style='color:#dd6b02'>· "
+                               "업체 미매칭</span>")
+                    _parts.append(_chip.format(
+                        n=_i9 + 1, t=_l9, v=_v9, bg=_bg9))
+                st.markdown(
+                    " <span style='color:#b0b8c1'>→</span> ".join(
+                        _parts), unsafe_allow_html=True)
+
+            _sel_ids = {(_pb_by_lbl.get(l) or {}).get("bom_id")
+                        for l in _sel}
+            _unlinked = [b for b in _proc_bom
+                         if b["bom_id"] not in _sel_ids]
+            if _proc_bom and _unlinked:
+                st.caption(
+                    f"순서 부여 {len(_proc_bom) - len(_unlinked)}"
+                    f"/{len(_proc_bom)} — 순서 미부여 공정행: "
+                    + ", ".join(_pb_lbl(b) for b in _unlinked))
+            elif _proc_bom:
+                st.caption(f"BOM 공정행 {len(_proc_bom)}건 모두 "
+                           "순서가 부여되었습니다.")
+
+            _CODE_BY_NAME = {"소재입고": "MAT_IN", "생산": "PROD",
+                             "검사": "INSPECT", "완성": "DONE"}
+            rb1, rb2 = st.columns(2)
+            if rb1.button("라우팅 저장", type="primary",
+                          use_container_width=True,
+                          key=f"rout_save_{_bp['product_id']}"):
+                _missing = [b for b in _BASE_STEPS if b not in _sel]
+                if _missing:
+                    st.error("기본 공정이 빠졌습니다: "
+                             + " · ".join(_missing)
+                             + " — 소재입고·생산·검사·완성은 항상 "
+                             "포함되어야 합니다.")
+                elif _sel[0] != "소재입고" or _sel[-1] != "완성":
+                    st.error("소재입고가 맨 앞, 완성이 맨 끝이어야 "
+                             "합니다 — 항목을 뺐다가 순서대로 다시 "
+                             "클릭하세요.")
+                else:
+                    _ins = []
+                    for _i, _lb in enumerate(_sel):
+                        _b9 = _pb_by_lbl.get(_lb)
+                        if _b9:
+                            # BOM 공정행 스텝 — 정보·업체는 BOM,
+                            # 여기는 순서만 (외주 흐름으로 처리)
+                            _ins.append({
+                                "product_id": _bp["product_id"],
+                                "seq": (_i + 1) * 10,
+                                "step_code": "OUT",
+                                "step_name":
+                                    _b9.get("raw_material_name")
+                                    or _lb,
+                                "step_kind": "OUTSOURCE",
+                                "stage": "PRODUCT",
+                                "bom_id": _b9["bom_id"],
+                                "default_vendor": _bb_vnm.get(
+                                    _b9.get("process_vendor_id")),
+                                "confirmed": True,
+                            })
+                        else:
+                            _ins.append({
+                                "product_id": _bp["product_id"],
+                                "seq": (_i + 1) * 10,
+                                "step_code": _CODE_BY_NAME.get(
+                                    _lb, "STEP"),
+                                "step_name": _lb,
+                                "step_kind": "INHOUSE",
+                                "stage": ("MATERIAL"
+                                          if _lb == "소재입고"
+                                          else "PRODUCT"),
+                                "bom_id": None,
+                                "default_vendor": None,
+                                "confirmed": True,
+                            })
+                    _no_vend = [
+                        _lb for _lb in _sel
+                        if _pb_by_lbl.get(_lb)
+                        and not _bb_vnm.get(_pb_by_lbl[_lb].get(
+                            "process_vendor_id"))]
+                    try:
+                        _db.delete("product_routing",
+                                   "product_id=eq."
+                                   f"{_bp['product_id']}")
+                        _db.insert("product_routing", _ins)
+                        _msg8 = (f"라우팅 저장: {_bp['pn']} — "
+                                 f"{len(_ins)}개 공정")
+                        if _no_vend:
+                            _msg8 += (" · 업체 미매칭 공정 "
+                                      + ", ".join(_no_vend)
+                                      + " — BOM 상세에서 업체 매칭 "
+                                      "후 라우팅을 다시 저장하면 "
+                                      "고정됩니다 (그 전에는 공정 "
+                                      "처리에서 직접 선택)")
+                        st.success(_msg8)
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"저장 실패: {e}")
+            if _has_custom and rb2.button(
+                    "기본 플로우로 되돌리기 (라우팅 삭제)",
+                    use_container_width=True,
+                    key="rout_reset"):
+                st.session_state["cfm_rout_reset"] = True
+            if st.session_state.get("cfm_rout_reset") \
+                    and confirm_gate("rout_reset",
+                        f"{_bp['pn']} 의 라우팅 전체를 삭제하고 기본 "
+                        "플로우로 되돌립니다 — 공정 순서·업체 고정이 "
+                        "사라집니다. 실행할까요?"):
+                try:
+                    _db.delete("product_routing",
+                               f"product_id=eq.{_bp['product_id']}")
+                    st.success("라우팅 삭제 — 기본 플로우로 "
+                               "동작합니다.")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"삭제 실패: {e}")
 
     # ─── Tab: 계정 관리 (2026-08-05) ───
     with tab_acct:
@@ -9595,7 +9552,7 @@ elif page == "공정 관리":
                         "품번 (BOM 연결 없음 — 직접 입력)",
                         key="pe_in_pn",
                         help="이 소재를 쓰는 제품이 BOM 에 없습니다. "
-                             "마스터 관리 → BOM·공정에서 등록하면 "
+                             "마스터 관리 → BOM 편집에서 등록하면 "
                              "다음부터 자동 제안됩니다.")
 
                 # BOM 분할 환산 — 소재 수량 → 예상 생산 수량 (제품 EA)
@@ -10178,7 +10135,7 @@ elif page == "공정 관리":
                                     [v["name"] for v in _bov]
                                     or ["(거래처 없음)"],
                                     key=f"bt_vs_{_sb['batch_id']}")
-                                st.caption("마스터 관리 → BOM 편집 > 라우팅에서 "
+                                st.caption("마스터 관리 → BOM 편집에서 "
                                            "승인 업체를 고정할 수 있습니다.")
                         with bc2:
                             _bq = st.number_input("출고 수량", 0.0, _sb_qty,
@@ -10613,7 +10570,7 @@ elif page == "공정 관리":
                                 or ["(거래처 없음)"],
                                 key="pe_o_vendor")
                             if _routed and _pending_out is not None:
-                                st.caption("마스터 관리 → BOM 편집 > 라우팅에서 "
+                                st.caption("마스터 관리 → BOM 편집에서 "
                                            "이 공정의 승인 업체를 고정할 "
                                            "수 있습니다.")
                         # 라우팅이 정의된 제품은 다음 외주 공정으로 고정
@@ -11594,7 +11551,7 @@ elif page == "생산 보고":
                 st.warning(
                     "⚠️ 이 제품의 BOM 자재행이 없거나 material_id 미매핑 — "
                     "**자재 차감 없이** 생산 기록만 저장됩니다. "
-                    "(마스터 관리 → BOM·공정에서 보완 가능)")
+                    "(마스터 관리 → BOM 편집에서 보완 가능)")
             elif total_produced <= 0:
                 st.caption("생산/불량 수량 입력 시 차감량이 계산됩니다.")
             else:
@@ -12397,7 +12354,7 @@ elif page == "영업 보고":
 elif page == "원가 확인":
     st.subheader("원가 확인")
     st.caption(
-        "**가격·원가·마진만 다루는 화면**. BOM 구조 편집은 마스터 관리 → BOM·공정 에서. "
+        "**가격·원가·마진만 다루는 화면**. BOM 구조 편집은 마스터 관리 → BOM 편집 에서. "
         "**자동 반영 / 자동 overwrite 없음** — 후보 확인 → 사용자 직접 반영."
     )
 
