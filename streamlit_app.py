@@ -663,6 +663,15 @@ _TOSS_GRID_CSS = {
     ".b-amber": {"background": "#fff3e0", "color": "#dd6b02"},
     ".b-blue": {"background": "#e8f3ff", "color": "#1b64da"},
     ".b-gray": {"background": "#f2f4f6", "color": "#8b95a1"},
+    # 스크롤바 상시 표시 — AG Grid 기본은 OS 오버레이라 안 보여서
+    # 긴 리스트가 스크롤 안 되는 것처럼 오해됨 (2026-08-21)
+    "::-webkit-scrollbar": {"width": "10px", "height": "10px"},
+    "::-webkit-scrollbar-thumb": {"background": "#d1d6db",
+                                  "border-radius": "8px",
+                                  "border": "2px solid #ffffff"},
+    "::-webkit-scrollbar-thumb:hover": {"background": "#b0b8c1"},
+    "::-webkit-scrollbar-track": {"background": "#ffffff",
+                                  "border-radius": "8px"},
 }
 
 
@@ -3304,10 +3313,12 @@ elif page == "마스터 관리":
                 "수량/PC": float(b.get("qty_per_pc") or 0),
                 "분할/LOT": float(b.get("shared_factor") or 1),
                 "업체": _bb_vnm.get(b.get("process_vendor_id")) or "-",
+                "LOT 단가 (원)": (float(b["unit_price"])
+                                  if b.get("unit_price") else None),
                 "검증": b.get("verification_status") or "-",
             } for b in brows], key=f"bom_grid_{_bp['product_id']}",
                 badge_cols=("구분",),
-                num_cols=("수량/PC", "분할/LOT"),
+                num_cols=("수량/PC", "분할/LOT", "LOT 단가 (원)"),
                 strong_cols=("자재/공정",))
             _bd = brows[_bg_i if _bg_i is not None else 0]
             _bid = _bd["bom_id"]
@@ -3431,6 +3442,13 @@ elif page == "마스터 관리":
                 _cur_vnm = _bb_vnm.get(_bd.get("process_vendor_id"))
                 if _cur_vnm and _cur_vnm not in _pv_opts:
                     _pv_opts.append(_cur_vnm)  # 계열 밖 기존 매칭 보존
+                st.caption(
+                    "LOT 단가(표준): "
+                    + (f"₩{float(_bd['unit_price']):,.0f}"
+                       if _bd.get("unit_price") else "미입력")
+                    + " — 단가 입력·수정은 원가 확인 > 단가 관리에서. "
+                    "원가 산정: per_pc = LOT단가 × qty/PC ÷ "
+                    "LOT처리수량")
                 with st.form(f"bom_procf_{_bid}"):
                     pc1, pc2 = st.columns([2, 1])
                     _bf_nm = pc1.text_input(
