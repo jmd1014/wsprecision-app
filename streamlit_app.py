@@ -1567,10 +1567,27 @@ elif page == "마스터 관리":
                     _pbom = fetch("bom",
                         "bom_id,process_type,raw_material_name,"
                         "material_id,qty_per_pc,shared_factor,"
-                        "unit_price,lot_label",
+                        "unit_price,lot_label,process_vendor_id",
                         f"product_id=eq.{_rp_id}", limit=50)
                 except Exception:
                     _pbom = []
+                # BOM 공정행에 매칭된 업체명 — 라우팅 외주 스텝은 이
+                # 업체를 그대로 쓴다 (라우팅 = 순서만, 2026-08-20)
+                _rt_vnm = {}
+                try:
+                    _rt_vids = {b.get("process_vendor_id")
+                                for b in _pbom
+                                if b.get("process_vendor_id")}
+                    if _rt_vids:
+                        _rt_vnm = {v["vendor_id"]: v["name"]
+                                   for v in fetch(
+                                       "vendors", "vendor_id,name",
+                                       "vendor_id=in.({})".format(
+                                           ",".join(str(i) for i
+                                                    in _rt_vids)),
+                                       limit=100)}
+                except Exception:
+                    pass
                 _pbom.sort(key=lambda b: (
                     (b.get("process_type") or "MATERIAL") != "MATERIAL",
                     b["bom_id"]))
@@ -1587,13 +1604,15 @@ elif page == "마스터 관리":
                         "자재ID": b.get("material_id") or "-",
                         "수량/PC": float(b.get("qty_per_pc") or 0),
                         "분할/LOT": float(b.get("shared_factor") or 1),
+                        "업체": _rt_vnm.get(
+                            b.get("process_vendor_id")) or "-",
                     } for b in _pbom],
                         badge_cols=("구분",),
                         num_cols=("수량/PC", "분할/LOT"),
                         strong_cols=("자재/공정",))
                     st.caption(
-                        "이 제품의 BOM 행 — 정보 수정·행 추가는 BOM "
-                        "하위 탭에서. 아래에서 공정행들의 순서를 "
+                        "이 제품의 BOM 행 — 정보 수정·행 추가·업체 "
+                        "매칭은 BOM 하위 탭에서. 아래에서 공정 순서만 "
                         "정하세요.")
                 else:
                     st.info("이 제품의 BOM 이 아직 없습니다 — BOM 하위 "
@@ -1632,57 +1651,32 @@ elif page == "마스터 관리":
                         return _pb_lbl(_b9)
                     return s.get("step_name") or "생산"
 
-                # 외주 거래처 고정 후보 — PPAP 개념: 공정은 검증된 업체만.
-                # 여기서 고정하면 공정 처리에서 변경 불가(마스터 전용)
-                try:
-                    _rvend = fetch("vendors", "name",
-                                   "in_use=eq.true&order=name", limit=300)
-                except Exception:
-                    _rvend = []
-                _vend_opts = ["(미지정)"] + [v["name"] for v in _rvend]
-
-                # 편집기 — 순서 + 공정(BOM 공정행/기본 공정) + 거래처.
-                # st.form: 셀 편집마다 rerun 하지 않고 저장 때 한 번만
+                # ── 순서 배열만 — 첫 공정부터 차례대로 클릭 (2026-08-20
+                # 단순화: 거래처는 BOM 공정행의 매칭 업체를 그대로 사용)
                 _cur_lbls = [_step_lbl_of(s) for s in _cur]
                 for _l9 in _cur_lbls:
                     if _l9 not in _step_opts:
                         _step_opts.append(_l9)  # 구버전 자유 입력 스텝 보존
                 with st.form(f"rout_form_{_rp_id}"):
-                    _red = st.data_editor(
-                        pd.DataFrame([{
-                            "순서": s["seq"],
-                            "공정": _cur_lbls[_ci],
-                            "외주 거래처": (s.get("default_vendor")
-                                            or "(미지정)"),
-                        } for _ci, s in enumerate(_cur)]),
-                        hide_index=True, num_rows="dynamic",
-                        use_container_width=True,
-                        column_config={
-                            "순서": st.column_config.NumberColumn(
-                                required=True, step=1,
-                                help="이 숫자 순으로 정렬됩니다"),
-                            "공정": st.column_config.SelectboxColumn(
-                                options=_step_opts, required=True,
-                                help="기본 공정 또는 이 제품 BOM 의 "
-                                     "공정행 — 새 공정이 필요하면 BOM "
-                                     "하위 탭에서 행으로 먼저 추가"),
-                            "외주 거래처":
-                                st.column_config.SelectboxColumn(
-                                    options=_vend_opts,
-                                    help="PPAP 승인 업체 고정 — 지정하면 "
-                                         "공정 처리에서 변경 불가 "
-                                         "(품질 유지)"),
-                        }, key=f"rout_ed_{_rp_id}")
+                    _sel = st.multiselect(
+                        "공정 순서 — 첫 공정부터 차례대로 클릭해 "
+                        "배열하세요",
+                        _step_opts,
+                        default=[l for l in _cur_lbls
+                                 if l in _step_opts],
+                        key=f"rout_ms_{_rp_id}",
+                        help="클릭한 순서가 곧 공정 순서입니다. 순서를 "
+                             "바꾸려면 항목의 ×를 눌러 뺐다가 원하는 "
+                             "차례에 다시 클릭하세요. 외주 스텝의 "
+                             "업체는 BOM 상세의 매칭 업체를 따릅니다.")
                     _rt_save = st.form_submit_button(
                         "라우팅 저장", type="primary")
 
                 # 순서 부여 완성도 — BOM 공정행이 다 순서를 받았는지
-                _linked_ids = {
-                    (_pb_by_lbl.get(str(r.get("공정") or "").strip())
-                     or {}).get("bom_id")
-                    for r in _red.to_dict("records")}
+                _sel_ids = {(_pb_by_lbl.get(l) or {}).get("bom_id")
+                            for l in _sel}
                 _unlinked = [b for b in _proc_bom
-                             if b["bom_id"] not in _linked_ids]
+                             if b["bom_id"] not in _sel_ids]
                 if _proc_bom and _unlinked:
                     st.caption(
                         f"순서 부여 {len(_proc_bom) - len(_unlinked)}"
@@ -1695,20 +1689,23 @@ elif page == "마스터 관리":
                 _CODE_BY_NAME = {"소재입고": "MAT_IN", "생산": "PROD",
                                  "검사": "INSPECT", "완성": "DONE"}
                 if _rt_save:
-                    _rows = [r for r in _red.to_dict("records")
-                             if (str(r.get("공정") or "")).strip()]
-                    if not _rows:
-                        st.error("공정이 없습니다.")
+                    _missing = [b for b in _BASE_STEPS if b not in _sel]
+                    if _missing:
+                        st.error("기본 공정이 빠졌습니다: "
+                                 + " · ".join(_missing)
+                                 + " — 소재입고·생산·검사·완성은 항상 "
+                                 "포함되어야 합니다.")
+                    elif _sel[0] != "소재입고" or _sel[-1] != "완성":
+                        st.error("소재입고가 맨 앞, 완성이 맨 끝이어야 "
+                                 "합니다 — 항목을 뺐다가 순서대로 다시 "
+                                 "클릭하세요.")
                     else:
-                        _rows.sort(key=lambda r: float(r.get("순서") or 0))
                         _ins = []
-                        for _i, r in enumerate(_rows):
-                            _lb = str(r["공정"]).strip()
-                            _vend_pick = (r.get("외주 거래처") or "").strip()
+                        for _i, _lb in enumerate(_sel):
                             _b9 = _pb_by_lbl.get(_lb)
                             if _b9:
-                                # BOM 공정행 스텝 — 정보는 BOM, 여기는
-                                # 순서·거래처만 (외주 흐름으로 처리)
+                                # BOM 공정행 스텝 — 정보·업체는 BOM,
+                                # 여기는 순서만 (외주 흐름으로 처리)
                                 _ins.append({
                                     "product_id": _rp_id,
                                     "seq": (_i + 1) * 10,
@@ -1719,10 +1716,8 @@ elif page == "마스터 관리":
                                     "step_kind": "OUTSOURCE",
                                     "stage": "PRODUCT",
                                     "bom_id": _b9["bom_id"],
-                                    "default_vendor": (
-                                        _vend_pick
-                                        if _vend_pick not in
-                                        ("", "(미지정)") else None),
+                                    "default_vendor": _rt_vnm.get(
+                                        _b9.get("process_vendor_id")),
                                     "confirmed": True,
                                 })
                             else:
@@ -1740,12 +1735,25 @@ elif page == "마스터 관리":
                                     "default_vendor": None,
                                     "confirmed": True,
                                 })
+                        _no_vend = [
+                            _lb for _lb in _sel
+                            if _pb_by_lbl.get(_lb)
+                            and not _rt_vnm.get(_pb_by_lbl[_lb].get(
+                                "process_vendor_id"))]
                         try:
                             _db.delete("product_routing",
                                        f"product_id=eq.{_rp_id}")
                             _db.insert("product_routing", _ins)
-                            st.success(f"라우팅 저장: {_rp_pick} — "
-                                       f"{len(_ins)}개 공정")
+                            _msg8 = (f"라우팅 저장: {_rp_pick} — "
+                                     f"{len(_ins)}개 공정")
+                            if _no_vend:
+                                _msg8 += (" · 업체 미매칭 공정 "
+                                          + ", ".join(_no_vend)
+                                          + " — BOM 상세에서 업체 매칭 "
+                                          "후 라우팅을 다시 저장하면 "
+                                          "고정됩니다 (그 전에는 공정 "
+                                          "처리에서 직접 선택)")
+                            st.success(_msg8)
                             st.rerun()
                         except Exception as e:
                             st.error(f"저장 실패: {e}")
@@ -3468,7 +3476,8 @@ elif page == "마스터 관리":
             full_select = ("bom_id,product_id,material_id,"
                            "raw_material_name,qty_per_pc,shared_factor,"
                            "source,verification_status,"
-                           "process_type,unit_price,lot_label")
+                           "process_type,unit_price,lot_label,"
+                           "process_vendor_id")
             try:
                 brows = fetch("bom", full_select,
                     f"product_id=eq.{_bp['product_id']}"
@@ -3481,6 +3490,21 @@ elif page == "마스터 관리":
             brows.sort(key=lambda b: (
                 (b.get("process_type") or "MATERIAL") != "MATERIAL",
                 b["bom_id"]))
+            # 공정행 매칭 업체명
+            _bb_vnm = {}
+            try:
+                _bb_vids = {b.get("process_vendor_id") for b in brows
+                            if b.get("process_vendor_id")}
+                if _bb_vids:
+                    _bb_vnm = {v["vendor_id"]: v["name"]
+                               for v in fetch("vendors",
+                                   "vendor_id,name",
+                                   "vendor_id=in.({})".format(
+                                       ",".join(str(i)
+                                                for i in _bb_vids)),
+                                   limit=100)}
+            except Exception:
+                pass
             st.markdown(f"##### {_bp['pn']} — BOM 전개 "
                         f"({len(brows)}행)")
             if not brows:
@@ -3488,450 +3512,404 @@ elif page == "마스터 관리":
                         "자재행/공정행을 추가하세요.")
 
         if brows:
-            bdf = pd.DataFrame(brows)
-            # 컬럼 순서 재배치 — 품번 기준 전개라 제품 컬럼은 생략
-            preferred_cols = ['bom_id',
-                              'process_type', 'material_id', 'raw_material_name',
-                              'qty_per_pc', 'shared_factor', 'unit_price', 'lot_label',
-                              'source', 'verification_status']
-            preferred_cols = [c for c in preferred_cols if c in bdf.columns]
-            bdf = bdf[preferred_cols]
-            # st.form — 셀 편집마다 rerun 하지 않고 저장 때 한 번만.
-            # 편집 표의 화면 상태는 저장 전에도 세션에 남으므로(삭제된
-            # 것처럼 보이는 착시) [편집 취소]로 키를 바꿔 리셋한다
-            # 키에 product_id 포함 — 제품을 바꿀 때 이전 제품의 편집
-            # 상태가 새 표에 겹쳐 보이는 착시 방지
-            _bom_ed_key = (f"bom_editor_{_bp['product_id']}_"
-                           f"{st.session_state.get('bom_ed_nonce', 0)}")
-            with st.form("bom_bulk_form"):
-                bedited = st.data_editor(
-                bdf,
-                column_config={
-                    "bom_id": st.column_config.NumberColumn("ID", disabled=True, width="small"),
-                    "process_type": st.column_config.SelectboxColumn("구분",
-                        options=["MATERIAL","HEAT","SURFACE","OUTSOURCE","PACKING","LABOR","OTHER"],
-                        width="small",
-                        help="MATERIAL=자재 / HEAT=열처리(LOT) / SURFACE=표면 / OUTSOURCE=외주 등"),
-                    "material_id": st.column_config.TextColumn("자재ID", disabled=True, width="small"),
-                    "raw_material_name": st.column_config.TextColumn("자재/공정명", width="large"),
-                    "qty_per_pc": st.column_config.NumberColumn("자재/PC", format="%.3f",
-                        help="제품 1EA당 자재 사용량. 공정행은 보통 1."),
-                    "shared_factor": st.column_config.NumberColumn("분할/LOT", format="%.0f",
-                        help="자재: 1자재→N제품. 공정: 1 LOT 처리수량."),
-                    "unit_price": st.column_config.NumberColumn("LOT 단가 (조회)",
-                        format="%.2f", disabled=True,
-                        help="단가 편집은 원가 확인 → 단가 관리 탭에서. "
-                             "여기서는 조회만 가능."),
-                    "lot_label": st.column_config.TextColumn("LOT단위", width="small",
-                        help="표시용. 예: LOT, CH, BATCH"),
-                    "source": st.column_config.TextColumn("출처", disabled=True, width="small"),
-                    "verification_status": st.column_config.SelectboxColumn("검증",
-                        options=["AUTO-추정", "AUTO-매입추정", "AUTO-명진추정", "확인완료", "재검토"],
-                        width="small"),
-                },
-                hide_index=True, use_container_width=True,
-                num_rows="fixed", key=_bom_ed_key,
-            )
-                fb1, fb2 = st.columns([1, 1])
-                save_clicked = fb1.form_submit_button(
-                    "BOM 변경 저장", type="primary",
-                    use_container_width=True)
-                if fb2.form_submit_button("편집 취소",
-                        use_container_width=True,
-                        help="저장하지 않은 편집을 모두 버리고 표를 "
-                             "원래대로 되돌립니다"):
-                    st.session_state["bom_ed_nonce"] = \
-                        st.session_state.get("bom_ed_nonce", 0) + 1
-                    st.rerun()
+            # ── 리스트에서 행 선택 → 아래 상세 편집 카드 (2026-08-20
+            # 사용자 확정: 제품 편집과 같은 공통 문법. 자재는 검색
+            # 매칭, 공정 업체는 계열별 거래처 매칭) ──
+            _PT_KO = {"MATERIAL": "소재", "HEAT": "열처리",
+                      "SURFACE": "표면", "OUTSOURCE": "외주",
+                      "PACKING": "포장", "LABOR": "노무",
+                      "OTHER": "기타"}
+            _PT_ORDER = ["HEAT", "SURFACE", "OUTSOURCE", "PACKING",
+                         "LABOR", "OTHER"]
+            _VER_OPTS = ["AUTO-추정", "AUTO-매입추정", "AUTO-명진추정",
+                         "확인완료", "재검토"]
+            _bg_i = toss_grid([{
+                "구분": _PT_KO.get(b.get("process_type") or "MATERIAL",
+                                   b.get("process_type") or "-"),
+                "자재/공정": b.get("raw_material_name") or "-",
+                "자재ID": b.get("material_id") or "-",
+                "수량/PC": float(b.get("qty_per_pc") or 0),
+                "분할/LOT": float(b.get("shared_factor") or 1),
+                "업체": _bb_vnm.get(b.get("process_vendor_id")) or "-",
+                "검증": b.get("verification_status") or "-",
+            } for b in brows], key=f"bom_grid_{_bp['product_id']}",
+                badge_cols=("구분",),
+                num_cols=("수량/PC", "분할/LOT"),
+                strong_cols=("자재/공정",))
+            _bd = brows[_bg_i if _bg_i is not None else 0]
+            _bid = _bd["bom_id"]
+            _bd_is_mat = ((_bd.get("process_type") or "MATERIAL")
+                          == "MATERIAL")
+            st.markdown(
+                f"##### {_bd.get('raw_material_name') or '-'} — "
+                + ("소재행 상세" if _bd_is_mat else "공정행 상세"))
 
-            # Streamlit data_editor 의 edited_rows API 로 정확한 변경 감지
-            # (PostgREST 의 NUMERIC 문자열 ↔ data_editor float 비교 회피)
-            editor_state = st.session_state.get(_bom_ed_key, {})
-            edited_rows = editor_state.get("edited_rows", {}) if isinstance(editor_state, dict) else {}
-
-            # 편집 가능 컬럼 (자재행 unit_price 는 무시)
-            editable_keys = {"qty_per_pc", "shared_factor", "verification_status",
-                             "process_type", "lot_label", "raw_material_name",
-                             "unit_price"}
-
-            if save_clicked:
-                if not edited_rows:
-                    st.info("변경된 셀이 없습니다. data_editor 셀 수정 후 다른 곳 클릭 → 저장 버튼.")
-                else:
-                    chg = 0
-                    fail = 0
-                    ignored_mat_unit_price = 0
-                    _applied = []      # 저장 직후 적용 내역 표시용
-                    for row_idx, changes in edited_rows.items():
-                        try:
-                            orig_row = brows[int(row_idx)]
-                        except Exception:
-                            fail += 1; continue
-                        bom_id = orig_row.get("bom_id")
-                        if not bom_id:
-                            fail += 1; continue
-
-                        # MATERIAL 행 unit_price 무시
-                        is_material = (
-                            changes.get("process_type")
-                            or orig_row.get("process_type")
-                            or "MATERIAL"
-                        ) == "MATERIAL"
-
-                        upd = {}
-                        for k, v in changes.items():
-                            if k not in editable_keys:
-                                continue
-                            if k == "unit_price" and is_material:
-                                ignored_mat_unit_price += 1
-                                continue
-                            if isinstance(v, str) and v.strip() == "":
-                                v = None
-                            upd[k] = v
-
-                        if not upd:
-                            continue
-
-                        try:
-                            if _db.update("bom",
-                                f"bom_id=eq.{bom_id}", upd):
-                                chg += 1
-                                _applied.append("#{} {}: {}".format(
-                                    bom_id,
-                                    orig_row.get("raw_material_name")
-                                    or "?",
-                                    ", ".join(f"{k}={v}" for k, v
-                                              in upd.items())))
-                                # 소재 행 자재명 변경 → 제품 소재 표기
-                                # 자동 동기화 (진실=BOM, 2026-08-19)
-                                if (is_material
-                                        and upd.get("raw_material_name")
-                                        and orig_row.get("product_id")):
-                                    try:
-                                        _db.update("products",
-                                            "product_id=eq."
-                                            f"{orig_row['product_id']}",
-                                            {"raw_material_name":
-                                                 upd["raw_material_name"],
-                                             "bom_material_name":
-                                                 upd["raw_material_name"]})
-                                    except Exception:
-                                        pass
-                            else:
-                                fail += 1
-                                st.warning(f"BOM #{bom_id} 저장 실패: {upd}")
-                        except Exception as e:
-                            fail += 1
-                            st.warning(f"BOM #{bom_id} 저장 오류: {e}")
-
-                    # 자재행 이름 텍스트만 수정한 경우 — 표기만 바뀌고
-                    # 자재 연결(material_id)은 그대로임을 안내
-                    _renamed_linked = sum(
-                        1 for row_idx, changes in edited_rows.items()
-                        if "raw_material_name" in changes
-                        and brows[int(row_idx)].get("material_id"))
-                    if _renamed_linked:
-                        st.warning(
-                            f"자재명 텍스트 변경 {_renamed_linked}건은 "
-                            "표기만 바뀝니다 — 투입·발주·원가가 보는 "
-                            "자재 연결(material_id)은 그대로입니다. "
-                            "자재 자체를 바꾸려면 아래 [자재 교체]를 "
-                            "사용하세요.")
-                    if chg:
-                        msg = f"{chg}건 저장 완료"
-                        if fail:
-                            msg += f" / 실패 {fail}건"
-                        if ignored_mat_unit_price:
-                            msg += f" / 자재행 단가 무시 {ignored_mat_unit_price}건"
-                        st.success(msg)
-                        # 적용 내역 자동 표시 (구 '변경 내역 확인' 대체)
-                        for _ap9 in _applied[:10]:
-                            st.caption(f"• {_ap9}")
-                        # 편집 표 상태 리셋 — 저장분이 원본에 반영됨
-                        st.session_state["bom_ed_nonce"] = \
-                            st.session_state.get("bom_ed_nonce", 0) + 1
-                        if not _renamed_linked:
-                            st.rerun()
-                    elif fail:
-                        st.error(f"모든 변경 저장 실패 ({fail}건). "
-                                 "로그 확인 필요.")
+            if _bd_is_mat:
+                st.caption(
+                    f"매칭 자재: **{_bd.get('material_id') or '미연결'}"
+                    "** — 아래에서 자재를 검색해 바꾸면 연결"
+                    "(material_id)·표기·제품 소재 표기가 함께 바뀝니다.")
+                _sw_q = st.text_input(
+                    "자재 검색 (바꿀 때만 입력)",
+                    key=f"bom_sw_q_{_bid}",
+                    placeholder="자재명 · 재질 · 규격 — 예: S316 140")
+                _sw_m = None
+                if (_sw_q or "").strip():
+                    _sw_kw = _sw_q.strip()
+                    try:
+                        _sw_mc = fetch("materials",
+                            "material_id,raw_name,spec",
+                            f"or=(raw_name.ilike.*{_sw_kw}*,"
+                            f"material_type.ilike.*{_sw_kw}*,"
+                            f"spec.ilike.*{_sw_kw}*)"
+                            "&archived_at=is.null&order=raw_name",
+                            limit=15)
+                    except Exception:
+                        _sw_mc = []
+                    if not _sw_mc:
+                        st.info("일치 자재 없음 — 자재 편집에서 먼저 "
+                                "등록하세요.")
                     else:
-                        st.info("변경 사항 없음 (편집 가능 컬럼 외 수정만 시도됨)")
-
-            # ── 자재 교체 — 소재행의 자재 연결(material_id) 변경 ──
-            # 자재/공정명 텍스트 수정은 표기만 바꾼다. 진실(material_id)
-            # 을 바꾸는 유일한 경로 (제품 소재 표기 자동 동기화)
-            _mat_rows = [b for b in brows
-                         if (b.get("process_type") or "MATERIAL")
-                         == "MATERIAL"]
-            if _mat_rows:
-                with st.expander("자재 교체 — 소재행의 자재 연결 변경"):
-                    st.caption(
-                        "위 표에서 자재/공정명을 텍스트로 고치면 표기만 "
-                        "바뀌고, 투입·발주·원가가 보는 자재 연결"
-                        "(material_id)은 그대로입니다. 다른 자재로 "
-                        "바꾸려면 여기서 교체하세요. 새 자재가 목록에 "
-                        "없으면 마스터 관리 > 자재에서 먼저 등록.")
-                    _sw_opts = [
-                        f"{b.get('raw_material_name') or '-'} "
-                        f"({b.get('material_id') or '미연결'})"
-                        for b in _mat_rows]
-                    _sw_i = st.selectbox(
-                        "대상 소재행", range(len(_sw_opts)),
-                        format_func=lambda i: _sw_opts[i],
-                        key="bom_sw_row")
-                    _sw_b = _mat_rows[_sw_i]
-                    _sw_q = st.text_input(
-                        "새 자재 검색", key="bom_sw_q",
-                        placeholder="자재명 · 재질 · 규격 — 예: S316 140")
-                    _sw_mc = []
-                    if (_sw_q or "").strip():
-                        _sw_kw = _sw_q.strip()
-                        try:
-                            _sw_mc = fetch("materials",
-                                "material_id,raw_name,spec",
-                                f"or=(raw_name.ilike.*{_sw_kw}*,"
-                                f"material_type.ilike.*{_sw_kw}*,"
-                                f"spec.ilike.*{_sw_kw}*)&order=raw_name",
-                                limit=15)
-                        except Exception:
-                            _sw_mc = []
-                        if not _sw_mc:
-                            st.info("일치 자재 없음 — 마스터 관리 > "
-                                    "자재에서 먼저 등록하세요.")
-                    if _sw_mc:
-                        _sw_ml = [f"{m['material_id']} | {m['raw_name']}"
+                        _sw_ml = [f"{m['material_id']} | "
+                                  f"{m['raw_name']}"
                                   f" ({m.get('spec') or '-'})"
                                   for m in _sw_mc]
-                        _sw_pick = st.selectbox("새 자재", _sw_ml,
-                                                key="bom_sw_m")
+                        _sw_pick = st.selectbox("바꿀 자재", _sw_ml,
+                                                key=f"bom_sw_m_{_bid}")
                         _sw_m = _sw_mc[_sw_ml.index(_sw_pick)]
-                        if st.button(
-                                f"자재 교체 "
-                                f"({_sw_b.get('material_id') or '미연결'}"
-                                f" → {_sw_m['material_id']})",
-                                type="primary", key="bom_sw_go",
-                                help="BOM 자재 연결과 자재명 표기, 제품 "
-                                     "마스터의 소재 표기까지 함께 "
-                                     "바뀝니다"):
-                            try:
-                                if _db.update("bom",
-                                        f"bom_id=eq.{_sw_b['bom_id']}",
-                                        {"material_id":
-                                             _sw_m["material_id"],
-                                         "raw_material_name":
-                                             _sw_m["raw_name"]}):
-                                    if _sw_b.get("product_id"):
-                                        try:
-                                            _db.update("products",
-                                                "product_id=eq."
-                                                f"{_sw_b['product_id']}",
-                                                {"raw_material_name":
-                                                     _sw_m["raw_name"],
-                                                 "bom_material_name":
-                                                     _sw_m["raw_name"]})
-                                        except Exception:
-                                            pass
-                                    st.success(
-                                        f"자재 교체 완료 — "
-                                        f"{_sw_m['material_id']} "
-                                        f"{_sw_m['raw_name']} (제품 소재 "
-                                        "표기 동기화)")
-                                    st.rerun()
-                                else:
-                                    st.error("자재 교체 실패 — DB 가 "
-                                             "변경을 거부했습니다.")
-                            except Exception as e:
-                                st.error(f"자재 교체 오류: {e}")
+                with st.form(f"bom_matf_{_bid}"):
+                    mc1, mc2, mc3 = st.columns(3)
+                    _bf_qpc = mc1.number_input(
+                        "자재/PC", min_value=0.0,
+                        value=float(_bd.get("qty_per_pc") or 1),
+                        step=0.1,
+                        help="제품 1EA당 자재 사용량")
+                    _bf_sf = mc2.number_input(
+                        "분할 (1자재→N제품)", min_value=1.0,
+                        value=float(_bd.get("shared_factor") or 1),
+                        step=1.0)
+                    _ver_opts = list(_VER_OPTS)
+                    if (_bd.get("verification_status")
+                            and _bd["verification_status"]
+                            not in _ver_opts):
+                        _ver_opts.append(_bd["verification_status"])
+                    _bf_ver = mc3.selectbox(
+                        "검증", _ver_opts,
+                        index=(_ver_opts.index(
+                                   _bd["verification_status"])
+                               if _bd.get("verification_status")
+                               in _ver_opts else 0))
+                    if st.form_submit_button("변경 저장",
+                                             type="primary"):
+                        _bupd = {}
+                        if float(_bd.get("qty_per_pc") or 0) != _bf_qpc:
+                            _bupd["qty_per_pc"] = _bf_qpc
+                        if float(_bd.get("shared_factor") or 1) \
+                                != _bf_sf:
+                            _bupd["shared_factor"] = _bf_sf
+                        if _bd.get("verification_status") != _bf_ver:
+                            _bupd["verification_status"] = _bf_ver
+                        if _sw_m:
+                            _bupd["material_id"] = _sw_m["material_id"]
+                            _bupd["raw_material_name"] = \
+                                _sw_m["raw_name"]
+                        if not _bupd:
+                            st.info("변경 사항 없음")
+                        elif _db.update("bom", f"bom_id=eq.{_bid}",
+                                        _bupd):
+                            if _sw_m:
+                                try:  # 제품 소재 표기 동기화 (진실=BOM)
+                                    _db.update("products",
+                                        "product_id=eq."
+                                        f"{_bp['product_id']}",
+                                        {"raw_material_name":
+                                             _sw_m["raw_name"],
+                                         "bom_material_name":
+                                             _sw_m["raw_name"]})
+                                except Exception:
+                                    pass
+                            st.success(
+                                f"{len(_bupd)}개 항목 저장"
+                                + (f" · 자재 교체 → "
+                                   f"{_sw_m['material_id']} "
+                                   f"{_sw_m['raw_name']}"
+                                   if _sw_m else ""))
+                            st.rerun()
+                        else:
+                            st.error("저장 실패 — 다시 시도해 주세요.")
+            else:
+                # 공정행 — 업체는 공정 계열 거래처에서 매칭
+                _grp_by_pt = {"HEAT": ("HEAT_TREAT",),
+                              "SURFACE": ("SURFACE",),
+                              "OUTSOURCE": ("OUTSOURCE",)}
+                _vgrps = _grp_by_pt.get(
+                    _bd.get("process_type"),
+                    ("OUTSOURCE", "HEAT_TREAT", "SURFACE"))
+                try:
+                    _pv = fetch("vendors", "vendor_id,name",
+                        "vendor_group=in.({})".format(
+                            ",".join(f'"{g}"' for g in _vgrps))
+                        + "&archived_at=is.null&order=name",
+                        limit=200)
+                except Exception:
+                    _pv = []
+                _pv_opts = ["(미지정)"] + [v["name"] for v in _pv]
+                _pv_ids = {v["name"]: v["vendor_id"] for v in _pv}
+                _cur_vnm = _bb_vnm.get(_bd.get("process_vendor_id"))
+                if _cur_vnm and _cur_vnm not in _pv_opts:
+                    _pv_opts.append(_cur_vnm)  # 계열 밖 기존 매칭 보존
+                with st.form(f"bom_procf_{_bid}"):
+                    pc1, pc2 = st.columns([2, 1])
+                    _bf_nm = pc1.text_input(
+                        "공정명",
+                        value=_bd.get("raw_material_name") or "")
+                    _bf_pt = pc2.selectbox(
+                        "종류", _PT_ORDER,
+                        index=(_PT_ORDER.index(_bd["process_type"])
+                               if _bd.get("process_type") in _PT_ORDER
+                               else 0),
+                        format_func=lambda v: _PT_KO.get(v, v))
+                    pc3, pc4, pc5 = st.columns(3)
+                    _bf_qpc = pc3.number_input(
+                        "qty/PC", min_value=0.0,
+                        value=float(_bd.get("qty_per_pc") or 1),
+                        step=0.1,
+                        help="제품 1EA당 공정 횟수. 보통 1.")
+                    _bf_lot = pc4.number_input(
+                        "LOT 처리수량", min_value=1.0,
+                        value=float(_bd.get("shared_factor") or 1),
+                        step=1.0,
+                        help="1 LOT/CH 에서 처리되는 제품 수")
+                    _lot_opts = ["", "LOT", "CH", "BATCH"]
+                    _bf_lbl = pc5.selectbox(
+                        "LOT 단위", _lot_opts,
+                        index=(_lot_opts.index(_bd.get("lot_label"))
+                               if _bd.get("lot_label") in _lot_opts
+                               else 0))
+                    _bf_vend = st.selectbox(
+                        "업체 (공정 계열 거래처)", _pv_opts,
+                        index=(_pv_opts.index(_cur_vnm)
+                               if _cur_vnm in _pv_opts else 0),
+                        help="이 공정 계열의 거래처만 나옵니다 — "
+                             "매칭하면 라우팅 외주 스텝이 이 업체로 "
+                             "고정됩니다 (PPAP)")
+                    if st.form_submit_button("변경 저장",
+                                             type="primary"):
+                        _nv_nm = (_bf_nm or "").strip()
+                        if not _nv_nm:
+                            st.error("공정명은 비울 수 없습니다.")
+                        else:
+                            _bupd = {}
+                            if _bd.get("raw_material_name") != _nv_nm:
+                                _bupd["raw_material_name"] = _nv_nm
+                            if _bd.get("process_type") != _bf_pt:
+                                _bupd["process_type"] = _bf_pt
+                            if float(_bd.get("qty_per_pc") or 0) \
+                                    != _bf_qpc:
+                                _bupd["qty_per_pc"] = _bf_qpc
+                            if float(_bd.get("shared_factor") or 1) \
+                                    != _bf_lot:
+                                _bupd["shared_factor"] = _bf_lot
+                            if (_bd.get("lot_label") or "") \
+                                    != (_bf_lbl or ""):
+                                _bupd["lot_label"] = _bf_lbl or None
+                            if _bf_vend == "(미지정)":
+                                if _bd.get("process_vendor_id"):
+                                    _bupd["process_vendor_id"] = None
+                            elif _bf_vend in _pv_ids and \
+                                    _pv_ids[_bf_vend] != \
+                                    _bd.get("process_vendor_id"):
+                                _bupd["process_vendor_id"] = \
+                                    _pv_ids[_bf_vend]
+                            if not _bupd:
+                                st.info("변경 사항 없음")
+                            elif _db.update("bom",
+                                            f"bom_id=eq.{_bid}",
+                                            _bupd):
+                                st.success(
+                                    f"{len(_bupd)}개 항목 저장 — "
+                                    "공정 순서는 라우팅 하위 탭에서")
+                                st.rerun()
+                            else:
+                                st.error("저장 실패 — 다시 시도해 "
+                                         "주세요.")
 
-        # 추가 폼 — BOM 이 없는 제품에도 첫 행을 넣을 수 있게 if brows 밖 (품번 기준 전개)
+            # ── 행 삭제 (2단계 확인) ──
+            _del_k = f"bom_del_{_bid}"
+            if st.button("행 삭제", key=_del_k,
+                         help="이 행을 BOM 에서 제거합니다 — 라우팅에 "
+                              "순서가 부여된 공정이면 그 스텝도 함께 "
+                              "제거됩니다"):
+                st.session_state[f"cfm_{_del_k}"] = True
+            if st.session_state.get(f"cfm_{_del_k}") \
+                    and confirm_gate(_del_k,
+                        f"{_bd.get('raw_material_name') or '-'} 행을 "
+                        f"{_bp['pn']} 의 BOM 에서 삭제합니다 — 원가 "
+                        "계산에서 빠지고, 라우팅에 있던 스텝도 함께 "
+                        "제거됩니다. 실행할까요?"):
+                try:
+                    _db.delete("product_routing", f"bom_id=eq.{_bid}")
+                    _db.delete("bom", f"bom_id=eq.{_bid}")
+                    st.success("행 삭제 완료")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"삭제 실패: {e}")
+
+        # ── 행 추가 — BOM 없는 제품에도 첫 행을 넣을 수 있게 ──
         if _bp:
-            st.divider()
-            st.markdown(f"##### 신규 BOM 자재행 추가 — {_bp['pn']}")
-            st.caption("자재를 검색해 선택하면 위에서 고른 제품의 BOM "
-                       "에 추가됩니다. BOM 은 수량 정보만 관리 — 가격은 "
-                       "매입/원가에서 자동 산정.")
-
-            ar1, ar2 = st.columns(2)
-            with ar1:
-                st.text_input("제품 (선택됨)", value=_bp["pn"],
-                              disabled=True, key="bom_new_p_fixed")
-                p_pick_pid = _bp["product_id"]
-                p_pick_pn = _bp["pn"]
-
-            with ar2:
-                m_search = st.text_input("자재 검색 (자재명/규격/재질)",
-                    placeholder="예: 환봉 또는 STS304 또는 SCM440",
-                    key="bom_new_m_search")
-                m_pick_mid = None
-                m_pick_name = None
-                if m_search:
-                    qq = m_search.strip()
-                    try:
-                        m_found = fetch("materials",
-                            "material_id,raw_name,material_type,spec",
-                            f"or=(raw_name.ilike.*{qq}*,material_type.ilike.*{qq}*,"
-                            f"spec.ilike.*{qq}*)&order=raw_name.asc", limit=30)
-                    except Exception:
-                        m_found = []
-                    if m_found:
-                        m_labels = [
-                            f"{m['raw_name']} · {m.get('material_type','-')} · {m.get('spec','-')}"
-                            for m in m_found
-                        ]
-                        m_sel = st.selectbox(f"자재 선택 ({len(m_found)}건)",
-                            m_labels, key="bom_new_m_pick")
-                        if m_sel:
-                            picked_m = m_found[m_labels.index(m_sel)]
-                            m_pick_mid = picked_m["material_id"]
-                            m_pick_name = picked_m["raw_name"]
-                    else:
-                        st.warning("일치하는 자재 없음")
-
-            ar3, ar4, ar5 = st.columns([1, 1, 2])
-            with ar3:
-                new_qpc = st.number_input("자재/PC (EA)", min_value=0.0,
-                    value=1.0, step=0.1, key="bom_new_qpc",
-                    help="제품 1EA당 자재 사용량")
-            with ar4:
-                new_sf = st.number_input("1자재→N제품 (분할가공)",
-                    min_value=1, value=1, step=1, key="bom_new_sf",
-                    help="환봉 1개에서 N제품 분할가공 시 N")
-            with ar5:
-                st.caption(
-                    f"선택됨 → "
-                    f"제품: **{p_pick_pn or '(미선택)'}** · "
-                    f"자재: **{m_pick_name or '(미선택)'}**"
-                )
-
-            # 단가/원가 미리보기는 원가 확인 페이지에서 확인하세요.
-
-            if st.button("자재행 추가", key="bom_new_btn", type="primary"):
-                if not p_pick_pid or not m_pick_mid:
-                    st.error("제품과 자재를 모두 선택해주세요.")
+            with st.expander(f"행 추가 — {_bp['pn']}",
+                             expanded=not brows):
+                _ad_kind = st.radio("구분", ["소재행", "공정행"],
+                                    horizontal=True,
+                                    key="bom_add_kind")
+                if _ad_kind == "소재행":
+                    m_search = st.text_input(
+                        "자재 검색 (자재명/규격/재질)",
+                        placeholder="예: 환봉 또는 STS304 또는 SCM440",
+                        key="bom_new_m_search")
+                    m_pick_mid = None
+                    m_pick_name = None
+                    if m_search:
+                        qq = m_search.strip()
+                        try:
+                            m_found = fetch("materials",
+                                "material_id,raw_name,material_type,spec",
+                                f"or=(raw_name.ilike.*{qq}*,"
+                                f"material_type.ilike.*{qq}*,"
+                                f"spec.ilike.*{qq}*)&order=raw_name.asc",
+                                limit=30)
+                        except Exception:
+                            m_found = []
+                        if m_found:
+                            m_labels = [
+                                f"{m['raw_name']} · "
+                                f"{m.get('material_type','-')} · "
+                                f"{m.get('spec','-')}"
+                                for m in m_found]
+                            m_sel = st.selectbox(
+                                f"자재 선택 ({len(m_found)}건)",
+                                m_labels, key="bom_new_m_pick")
+                            if m_sel:
+                                picked_m = m_found[
+                                    m_labels.index(m_sel)]
+                                m_pick_mid = picked_m["material_id"]
+                                m_pick_name = picked_m["raw_name"]
+                        else:
+                            st.warning("일치하는 자재 없음 — 자재 "
+                                       "편집에서 먼저 등록하세요.")
+                    na1, na2 = st.columns(2)
+                    new_qpc = na1.number_input("자재/PC (EA)",
+                        min_value=0.0, value=1.0, step=0.1,
+                        key="bom_new_qpc",
+                        help="제품 1EA당 자재 사용량")
+                    new_sf = na2.number_input("1자재→N제품 (분할가공)",
+                        min_value=1, value=1, step=1, key="bom_new_sf",
+                        help="환봉 1개에서 N제품 분할가공 시 N")
+                    if st.button("소재행 추가", key="bom_new_btn",
+                                 type="primary",
+                                 disabled=not m_pick_mid):
+                        try:
+                            _db.insert("bom", [{
+                                "product_id": _bp["product_id"],
+                                "material_id": m_pick_mid,
+                                "raw_material_name": m_pick_name,
+                                "qty_per_pc": new_qpc,
+                                "shared_factor": new_sf,
+                                "process_type": "MATERIAL",
+                                "source": "MANUAL",
+                                "verification_status": "확인완료",
+                            }])
+                            try:  # 제품 소재 표기 동기화 (진실=BOM)
+                                _db.update("products",
+                                    "product_id=eq."
+                                    f"{_bp['product_id']}",
+                                    {"raw_material_name": m_pick_name,
+                                     "bom_material_name":
+                                         m_pick_name})
+                            except Exception:
+                                pass
+                            st.success(f"소재행 추가: {_bp['pn']} ↔ "
+                                       f"{m_pick_name}")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"추가 실패: {e}")
                 else:
+                    _PT_KO2 = {"HEAT": "열처리", "SURFACE": "표면",
+                               "OUTSOURCE": "외주", "PACKING": "포장",
+                               "LABOR": "노무", "OTHER": "기타"}
+                    ap1, ap2 = st.columns([2, 1])
+                    proc_name = ap1.text_input("공정명",
+                        placeholder="예: 진공열처리, 무전해Ni도금, "
+                                    "외주황삭",
+                        key="bom_proc_name")
+                    proc_type = ap2.selectbox("종류",
+                        list(_PT_KO2.keys()),
+                        format_func=lambda v: _PT_KO2.get(v, v),
+                        key="bom_proc_type")
+                    ap3, ap4, ap5 = st.columns(3)
+                    proc_qty = ap3.number_input("qty/PC",
+                        min_value=0.0, value=1.0, step=0.1,
+                        key="bom_proc_qty",
+                        help="제품 1EA당 공정 횟수. 보통 1.")
+                    proc_lot_size = ap4.number_input("LOT 처리수량",
+                        min_value=1, value=1, step=1,
+                        key="bom_proc_lot",
+                        help="1 LOT/CH 에서 처리되는 제품 수. "
+                             "예: 5000EA")
+                    proc_lot_label = ap5.selectbox("LOT 단위",
+                        ["", "LOT", "CH", "BATCH"],
+                        key="bom_proc_label")
+                    _agrp = {"HEAT": ("HEAT_TREAT",),
+                             "SURFACE": ("SURFACE",),
+                             "OUTSOURCE": ("OUTSOURCE",)}.get(
+                        proc_type,
+                        ("OUTSOURCE", "HEAT_TREAT", "SURFACE"))
                     try:
-                        _db.insert("bom", [{
-                            "product_id": p_pick_pid,
-                            "material_id": m_pick_mid,
-                            "raw_material_name": m_pick_name,
-                            "qty_per_pc": new_qpc,
-                            "shared_factor": new_sf,
-                            "process_type": "MATERIAL",
+                        proc_vendors = fetch("vendors",
+                            "vendor_id,name",
+                            "vendor_group=in.({})".format(
+                                ",".join(f'"{g}"' for g in _agrp))
+                            + "&archived_at=is.null&order=name.asc",
+                            limit=200)
+                    except Exception:
+                        proc_vendors = []
+                    v_labels = (["(미지정)"]
+                                + [v["name"] for v in proc_vendors])
+                    v_pick = st.selectbox(
+                        "업체 (공정 계열 거래처)", v_labels,
+                        key="bom_proc_vendor_pick",
+                        help="매칭하면 라우팅 외주 스텝이 이 업체로 "
+                             "고정됩니다")
+                    if st.button("공정행 추가", key="bom_proc_btn",
+                                 type="primary",
+                                 disabled=not (proc_name
+                                               or "").strip()):
+                        record = {
+                            "product_id": _bp["product_id"],
+                            "material_id": None,
+                            "raw_material_name": proc_name.strip(),
+                            "process_type": proc_type,
+                            "qty_per_pc": proc_qty,
+                            "shared_factor": proc_lot_size,
+                            "lot_label": proc_lot_label or None,
                             "source": "MANUAL",
                             "verification_status": "확인완료",
-                        }])
-                        st.success(
-                            f"자재행 추가: **{p_pick_pn}** ↔ **{m_pick_name}** "
-                            f"(qty/PC={new_qpc}, 분할={new_sf})"
-                        )
-                        try:  # 제품 소재 표기 동기화 (진실=BOM)
-                            _db.update("products",
-                                f"product_id=eq.{p_pick_pid}",
-                                {"raw_material_name": m_pick_name,
-                                 "bom_material_name": m_pick_name})
-                        except Exception:
-                            pass
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"추가 실패: {e}")
-
-            st.divider()
-            st.markdown("##### 신규 공정행 추가 (열처리/외주/표면 등)")
-            st.info(
-                "**공정 정보(열처리·표면·외주)는 여기 BOM 에서 행으로 "
-                "추가합니다** — 추가한 공정행의 순서는 옆의 [라우팅 "
-                "(공정 순서)] 하위 탭에서 부여하세요. (BOM = 정보의 "
-                "진실, 라우팅 = 순서 부여, 2026-08-20)")
-            st.caption(
-                "공정행 = **수량 관계** 만 입력 (어떤 공정 + LOT 처리수량). "
-                "**LOT 단가는 원가 확인 → 단가 관리** 에서 입력하세요. "
-                "공식: per_pc = LOT단가 × qty/PC ÷ LOT처리수량 (단가 입력 후 자동 계산)."
-            )
-
-            pr1, pr2 = st.columns(2)
-            with pr1:
-                st.text_input("제품 (선택됨)", value=_bp["pn"],
-                              disabled=True, key="bom_proc_p_fixed")
-                pp_pick_pid = _bp["product_id"]
-                pp_pick_pn = _bp["pn"]
-
-            with pr2:
-                proc_type = st.selectbox("공정 종류 *",
-                    ["HEAT", "SURFACE", "OUTSOURCE", "PACKING", "LABOR", "OTHER"],
-                    format_func=lambda v: {
-                        "HEAT": "HEAT (열처리)",
-                        "SURFACE": "SURFACE (표면처리)",
-                        "OUTSOURCE": "OUTSOURCE (외주가공)",
-                        "PACKING": "PACKING (포장)",
-                        "LABOR": "LABOR (직접노무)",
-                        "OTHER": "OTHER (기타)",
-                    }.get(v, v),
-                    key="bom_proc_type")
-
-            pr3, pr4, pr_lbl = st.columns([1, 1, 1])
-            with pr3:
-                proc_qty = st.number_input("qty/PC", min_value=0.0,
-                    value=1.0, step=0.1, key="bom_proc_qty",
-                    help="제품 1EA당 공정 횟수. 보통 1.")
-            with pr4:
-                proc_lot_size = st.number_input("LOT 처리수량",
-                    min_value=1, value=1, step=1, key="bom_proc_lot",
-                    help="1 LOT/CH 에서 처리되는 제품 수. 예: 5000EA")
-            with pr_lbl:
-                proc_lot_label = st.selectbox("LOT 단위",
-                    ["", "LOT", "CH", "BATCH"], key="bom_proc_label",
-                    help="표시용")
-
-            pr6, pr7 = st.columns([3, 2])
-            with pr6:
-                proc_name = st.text_input("공정 설명",
-                    placeholder="예: 진공열처리, 무전해Ni도금, 외주황삭",
-                    key="bom_proc_name")
-            with pr7:
-                # 공정 거래처 선택 (옵션) — vendor_group 매핑
-                try:
-                    proc_vendors = fetch("vendors", "vendor_id,name",
-                        "vendor_group=in.(\"OUTSOURCE\",\"HEAT_TREAT\",\"SURFACE\")"
-                        "&archived_at=is.null&order=name.asc", limit=200)
-                except Exception:
-                    proc_vendors = []
-                v_labels = ["(선택 안 함)"] + [
-                    f"{v['vendor_id']} | {v['name']}" for v in proc_vendors
-                ]
-                v_pick = st.selectbox("공정 거래처 (선택)",
-                    v_labels, key="bom_proc_vendor_pick")
-
-            if st.button("공정행 추가", key="bom_proc_btn", type="primary"):
-                if not pp_pick_pid:
-                    st.error("제품을 선택해주세요.")
-                else:
-                    record = {
-                        "product_id": pp_pick_pid,
-                        "material_id": None,
-                        "raw_material_name": proc_name or proc_type,
-                        "process_type": proc_type,
-                        "qty_per_pc": proc_qty,
-                        "shared_factor": proc_lot_size,
-                        "lot_label": proc_lot_label or None,
-                        "source": "MANUAL",
-                        "verification_status": "확인완료",
-                    }
-                    if v_pick != "(선택 안 함)":
+                        }
+                        if v_pick != "(미지정)":
+                            _pvid = next(
+                                (v["vendor_id"] for v in proc_vendors
+                                 if v["name"] == v_pick), None)
+                            if _pvid:
+                                record["process_vendor_id"] = _pvid
                         try:
-                            record["process_vendor_id"] = int(v_pick.split(" | ")[0])
-                        except (ValueError, IndexError):
-                            pass
-                    try:
-                        _db.insert("bom", [record])
-                        st.success(
-                            f"{proc_type} 공정행 추가: **{pp_pick_pn}** "
-                            f"(LOT 처리 {proc_lot_size}EA). "
-                            f"단가는 원가 확인 → 단가 관리에서 입력하세요."
-                        )
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"추가 실패: {e}")
+                            _db.insert("bom", [record])
+                            st.success(
+                                f"공정행 추가: {proc_name.strip()} — "
+                                "순서는 라우팅 하위 탭에서 부여, "
+                                "단가는 원가 확인에서.")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"추가 실패: {e}")
 
     # ─── Tab: 계정 관리 (2026-08-05) ───
     with tab_acct:
