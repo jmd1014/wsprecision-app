@@ -126,6 +126,26 @@ def parse_mijin_excel(file_bytes: bytes, filename: str = "") -> list[dict]:
     return items
 
 
+def _pick_line_nums(raw_nums: list[str]) -> list:
+    """품목 행의 숫자 토큰 해석 — '수량 단가 금액' 검산 기반.
+
+    PDF 가 "78,000,000"을 "7 8,000,000"으로 쪼개는 경우가 있어 병합
+    후보를 만들되, 무조건 병합하면 정상 라인("100 6,000 600,000")까지
+    이어붙는 사고가 난다(2026-08-25 MJT-PO26-우성-708) — 수량 × 단가
+    = 금액이 성립하는 해석을 고르고, 없으면 그대로 읽는다."""
+    cands = [[_to_int(t) for t in raw_nums]]
+    for _i in range(len(raw_nums) - 1):
+        if ',' not in raw_nums[_i] and ',' in raw_nums[_i + 1]:
+            _mg = (raw_nums[:_i]
+                   + [raw_nums[_i] + raw_nums[_i + 1].replace(',', '')]
+                   + raw_nums[_i + 2:])
+            cands.append([_to_int(t) for t in _mg])
+    return next((c for c in cands
+                 if len(c) >= 3 and c[0] and c[1]
+                 and c[0] * c[1] == c[2]),
+                cands[0])
+
+
 def parse_mjt_pdf(file_bytes: bytes, filename: str = "") -> list[dict]:
     """
     엠제이티(MJT) PDF 발주서 파싱 — 텍스트 라인 기반 정규식
@@ -169,45 +189,41 @@ def parse_mjt_pdf(file_bytes: bytes, filename: str = "") -> list[dict]:
             unit = m.group(3).strip().upper()
             rest = m.group(4).strip()
 
-            # rest에서 숫자 추출 — 콤마/공백 섞인 숫자들을 분리
-            # 예: "13,000 6,000 78,000,000 06/05" 또는 "13,000 6,000 7 8,000,000"
-            # 공백으로 분리한 토큰을 모음 후 콤마 있는 정수만 추출
+            # rest에서 숫자 추출 — "수량 단가 금액" 이 정석이지만 PDF 가
+            # "78,000,000"을 "7 8,000,000"으로 쪼개는 경우가 있다.
+            # 무조건 병합하면 정상 라인("100 6,000 600,000")까지
+            # 이어붙는 사고(2026-08-25 MJT-PO26-우성-708)가 나므로,
+            # 해석 후보를 만들고 '수량 × 단가 = 금액' 검산으로 고른다.
             tokens = rest.split()
-            nums = []
-            buf = ""
-            for tok in tokens:
-                # 토큰이 숫자(콤마/숫자만)이면
-                if re.match(r'^[\d,]+$', tok):
-                    if buf:
-                        # 직전이 숫자 = "7" 같은 단독 숫자였을 수도, 합쳐서 큰 수 의도일 수 있음
-                        # 콤마가 새 토큰에 있으면 새 숫자
-                        if ',' in tok and ',' not in buf:
-                            # 합쳐서 큰 수
-                            buf = buf + tok.replace(',', '')
-                        else:
-                            nums.append(_to_int(buf))
-                            buf = tok
-                    else:
-                        buf = tok
-                else:
-                    # 숫자 아닌 토큰 도착 → 직전 숫자 확정
-                    if buf:
-                        nums.append(_to_int(buf))
-                        buf = ""
-                    # 비고로 보존 (날짜 패턴 등)
-                    nums.append(tok)
-            if buf: nums.append(_to_int(buf))
+            raw_nums = [t for t in tokens if re.match(r'^[\d,]+$', t)]
+            remark_parts = [t for t in tokens
+                            if not re.match(r'^[\d,]+$', t)]
 
-            # 첫 3개 숫자 = 수량/단가/금액
-            qty = next((n for n in nums if isinstance(n, int)), None)
-            num_only = [n for n in nums if isinstance(n, int)]
+            num_only = _pick_line_nums(raw_nums)
+
+            qty = num_only[0] if num_only else None
             unit_price = num_only[1] if len(num_only) >= 2 else None
             amount = num_only[2] if len(num_only) >= 3 else (
                 qty * unit_price if qty and unit_price else None
             )
-            # 비고 (날짜 등)
-            remark_parts = [str(n) for n in nums if not isinstance(n, int)]
             remark = " ".join(remark_parts) if remark_parts else ""
+
+            # 헤더 납기일자가 비어 있는 양식 — 라인 비고의 MM/DD 를
+            # 납기로 해석 (발주일보다 앞이면 이듬해)
+            _line_due = due_date
+            if _line_due is None and so_date:
+                _md9 = re.search(r'\b(\d{2})/(\d{2})\b', remark)
+                if _md9:
+                    try:
+                        _yy = so_date.year
+                        _cand = date(_yy, int(_md9.group(1)),
+                                     int(_md9.group(2)))
+                        if _cand < so_date:
+                            _cand = date(_yy + 1, int(_md9.group(1)),
+                                         int(_md9.group(2)))
+                        _line_due = _cand
+                    except ValueError:
+                        pass
 
             items.append({
                 "_source": "MJT_PDF",
@@ -216,7 +232,7 @@ def parse_mjt_pdf(file_bytes: bytes, filename: str = "") -> list[dict]:
                 "so_number": so_number,
                 "line_no": line_no,
                 "so_date": so_date,
-                "due_date": due_date,
+                "due_date": _line_due,
                 "customer_part_no": pn,
                 "canonical_pn_hint": pn,
                 "customer_item_name": "",
