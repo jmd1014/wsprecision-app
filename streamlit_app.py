@@ -177,6 +177,8 @@ div[data-testid="stDataFrame"]{
 .step.on{background:var(--primary);color:#fff}
 .step.done{background:var(--good-bg);color:var(--good)}
 .step.warn{background:var(--warn-bg);color:var(--warn)}
+.step.wait{background:#fff;color:var(--warn);
+  box-shadow:inset 0 0 0 1.5px var(--warn)}
 
 /* ── 납품 스케줄 회차 간트 (7b) ── */
 .gt{display:grid;grid-template-columns:250px repeat(6,1fr) 96px;
@@ -377,6 +379,26 @@ def confirm_gate(key, message):
         st.session_state.pop(_fk, None)
         return True
     return False
+
+
+def fresh_keys(scope, fingerprint, keys):
+    """리스트 선택이 바뀌면 상세 입력 위젯들을 기본값으로 리셋.
+
+    Streamlit 위젯은 세션에 남은 값이 value= 기본값보다 우선하므로,
+    선택을 바꿔도 이전 선택의 입력이 남아 오입력이 생긴다
+    (2026-08-27 사용자 지적). 상세 영역 상단에서 호출:
+
+        fresh_keys("rcvp", (poi_id, 잔량), (f"rcvp_qty_{poi_id}",))
+
+    fingerprint(선택 id + 기본값에 영향을 주는 값들)가 직전 런과
+    다르면 keys 를 세션에서 지워 기본값이 다시 적용되게 한다.
+    """
+    _k = f"_fresh_{scope}"
+    _fp = str(fingerprint)
+    if st.session_state.get(_k) != _fp:
+        st.session_state[_k] = _fp
+        for k in keys:
+            st.session_state.pop(k, None)
 
 
 def _cookie_js(script: str):
@@ -2157,6 +2179,13 @@ elif page == "마스터 관리":
                 badge_cols=("사용",), strong_cols=("거래처명",))
             _vd = rows[_vd_i if _vd_i is not None else 0]
             _vid = _vd["vendor_id"]
+            # 선택·값이 바뀌면 카드 입력 기본값 리셋 (2026-08-27)
+            fresh_keys("vdcard",
+                (_vid,) + tuple(str(_vd.get(k)) for k in (
+                    "vendor_group", "ceo_name", "phone", "address",
+                    "payment_terms", "in_use")),
+                tuple(f"vd_{p}_{_vid}" for p in (
+                    "grp", "ceo", "ph", "ad", "pay", "use")))
             st.markdown(f"##### {_vd['name']} — 상세 편집")
             st.caption(
                 f"사업자번호 {_vd.get('business_no') or '-'} · 업태 "
@@ -2350,6 +2379,16 @@ elif page == "마스터 관리":
                 badge_cols=("상태",), strong_cols=("품번",))
             _pd = prows[_pd_i if _pd_i is not None else 0]
             _pid = _pd["product_id"]
+            # 선택·값이 바뀌면 카드 입력 기본값 리셋 (2026-08-27)
+            fresh_keys("pdcard",
+                (_pid,) + tuple(str(_pd.get(k)) for k in (
+                    "pn", "item_name", "customer", "sub_class",
+                    "material", "raw_material_spec",
+                    "procurement_type", "drawing_no", "caution",
+                    "alias_list", "archived_at")),
+                tuple(f"pd_{p}_{_pid}" for p in (
+                    "pn", "inm", "cu", "sub", "mat", "sp", "pr",
+                    "dw", "ct", "al", "arr")))
             st.markdown(
                 f"##### {_pd['pn']} — 상세 편집"
                 + (f" · 휴면 ({_pd.get('archive_reason') or '사유 없음'})"
@@ -2789,6 +2828,13 @@ elif page == "마스터 관리":
                 num_cols=("재고",), strong_cols=("자재명",))
             _md = mrows[_md_i if _md_i is not None else 0]
             _mid = _md["material_id"]
+            # 선택·값이 바뀌면 카드 입력 기본값 리셋 (2026-08-27)
+            fresh_keys("mdcard",
+                (_mid,) + tuple(str(_md.get(k)) for k in (
+                    "raw_name", "material_type", "spec",
+                    "procurement_type", "main_supplier")),
+                tuple(f"md_{p}_{_mid}" for p in (
+                    "nm", "ty", "sp", "pr", "su")))
             st.markdown(f"##### {_md['raw_name']} ({_mid}) — 상세 편집")
             st.caption(
                 f"재고 {float(_md.get('stock_qty') or 0):,.1f} "
@@ -3326,6 +3372,16 @@ elif page == "마스터 관리":
                 strong_cols=("자재/공정",))
             _bd = brows[_bg_i if _bg_i is not None else 0]
             _bid = _bd["bom_id"]
+            # 선택·값이 바뀌면 카드 입력 기본값 리셋 (2026-08-27)
+            fresh_keys("bomcard",
+                (_bid,) + tuple(str(_bd.get(k)) for k in (
+                    "raw_material_name", "process_type", "qty_per_pc",
+                    "shared_factor", "lot_label", "unit_price",
+                    "process_vendor_id", "verification_status",
+                    "material_id")),
+                tuple(f"bomf_{p}_{_bid}" for p in (
+                    "qpc", "sf", "ver", "nm", "pt", "q2", "lot",
+                    "lbl", "up", "vend")))
             _bd_is_mat = ((_bd.get("process_type") or "MATERIAL")
                           == "MATERIAL")
             st.markdown(
@@ -3370,19 +3426,19 @@ elif page == "마스터 관리":
                     _bf_qpc = mc1.number_input(
                         "자재/PC", min_value=0.0,
                         value=float(_bd.get("qty_per_pc") or 1),
-                        step=0.1,
+                        step=0.1, key=f"bomf_qpc_{_bid}",
                         help="제품 1EA당 자재 사용량")
                     _bf_sf = mc2.number_input(
                         "분할 (1자재→N제품)", min_value=1.0,
                         value=float(_bd.get("shared_factor") or 1),
-                        step=1.0)
+                        step=1.0, key=f"bomf_sf_{_bid}")
                     _ver_opts = list(_VER_OPTS)
                     if (_bd.get("verification_status")
                             and _bd["verification_status"]
                             not in _ver_opts):
                         _ver_opts.append(_bd["verification_status"])
                     _bf_ver = mc3.selectbox(
-                        "검증", _ver_opts,
+                        "검증", _ver_opts, key=f"bomf_ver_{_bid}",
                         index=(_ver_opts.index(
                                    _bd["verification_status"])
                                if _bd.get("verification_status")
@@ -3453,10 +3509,10 @@ elif page == "마스터 관리":
                 with st.form(f"bom_procf_{_bid}"):
                     pc1, pc2 = st.columns([2, 1])
                     _bf_nm = pc1.text_input(
-                        "공정명",
+                        "공정명", key=f"bomf_nm_{_bid}",
                         value=_bd.get("raw_material_name") or "")
                     _bf_pt = pc2.selectbox(
-                        "종류", _PT_ORDER,
+                        "종류", _PT_ORDER, key=f"bomf_pt_{_bid}",
                         index=(_PT_ORDER.index(_bd["process_type"])
                                if _bd.get("process_type") in _PT_ORDER
                                else 0),
@@ -3465,16 +3521,17 @@ elif page == "마스터 관리":
                     _bf_qpc = pc3.number_input(
                         "qty/PC", min_value=0.0,
                         value=float(_bd.get("qty_per_pc") or 1),
-                        step=0.1,
+                        step=0.1, key=f"bomf_q2_{_bid}",
                         help="제품 1EA당 공정 횟수. 보통 1.")
                     _bf_lot = pc4.number_input(
                         "LOT 처리수량", min_value=1.0,
                         value=float(_bd.get("shared_factor") or 1),
-                        step=1.0,
+                        step=1.0, key=f"bomf_lot_{_bid}",
                         help="1 LOT/CH 에서 처리되는 제품 수")
                     _lot_opts = ["", "LOT", "CH", "BATCH"]
                     _bf_lbl = pc5.selectbox(
                         "LOT 단위", _lot_opts,
+                        key=f"bomf_lbl_{_bid}",
                         index=(_lot_opts.index(_bd.get("lot_label"))
                                if _bd.get("lot_label") in _lot_opts
                                else 0))
@@ -3482,12 +3539,13 @@ elif page == "마스터 관리":
                     _bf_up = pc6.number_input(
                         "LOT 단가 (원)", min_value=0.0,
                         value=float(_bd.get("unit_price") or 0),
-                        step=1000.0,
+                        step=1000.0, key=f"bomf_up_{_bid}",
                         help="표준 단가 — 1 LOT/CH 처리 비용. 0 이면 "
                              "미입력으로 저장되어 정합 점검에 "
                              "표시됩니다")
                     _bf_vend = pc7.selectbox(
                         "업체 (공정 계열 거래처)", _pv_opts,
+                        key=f"bomf_vend_{_bid}",
                         index=(_pv_opts.index(_cur_vnm)
                                if _cur_vnm in _pv_opts else 0),
                         help="이 공정 계열의 거래처만 나옵니다 — "
@@ -3794,12 +3852,11 @@ elif page == "마스터 관리":
               box-shadow: 0 1px 3px rgba(2,32,71,.07);
               cursor: grab; }
             """
+            # 소재입고 칩 폐지 (2026-08-27) — 투입 = 첫 공정 대기.
+            # 저장 시 데이터(MAT_IN)는 호환을 위해 자동 삽입된다
             _ordered = list(_init_mid)
-            _fc1, _fc2, _fc3 = st.columns(
-                [1, 5.5, 0.8],
-                vertical_alignment="center")
-            _fc1.markdown(f"<span style='{_FX_CSS}'>소재입고</span>",
-                          unsafe_allow_html=True)
+            _fc2, _fc3 = st.columns(
+                [6, 0.8], vertical_alignment="center")
             with _fc2:
                 try:
                     from streamlit_sortables import sort_items
@@ -3821,12 +3878,11 @@ elif page == "마스터 관리":
                                "표시합니다.")
             _fc3.markdown(f"<span style='{_FX_CSS}'>완성</span>",
                           unsafe_allow_html=True)
-            st.caption("가운데 칩을 드래그해서 공정 순서를 정하세요 — "
-                       "소재입고(시작)·완성(끝)은 고정입니다. 공정을 "
-                       "빼려면 위 BOM 에서 행을 삭제하세요.")
-            _sel = (["소재입고"]
-                    + [l for l in _ordered
-                       if l not in ("소재입고", "완성")]
+            st.caption("칩을 드래그해서 공정 순서를 정하세요 — 투입은 "
+                       "첫 공정 대기로 시작하고, 완성(끝)은 고정입니다. "
+                       "공정을 빼려면 위 BOM 에서 행을 삭제하세요.")
+            _sel = ([l for l in _ordered
+                     if l not in ("소재입고", "완성")]
                     + ["완성"])
             if _sel:
                 _chip = ("<span style='display:inline-block;"
@@ -3866,10 +3922,17 @@ elif page == "마스터 관리":
             if rb1.button("라우팅 저장", type="primary",
                           use_container_width=True,
                           key=f"rout_save_{_bp['product_id']}"):
-                # 소재입고/완성 고정 + 공정 풀 자동 포함이라 구성
-                # 검증은 불필요 — 순서만 저장한다
+                # 완성 고정 + 공정 풀 자동 포함이라 구성 검증 불필요.
+                # 소재입고(MAT_IN)는 표시에서 폐지됐지만 데이터
+                # 호환(get_routing·기본 플로우)을 위해 자동 삽입
                 if True:
-                    _ins = []
+                    _ins = [{
+                        "product_id": _bp["product_id"], "seq": 10,
+                        "step_code": "MAT_IN", "step_name": "소재입고",
+                        "step_kind": "INHOUSE", "stage": "MATERIAL",
+                        "bom_id": None, "default_vendor": None,
+                        "confirmed": True,
+                    }]
                     for _i, _lb in enumerate(_sel):
                         _b9 = _pb_by_lbl.get(_lb)
                         if _b9:
@@ -3877,7 +3940,7 @@ elif page == "마스터 관리":
                             # 여기는 순서만 (외주 흐름으로 처리)
                             _ins.append({
                                 "product_id": _bp["product_id"],
-                                "seq": (_i + 1) * 10,
+                                "seq": (_i + 2) * 10,
                                 "step_code": "OUT",
                                 "step_name":
                                     _b9.get("raw_material_name")
@@ -3892,14 +3955,12 @@ elif page == "마스터 관리":
                         else:
                             _ins.append({
                                 "product_id": _bp["product_id"],
-                                "seq": (_i + 1) * 10,
+                                "seq": (_i + 2) * 10,
                                 "step_code": _CODE_BY_NAME.get(
                                     _lb, "STEP"),
                                 "step_name": _lb,
                                 "step_kind": "INHOUSE",
-                                "stage": ("MATERIAL"
-                                          if _lb == "소재입고"
-                                          else "PRODUCT"),
+                                "stage": "PRODUCT",
                                 "bom_id": None,
                                 "default_vendor": None,
                                 "confirmed": True,
@@ -7750,6 +7811,9 @@ elif page == "발주/입고":
                     num_cols=("입고", "잔량"),
                     strong_cols=("식별 번호",))
                 _r9, _d9 = _pairs[_rs_i if _rs_i is not None else 0]
+                fresh_keys("rcvw",
+                           (_r9["txn_id"], _r9.get("lot_number")),
+                           (f"rcv_wid_{_r9['txn_id']}",))
                 st.markdown(
                     f"##### {_d9['식별 번호']} · {_d9['자재']} — "
                     f"입고 {_d9['입고']:,.0f} · {_d9['상태']}"
@@ -8806,6 +8870,9 @@ elif page == "발주/입고":
                 _rh = _po_h.get(_r["po_id"], {})
                 _r_vendor = _po_v.get(_rh.get("vendor_id")) or "-"
                 _pend8 = float(_r.get("pending_qty") or 0)
+                # 선택·잔량이 바뀌면 입고 수량 기본값 리셋 (2026-08-27)
+                fresh_keys("rcvp", (_r["poi_id"], _pend8),
+                           (f"rcvp_qty_{_r['poi_id']}",))
                 st.markdown(
                     f"##### {_r.get('item_name')} — "
                     f"{_r.get('po_number') or _r['po_id']} · "
@@ -9164,6 +9231,9 @@ elif page == "발주/입고":
                     f"자재 선택 ({len(_dr_cands)}건)", _dr_labels,
                     key="dr_mp")
                 _dr_pick = _dr_cands[_dr_labels.index(_dr_sel)]
+                # 자재 선택이 바뀌면 입력 기본값 리셋 (2026-08-27)
+                fresh_keys("dr", _dr_pick.get("material_id"),
+                           ("dr_qty", "dr_sagup", "dr_pn", "dr_src"))
             elif (_dr_kw or "").strip():
                 # 자재 등록 경로는 마스터·발주 입고 매핑 2곳으로 통일
                 # (2026-08-19 사용자 확정 — 중구난방 등록 방지)
@@ -9538,6 +9608,9 @@ elif page == "공정 관리":
                 _sel = _bal.iloc[_w_i if _w_i is not None else 0]
                 _sel_lot, _sel_mid = _sel["lot_number"], _sel["material_id"]
                 _sel_bal = float(_sel["qty"])
+                # 소재 선택이 바뀌면 투입 입력 기본값 리셋 (2026-08-27)
+                fresh_keys("pe_in", (_sel_lot, _sel_bal),
+                           ("pe_in_pn", "pe_wo_no", "pe_in_qty"))
                 st.caption(f"선택: **{_sel_lot}** · "
                            f"{_mn_map.get(_sel_mid, _sel_mid)} · "
                            f"잔여 {_sel_bal:,.0f}")
@@ -9722,6 +9795,7 @@ elif page == "공정 관리":
                                 "step_name": _st0["step_name"],
                                 "routing_id": _st0.get("routing_id"),
                                 "location": "사내",
+                                "step_status": "WAIT",
                                 "created_by": current_user_name()}])
                             _nb = _db.fetch_one("wo_batches",
                                 f"batch_no=eq.{_wo}-A", "batch_id")
@@ -9931,7 +10005,8 @@ elif page == "공정 관리":
             # (투입 직후 '생산'이 켜져 보이던 혼선 수정, 2026-08-21)
             try:
                 _stp_open = fetch("wo_batches",
-                    "batch_no,qty,step_code,step_name,routing_id",
+                    "batch_no,qty,step_code,step_name,routing_id,"
+                    "step_status,location",
                     f"wo_id=eq.{_t['wo_id']}&status=eq.OPEN", limit=200)
             except Exception:
                 _stp_open = []
@@ -9946,18 +10021,33 @@ elif page == "공정 관리":
                         return _i9
                 return None
 
+            def _stp_state(b):
+                s = b.get("step_status")
+                if s in ("WAIT", "RUN"):
+                    return s
+                return ("RUN" if (b.get("location") or "사내")
+                        not in ("사내", "재작업") else "WAIT")
+
             _stp = []
             if _stp_open:
-                _on_idx = {i for i in (_stp_idx_of(b)
-                                       for b in _stp_open)
-                           if i is not None}
-                _max_on = max(_on_idx) if _on_idx else -1
+                # 상태 기계 표시 (2026-08-27): 진행 중=파랑,
+                # 투입 대기=주황 테두리, 지나간 공정=초록.
+                # 소재입고 칸은 폐지 — 투입 후엔 의미가 없다
+                _run_idx = {i for i in (
+                    _stp_idx_of(b) for b in _stp_open
+                    if _stp_state(b) == "RUN") if i is not None}
+                _wait_idx = {i for i in (
+                    _stp_idx_of(b) for b in _stp_open
+                    if _stp_state(b) == "WAIT")
+                    if i is not None} - _run_idx
+                _max_on = max(_run_idx | _wait_idx, default=-1)
                 for _i9, _s in enumerate(_rt):
                     if _s["step_code"] == "MAT_IN":
-                        _cls = _step_cls(
-                            False, float(_t.get("input_qty") or 0) > 0)
-                    elif _i9 in _on_idx:
+                        continue
+                    if _i9 in _run_idx:
                         _cls = "on"
+                    elif _i9 in _wait_idx:
+                        _cls = "wait"
                     elif _i9 < _max_on:
                         _cls = "done"
                     elif (_s["step_code"] == "DONE"
@@ -9970,9 +10060,8 @@ elif page == "공정 관리":
                 for _s in _rt:
                     _sc = _s["step_code"]
                     if _sc == "MAT_IN":
-                        _cls = _step_cls(
-                            False, float(_t.get("input_qty") or 0) > 0)
-                    elif (_s.get("stage") == "MATERIAL"
+                        continue   # 소재입고 칸 폐지 (2026-08-27)
+                    if (_s.get("stage") == "MATERIAL"
                           and _s.get("step_kind") == "OUTSOURCE"):
                         _ms = sum(float(e.get("qty") or 0)
                                   for e in _mat_evs
@@ -10006,14 +10095,19 @@ elif page == "공정 관리":
             st.markdown('<div class="stepper">' + "".join(
                 f'<div class="step {c}">{n}</div>' for n, c in _stp)
                 + "</div>", unsafe_allow_html=True)
-            # 다음 공정 안내 — 진행 중이면 그 공정, 아니면 첫 미완료 공정
+            # 진행/대기 안내 — 상태 기계 (2026-08-27)
             _going = [n for n, c in _stp if c == "on"]
+            _wtg = [n for n, c in _stp if c == "wait"]
             _next = [n for n, c in _stp if c == ""]
+            _cap9 = []
             if _going:
-                st.caption(f"진행 중: **{' · '.join(_going)}**"
-                           + (f" — 다음 공정: {_next[0]}" if _next else ""))
-            elif _next:
-                st.caption(f"다음 공정: **{_next[0]}**")
+                _cap9.append(f"진행 중: **{' · '.join(_going)}**")
+            if _wtg:
+                _cap9.append(f"투입 대기: **{' · '.join(_wtg)}**")
+            if not _cap9 and _next:
+                _cap9.append(f"다음 공정: **{_next[0]}**")
+            if _cap9:
+                st.caption(" · ".join(_cap9))
 
             # 외주 공정별 수량 추적 (분기 대비) — 출고·회수 누계와
             # 인수 대비 미처리 수량을 스텝 단위로 보여준다
@@ -10097,18 +10191,29 @@ elif page == "공정 관리":
                 _i = _bpos(b)
                 return _flow[_i + 1] if _i + 1 < len(_flow) else None
 
+            def _b_state(b):
+                """배치의 공정 상태 — WAIT(투입 대기)/RUN(진행 중).
+                049 이전 데이터는 위치로 역산."""
+                s = b.get("step_status")
+                if s in ("WAIT", "RUN"):
+                    return s
+                return ("RUN" if (b.get("location") or "사내")
+                        not in ("사내", "재작업") else "WAIT")
+
             def _b_action(b):
-                """배치 위치 → 가능한 처리 (위치가 액션을 결정)"""
-                if b["step_code"] == "PROD":
-                    return "완료 인수"
+                """배치 공정+상태 → 가능한 처리 (2026-08-27 상태 기계:
+                공정마다 투입(대기→진행) → 완료(→다음 공정 대기))"""
+                _stx = _b_state(b)
                 if b["step_code"] == "OUT":
-                    return ("외주 입고"
-                            if (b.get("location") or "사내")
-                            not in ("사내", "재작업") else "외주 출고")
+                    return "외주 입고" if _stx == "RUN" else "외주 출고"
+                if b["step_code"] == "PROD":
+                    return "완료 인수" if _stx == "RUN" else "공정 투입"
                 if b["step_code"] == "INSPECT":
-                    return ("재작업 복귀"
-                            if b.get("location") == "재작업" else "검사")
-                return "-"
+                    if b.get("location") == "재작업":
+                        return "재작업 복귀"
+                    return "검사" if _stx == "RUN" else "공정 투입"
+                # 사용자 정의 사내 공정
+                return "공정 완료" if _stx == "RUN" else "공정 투입"
 
             def _b_suffix():
                 """다음 가지 문자 (A~Z, AA~) — 지시 내 유일"""
@@ -10163,24 +10268,97 @@ elif page == "공정 관리":
                         "<span>행 선택 → 진행 · 부분 수량은 자동 분기(새 "
                         "가지 번호) · 계보 기록으로 회차·LOT 추적 유지"
                         "</span></div>", unsafe_allow_html=True)
+                    _ST_KO9 = {"WAIT": "투입 대기", "RUN": "진행 중"}
                     _bt_i = toss_grid([{
                         "배치": b["batch_no"],
                         "수량": float(b.get("qty") or 0),
                         "공정": b.get("step_name") or "-",
+                        "상태": _ST_KO9.get(_b_state(b), "-"),
                         "위치": b.get("location") or "사내",
                         "다음 처리": _b_action(b),
                     } for b in _bat_open],
                         key=f"bt_grid_{_t['wo_id']}",
+                        badge_cols=("상태",),
                         num_cols=("수량",),
                         strong_cols=("배치",))
                     _sb = _bat_open[_bt_i if _bt_i is not None else 0]
                     _sb_qty = float(_sb.get("qty") or 0)
                     _sb_act = _b_action(_sb)
-                    _bs1, _bs2 = st.columns([3, 1])
+                    # 선택/수량/상태가 바뀌면 입력 기본값 리셋
+                    # (이전 선택의 입력 잔존 방지, 2026-08-27)
+                    fresh_keys(f"bt_{_t['wo_id']}",
+                        (_sb["batch_id"], _sb_qty,
+                         _b_state(_sb), _sb.get("location")),
+                        tuple(f"bt_{p}_{_sb['batch_id']}" for p in (
+                            "rq", "sq", "dq", "oq", "od", "iq",
+                            "ip", "ir", "is", "it", "ib", "mg")))
+                    _bs1, _bs2, _bs3 = st.columns([2.6, 0.8, 0.8])
                     _bs1.markdown(
                         f"**{_sb['batch_no']}** · {_sb_qty:,.0f} EA · "
                         f"{_sb.get('step_name') or '-'} · "
-                        f"{_sb.get('location') or '사내'} → **{_sb_act}**")
+                        f"{_ST_KO9.get(_b_state(_sb), '-')}"
+                        f"({_sb.get('location') or '사내'}) → "
+                        f"**{_sb_act}**")
+                    # ── 이 공정 취소 (오입력 정정 — 직전 투입만) ──
+                    _cx9_able = False
+                    _cx9_le = None
+                    if _b_state(_sb) == "RUN":
+                        try:
+                            _lev9 = fetch("wo_events",
+                                "event_id,event_type,qty",
+                                f"batch_id=eq.{_sb['batch_id']}"
+                                "&order=event_id.desc", limit=1)
+                        except Exception:
+                            _lev9 = []
+                        _cx9_le = _lev9[0] if _lev9 else None
+                        _cx9_able = bool(
+                            _cx9_le and _cx9_le["event_type"]
+                            in ("STEP_START", "OUT_SEND"))
+                    _cx9_k = f"bt_cx_{_sb['batch_id']}"
+                    if _bs3.button(
+                            "공정 취소", disabled=not _cx9_able,
+                            use_container_width=True,
+                            help=("방금 기록한 공정 투입(외주 출고)을 "
+                                  "되돌려 투입 대기로 복귀합니다"
+                                  if _cx9_able else
+                                  "취소 불가 — 진행 중 배치의 마지막 "
+                                  "기록이 공정 투입일 때만 가능합니다 "
+                                  "(이후 처리·분기가 있으면 추적성 "
+                                  "보호를 위해 차단)"),
+                            key=_cx9_k):
+                        st.session_state[f"cfm_{_cx9_k}"] = True
+                    if st.session_state.get(f"cfm_{_cx9_k}") \
+                            and confirm_gate(_cx9_k,
+                                f"{_sb['batch_no']} 의 "
+                                f"{_sb.get('step_name')} 투입을 "
+                                "취소하고 투입 대기로 되돌립니다."
+                                + (" 외주 출고 취소이므로 업체에 의뢰 "
+                                   "취소를 통보하세요."
+                                   if (_cx9_le or {}).get("event_type")
+                                   == "OUT_SEND" else "")
+                                + " 실행할까요?"):
+                        _cx9_out = ((_cx9_le or {}).get("event_type")
+                                    == "OUT_SEND")
+                        _bat_update(_sb["batch_id"],
+                                    {"step_status": "WAIT",
+                                     "location": "사내"})
+                        _wo_apply(
+                            ({"outsource_qty": max(0.0,
+                                float(_t.get("outsource_qty") or 0)
+                                - _sb_qty)} if _cx9_out else {}),
+                            event={"event_type": "STEP_CANCEL",
+                                   "qty": _sb_qty,
+                                   "routing_id": _sb.get("routing_id"),
+                                   "step_name": _sb.get("step_name"),
+                                   "batch_id": _sb["batch_id"],
+                                   "detail": {"batch_no":
+                                              _sb["batch_no"],
+                                              "cancelled":
+                                              (_cx9_le or {}).get(
+                                                  "event_type")}},
+                            msg=f"{_sb['batch_no']} "
+                                f"{_sb.get('step_name')} 투입 취소 — "
+                                "투입 대기로 복귀")
                     # 공정 이동표 — 배치 실물 부착용 (2026-08-21)
                     from utils.label_generator import batch_labels
                     from datetime import date as _btl_d
@@ -10203,8 +10381,99 @@ elif page == "공정 관리":
                              "때마다 새로 발행해 교체하세요.",
                         key=f"bt_lbl_{_sb['batch_id']}")
 
+                    # ── 공정 투입 (대기 → 진행, 부분 = 분기) ──
+                    if _sb_act == "공정 투입":
+                        _stn9 = _sb.get("step_name") or "-"
+                        st.caption(
+                            f"**{_stn9}** 공정을 시작합니다 — 투입한 "
+                            "수량만 진행 중으로 분기되고, 남은 수량은 "
+                            "투입 대기에 남습니다.")
+                        _bq = st.number_input("투입 수량", 0.0, _sb_qty,
+                            _sb_qty, 1.0, key=f"bt_sq_{_sb['batch_id']}")
+                        _ci1, _ci2 = st.columns(2)
+                        if _ci1.button(f"공정 투입 ({_bq:,.0f})",
+                                type="primary", disabled=_bq <= 0,
+                                use_container_width=True,
+                                key=f"bt_s_btn_{_sb['batch_id']}"):
+                            _no, _nid = _bat_take(
+                                _sb, _bq, {"step_status": "RUN"})
+                            _wo_apply({},
+                                event={"event_type": "STEP_START",
+                                       "qty": _bq,
+                                       "routing_id":
+                                           _sb.get("routing_id"),
+                                       "step_name": _stn9,
+                                       "batch_id": _nid,
+                                       "detail": {"batch_no": _no}},
+                                msg=f"{_no} {_stn9} 투입 "
+                                    f"{_bq:,.0f} EA — 진행 중")
+                        # 대기 개념이 필요 없는 사내 공정은 한번에
+                        if (_sb["step_code"] not in
+                                ("OUT", "PROD", "INSPECT")
+                                and _ci2.button(
+                                    f"투입+완료 한번에 ({_bq:,.0f})",
+                                    disabled=_bq <= 0,
+                                    use_container_width=True,
+                                    help="공정 시작과 완료를 한 번에 "
+                                         "기록 — 다음 공정 대기로 "
+                                         "넘어갑니다",
+                                    key=f"bt_sd_btn_"
+                                        f"{_sb['batch_id']}")):
+                            _nx = _bnext(_sb)
+                            _no, _nid = _bat_take(_sb, _bq, {
+                                "step_code": _nx["step_code"],
+                                "step_name": _nx["step_name"],
+                                "routing_id": _nx.get("routing_id"),
+                                "location": "사내",
+                                "step_status": "WAIT"})
+                            _wo_apply({},
+                                event={"event_type": "STEP_DONE",
+                                       "qty": _bq,
+                                       "routing_id":
+                                           _sb.get("routing_id"),
+                                       "step_name": _stn9,
+                                       "batch_id": _nid,
+                                       "detail": {"batch_no": _no,
+                                                  "oneshot": True}},
+                                msg=f"{_no} {_stn9} 완료 "
+                                    f"{_bq:,.0f} EA → "
+                                    f"{_nx['step_name']} 대기")
+
+                    # ── 공정 완료 (사내 공정: 진행 → 다음 공정 대기) ──
+                    elif _sb_act == "공정 완료":
+                        _nx0 = _bnext(_sb)
+                        st.caption(
+                            f"**{_sb.get('step_name')}** 완료분을 "
+                            f"{(_nx0 or {}).get('step_name') or '다음 공정'}"
+                            " 대기로 넘깁니다 — 부분 완료 시 잔량은 "
+                            "진행 중에 남습니다.")
+                        _bq = st.number_input("완료 수량", 0.0, _sb_qty,
+                            _sb_qty, 1.0, key=f"bt_dq_{_sb['batch_id']}")
+                        if st.button(f"공정 완료 ({_bq:,.0f})",
+                                type="primary", disabled=_bq <= 0,
+                                key=f"bt_d_btn_{_sb['batch_id']}"):
+                            _nx = _bnext(_sb)
+                            _no, _nid = _bat_take(_sb, _bq, {
+                                "step_code": _nx["step_code"],
+                                "step_name": _nx["step_name"],
+                                "routing_id": _nx.get("routing_id"),
+                                "location": "사내",
+                                "step_status": "WAIT"})
+                            _wo_apply({},
+                                event={"event_type": "STEP_DONE",
+                                       "qty": _bq,
+                                       "routing_id":
+                                           _sb.get("routing_id"),
+                                       "step_name":
+                                           _sb.get("step_name"),
+                                       "batch_id": _nid,
+                                       "detail": {"batch_no": _no}},
+                                msg=f"{_no} {_sb.get('step_name')} "
+                                    f"완료 {_bq:,.0f} EA → "
+                                    f"{_nx['step_name']} 대기")
+
                     # ── 완료 인수 (배치: 생산 → 다음 공정 대기) ──
-                    if _sb_act == "완료 인수":
+                    elif _sb_act == "완료 인수":
                         _nx0 = _bnext(_sb)
                         st.caption(
                             "MES 생산 완료분을 인수합니다 — **인수한 수량만 "
@@ -10221,7 +10490,8 @@ elif page == "공정 관리":
                                 "step_code": _nx["step_code"],
                                 "step_name": _nx["step_name"],
                                 "routing_id": _nx.get("routing_id"),
-                                "location": "사내"})
+                                "location": "사내",
+                                "step_status": "WAIT"})
                             _wo_apply(
                                 {"received_qty":
                                  float(_t.get("received_qty") or 0) + _bq},
@@ -10279,7 +10549,9 @@ elif page == "공정 관리":
                             from utils.label_generator import (
                                 outsource_request_html)
                             _no, _nid = _bat_take(_sb, _bq,
-                                                  {"location": _bv})
+                                                  {"location": _bv,
+                                                   "step_status":
+                                                       "RUN"})
                             _doc = outsource_request_html({
                                 "vendor": _bv,
                                 "process": _sb.get("step_name") or "외주",
@@ -10326,7 +10598,8 @@ elif page == "공정 관리":
                                 "step_code": _nx["step_code"],
                                 "step_name": _nx["step_name"],
                                 "routing_id": _nx.get("routing_id"),
-                                "location": "사내"})
+                                "location": "사내",
+                                "step_status": "WAIT"})
                             _wo_apply(
                                 {"outsource_in_qty":
                                  float(_t.get("outsource_in_qty") or 0)
@@ -10374,15 +10647,11 @@ elif page == "공정 관리":
                         if _i_done > 0 and not _f_pid:
                             st.error("품번이 제품 마스터와 연결되지 않아 "
                                      "완성 재고 등록이 불가합니다.")
-                        if st.button(f"검사 등록 ({_i_sum:,.0f})",
-                                     type="primary",
-                                     help=f"판정 {_i_sum:,.0f} 중 완성(합격) "
-                                          f"{_i_done:,.0f} — 합격분은 즉시 "
-                                          "완성 재고로 확정 + LOT 라벨",
-                                     disabled=not (0 < _i_sum <= _sb_qty
-                                                   and (_i_done <= 0
-                                                        or bool(_f_pid))),
-                                     key=f"bt_i_go_{_sb['batch_id']}"):
+                        def _do_inspect9(_i_pass, _i_rework, _i_scrap,
+                                         _i_tok, _i_ret):
+                            _i_done = _i_pass + _i_tok
+                            _i_sum = (_i_pass + _i_rework + _i_scrap
+                                      + _i_tok + _i_ret)
                             from utils.label_generator import (
                                 inspection_labels, finished_labels)
                             _today = _pe_date.today().isoformat()
@@ -10503,6 +10772,28 @@ elif page == "공정 관리":
                                     f"{_i_rework:,.0f} · 폐기 "
                                     f"{_i_scrap:,.0f}")
 
+                        qb1, qb2 = st.columns(2)
+                        if qb1.button(f"전량 합격 ({_sb_qty:,.0f})",
+                                use_container_width=True,
+                                help="배치 전체를 합격 판정 — 즉시 완성 "
+                                     "재고 확정 + LOT 라벨 (혼합 판정은 "
+                                     "오른쪽 상세 판정으로)",
+                                disabled=not _f_pid,
+                                key=f"bt_i_all_{_sb['batch_id']}"):
+                            _do_inspect9(_sb_qty, 0.0, 0.0, 0.0, 0.0)
+                        if qb2.button(f"검사 등록 ({_i_sum:,.0f})",
+                                type="primary",
+                                use_container_width=True,
+                                help=f"판정 {_i_sum:,.0f} 중 완성(합격) "
+                                     f"{_i_done:,.0f} — 합격분은 즉시 "
+                                     "완성 재고로 확정 + LOT 라벨",
+                                disabled=not (0 < _i_sum <= _sb_qty
+                                              and (_i_done <= 0
+                                                   or bool(_f_pid))),
+                                key=f"bt_i_go_{_sb['batch_id']}"):
+                            _do_inspect9(_i_pass, _i_rework, _i_scrap,
+                                         _i_tok, _i_ret)
+
                     # ── 재작업 복귀 (배치: 재작업 → 검사 대기) ──
                     elif _sb_act == "재작업 복귀":
                         _bq = st.number_input("복귀 수량", 0.0, _sb_qty,
@@ -10511,7 +10802,9 @@ elif page == "공정 관리":
                                      type="primary", disabled=_bq <= 0,
                                      key=f"bt_rw_btn_{_sb['batch_id']}"):
                             _no, _nid = _bat_take(_sb, _bq,
-                                                  {"location": "사내"})
+                                                  {"location": "사내",
+                                                   "step_status":
+                                                       "WAIT"})
                             _wo_apply(
                                 {"rework_in_qty":
                                  float(_t.get("rework_in_qty") or 0) + _bq},
@@ -10524,9 +10817,11 @@ elif page == "공정 관리":
                     # ── 배치 합치기 (같은 지시 · 같은 공정·위치만) ──
                     _mg_pool = [b for b in _bat_open
                                 if (b["step_code"], b.get("routing_id"),
-                                    b.get("location") or "사내")
+                                    b.get("location") or "사내",
+                                    _b_state(b))
                                 == (_sb["step_code"], _sb.get("routing_id"),
-                                    _sb.get("location") or "사내")]
+                                    _sb.get("location") or "사내",
+                                    _b_state(_sb))]
                     if len(_mg_pool) >= 2:
                         with st.expander(
                                 f"배치 합치기 — {_sb.get('step_name')} · "
@@ -10564,6 +10859,7 @@ elif page == "공정 관리":
                                         "routing_id": _sb.get("routing_id"),
                                         "location": _sb.get("location")
                                                     or "사내",
+                                        "step_status": _b_state(_sb),
                                         "created_by": current_user_name()}])
                                     _mg_new = _db.fetch_one("wo_batches",
                                         f"batch_no=eq.{_mg_no}", "batch_id")
@@ -10596,6 +10892,24 @@ elif page == "공정 관리":
                                        "완성 LOT 번호**로 출고까지 이어집니다.")
                         else:
                             st.caption("계보 없음")
+
+                    # ── 투입 전체 취소 안내 (오입력 정정 위치 표시) ──
+                    _dn9 = sum(float(_t.get(k) or 0) for k in
+                               ("received_qty", "outsource_qty",
+                                "pass_qty", "tokusai_qty", "scrap_qty",
+                                "rework_qty", "output_qty",
+                                "return_qty"))
+                    if current_user().get("role") == "admin":
+                        if _dn9 == 0:
+                            st.caption("투입 자체가 오입력이면 아래 "
+                                       "**처리 선택 > 투입 취소**에서 "
+                                       "지시를 삭제하고 소재를 복원할 "
+                                       "수 있습니다 (관리자).")
+                        else:
+                            st.caption("투입 전체 취소 불가 — 후속 "
+                                       "처리가 이미 있어 추적성 보호를 "
+                                       "위해 차단됩니다. 공정 단위 "
+                                       "오입력은 위 [공정 취소]로.")
 
             # ── 레거시 경로: 배치가 없는 옛 지시만 수량 풀 방식 유지 ──
             _acts = []
@@ -10653,6 +10967,16 @@ elif page == "공정 관리":
                 st.divider()
                 _act = st.radio("처리 선택", _acts, horizontal=True,
                                 key=f"pe_act_{_t['wo_id']}")
+                # 지시·수량이 바뀌면 구형 패널 입력 기본값 리셋
+                # (고정 key 라 이전 지시의 값이 남던 문제, 2026-08-27)
+                fresh_keys("pe_legacy",
+                    (_t["wo_id"], _q["생산중"], _q["검사대기"],
+                     _q["외주중"], _q["재작업중"]),
+                    ("pe_rq", "pe_o_vendor", "pe_o_proc", "pe_o_qty",
+                     "pe_o_due", "pe_o_note", "pe_oi_step",
+                     "pe_oi_qty", "pe_i_pass", "pe_i_rework",
+                     "pe_i_scrap", "pe_i_tok", "pe_i_ret",
+                     "pe_rw_qty", "pe_cx_ok"))
 
                 # ── 1. 완료 인수 (생산분, 부분 가능) ──
                 if _act == "완료 인수":

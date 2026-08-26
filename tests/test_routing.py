@@ -217,16 +217,18 @@ def test_process_stepper_follows_routing(routing_db):
     assert not at.exception, [str(e.value) for e in at.exception]
 
     md = " ".join(m.value for m in at.markdown)
-    # 스테퍼가 라우팅 이름·순서로 렌더 (소재입고 → 고용화 → 생산 → 에이징)
+    # 스테퍼가 라우팅 이름·순서로 렌더 — 소재입고 칸은 폐지
+    # (2026-08-27 상태 기계: 투입 = 첫 공정 대기)
     assert '<div class="stepper">' in md
-    _i_mat = md.find(">소재입고<")
+    assert ">소재입고<" not in md, "소재입고 칸이 남아있음 (폐지됨)"
     _i_sol = md.find(">고용화<")
     _i_prod = md.find(">생산<")
     _i_age = md.find(">에이징<")
-    assert -1 not in (_i_mat, _i_sol, _i_prod, _i_age)
-    assert _i_mat < _i_sol < _i_prod < _i_age
-    # 소재 외주(고용화)는 회수 완료 → done 칸
+    assert -1 not in (_i_sol, _i_prod, _i_age)
+    assert _i_sol < _i_prod < _i_age
+    # 지나간 공정(고용화)은 done, 배치가 대기 중인 에이징은 wait 칸
     assert 'step done">고용화' in md
+    assert 'step wait">에이징' in md
     # 배치 경로 (Phase B) — 에이징 대기 배치가 선택되어 외주 출고
     # 폼이 열리고, 공정·승인 업체가 고정 표시된다
     assert "20260812-001-B" in md, "배치 처리 섹션이 렌더되지 않음"
@@ -290,22 +292,30 @@ def test_batch_split_on_partial_outsource(routing_db):
 
 def test_input_cancel_action(routing_db):
     """투입 취소 — 후속 처리 없는 투입만 관리자에게 노출, 실행 시
-    취소 이벤트 기록 + 작업지시 삭제. 배치(생산 위치)에는 인수
-    버튼이 열린다."""
-    # 후속 처리 없는 갓 투입된 지시 + 생산 위치 배치
+    취소 이벤트 기록 + 작업지시 삭제. 상태 기계(2026-08-27):
+    생산 대기 배치에는 [공정 투입], 진행 중이면 [인수 등록]."""
+    # 후속 처리 없는 갓 투입된 지시 + 생산 대기 배치
     WO_LIST[:] = [dict(WO, received_qty=0.0, status="IN_PROD")]
     WO_BATCHES[:] = [{"batch_id": 1, "batch_no": "20260812-001-A",
                       "wo_id": 9, "wo_number": "20260812-001",
                       "qty": 100.0, "step_code": "PROD",
                       "routing_id": None, "step_name": "생산",
-                      "location": "사내", "status": "OPEN"}]
+                      "location": "사내", "step_status": "WAIT",
+                      "status": "OPEN"}]
     at = _boot(routing_db)
     at.sidebar.radio[0].set_value("공정 관리")
     at.sidebar.radio[1].set_value(None)
     at.run()
     assert not at.exception, [str(e.value) for e in at.exception]
-    # 배치 경로: 인수 버튼 존재
-    assert at.button(key="bt_rq_btn_1"), "배치 인수 버튼이 없습니다"
+    # 배치 경로: 생산 대기 → 공정 투입 버튼
+    assert at.button(key="bt_s_btn_1"), "공정 투입 버튼이 없습니다"
+    # 진행 중이면 인수 버튼
+    WO_BATCHES[0]["step_status"] = "RUN"
+    at2 = _boot(routing_db)
+    at2.sidebar.radio[0].set_value("공정 관리")
+    at2.sidebar.radio[1].set_value(None)
+    at2.run()
+    assert at2.button(key="bt_rq_btn_1"), "배치 인수 버튼이 없습니다"
     # 투입 취소 radio (배치 경로에서도 유지)
     _pr = next(r for r in at.radio
                if r.options and "투입 취소" in r.options)
