@@ -605,6 +605,9 @@ def toss_df(data, *, column_config=None, hide_index=True,
     숫자 컬럼은 자동 우측 정렬·콤마, '상태' 성격 컬럼은 자동 배지.
     편집이 필요한 표(data_editor)는 대상이 아니다. (2026-08-19 통일)
     """
+    # pandas 는 페이지별 지역 import 라 전역 pd 가 없을 수 있다 —
+    # 영업 보고 직행 시 NameError (2026-08-26 수정)
+    import pandas as pd
     try:
         if type(data).__name__ == "Styler":
             data = data.data
@@ -684,6 +687,7 @@ def toss_grid(rows, *, key, badge_cols=(), num_cols=(), strong_cols=(),
     행을 클릭하면 rerun 되어 그 행 인덱스가 반환된다. AgGrid 미탑재
     (테스트 등) 시 st.dataframe 행 선택으로 폴백 — 동작 동일.
     """
+    import pandas as pd   # 전역 pd 부재 대비 (페이지별 지역 import)
     if hasattr(rows, "to_dict"):
         rows = rows.to_dict("records")
     if not rows:
