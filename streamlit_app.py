@@ -8737,13 +8737,32 @@ elif page == "발주/입고":
                         ",".join(str(i) for i in _po_ids8)), limit=300)}
                 _v_ids8 = {p.get("vendor_id") for p in _po_h.values()
                            if p.get("vendor_id")}
+                _po_g = {}
                 if _v_ids8:
-                    _po_v = {v["vendor_id"]: v["name"] for v in fetch(
-                        "vendors", "vendor_id,name",
+                    _vrows8 = fetch(
+                        "vendors", "vendor_id,name,vendor_group",
                         "vendor_id=in.({})".format(
-                            ",".join(str(i) for i in _v_ids8)), limit=300)}
+                            ",".join(str(i) for i in _v_ids8)), limit=300)
+                    _po_v = {v["vendor_id"]: v["name"]
+                             for v in _vrows8}
+                    _po_g = {v["vendor_id"]: v.get("vendor_group")
+                             for v in _vrows8}
             except Exception:
-                pass
+                _po_g = {}
+
+            # 소모품·공구·간접 발주는 입고 대기에서 제외 — 소재 흐름
+            # 안정화 우선, 확장 시 다시 노출 (2026-08-27 사용자 확정)
+            def _rcv_hide(r):
+                _g9 = _po_g.get(
+                    _po_h.get(r["po_id"], {}).get("vendor_id")) or ""
+                return (_g9 in ("MAT_CONSUMABLES", "TOOL")
+                        or _g9.startswith("INDIRECT"))
+            _hid8 = sum(1 for r in _rw if _rcv_hide(r))
+            _rw = [r for r in _rw if not _rcv_hide(r)]
+            if _hid8:
+                st.caption(f"소모품·공구 발주 {_hid8}개 라인은 입고 "
+                           "대기에서 숨김 — 발주 이력에서 확인할 수 "
+                           "있습니다.")
 
             _rq = st.text_input(
                 "입고 대기 검색", key="rcvp_q",
