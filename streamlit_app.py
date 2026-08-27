@@ -777,7 +777,10 @@ def toss_grid(rows, *, key, badge_cols=(), num_cols=(), strong_cols=(),
             headerHeight=42, rowHeight=42, suppressCellFocus=True,
             suppressColumnVirtualisation=True,
             **({"domLayout": "autoHeight"} if _auto else {}))
-        _kw2 = {} if _auto else {"height": height or 520}
+        # autoHeight 여도 iframe 은 기본 400px 를 차지해 행이 적으면
+        # 큰 공백이 남는다 — 행 수에 맞춰 iframe 높이 지정 (2026-08-28)
+        _kw2 = ({"height": 46 + 42 * (len(rows) + 1)} if _auto
+                else {"height": height or 520})
         _g = AgGrid(_df, gridOptions=gb.build(),
                     update_on=["selectionChanged"],
                     allow_unsafe_jscode=True,
@@ -10454,9 +10457,11 @@ elif page == "공정 관리":
                             f"**{_stn9}** 공정을 시작합니다 — 투입한 "
                             "수량만 진행 중으로 분기되고, 남은 수량은 "
                             "투입 대기에 남습니다.")
-                        _bq = st.number_input("투입 수량", 0.0, _sb_qty,
-                            _sb_qty, 1.0, key=f"bt_sq_{_sb['batch_id']}")
-                        _ci1, _ci2 = st.columns(2)
+                        _ci0, _ci1, _ci2 = st.columns(
+                            [1.4, 1, 1], vertical_alignment="bottom")
+                        _bq = _ci0.number_input("투입 수량", 0.0,
+                            _sb_qty, _sb_qty, 1.0,
+                            key=f"bt_sq_{_sb['batch_id']}")
                         if _ci1.button(f"공정 투입 ({_bq:,.0f})",
                                 type="primary", disabled=_bq <= 0,
                                 use_container_width=True,
@@ -10513,10 +10518,14 @@ elif page == "공정 관리":
                             f"{(_nx0 or {}).get('step_name') or '다음 공정'}"
                             " 대기로 넘깁니다 — 부분 완료 시 잔량은 "
                             "진행 중에 남습니다.")
-                        _bq = st.number_input("완료 수량", 0.0, _sb_qty,
-                            _sb_qty, 1.0, key=f"bt_dq_{_sb['batch_id']}")
-                        if st.button(f"공정 완료 ({_bq:,.0f})",
+                        _cd0, _cd1 = st.columns(
+                            [1.4, 1], vertical_alignment="bottom")
+                        _bq = _cd0.number_input("완료 수량", 0.0,
+                            _sb_qty, _sb_qty, 1.0,
+                            key=f"bt_dq_{_sb['batch_id']}")
+                        if _cd1.button(f"공정 완료 ({_bq:,.0f})",
                                 type="primary", disabled=_bq <= 0,
+                                use_container_width=True,
                                 key=f"bt_d_btn_{_sb['batch_id']}"):
                             _nx = _bnext(_sb)
                             _no, _nid = _bat_take(_sb, _bq, {
@@ -10546,10 +10555,14 @@ elif page == "공정 관리":
                             f"{(_nx0 or {}).get('step_name') or '다음 공정'} "
                             "대기로 분기**되고, 남은 수량은 생산에 남습니다. "
                             "생산되는 대로 나눠서 등록하세요.")
-                        _bq = st.number_input("완료 수량", 0.0, _sb_qty,
-                            _sb_qty, 1.0, key=f"bt_rq_{_sb['batch_id']}")
-                        if st.button(f"완료 등록 ({_bq:,.0f})",
+                        _cr0, _cr1 = st.columns(
+                            [1.4, 1], vertical_alignment="bottom")
+                        _bq = _cr0.number_input("완료 수량", 0.0,
+                            _sb_qty, _sb_qty, 1.0,
+                            key=f"bt_rq_{_sb['batch_id']}")
+                        if _cr1.button(f"완료 등록 ({_bq:,.0f})",
                                      type="primary", disabled=_bq <= 0,
+                                     use_container_width=True,
                                      key=f"bt_rq_btn_{_sb['batch_id']}"):
                             _nx = _bnext(_sb)
                             _no, _nid = _bat_take(_sb, _bq, {
@@ -10654,10 +10667,14 @@ elif page == "공정 관리":
                                    f"{_sb.get('step_name')} 완료분을 "
                                    "회수합니다 — 부분 입고 시 잔량은 외주에 "
                                    "남습니다.")
-                        _bq = st.number_input("입고 수량", 0.0, _sb_qty,
-                            _sb_qty, 1.0, key=f"bt_iq_{_sb['batch_id']}")
-                        if st.button(f"외주 입고 ({_bq:,.0f})",
+                        _cq0, _cq1 = st.columns(
+                            [1.4, 1], vertical_alignment="bottom")
+                        _bq = _cq0.number_input("입고 수량", 0.0,
+                            _sb_qty, _sb_qty, 1.0,
+                            key=f"bt_iq_{_sb['batch_id']}")
+                        if _cq1.button(f"외주 입고 ({_bq:,.0f})",
                                      type="primary", disabled=_bq <= 0,
+                                     use_container_width=True,
                                      key=f"bt_i_btn_{_sb['batch_id']}"):
                             _nx = _bnext(_sb)
                             _no, _nid = _bat_take(_sb, _bq, {
@@ -10861,10 +10878,14 @@ elif page == "공정 관리":
 
                     # ── 재작업 복귀 (배치: 재작업 → 검사 대기) ──
                     elif _sb_act == "재작업 복귀":
-                        _bq = st.number_input("복귀 수량", 0.0, _sb_qty,
-                            _sb_qty, 1.0, key=f"bt_rw_{_sb['batch_id']}")
-                        if st.button(f"재작업 복귀 ({_bq:,.0f})",
+                        _cw0, _cw1 = st.columns(
+                            [1.4, 1], vertical_alignment="bottom")
+                        _bq = _cw0.number_input("복귀 수량", 0.0,
+                            _sb_qty, _sb_qty, 1.0,
+                            key=f"bt_rw_{_sb['batch_id']}")
+                        if _cw1.button(f"재작업 복귀 ({_bq:,.0f})",
                                      type="primary", disabled=_bq <= 0,
+                                     use_container_width=True,
                                      key=f"bt_rw_btn_{_sb['batch_id']}"):
                             _no, _nid = _bat_take(_sb, _bq,
                                                   {"location": "사내",
