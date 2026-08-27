@@ -6089,10 +6089,22 @@ elif page == "출고 관리":
             "확정 시점에 이루어집니다.")
 
         st.markdown("##### 출고 리스트 담기")
+        # 회차 기준일(어떤 스케줄 잔량을 담을지)과 실제 납품일(전표·
+        # 명세서 날짜)을 분리 — 스케줄보다 빠른/늦은 출고 지원
+        # (2026-08-28 사용자 확정)
         shc1, shc2, shc3 = st.columns([1, 1, 2])
-        _sh_d = shc1.date_input("납품일", _sh_dt.today(), key="bk_date")
-        _sh_late = shc2.checkbox("지연 회차 포함", value=True, key="bk_late",
-                                 help="선택일 이전에 밀린 회차 잔량도 "
+        _sh_d = shc1.date_input("회차 기준일", _sh_dt.today(),
+                                key="bk_date",
+                                help="이 날짜까지의 납품 회차 잔량을 "
+                                     "리스트에 올립니다 — 스케줄보다 "
+                                     "일찍 출고하려면 미래 날짜로")
+        _sh_ship_d = shc2.date_input("납품일 (전표·명세서)",
+                                     _sh_dt.today(), key="bk_ship_date",
+                                     help="실제 납품하는 날짜 — 전표와 "
+                                          "거래명세서에 이 날짜가 "
+                                          "기록됩니다")
+        _sh_late = shc3.checkbox("지연 회차 포함", value=True, key="bk_late",
+                                 help="기준일 이전에 밀린 회차 잔량도 "
                                       "리스트에 올립니다")
 
         # 작성중(DRAFT) 전표에 이미 담긴 라인은 중복 등록 방지를 위해
@@ -6330,7 +6342,7 @@ elif page == "출고 관리":
                     type="primary", key="ship_reg",
                     use_container_width=True,
                     disabled=_sh_total <= 0):
-                _sd = _sh_d.isoformat()
+                _sd = _sh_ship_d.isoformat()   # 전표 날짜 = 실제 납품일
                 # 이중 클릭 가드 — 화면 구성 시점의 제외 목록은 클릭
                 # 1.4초 간격의 두 번째 실행을 못 거른다 (2026-08-18
                 # SH-20260817-01/-02 동일 전표 2건 사례). ① 시간 가드
@@ -9873,22 +9885,9 @@ elif page == "공정 관리":
             "처리합니다. 수량은 부분 처리 가능 — 상태는 자동 전환. "
             "검사 불합격은 재작업/폐기/특채로 구분.")
 
-        # ── 방금 발행한 문서 (라벨/의뢰서) — rerun 후 다운로드 유지 ──
-        if st.session_state.get("pe_docs"):
-            _pdoc = st.session_state["pe_docs"]
-            st.info(f"{_pdoc['title']} — 다운로드 후 열면 인쇄 창이 "
-                    "자동으로 뜹니다.")
-            _dcols = st.columns(len(_pdoc["files"]) + 1)
-            for _di, (_dlabel, _dfn, _dhtml) in enumerate(_pdoc["files"]):
-                _dcols[_di].download_button(
-                    _dlabel, data=_dhtml, file_name=_dfn,
-                    mime="text/html", use_container_width=True,
-                    key=f"pe_doc_dl{_di}")
-            if _dcols[-1].button("닫기", use_container_width=True,
-                                 key="pe_docs_close"):
-                del st.session_state["pe_docs"]
-                st.rerun()
-            st.divider()
+        # 검사 판정 문서 즉시 다운로드 박스는 제거 (2026-08-28 사용자
+        # 확정) — 라벨 출력은 처리 이력 > 라벨·의뢰서 재발행에서
+        st.session_state.pop("pe_docs", None)
 
         _inc_closed = st.checkbox(
             "종결된 작업지시 포함 (이력 조회·라벨 재발행)",
@@ -9907,6 +9906,26 @@ elif page == "공정 관리":
             # 작업지시 상태 리스트 — 전체 진행 상황을 보면서 행을
             # 선택(체크)해 바로 처리한다 (스크롤 선택 대체, 2026-08-12)
             def _next_hint(t1):
+                # 배치가 있으면 최대 수량 배치의 상태 기계 액션
+                # (2026-08-28 — 전부 '완료 등록'으로 보이던 문제 수정)
+                bs = _pos_map9.get(t1.get("wo_id"))
+                if bs:
+                    b = max(bs, key=lambda x: float(x.get("qty") or 0))
+                    if b.get("location") == "재작업":
+                        return "재작업 복귀"
+                    _run = (b.get("step_status") == "RUN"
+                            or (b.get("step_status")
+                                not in ("WAIT", "RUN")
+                                and (b.get("location") or "사내")
+                                != "사내"))
+                    _sc9 = b.get("step_code")
+                    if _sc9 == "OUT":
+                        return "외주 입고" if _run else "외주 출고"
+                    if _sc9 == "PROD":
+                        return "완료 등록" if _run else "공정 투입"
+                    if _sc9 == "INSPECT":
+                        return "검사" if _run else "공정 투입"
+                    return "공정 완료" if _run else "공정 투입"
                 q1 = wo_stage_qty(t1)
                 if q1["생산중"] > 0:
                     return "완료 등록"
@@ -9929,7 +9948,8 @@ elif page == "공정 관리":
                             if t1.get("wo_id")]
                 if _wo_ids9:
                     for b in fetch("wo_batches",
-                            "wo_id,qty,step_name,step_status,location",
+                            "wo_id,qty,step_code,step_name,"
+                            "step_status,location",
                             "wo_id=in.({})&status=eq.OPEN".format(
                                 ",".join(str(i) for i in _wo_ids9)),
                             limit=2000):
@@ -10811,12 +10831,11 @@ elif page == "공정 관리":
                                               f"{_t.get('w_lot') or '-'})",
                                     "created_by": current_user_name(),
                                 } if _i_done > 0 else None),
-                                docs=({"title": "검사 판정 문서",
-                                       "files": _files} if _files else None),
                                 msg=f"검사 등록 — 완성 {_i_done:,.0f} "
                                     f"(LOT {_fin_no or '-'}) · 재작업 "
                                     f"{_i_rework:,.0f} · 폐기 "
-                                    f"{_i_scrap:,.0f}")
+                                    f"{_i_scrap:,.0f} · 라벨은 처리 "
+                                    "이력 > 재발행에서 출력")
 
                         qb1, qb2 = st.columns(2)
                         if qb1.button(f"전량 합격 ({_sb_qty:,.0f})",
@@ -11293,11 +11312,10 @@ elif page == "공정 관리":
                                           f"{_t.get('w_lot') or '-'})",
                                 "created_by": current_user_name(),
                             } if _i_done > 0 else None),
-                            docs=({"title": "검사 판정 문서",
-                                   "files": _files} if _files else None),
                             msg=f"검사 등록 — 완성 {_i_done:,.0f} · "
                                 f"재작업 {_i_rework:,.0f} · 폐기 "
-                                f"{_i_scrap:,.0f} · 반품 {_i_ret:,.0f}")
+                                f"{_i_scrap:,.0f} · 반품 {_i_ret:,.0f} "
+                                "· 라벨은 처리 이력 > 재발행에서 출력")
                 # ── 5. 재작업 복귀 ──
                 elif _act == "재작업 복귀":
                     st.caption("재작업 완료분을 검사 대기로 되돌립니다 — "
