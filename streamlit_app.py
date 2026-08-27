@@ -908,10 +908,12 @@ def wo_stage_qty(t):
 
 
 EVENT_KO = {
-    "INPUT": "투입", "RECEIVE": "완료 인수",
+    "INPUT": "투입", "RECEIVE": "완료 등록",
     "OUT_SEND": "외주 출고", "OUT_RETURN": "외주 입고",
     "INSPECT": "검사", "REWORK_BACK": "재작업 복귀",
     "OUTPUT": "완성 확정",
+    "STEP_START": "공정 투입", "STEP_DONE": "공정 완료",
+    "STEP_CANCEL": "공정 취소",
     "INPUT_CANCEL": "투입 취소",
     "MAT_OUT_SEND": "소재 외주 출고", "MAT_OUT_RETURN": "소재 외주 회수",
 }
@@ -1720,7 +1722,7 @@ elif page == "마스터 관리":
                 try:
                     out["txns"] = _db.fetch("inventory_transactions",
                         "txn_id,txn_type,qty,unit,lot_number,txn_date,remark,"
-                        "material_id,product_id",
+                        "material_id,product_id,created_by",
                         f"product_id=eq.{_pid}&order=txn_id.desc", limit=15)
                 except Exception:
                     pass
@@ -2011,6 +2013,7 @@ elif page == "마스터 관리":
                         "유형": t.get("txn_type"),
                         "수량": float(t.get("qty") or 0),
                         "LOT": t.get("lot_number") or "-",
+                        "입력자": t.get("created_by") or "-",
                         "비고": t.get("remark") or "-",
                     } for t in _ft["txns"]]),
                         use_container_width=True, hide_index=True)
@@ -7665,7 +7668,7 @@ elif page == "발주/입고":
         try:
             _rcpts = fetch("inventory_transactions",
                 "txn_id,material_id,qty,unit,lot_number,ref_id,txn_date,"
-                "remark",
+                "remark,created_by",
                 "txn_type=eq.RECEIPT&material_id=not.is.null"
                 "&order=txn_date.desc,txn_id.desc", limit=300)
         except Exception:
@@ -7794,6 +7797,7 @@ elif page == "발주/입고":
                     "공정 투입": ", ".join(
                         _wo_by_lot.get(_ln, [])) or "-",
                     "발주": _po9.get("po_number") or "-",
+                    "입고자": r.get("created_by") or "-",
                 }))
             if (_bq or "").strip():
                 _q1 = _bq.strip().lower()
@@ -9865,7 +9869,7 @@ elif page == "공정 관리":
     # ════════ TAB 2: 공정 처리 (Phase E-2) ════════
     with pe_tab_proc:
         st.caption(
-            "작업지시를 선택해 **완료 인수 → 외주 → 검사 → 완성 확정**을 "
+            "작업지시를 선택해 **공정 투입 → 완료 등록 → 외주 → 검사 → 완성 확정**을 "
             "처리합니다. 수량은 부분 처리 가능 — 상태는 자동 전환. "
             "검사 불합격은 재작업/폐기/특채로 구분.")
 
@@ -9905,7 +9909,7 @@ elif page == "공정 관리":
             def _next_hint(t1):
                 q1 = wo_stage_qty(t1)
                 if q1["생산중"] > 0:
-                    return "완료 인수"
+                    return "완료 등록"
                 if q1["외주중"] > 0:
                     return "외주 입고"
                 if q1["재작업중"] > 0:
@@ -9916,6 +9920,48 @@ elif page == "공정 관리":
                     return "완성 확정"
                 return "-"
 
+            # 배치 위치 요약 — 지시 단위 상태(생산중 등) 대신 배치가
+            # 실제로 있는 공정·상태를 보여준다 (2026-08-27: MRG4-20
+            # 생산 대기가 '생산중'으로 보이던 혼선 수정)
+            _pos_map9 = {}
+            try:
+                _wo_ids9 = [t1["wo_id"] for t1 in _pe_pool
+                            if t1.get("wo_id")]
+                if _wo_ids9:
+                    for b in fetch("wo_batches",
+                            "wo_id,qty,step_name,step_status,location",
+                            "wo_id=in.({})&status=eq.OPEN".format(
+                                ",".join(str(i) for i in _wo_ids9)),
+                            limit=2000):
+                        _pos_map9.setdefault(
+                            b["wo_id"], []).append(b)
+            except Exception:
+                pass
+
+            def _wo_pos9(t1):
+                bs = _pos_map9.get(t1.get("wo_id"))
+                if not bs:
+                    return status_ko(wo_derive_status(t1))
+                agg = {}
+                for b in bs:
+                    if b.get("location") == "재작업":
+                        k = "재작업 대기"
+                    else:
+                        _run = (b.get("step_status") == "RUN"
+                                or (b.get("step_status")
+                                    not in ("WAIT", "RUN")
+                                    and (b.get("location") or "사내")
+                                    != "사내"))
+                        k = (f"{b.get('step_name') or '-'} "
+                             + ("진행" if _run else "대기"))
+                    agg[k] = agg.get(k, 0) + float(b.get("qty") or 0)
+                _ps = sorted(agg.items(), key=lambda x: -x[1])
+                _txt = " · ".join(f"{k} {v:,.0f}"
+                                  for k, v in _ps[:2])
+                if len(_ps) > 2:
+                    _txt += f" 외 {len(_ps) - 2}"
+                return _txt
+
             _p_i = toss_grid([{
                 "지시번호": t1["wo_number"],
                 "품번": t1.get("pn") or "-",
@@ -9924,7 +9970,7 @@ elif page == "공정 관리":
                 "외주중": float(wo_stage_qty(t1)["외주중"]),
                 "검사대기": float(wo_stage_qty(t1)["검사대기"]),
                 "완성": float(wo_stage_qty(t1)["완성"]),
-                "상태": status_ko(wo_derive_status(t1)),
+                "상태": _wo_pos9(t1),
                 "다음 처리": _next_hint(t1),
             } for t1 in _pe_pool],
                 key="pe_proc_grid",
@@ -10207,7 +10253,7 @@ elif page == "공정 관리":
                 if b["step_code"] == "OUT":
                     return "외주 입고" if _stx == "RUN" else "외주 출고"
                 if b["step_code"] == "PROD":
-                    return "완료 인수" if _stx == "RUN" else "공정 투입"
+                    return "완료 등록" if _stx == "RUN" else "공정 투입"
                 if b["step_code"] == "INSPECT":
                     if b.get("location") == "재작업":
                         return "재작업 복귀"
@@ -10473,16 +10519,16 @@ elif page == "공정 관리":
                                     f"{_nx['step_name']} 대기")
 
                     # ── 완료 인수 (배치: 생산 → 다음 공정 대기) ──
-                    elif _sb_act == "완료 인수":
+                    elif _sb_act == "완료 등록":
                         _nx0 = _bnext(_sb)
                         st.caption(
-                            "MES 생산 완료분을 인수합니다 — **인수한 수량만 "
+                            "MES 생산 완료분을 완료 등록합니다 — **등록한 수량만 "
                             f"{(_nx0 or {}).get('step_name') or '다음 공정'} "
                             "대기로 분기**되고, 남은 수량은 생산에 남습니다. "
-                            "생산되는 대로 나눠서 인수하세요.")
-                        _bq = st.number_input("인수 수량", 0.0, _sb_qty,
+                            "생산되는 대로 나눠서 등록하세요.")
+                        _bq = st.number_input("완료 수량", 0.0, _sb_qty,
                             _sb_qty, 1.0, key=f"bt_rq_{_sb['batch_id']}")
-                        if st.button(f"인수 등록 ({_bq:,.0f})",
+                        if st.button(f"완료 등록 ({_bq:,.0f})",
                                      type="primary", disabled=_bq <= 0,
                                      key=f"bt_rq_btn_{_sb['batch_id']}"):
                             _nx = _bnext(_sb)
@@ -10498,7 +10544,7 @@ elif page == "공정 관리":
                                 event={"event_type": "RECEIVE", "qty": _bq,
                                        "batch_id": _nid,
                                        "detail": {"batch_no": _no}},
-                                msg=f"{_no} 인수 {_bq:,.0f} EA → "
+                                msg=f"{_no} 완료 등록 {_bq:,.0f} EA → "
                                     f"{_nx['step_name']} 대기")
 
                     # ── 외주 출고 (배치: 공정 대기 → 거래처) ──
@@ -10914,7 +10960,7 @@ elif page == "공정 관리":
             # ── 레거시 경로: 배치가 없는 옛 지시만 수량 풀 방식 유지 ──
             _acts = []
             if not _bat_open and _q["생산중"] > 0:
-                _acts.append("완료 인수")
+                _acts.append("완료 등록")
             # 라우팅이 정의된 제품은 공정 순차 강제 — 인수 누계 전량이
             # 각 외주 공정을 순서대로 통과해야 검사가 열린다. 수량 분기
             # (나눠서 출고·회수)는 허용하되 스텝별 누계로 추적하므로
@@ -10941,7 +10987,7 @@ elif page == "공정 관리":
                             f"출고 가능 {_pending_cap:,.0f}"
                             + ("" if _pending_cap > 0
                                else " (이전 공정 회수 대기)")
-                            + ". 인수 수량 전량이 통과해야 검사가 "
+                            + ". 완료 등록 수량 전량이 통과해야 검사가 "
                             "열립니다.")
                     else:
                         _acts.append("검사")
@@ -10951,7 +10997,7 @@ elif page == "공정 관리":
                 _acts.append("외주 입고")
             if not _bat_open and _q["재작업중"] > 0:
                 _acts.append("재작업 복귀")
-            # 오입력 정리 — 후속 처리(인수·외주·검사)가 없는 투입만 취소
+            # 오입력 정리 — 후속 처리(완료 등록·외주·검사)가 없는 투입만 취소
             # 가능. 관리자 전용.
             _dnstream = sum(float(_t.get(k) or 0) for k in
                             ("received_qty", "outsource_qty", "pass_qty",
@@ -10979,19 +11025,20 @@ elif page == "공정 관리":
                      "pe_rw_qty", "pe_cx_ok"))
 
                 # ── 1. 완료 인수 (생산분, 부분 가능) ──
-                if _act == "완료 인수":
-                    st.caption("MES 생산 완료분을 인수합니다 — 인수분은 "
-                               "검사 대기로 이동. 부분 인수 가능.")
-                    _rq = st.number_input("인수 수량", 0.0, _q["생산중"],
+                if _act == "완료 등록":
+                    st.caption("MES 생산 완료분을 완료 등록합니다 — "
+                               "등록분은 검사 대기로 이동. 부분 등록 "
+                               "가능.")
+                    _rq = st.number_input("완료 수량", 0.0, _q["생산중"],
                                           _q["생산중"], 1.0, key="pe_rq")
-                    if st.button(f"인수 등록 ({_rq:,.0f})",
+                    if st.button(f"완료 등록 ({_rq:,.0f})",
                                  type="primary", disabled=_rq <= 0,
                                  key="pe_rq_btn"):
                         _wo_apply(
                             {"received_qty":
                              float(_t.get("received_qty") or 0) + _rq},
                             event={"event_type": "RECEIVE", "qty": _rq},
-                            msg=f"인수 {_rq:,.0f} EA → 검사 대기")
+                            msg=f"완료 등록 {_rq:,.0f} EA → 검사 대기")
 
                 # ── 2. 외주 출고 (+의뢰서) ──
                 elif _act == "외주 출고":
@@ -11335,7 +11382,8 @@ elif page == "공정 관리":
             st.markdown("##### 공정 이력")
             try:
                 _evs = fetch("wo_events",
-                    "event_id,event_type,qty,detail,event_date,created_at",
+                    "event_id,event_type,qty,detail,event_date,"
+                    "created_at,created_by",
                     f"wo_number=eq.{_t['wo_number']}&order=event_id.asc",
                     limit=200)
             except Exception:
@@ -11360,6 +11408,8 @@ elif page == "공정 관리":
                         return _s
                     if e["event_type"] == "OUTPUT" and d.get("tokusai"):
                         return f"특채 포함 {float(d['tokusai']):,.0f}"
+                    if d.get("batch_no"):
+                        return f"배치 {d['batch_no']}"
                     return "-"
                 toss_df(pd.DataFrame([{
                     "일자": e.get("event_date"),
@@ -11367,6 +11417,7 @@ elif page == "공정 관리":
                                         e["event_type"]),
                     "수량": float(e.get("qty") or 0),
                     "상세": _ev_detail(e),
+                    "입력자": e.get("created_by") or "-",
                     "기록": str(e.get("created_at") or "")[:16]
                             .replace("T", " "),
                 } for e in _evs]), use_container_width=True,
@@ -11386,9 +11437,13 @@ elif page == "공정 관리":
                         "일자": e.get("event_date"),
                         "처리": EVENT_KO.get(e["event_type"],
                                              e["event_type"]),
+                        "품번": _t.get("pn") or "-",
+                        # 검사·완성은 완성 LOT(분기 배치번호) 기준
+                        "LOT": ((e.get("detail") or {}).get("lot")
+                                or (e.get("detail") or {})
+                                .get("batch_no") or "-"),
                         "수량": float(e.get("qty") or 0),
-                        "배치": ((e.get("detail") or {})
-                                 .get("batch_no") or "-"),
+                        "입력자": e.get("created_by") or "-",
                     } for e in _re_evs],
                         key=f"pe_re_grid_{_t['wo_id']}",
                         badge_cols=("처리",),
@@ -11418,9 +11473,14 @@ elif page == "공정 관리":
                                 "remark": _red.get("note", ""),
                             }))]
                     elif _re["event_type"] == "INSPECT":
+                        # 완성 LOT(분기 배치번호) 기준 (2026-08-27)
+                        _re_lot = (_red.get("lot")
+                                   or _red.get("batch_no")
+                                   or _t["wo_number"])
                         _base = {"pn": _t.get("pn"),
                                  "wo_number": _t["wo_number"],
                                  "w_lot": _t.get("w_lot"),
+                                 "lot": _re_lot,
                                  "date": _re_date}
                         _items = []
                         if float(_red.get("pass") or 0):
@@ -11445,7 +11505,7 @@ elif page == "공정 관리":
                         if float(_red.get("output") or 0):
                             _re_files += [
                                 ("완성 라벨 (단표)",
-                                 f"완성라벨_재발행_{_t['wo_number']}"
+                                 f"완성라벨_재발행_{_re_lot}"
                                  ".html",
                                  finished_labels([{**_base,
                                      "qty": float(_red["output"]),
@@ -11466,6 +11526,9 @@ elif page == "공정 관리":
                         _f_items = [{"pn": _t.get("pn"),
                                      "wo_number": _t["wo_number"],
                                      "w_lot": _t.get("w_lot"),
+                                     "lot": (_red.get("lot")
+                                             or _red.get("batch_no")
+                                             or _t["wo_number"]),
                                      "qty": _re_qty, "date": _re_date,
                                      "tokusai": float(_red.get("tokusai")
                                                       or 0)}]
@@ -11515,7 +11578,48 @@ elif page == "공정 관리":
                               - _bdf["outsource_qty"] - _bdf["pass_qty"]
                               - _bdf["scrap_qty"] - _bdf["return_qty"]
                               - _bdf["재작업중"])
-            _bdf["상태"] = [status_ko(wo_derive_status(t)) for t in _wos]
+            # 상태 = 배치 위치 요약 우선 (2026-08-27 — 지시 단위
+            # '생산중' 대신 배치가 실제로 있는 공정·상태)
+            _bpos_map = {}
+            try:
+                _bwo_ids = [t.get("wo_id") for t in _wos
+                            if t.get("wo_id")]
+                if _bwo_ids:
+                    for b in fetch("wo_batches",
+                            "wo_id,qty,step_name,step_status,location",
+                            "wo_id=in.({})&status=eq.OPEN".format(
+                                ",".join(str(i) for i in _bwo_ids)),
+                            limit=3000):
+                        _bpos_map.setdefault(
+                            b["wo_id"], []).append(b)
+            except Exception:
+                pass
+
+            def _bpos_lbl(t):
+                bs = _bpos_map.get(t.get("wo_id"))
+                if not bs:
+                    return status_ko(wo_derive_status(t))
+                agg = {}
+                for b in bs:
+                    if b.get("location") == "재작업":
+                        k = "재작업 대기"
+                    else:
+                        _run = (b.get("step_status") == "RUN"
+                                or (b.get("step_status")
+                                    not in ("WAIT", "RUN")
+                                    and (b.get("location") or "사내")
+                                    != "사내"))
+                        k = (f"{b.get('step_name') or '-'} "
+                             + ("진행" if _run else "대기"))
+                    agg[k] = agg.get(k, 0) + float(b.get("qty") or 0)
+                _ps = sorted(agg.items(), key=lambda x: -x[1])
+                _txt = " · ".join(f"{k} {v:,.0f}"
+                                  for k, v in _ps[:2])
+                if len(_ps) > 2:
+                    _txt += f" 외 {len(_ps) - 2}"
+                return _txt
+
+            _bdf["상태"] = [_bpos_lbl(t) for t in _wos]
 
             # MES 실적 연계 — 작업지시별 최종공정 누적 (참고)
             _wo_nums = list(_bdf["wo_number"].unique())

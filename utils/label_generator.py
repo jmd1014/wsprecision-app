@@ -183,9 +183,10 @@ def finished_labels(items: list, mode: str = "label") -> str:
     labels = []
     for it in items:
         rows = [
+            ("완성 LOT", it.get("lot") or "-"),
             ("수량", f"{it.get('qty', 0):,.0f} EA"),
             ("작업지시", it.get("wo_number")),
-            ("식별 번호", it.get("w_lot")),
+            ("소재 LOT", it.get("w_lot")),
             ("완성일", it.get("date")),
         ]
         if it.get("tokusai"):
