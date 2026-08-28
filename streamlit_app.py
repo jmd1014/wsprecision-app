@@ -1325,7 +1325,8 @@ if page == "홈":
                     if _cf != "전체 거래처":
                         _rows_pn = [a for a in _rows_pn
                                     if _cf in a["custs"]]
-                _cut_pn = len(_rows_pn) - 15
+                # 15행 컷 폐지 — 지연 품번이 많으면 최근 수주가
+                # 잘려 안 보였다 (2026-08-29). 전량 + 내부 스크롤
                 _pndf = pd.DataFrame([{
                     "품번": a["pn"],
                     "거래처": (next(iter(a["custs"])) if len(a["custs"]) == 1
@@ -1337,7 +1338,7 @@ if page == "홈":
                     "생산중": _wip_map.get(a["pn"], 0.0),
                     "부족": max(0.0, a["pend"] - _stock_map.get(a["pn"], 0.0)
                                - _wip_map.get(a["pn"], 0.0)),
-                } for a in _rows_pn[:15]])
+                } for a in _rows_pn])
                 toss_df(
                     _pndf.style.apply(
                         lambda r: ["color:#f04452;font-weight:700"
@@ -1352,12 +1353,9 @@ if page == "홈":
                             format="localized", width="small")
                            for c in ["미납", "완성재고", "생산중", "부족"]},
                     })
-                _cap_pn = [f"품목 {len(_agg)}종"]
+                _cap_pn = [f"품목 {len(_agg)}종 (스크롤)"]
                 if _n_late_pn:
                     _cap_pn.append(f"납기 지연 {_n_late_pn}종")
-                if _cut_pn > 0:
-                    _cap_pn.append(f"외 {_cut_pn:,}종은 수주 관리 → "
-                                   "품목별에서 확인")
                 st.caption(" · ".join(_cap_pn)
                            + " — 부족 = 미납 − 완성재고 − 생산중(진행 "
                              "작업지시)")
@@ -1452,11 +1450,16 @@ if page == "홈":
             # 품번별 = 미납 대비 어디까지 왔고 얼마나 부족한가
             # (수주 품번별과 짝 — 부족 큰 순, 2026-08-29)
             _hp_pend = {}
+            _hp_cust = {}
+            _so_cust2 = {s["so_id"]: s.get("customer") for s in _h_so}
             for _l in _h_lines:
                 _pn9 = (_l.get("canonical_pn")
                         or _l.get("customer_part_no") or "-")
                 _hp_pend[_pn9] = (_hp_pend.get(_pn9, 0)
                                   + float(_l.get("pending_qty") or 0))
+                _c9 = _so_cust2.get(_l["so_id"])
+                if _c9:
+                    _hp_cust.setdefault(_pn9, set()).add(_c9)
             _hp_stock = {p["pn"]: float(p.get("current_stock") or 0)
                          for p in _h_ps}
             _hp = {}
@@ -1479,23 +1482,38 @@ if page == "홈":
                 _stk9 = _hp_stock.get(_pn9, 0)
                 _top9 = max(r["steps"].items(),
                             key=lambda x: x[1])[0] if r["steps"] else "-"
+                _cs9 = _hp_cust.get(_pn9, set())
                 _hp_rows.append({
-                    "품번": _pn9, "미납": _pend9, "재공": r["wip"],
+                    "품번": _pn9,
+                    "거래처": (next(iter(_cs9)) if len(_cs9) == 1
+                               else (f"{len(_cs9)}개사" if _cs9
+                                     else "-")),
+                    "미납": _pend9, "재공": r["wip"],
                     "부족": max(0.0, _pend9 - _stk9 - r["wip"]),
                     "위치": _top9
                            + (f" 외 {len(r['steps']) - 1}"
                               if len(r["steps"]) > 1 else ""),
                 })
             _hp_rows.sort(key=lambda x: (-x["부족"], -x["재공"]))
-            toss_df(pd.DataFrame(_hp_rows[:15]),
+            if len(_hp_rows) > 15:
+                _hp_cu = ["전체 거래처"] + sorted(
+                    {r["거래처"] for r in _hp_rows
+                     if r["거래처"] not in ("-",)
+                     and not r["거래처"].endswith("개사")})
+                _hp_cf = st.selectbox("거래처 (공정)", _hp_cu,
+                                      key="home_wo_cust",
+                                      label_visibility="collapsed")
+                if _hp_cf != "전체 거래처":
+                    _hp_rows = [r for r in _hp_rows
+                                if r["거래처"] == _hp_cf]
+            toss_df(pd.DataFrame(_hp_rows),
                 use_container_width=True, hide_index=True,
+                height=min(430, 60 + len(_hp_rows) * 35),
                 column_config={c: st.column_config.NumberColumn(
                     format="localized", width="small")
                     for c in ["미납", "재공", "부족"]})
             st.caption("부족 = 미납 − 완성 재고 − 재공(열린 배치 합) "
-                       "— 부족 큰 품번부터 투입이 필요합니다."
-                       + (f" 외 {len(_hp_rows) - 15}품번"
-                          if len(_hp_rows) > 15 else ""))
+                       "— 부족 큰 품번부터 투입이 필요합니다.")
         elif _h_wview == "상태별":
             # 상태별 = 공정 축 병목 보기 (현황판 축약, 2026-08-29)
             _hs = {}
