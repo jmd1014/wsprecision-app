@@ -9348,10 +9348,13 @@ elif page == "공정 관리":
     import re as _pe_re
     from datetime import date as _pe_date, datetime as _pe_dt
 
-    # 진행 중 작업지시 1회 조회 — KPI/처리/현황판 공용
+    # 진행 중 작업지시 1회 조회 — KPI/처리/현황판 공용.
+    # 종결 = DONE/CLOSED/CANCELLED (기존 neq.CLOSED 는 DONE 을 못
+    # 걸러 종결 지시가 공정 처리에 남던 버그, 2026-08-28)
     try:
         _pe_all = fetch("wo_tracking", "*",
-            "status=neq.CLOSED&order=created_at.desc", limit=300)
+            "status=not.in.(DONE,CLOSED,CANCELLED)"
+            "&order=created_at.desc", limit=300)
     except Exception as e:
         st.error(f"작업지시 조회 실패: {e}"); _pe_all = []
 
@@ -9429,6 +9432,132 @@ elif page == "공정 관리":
             _walk(_r0, 0)
         return _rows
 
+    def render_wo_reissue(_t, _evs, _kp="pe"):
+        """지시의 발행 문서(의뢰서·판정/완성 라벨) 재발행 —
+        공정 처리 · LOT 추적 공용. 종결 지시의 산출물도 LOT
+        추적에서 다시 출력할 수 있다 (2026-08-28)."""
+        _re_evs = [e for e in _evs if e["event_type"]
+                   in ("OUT_SEND", "INSPECT", "OUTPUT")]
+        if _re_evs:
+            st.markdown("##### 라벨·의뢰서 재발행")
+            st.caption("발행했던 문서를 이력에서 다시 출력합니다. "
+                       "소재 입고 라벨은 발주/입고 → 입고 "
+                       "현황에서 재발행.")
+            _re_i = toss_grid([{
+                "일자": e.get("event_date"),
+                "처리": EVENT_KO.get(e["event_type"],
+                                     e["event_type"]),
+                "품번": _t.get("pn") or "-",
+                # 검사·완성은 완성 LOT(분기 배치번호) 기준
+                "LOT": ((e.get("detail") or {}).get("lot")
+                        or (e.get("detail") or {})
+                        .get("batch_no") or "-"),
+                "수량": float(e.get("qty") or 0),
+                "입력자": e.get("created_by") or "-",
+            } for e in _re_evs],
+                key=f"{_kp}_re_grid_{_t['wo_id']}",
+                badge_cols=("처리",),
+                num_cols=("수량",))
+            _re = _re_evs[_re_i if _re_i is not None else 0]
+            _red = _re.get("detail") or {}
+            _re_date = _re.get("event_date") or ""
+            _re_qty = float(_re.get("qty") or 0)
+            from utils.label_generator import (
+                outsource_request_html, inspection_labels,
+                finished_labels)
+            _re_files = []
+            if _re["event_type"] == "OUT_SEND":
+                _re_files = [("외주 의뢰서 (A4)",
+                    f"외주의뢰서_재발행_{_t['wo_number']}.html",
+                    outsource_request_html({
+                        "vendor": _red.get("vendor", "-"),
+                        "process": _red.get("process", "-"),
+                        "due_date": _red.get("due", "-"),
+                        "issue_date": _re_date,
+                        "items": [{"pn": _t.get("pn"),
+                                   "wo_number": _t["wo_number"],
+                                   "w_lot": _t.get("w_lot"),
+                                   "qty": _re_qty,
+                                   "note": _red.get("process",
+                                                    "")}],
+                        "remark": _red.get("note", ""),
+                    }))]
+            elif _re["event_type"] == "INSPECT":
+                # 완성 LOT(분기 배치번호) 기준 (2026-08-27)
+                _re_lot = (_red.get("lot")
+                           or _red.get("batch_no")
+                           or _t["wo_number"])
+                _base = {"pn": _t.get("pn"),
+                         "wo_number": _t["wo_number"],
+                         "w_lot": _t.get("w_lot"),
+                         "lot": _re_lot,
+                         "date": _re_date}
+                _items = []
+                if float(_red.get("pass") or 0):
+                    _items.append({**_base, "verdict": "합격",
+                                   "qty": float(_red["pass"])})
+                if float(_red.get("tokusai") or 0):
+                    _items.append({**_base, "verdict": "특채",
+                                   "qty":
+                                   float(_red["tokusai"])})
+                if float(_red.get("rework") or 0):
+                    _items.append({**_base, "verdict": "불합격",
+                                   "qty": float(_red["rework"]),
+                                   "note": "재작업"})
+                if float(_red.get("scrap") or 0):
+                    _items.append({**_base, "verdict": "불합격",
+                                   "qty": float(_red["scrap"]),
+                                   "note": "폐기"})
+                if float(_red.get("return") or 0):
+                    _items.append({**_base, "verdict": "반품",
+                                   "qty": float(_red["return"]),
+                                   "note": "공급처 반품"})
+                if float(_red.get("output") or 0):
+                    _re_files += [
+                        ("완성 라벨 (단표)",
+                         f"완성라벨_재발행_{_re_lot}"
+                         ".html",
+                         finished_labels([{**_base,
+                             "qty": float(_red["output"]),
+                             "tokusai":
+                             float(_red.get("tokusai") or 0)}],
+                             mode="label"))]
+                if _items:
+                    _re_files += [
+                        ("판정 라벨 (단표)",
+                         f"검사라벨_재발행_{_t['wo_number']}"
+                         ".html",
+                         inspection_labels(_items, mode="label")),
+                        ("A4 배치 (예비)",
+                         f"검사라벨_재발행_A4_{_t['wo_number']}"
+                         ".html",
+                         inspection_labels(_items, mode="a4"))]
+            elif _re["event_type"] == "OUTPUT":
+                _f_items = [{"pn": _t.get("pn"),
+                             "wo_number": _t["wo_number"],
+                             "w_lot": _t.get("w_lot"),
+                             "lot": (_red.get("lot")
+                                     or _red.get("batch_no")
+                                     or _t["wo_number"]),
+                             "qty": _re_qty, "date": _re_date,
+                             "tokusai": float(_red.get("tokusai")
+                                              or 0)}]
+                _re_files = [
+                    ("완성 라벨 (단표)",
+                     f"완성라벨_재발행_{_t['wo_number']}.html",
+                     finished_labels(_f_items, mode="label")),
+                    ("A4 배치 (예비)",
+                     f"완성라벨_재발행_A4_{_t['wo_number']}"
+                     ".html",
+                     finished_labels(_f_items, mode="a4"))]
+            if _re_files:
+                _rc = st.columns(max(2, len(_re_files)))
+                for _ri, (_rl, _rf, _rh) in enumerate(_re_files):
+                    _rc[_ri].download_button(_rl, data=_rh,
+                        file_name=_rf, mime="text/html",
+                        use_container_width=True,
+                        key=f"{_kp}_re_dl{_ri}")
+
     pe_tab_in, pe_tab_proc, pe_tab_board, pe_tab_trace = st.tabs(
         ["투입 등록", "공정 처리", "공정 현황판", "LOT 추적"])
 
@@ -9439,13 +9568,20 @@ elif page == "공정 관리":
             "추적합니다 — **소재 → 공정(외주 회차) → 완성 → 출고** 가 "
             "한 화면에 이어집니다.")
         _tq = st.text_input("추적 검색", key="tr_q",
-            placeholder="예: 20260812-003-B / W0996 / 20260812-003")
+            placeholder="예: 20260812-003-B / W0996 / 20260812-003 / "
+                        "MRG6-07 (품번)")
         if (_tq or "").strip():
             _tk = _tq.strip()
             _wos = []
             try:
                 _wos = fetch("wo_tracking", "*",
-                    f"or=(wo_number.eq.{_tk},w_lot.eq.{_tk})", limit=20)
+                    f"or=(wo_number.eq.{_tk},w_lot.eq.{_tk},"
+                    f"pn.eq.{_tk})", limit=20)
+                if not _wos:
+                    # 품번 부분 일치 (2026-08-28 — 품번 추적 지원)
+                    _wos = fetch("wo_tracking", "*",
+                        f"pn=ilike.*{_tk}*&order=created_at.desc",
+                        limit=10)
                 if not _wos:
                     # 배치번호(가지 포함)로 검색 → 소속 지시
                     _b0 = fetch("wo_batches", "wo_number",
@@ -9460,8 +9596,11 @@ elif page == "공정 관리":
             except Exception as e:
                 st.error(f"조회 실패: {e}")
             if not _wos:
-                st.info("일치하는 지시·배치·LOT 이 없습니다.")
-            for _tw in _wos:
+                st.info("일치하는 지시·배치·LOT·품번이 없습니다.")
+            if len(_wos) > 5:
+                st.caption(f"일치 {len(_wos)}건 중 최근 5건만 표시 — "
+                           "지시번호로 좁혀 검색하세요.")
+            for _tw in _wos[:5]:
                 st.markdown(f"#### {_tw['wo_number']} · "
                             f"{_tw.get('pn') or '-'} · 소재 "
                             f"{_tw.get('w_lot') or '-'}")
@@ -9565,6 +9704,11 @@ elif page == "공정 관리":
                         "내용": x.get("remark") or "-",
                     } for x in _iss], num_cols=("수량",),
                         strong_cols=("완성 LOT",))
+
+                # ⑤ 문서 재발행 — 종결 지시의 산출물도 여기서 출력
+                # (공정 처리에서 종결 지시가 빠진 대신, 2026-08-28)
+                render_wo_reissue(_tw, _tev,
+                                  f"tr_{_tw.get('wo_id')}")
                 st.divider()
 
     # ════════ TAB 1: 투입 등록 ════════
@@ -9909,16 +10053,9 @@ elif page == "공정 관리":
         # 확정) — 라벨 출력은 처리 이력 > 라벨·의뢰서 재발행에서
         st.session_state.pop("pe_docs", None)
 
-        _inc_closed = st.checkbox(
-            "종결된 작업지시 포함 (이력 조회·라벨 재발행)",
-            value=False, key="pe_inc_closed")
+        # 공정 처리는 활성 지시만 (2026-08-28 사용자 확정) — 종결
+        # 지시 조회는 공정 현황판(종결 포함), 문서 재발행은 LOT 추적
         _pe_pool = _pe_all
-        if _inc_closed:
-            try:
-                _pe_pool = fetch("wo_tracking", "*",
-                    "order=created_at.desc", limit=300)
-            except Exception as e:
-                st.error(f"작업지시 조회 실패: {e}")
 
         if not _pe_pool:
             st.info("작업지시가 없습니다 — 투입 등록에서 시작합니다.")
@@ -11495,132 +11632,82 @@ elif page == "공정 관리":
                     column_config={"수량": st.column_config.NumberColumn(
                         format="localized", width="small")})
 
-                _re_evs = [e for e in _evs if e["event_type"]
-                           in ("OUT_SEND", "INSPECT", "OUTPUT")]
-                if _re_evs:
-                    st.markdown("##### 라벨·의뢰서 재발행")
-                    st.caption("발행했던 문서를 이력에서 다시 출력합니다. "
-                               "소재 입고 라벨은 발주/입고 → 입고 "
-                               "현황에서 재발행.")
-                    _re_i = toss_grid([{
-                        "일자": e.get("event_date"),
-                        "처리": EVENT_KO.get(e["event_type"],
-                                             e["event_type"]),
-                        "품번": _t.get("pn") or "-",
-                        # 검사·완성은 완성 LOT(분기 배치번호) 기준
-                        "LOT": ((e.get("detail") or {}).get("lot")
-                                or (e.get("detail") or {})
-                                .get("batch_no") or "-"),
-                        "수량": float(e.get("qty") or 0),
-                        "입력자": e.get("created_by") or "-",
-                    } for e in _re_evs],
-                        key=f"pe_re_grid_{_t['wo_id']}",
-                        badge_cols=("처리",),
-                        num_cols=("수량",))
-                    _re = _re_evs[_re_i if _re_i is not None else 0]
-                    _red = _re.get("detail") or {}
-                    _re_date = _re.get("event_date") or ""
-                    _re_qty = float(_re.get("qty") or 0)
-                    from utils.label_generator import (
-                        outsource_request_html, inspection_labels,
-                        finished_labels)
-                    _re_files = []
-                    if _re["event_type"] == "OUT_SEND":
-                        _re_files = [("외주 의뢰서 (A4)",
-                            f"외주의뢰서_재발행_{_t['wo_number']}.html",
-                            outsource_request_html({
-                                "vendor": _red.get("vendor", "-"),
-                                "process": _red.get("process", "-"),
-                                "due_date": _red.get("due", "-"),
-                                "issue_date": _re_date,
-                                "items": [{"pn": _t.get("pn"),
-                                           "wo_number": _t["wo_number"],
-                                           "w_lot": _t.get("w_lot"),
-                                           "qty": _re_qty,
-                                           "note": _red.get("process",
-                                                            "")}],
-                                "remark": _red.get("note", ""),
-                            }))]
-                    elif _re["event_type"] == "INSPECT":
-                        # 완성 LOT(분기 배치번호) 기준 (2026-08-27)
-                        _re_lot = (_red.get("lot")
-                                   or _red.get("batch_no")
-                                   or _t["wo_number"])
-                        _base = {"pn": _t.get("pn"),
-                                 "wo_number": _t["wo_number"],
-                                 "w_lot": _t.get("w_lot"),
-                                 "lot": _re_lot,
-                                 "date": _re_date}
-                        _items = []
-                        if float(_red.get("pass") or 0):
-                            _items.append({**_base, "verdict": "합격",
-                                           "qty": float(_red["pass"])})
-                        if float(_red.get("tokusai") or 0):
-                            _items.append({**_base, "verdict": "특채",
-                                           "qty":
-                                           float(_red["tokusai"])})
-                        if float(_red.get("rework") or 0):
-                            _items.append({**_base, "verdict": "불합격",
-                                           "qty": float(_red["rework"]),
-                                           "note": "재작업"})
-                        if float(_red.get("scrap") or 0):
-                            _items.append({**_base, "verdict": "불합격",
-                                           "qty": float(_red["scrap"]),
-                                           "note": "폐기"})
-                        if float(_red.get("return") or 0):
-                            _items.append({**_base, "verdict": "반품",
-                                           "qty": float(_red["return"]),
-                                           "note": "공급처 반품"})
-                        if float(_red.get("output") or 0):
-                            _re_files += [
-                                ("완성 라벨 (단표)",
-                                 f"완성라벨_재발행_{_re_lot}"
-                                 ".html",
-                                 finished_labels([{**_base,
-                                     "qty": float(_red["output"]),
-                                     "tokusai":
-                                     float(_red.get("tokusai") or 0)}],
-                                     mode="label"))]
-                        if _items:
-                            _re_files += [
-                                ("판정 라벨 (단표)",
-                                 f"검사라벨_재발행_{_t['wo_number']}"
-                                 ".html",
-                                 inspection_labels(_items, mode="label")),
-                                ("A4 배치 (예비)",
-                                 f"검사라벨_재발행_A4_{_t['wo_number']}"
-                                 ".html",
-                                 inspection_labels(_items, mode="a4"))]
-                    elif _re["event_type"] == "OUTPUT":
-                        _f_items = [{"pn": _t.get("pn"),
-                                     "wo_number": _t["wo_number"],
-                                     "w_lot": _t.get("w_lot"),
-                                     "lot": (_red.get("lot")
-                                             or _red.get("batch_no")
-                                             or _t["wo_number"]),
-                                     "qty": _re_qty, "date": _re_date,
-                                     "tokusai": float(_red.get("tokusai")
-                                                      or 0)}]
-                        _re_files = [
-                            ("완성 라벨 (단표)",
-                             f"완성라벨_재발행_{_t['wo_number']}.html",
-                             finished_labels(_f_items, mode="label")),
-                            ("A4 배치 (예비)",
-                             f"완성라벨_재발행_A4_{_t['wo_number']}"
-                             ".html",
-                             finished_labels(_f_items, mode="a4"))]
-                    if _re_files:
-                        _rc = st.columns(max(2, len(_re_files)))
-                        for _ri, (_rl, _rf, _rh) in enumerate(_re_files):
-                            _rc[_ri].download_button(_rl, data=_rh,
-                                file_name=_rf, mime="text/html",
-                                use_container_width=True,
-                                key=f"pe_re_dl{_ri}")
+                render_wo_reissue(_t, _evs, "pe")
 
     # ════════ TAB 3: 공정 현황판 ════════
     with pe_tab_board:
+        # ── 공정별 현황 — 지금 어느 공정에 얼마가 있는지 (배치 기반,
+        # 2026-08-28 개편: 지시별 표와 중복되던 내용을 공정 축으로) ──
+        st.markdown("##### 공정별 현황")
+        try:
+            _bd_open = fetch("wo_batches",
+                "wo_number,pn,qty,step_code,step_name,"
+                "step_status,location",
+                "status=eq.OPEN", limit=2000)
+        except Exception:
+            _bd_open = []
+        if not _bd_open:
+            st.info("진행 중인 배치가 없습니다.")
+        else:
+            def _bd_state(b):
+                s = b.get("step_status")
+                if s in ("WAIT", "RUN"):
+                    return s
+                return ("RUN" if (b.get("location") or "사내")
+                        not in ("사내", "재작업") else "WAIT")
+
+            _srow = {}
+            for b in _bd_open:
+                if b.get("location") == "재작업":
+                    _k9 = "재작업"
+                else:
+                    _k9 = b.get("step_name") or b.get("step_code") or "-"
+                r = _srow.setdefault(_k9, {
+                    "시작 대기": 0.0, "진행 중": 0.0, "외주중": 0.0,
+                    "배치": 0, "품번": set(), "업체": set()})
+                q = float(b.get("qty") or 0)
+                _loc = b.get("location") or "사내"
+                if b.get("location") == "재작업":
+                    r["시작 대기"] += q
+                elif _bd_state(b) == "RUN" and _loc != "사내":
+                    r["외주중"] += q
+                    r["업체"].add(_loc)
+                elif _bd_state(b) == "RUN":
+                    r["진행 중"] += q
+                else:
+                    r["시작 대기"] += q
+                r["배치"] += 1
+                if b.get("pn"):
+                    r["품번"].add(b["pn"])
+            _k1, _k2, _k3, _k4 = st.columns(4)
+            _k1.metric("시작 대기",
+                       f"{sum(r['시작 대기'] for r in _srow.values()):,.0f}")
+            _k2.metric("진행 중 (사내)",
+                       f"{sum(r['진행 중'] for r in _srow.values()):,.0f}")
+            _k3.metric("외주중",
+                       f"{sum(r['외주중'] for r in _srow.values()):,.0f}")
+            _k4.metric("진행 배치", f"{len(_bd_open):,}개")
+            toss_table([{
+                "공정": k,
+                "시작 대기": r["시작 대기"],
+                "진행 중": r["진행 중"],
+                "외주중": r["외주중"],
+                "배치": float(r["배치"]),
+                "품번": " · ".join(sorted(r["품번"])[:3])
+                        + (f" 외 {len(r['품번']) - 3}"
+                           if len(r["품번"]) > 3 else ""),
+                "업체": " · ".join(sorted(r["업체"])) or "-",
+            } for k, r in _srow.items()],
+                num_cols=("시작 대기", "진행 중", "외주중", "배치"),
+                strong_cols=("공정",))
+
+        st.divider()
+        st.markdown("##### 지시별 상세 — 종결 지시 조회는 여기서")
         _b_closed = st.checkbox("종결 포함 보기", value=False,
-                                key="pe_board_closed")
+                                key="pe_board_closed",
+                                help="완료·종결된 작업지시까지 포함해 "
+                                     "조회합니다 — 문서 재발행은 LOT "
+                                     "추적에서")
         _wos = _pe_all
         if _b_closed:
             try:
