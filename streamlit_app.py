@@ -1199,9 +1199,17 @@ if page == "홈":
             "wo_number,pn,w_lot,input_qty,received_qty,outsource_qty,"
             "outsource_in_qty,pass_qty,tokusai_qty,rework_qty,"
             "rework_in_qty,scrap_qty,output_qty,status",
-            "status=neq.CLOSED&order=created_at.desc", limit=300)
+            "status=not.in.(DONE,CLOSED,CANCELLED)"
+            "&order=created_at.desc", limit=300)
     except Exception:
         _h_wo = []
+    # 열린 배치 — 공정 진행 품번별/상태별 뷰용 (2026-08-29)
+    try:
+        _h_bat = fetch("wo_batches",
+            "pn,qty,step_name,step_code,step_status,location",
+            "status=eq.OPEN", limit=2000)
+    except Exception:
+        _h_bat = []
     try:
         _h_ps = fetch("product_stock_v", "pn,current_stock",
             "current_stock=gt.0&order=current_stock.desc", limit=500)
@@ -1430,10 +1438,98 @@ if page == "홈":
                 st.caption(" · ".join(_so_cap))
 
     with hc2:
-        st.markdown("##### 공정 진행 (작업지시)")
-        if not _h_wo:
+        # 타이틀 먼저 + 라디오 아래 — 좌측(수주 진행)과 줄 맞춤
+        _h_wview = st.session_state.get("home_wo_view", "품번별")
+        st.markdown(f"##### 공정 진행 ({_h_wview})")
+        _h_wview = st.radio("공정 진행 보기",
+                            ["품번별", "상태별", "지시별"],
+                            horizontal=True, key="home_wo_view",
+                            label_visibility="collapsed")
+        if not _h_wo and not _h_bat:
             st.info("진행 중인 작업지시 없음 — 공정 관리에서 투입 등록으로 "
                     "시작합니다.")
+        elif _h_wview == "품번별":
+            # 품번별 = 미납 대비 어디까지 왔고 얼마나 부족한가
+            # (수주 품번별과 짝 — 부족 큰 순, 2026-08-29)
+            _hp_pend = {}
+            for _l in _h_lines:
+                _pn9 = (_l.get("canonical_pn")
+                        or _l.get("customer_part_no") or "-")
+                _hp_pend[_pn9] = (_hp_pend.get(_pn9, 0)
+                                  + float(_l.get("pending_qty") or 0))
+            _hp_stock = {p["pn"]: float(p.get("current_stock") or 0)
+                         for p in _h_ps}
+            _hp = {}
+            for b in _h_bat:
+                _pn9 = b.get("pn") or "-"
+                r = _hp.setdefault(_pn9, {"wip": 0.0, "steps": {}})
+                q = float(b.get("qty") or 0)
+                r["wip"] += q
+                _run9 = (b.get("step_status") == "RUN"
+                         or (b.get("step_status") not in ("WAIT", "RUN")
+                             and (b.get("location") or "사내")
+                             not in ("사내", "재작업")))
+                _sn9 = ("재작업" if b.get("location") == "재작업"
+                        else (b.get("step_name") or "-"))
+                _k9 = _sn9 + (" 진행" if _run9 else " 대기")
+                r["steps"][_k9] = r["steps"].get(_k9, 0) + q
+            _hp_rows = []
+            for _pn9, r in _hp.items():
+                _pend9 = _hp_pend.get(_pn9, 0)
+                _stk9 = _hp_stock.get(_pn9, 0)
+                _top9 = max(r["steps"].items(),
+                            key=lambda x: x[1])[0] if r["steps"] else "-"
+                _hp_rows.append({
+                    "품번": _pn9, "미납": _pend9, "재공": r["wip"],
+                    "부족": max(0.0, _pend9 - _stk9 - r["wip"]),
+                    "위치": _top9
+                           + (f" 외 {len(r['steps']) - 1}"
+                              if len(r["steps"]) > 1 else ""),
+                })
+            _hp_rows.sort(key=lambda x: (-x["부족"], -x["재공"]))
+            toss_df(pd.DataFrame(_hp_rows[:15]),
+                use_container_width=True, hide_index=True,
+                column_config={c: st.column_config.NumberColumn(
+                    format="localized", width="small")
+                    for c in ["미납", "재공", "부족"]})
+            st.caption("부족 = 미납 − 완성 재고 − 재공(열린 배치 합) "
+                       "— 부족 큰 품번부터 투입이 필요합니다."
+                       + (f" 외 {len(_hp_rows) - 15}품번"
+                          if len(_hp_rows) > 15 else ""))
+        elif _h_wview == "상태별":
+            # 상태별 = 공정 축 병목 보기 (현황판 축약, 2026-08-29)
+            _hs = {}
+            for b in _h_bat:
+                _sn9 = ("재작업" if b.get("location") == "재작업"
+                        else (b.get("step_name") or "-"))
+                r = _hs.setdefault(_sn9, {"대기": 0.0, "진행": 0.0,
+                                          "외주": 0.0, "pns": set()})
+                q = float(b.get("qty") or 0)
+                _loc9 = b.get("location") or "사내"
+                _run9 = (b.get("step_status") == "RUN"
+                         or (b.get("step_status") not in ("WAIT", "RUN")
+                             and _loc9 not in ("사내", "재작업")))
+                if _loc9 == "재작업" or not _run9:
+                    r["대기"] += q
+                elif _loc9 != "사내":
+                    r["외주"] += q
+                else:
+                    r["진행"] += q
+                if b.get("pn"):
+                    r["pns"].add(b["pn"])
+            toss_df(pd.DataFrame([{
+                "공정": k, "시작 대기": r["대기"],
+                "진행 중": r["진행"], "외주중": r["외주"],
+                "품번": " · ".join(sorted(r["pns"])[:2])
+                        + (f" 외 {len(r['pns']) - 2}"
+                           if len(r["pns"]) > 2 else ""),
+            } for k, r in _hs.items()]),
+                use_container_width=True, hide_index=True,
+                column_config={c: st.column_config.NumberColumn(
+                    format="localized", width="small")
+                    for c in ["시작 대기", "진행 중", "외주중"]})
+            st.caption("시작 대기가 쌓인 공정이 병목 — 처리는 공정 "
+                       "관리 → 공정 처리에서.")
         else:
             toss_df(status_style(pd.DataFrame([{
                 "작업지시": w["wo_number"], "품번": w.get("pn") or "-",
