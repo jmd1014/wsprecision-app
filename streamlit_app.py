@@ -9629,7 +9629,7 @@ elif page == "공정 관리":
                 _sel_bal = float(_sel["qty"])
                 # 소재 선택이 바뀌면 투입 입력 기본값 리셋 (2026-08-27)
                 fresh_keys("pe_in", (_sel_lot, _sel_bal),
-                           ("pe_in_pn", "pe_wo_no", "pe_in_qty"))
+                           ("pe_in_pn", "pe_wo_no"))
                 st.caption(f"선택: **{_sel_lot}** · "
                            f"{_mn_map.get(_sel_mid, _sel_mid)} · "
                            f"잔여 {_sel_bal:,.0f}")
@@ -9746,9 +9746,13 @@ elif page == "공정 관리":
                              "연결과 MES 실적 자동 연동의 키라 입력해야 "
                              "투입 등록 버튼이 열립니다")
                 with ic2:
+                    # 동적 키 — LOT·잔여가 바뀌면 기본값으로 리셋
+                    # (고정 키 + 세션 pop 방식은 리셋이 불안정,
+                    # 2026-08-28)
                     _in_qty = st.number_input("소재 투입 수량",
                         min_value=0.0, max_value=_sel_bal,
-                        value=_sel_bal, step=1.0, key="pe_in_qty")
+                        value=_sel_bal, step=1.0,
+                        key=f"pe_in_q_{_sel_lot}_{int(_sel_bal)}")
                 with ic3:
                     _exp_qty = float(round(_in_qty * _cvt)) \
                         if _cvt else _in_qty
