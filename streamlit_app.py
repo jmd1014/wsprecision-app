@@ -915,7 +915,7 @@ EVENT_KO = {
     "OUT_SEND": "외주 출고", "OUT_RETURN": "외주 입고",
     "INSPECT": "검사", "REWORK_BACK": "재작업 복귀",
     "OUTPUT": "완성 확정",
-    "STEP_START": "공정 투입", "STEP_DONE": "공정 완료",
+    "STEP_START": "공정 시작", "STEP_DONE": "공정 완료",
     "STEP_CANCEL": "공정 취소",
     "INPUT_CANCEL": "투입 취소",
     "MAT_OUT_SEND": "소재 외주 출고", "MAT_OUT_RETURN": "소재 외주 회수",
@@ -3884,7 +3884,7 @@ elif page == "마스터 관리":
                                "표시합니다.")
             _fc3.markdown(f"<span style='{_FX_CSS}'>완성</span>",
                           unsafe_allow_html=True)
-            st.caption("칩을 드래그해서 공정 순서를 정하세요 — 투입은 "
+            st.caption("칩을 드래그해서 공정 순서를 정하세요 — 소재 투입은 "
                        "첫 공정 대기로 시작하고, 완성(끝)은 고정입니다. "
                        "공정을 빼려면 위 BOM 에서 행을 삭제하세요.")
             _sel = ([l for l in _ordered
@@ -7809,7 +7809,7 @@ elif page == "발주/입고":
                     "입고": _qty9,
                     "잔량": _bal9 if _bal9 is not None else None,
                     "상태": _stat9,
-                    "공정 투입": ", ".join(
+                    "공정 시작": ", ".join(
                         _wo_by_lot.get(_ln, [])) or "-",
                     "발주": _po9.get("po_number") or "-",
                     "입고자": r.get("created_by") or "-",
@@ -7837,7 +7837,7 @@ elif page == "발주/입고":
                     f"##### {_d9['식별 번호']} · {_d9['자재']} — "
                     f"입고 {_d9['입고']:,.0f} · {_d9['상태']}"
                     + (f" · 공정: {_d9['공정 투입']}"
-                       if _d9["공정 투입"] != "-" else ""))
+                       if _d9["공정 시작"] != "-" else ""))
 
                 from utils.label_generator import receipt_labels
 
@@ -9666,14 +9666,20 @@ elif page == "공정 관리":
                                 f"product_id=in.({_bp_str})"
                                 "&archived_at=is.null&order=pn", limit=50)
                             # 미납 수주가 있는 제품 우선 정렬
+                            _open_pend = {}
                             _open_pids = set()
                             try:
-                                _open_pids = {
-                                    s["product_id"] for s in fetch(
-                                        "sales_order_items", "product_id",
+                                for s in fetch("sales_order_items",
+                                        "product_id,pending_qty",
                                         f"product_id=in.({_bp_str})"
-                                        "&pending_qty=gt.0", limit=200)
-                                    if s.get("product_id")}
+                                        "&pending_qty=gt.0", limit=200):
+                                    if s.get("product_id"):
+                                        _open_pend[s["product_id"]] = (
+                                            _open_pend.get(
+                                                s["product_id"], 0)
+                                            + float(s.get("pending_qty")
+                                                    or 0))
+                                _open_pids = set(_open_pend)
                             except Exception:
                                 pass
                             _bom_pns = sorted(
@@ -9690,7 +9696,8 @@ elif page == "공정 관리":
                                "매핑)")
                 elif _bom_pns:
                     _pn_labels = [
-                        (f"{p['pn']} ← 미납 수주 있음"
+                        (f"{p['pn']} ← 미납 "
+                         f"{_open_pend.get(p['product_id'], 0):,.0f}"
                          if p["product_id"] in _open_pids else p["pn"])
                         for p in _bom_pns]
                     _pn_sel = st.selectbox(
@@ -9732,9 +9739,12 @@ elif page == "공정 관리":
 
                 ic1, ic2, ic3 = st.columns(3)
                 with ic1:
-                    _wo_no = st.text_input("작업지시 NO",
-                        placeholder="예: 20260723-001", key="pe_wo_no",
-                        help="MES 작업지시서의 번호 — MES 실적과 자동 연결되는 키")
+                    _wo_no = st.text_input("작업지시 NO *",
+                        placeholder="예: 20260723-001 (필수)",
+                        key="pe_wo_no",
+                        help="필수 입력 — MES 작업지시서의 번호. 현장 "
+                             "연결과 MES 실적 자동 연동의 키라 입력해야 "
+                             "투입 등록 버튼이 열립니다")
                 with ic2:
                     _in_qty = st.number_input("소재 투입 수량",
                         min_value=0.0, max_value=_sel_bal,
@@ -9761,6 +9771,9 @@ elif page == "공정 관리":
                 if _wo_no and not _wo_ok:
                     st.error("작업지시 NO 형식이 다릅니다 — YYYYMMDD-NNN "
                              "(예: 20260723-001)")
+                elif not _wo_no:
+                    st.warning("작업지시 NO는 필수입니다 — 입력해야 "
+                               "투입 등록 버튼이 열립니다.")
 
                 if st.button(
                         f"투입 등록 (제품 {_in_prod_qty:,.0f})",
@@ -9884,7 +9897,7 @@ elif page == "공정 관리":
     # ════════ TAB 2: 공정 처리 (Phase E-2) ════════
     with pe_tab_proc:
         st.caption(
-            "작업지시를 선택해 **공정 투입 → 완료 등록 → 외주 → 검사 → 완성 확정**을 "
+            "작업지시를 선택해 **공정 시작 → 완료 등록 → 외주 → 검사 → 완성 확정**을 "
             "처리합니다. 수량은 부분 처리 가능 — 상태는 자동 전환. "
             "검사 불합격은 재작업/폐기/특채로 구분.")
 
@@ -9925,10 +9938,10 @@ elif page == "공정 관리":
                     if _sc9 == "OUT":
                         return "외주 입고" if _run else "외주 출고"
                     if _sc9 == "PROD":
-                        return "완료 등록" if _run else "공정 투입"
+                        return "완료 등록" if _run else "공정 시작"
                     if _sc9 == "INSPECT":
-                        return "검사" if _run else "공정 투입"
-                    return "공정 완료" if _run else "공정 투입"
+                        return "검사" if _run else "공정 시작"
+                    return "공정 완료" if _run else "공정 시작"
                 q1 = wo_stage_qty(t1)
                 if q1["생산중"] > 0:
                     return "완료 등록"
@@ -10100,7 +10113,7 @@ elif page == "공정 관리":
             _stp = []
             if _stp_open:
                 # 상태 기계 표시 (2026-08-27): 진행 중=파랑,
-                # 투입 대기=주황 테두리, 지나간 공정=초록.
+                # 시작 대기=주황 테두리, 지나간 공정=초록.
                 # 소재입고 칸은 폐지 — 투입 후엔 의미가 없다
                 _run_idx = {i for i in (
                     _stp_idx_of(b) for b in _stp_open
@@ -10172,7 +10185,7 @@ elif page == "공정 관리":
             if _going:
                 _cap9.append(f"진행 중: **{' · '.join(_going)}**")
             if _wtg:
-                _cap9.append(f"투입 대기: **{' · '.join(_wtg)}**")
+                _cap9.append(f"시작 대기: **{' · '.join(_wtg)}**")
             if not _cap9 and _next:
                 _cap9.append(f"다음 공정: **{_next[0]}**")
             if _cap9:
@@ -10261,7 +10274,7 @@ elif page == "공정 관리":
                 return _flow[_i + 1] if _i + 1 < len(_flow) else None
 
             def _b_state(b):
-                """배치의 공정 상태 — WAIT(투입 대기)/RUN(진행 중).
+                """배치의 공정 상태 — WAIT(시작 대기)/RUN(진행 중).
                 049 이전 데이터는 위치로 역산."""
                 s = b.get("step_status")
                 if s in ("WAIT", "RUN"):
@@ -10271,18 +10284,18 @@ elif page == "공정 관리":
 
             def _b_action(b):
                 """배치 공정+상태 → 가능한 처리 (2026-08-27 상태 기계:
-                공정마다 투입(대기→진행) → 완료(→다음 공정 대기))"""
+                공정마다 시작(대기→진행) → 완료(→다음 공정 대기))"""
                 _stx = _b_state(b)
                 if b["step_code"] == "OUT":
                     return "외주 입고" if _stx == "RUN" else "외주 출고"
                 if b["step_code"] == "PROD":
-                    return "완료 등록" if _stx == "RUN" else "공정 투입"
+                    return "완료 등록" if _stx == "RUN" else "공정 시작"
                 if b["step_code"] == "INSPECT":
                     if b.get("location") == "재작업":
                         return "재작업 복귀"
-                    return "검사" if _stx == "RUN" else "공정 투입"
+                    return "검사" if _stx == "RUN" else "공정 시작"
                 # 사용자 정의 사내 공정
-                return "공정 완료" if _stx == "RUN" else "공정 투입"
+                return "공정 완료" if _stx == "RUN" else "공정 시작"
 
             def _b_suffix():
                 """다음 가지 문자 (A~Z, AA~) — 지시 내 유일"""
@@ -10337,7 +10350,7 @@ elif page == "공정 관리":
                         "<span>행 선택 → 진행 · 부분 수량은 자동 분기(새 "
                         "가지 번호) · 계보 기록으로 회차·LOT 추적 유지"
                         "</span></div>", unsafe_allow_html=True)
-                    _ST_KO9 = {"WAIT": "투입 대기", "RUN": "진행 중"}
+                    _ST_KO9 = {"WAIT": "시작 대기", "RUN": "진행 중"}
                     _bt_i = toss_grid([{
                         "배치": b["batch_no"],
                         "수량": float(b.get("qty") or 0),
@@ -10368,7 +10381,7 @@ elif page == "공정 관리":
                         f"{_ST_KO9.get(_b_state(_sb), '-')}"
                         f"({_sb.get('location') or '사내'}) → "
                         f"**{_sb_act}**")
-                    # ── 이 공정 취소 (오입력 정정 — 직전 투입만) ──
+                    # ── 이 공정 취소 (오입력 정정 — 직전 시작만) ──
                     _cx9_able = False
                     _cx9_le = None
                     if _b_state(_sb) == "RUN":
@@ -10387,11 +10400,11 @@ elif page == "공정 관리":
                     if _bs3.button(
                             "공정 취소", disabled=not _cx9_able,
                             use_container_width=True,
-                            help=("방금 기록한 공정 투입(외주 출고)을 "
-                                  "되돌려 투입 대기로 복귀합니다"
+                            help=("방금 기록한 공정 시작(외주 출고)을 "
+                                  "되돌려 시작 대기로 복귀합니다"
                                   if _cx9_able else
                                   "취소 불가 — 진행 중 배치의 마지막 "
-                                  "기록이 공정 투입일 때만 가능합니다 "
+                                  "기록이 공정 시작일 때만 가능합니다 "
                                   "(이후 처리·분기가 있으면 추적성 "
                                   "보호를 위해 차단)"),
                             key=_cx9_k):
@@ -10399,8 +10412,8 @@ elif page == "공정 관리":
                     if st.session_state.get(f"cfm_{_cx9_k}") \
                             and confirm_gate(_cx9_k,
                                 f"{_sb['batch_no']} 의 "
-                                f"{_sb.get('step_name')} 투입을 "
-                                "취소하고 투입 대기로 되돌립니다."
+                                f"{_sb.get('step_name')} 시작을 "
+                                "취소하고 시작 대기로 되돌립니다."
                                 + (" 외주 출고 취소이므로 업체에 의뢰 "
                                    "취소를 통보하세요."
                                    if (_cx9_le or {}).get("event_type")
@@ -10426,8 +10439,8 @@ elif page == "공정 관리":
                                               (_cx9_le or {}).get(
                                                   "event_type")}},
                             msg=f"{_sb['batch_no']} "
-                                f"{_sb.get('step_name')} 투입 취소 — "
-                                "투입 대기로 복귀")
+                                f"{_sb.get('step_name')} 시작 취소 — "
+                                "시작 대기로 복귀")
                     # 공정 이동표 — 배치 실물 부착용 (2026-08-21)
                     from utils.label_generator import batch_labels
                     from datetime import date as _btl_d
@@ -10451,18 +10464,18 @@ elif page == "공정 관리":
                         key=f"bt_lbl_{_sb['batch_id']}")
 
                     # ── 공정 투입 (대기 → 진행, 부분 = 분기) ──
-                    if _sb_act == "공정 투입":
+                    if _sb_act == "공정 시작":
                         _stn9 = _sb.get("step_name") or "-"
                         st.caption(
-                            f"**{_stn9}** 공정을 시작합니다 — 투입한 "
+                            f"**{_stn9}** 공정을 시작합니다 — 시작한 "
                             "수량만 진행 중으로 분기되고, 남은 수량은 "
-                            "투입 대기에 남습니다.")
+                            "시작 대기에 남습니다.")
                         _ci0, _ci1, _ci2 = st.columns(
                             [1.4, 1, 1], vertical_alignment="bottom")
-                        _bq = _ci0.number_input("투입 수량", 0.0,
+                        _bq = _ci0.number_input("시작 수량", 0.0,
                             _sb_qty, _sb_qty, 1.0,
                             key=f"bt_sq_{_sb['batch_id']}")
-                        if _ci1.button(f"공정 투입 ({_bq:,.0f})",
+                        if _ci1.button(f"공정 시작 ({_bq:,.0f})",
                                 type="primary", disabled=_bq <= 0,
                                 use_container_width=True,
                                 key=f"bt_s_btn_{_sb['batch_id']}"):
@@ -10476,13 +10489,13 @@ elif page == "공정 관리":
                                        "step_name": _stn9,
                                        "batch_id": _nid,
                                        "detail": {"batch_no": _no}},
-                                msg=f"{_no} {_stn9} 투입 "
+                                msg=f"{_no} {_stn9} 시작 "
                                     f"{_bq:,.0f} EA — 진행 중")
                         # 대기 개념이 필요 없는 사내 공정은 한번에
                         if (_sb["step_code"] not in
                                 ("OUT", "PROD", "INSPECT")
                                 and _ci2.button(
-                                    f"투입+완료 한번에 ({_bq:,.0f})",
+                                    f"시작+완료 한번에 ({_bq:,.0f})",
                                     disabled=_bq <= 0,
                                     use_container_width=True,
                                     help="공정 시작과 완료를 한 번에 "
