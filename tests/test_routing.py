@@ -331,6 +331,35 @@ def test_input_cancel_action(routing_db):
     assert _ev, "INPUT_CANCEL 이벤트가 기록되지 않음"
 
 
+def test_partial_step_start_inherits_position(routing_db):
+    """부분 공정 시작 분기 — 새 배치가 부모의 공정(검사)·상태를
+    승계해야 한다 (2026-08-28: _bat_take 가 위치 필드를 승계하지 않아
+    분기 배치가 DB 기본값 PROD(생산)로 새던 사고 회귀 방지)."""
+    WO_BATCHES[:] = [{"batch_id": 1, "batch_no": "20260812-001-A",
+                      "wo_id": 9, "wo_number": "20260812-001",
+                      "qty": 420.0, "step_code": "INSPECT",
+                      "routing_id": None, "step_name": "검사",
+                      "location": "사내", "step_status": "WAIT",
+                      "status": "OPEN"}]
+    at = _boot(routing_db)
+    at.sidebar.radio[0].set_value("공정 관리")
+    at.sidebar.radio[1].set_value(None)
+    at.run()
+    assert not at.exception, [str(e.value) for e in at.exception]
+    at.number_input(key="bt_sq_1").set_value(100.0)
+    at.run()
+    at.button(key="bt_s_btn_1").click()
+    at.run()
+    assert not at.exception, [str(e.value) for e in at.exception]
+    _nb = [r for t, recs in INSERTED if t == "wo_batches"
+           for r in recs]
+    assert _nb, "분기 배치 미생성"
+    assert _nb[0]["step_code"] == "INSPECT", _nb[0]
+    assert _nb[0]["step_name"] == "검사"
+    assert _nb[0]["step_status"] == "RUN"
+    assert float(_nb[0]["qty"]) == 100.0
+
+
 def test_lot_trace_tab(routing_db):
     """LOT 추적 (Phase C) — 지시번호 검색 시 계보·타임라인 렌더."""
     at = _boot(routing_db)

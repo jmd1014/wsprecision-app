@@ -10316,17 +10316,30 @@ elif page == "공정 관리":
 
             def _bat_take(b, qty, new_fields):
                 """배치에서 qty 를 떼어 새 상태로. 전량이면 배치 이동,
-                부분이면 자동 분기(SPLIT 계보 기록). (번호, id) 반환"""
+                부분이면 자동 분기(SPLIT 계보 기록). (번호, id) 반환.
+
+                분기 배치는 **부모의 위치(공정·상태·장소)를 승계**하고
+                new_fields 만 덮어쓴다 — 호출부가 위치 필드를 안 주면
+                DB 기본값(PROD)으로 새던 구조 결함 수정 (2026-08-28,
+                20260818-001 검사 부분 시작 → 생산 분기 사고)."""
                 if qty >= float(b["qty"]) - 1e-9:
                     _bat_update(b["batch_id"], new_fields)
                     return b["batch_no"], b["batch_id"]
                 _new_no = f"{_t['wo_number']}-{_b_suffix()}"
+                _inherit = {
+                    "step_code": b.get("step_code"),
+                    "step_name": b.get("step_name"),
+                    "routing_id": b.get("routing_id"),
+                    "location": b.get("location") or "사내",
+                    "step_status": b.get("step_status") or "WAIT",
+                }
+                _inherit.update(new_fields)
                 _db.insert("wo_batches", [{
                     "batch_no": _new_no, "wo_id": _t["wo_id"],
                     "wo_number": _t["wo_number"],
                     "product_id": _t.get("product_id"),
                     "pn": _t.get("pn"), "w_lot": _t.get("w_lot"),
-                    "qty": qty, **new_fields,
+                    "qty": qty, **_inherit,
                     "created_by": current_user_name()}])
                 _nb = _db.fetch_one("wo_batches",
                                     f"batch_no=eq.{_new_no}", "batch_id")
