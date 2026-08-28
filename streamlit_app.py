@@ -11703,16 +11703,45 @@ elif page == "공정 관리":
 
         st.divider()
         st.markdown("##### 지시별 상세 — 종결 지시 조회는 여기서")
-        _b_closed = st.checkbox("종결 포함 보기", value=False,
+        _bf1, _bf2, _bf3 = st.columns([1, 1, 2])
+        _b_closed = _bf1.checkbox("종결 포함 보기", value=False,
                                 key="pe_board_closed",
                                 help="완료·종결된 작업지시까지 포함해 "
                                      "조회합니다 — 문서 재발행은 LOT "
                                      "추적에서")
         _wos = _pe_all
         if _b_closed:
+            # 종결 포함은 시간이 갈수록 쌓인다 — 기간·검색을 서버
+            # 필터로 걸어 대량에서도 조회 가능하게 (2026-08-29)
+            _b_per = _bf2.selectbox("기간",
+                ["최근 1개월", "최근 3개월", "올해", "전체"],
+                key="pe_board_period",
+                label_visibility="collapsed")
+            _b_q = _bf3.text_input("지시·품번 검색",
+                key="pe_board_q", label_visibility="collapsed",
+                placeholder="검색 — 지시번호 · 품번 · 소재 LOT")
+            _bfq = ["order=created_at.desc"]
+            from datetime import date as _bd_d, timedelta as _bd_td
+            if _b_per == "최근 1개월":
+                _bfq.append("created_at=gte."
+                            f"{(_bd_d.today() - _bd_td(days=31))}")
+            elif _b_per == "최근 3개월":
+                _bfq.append("created_at=gte."
+                            f"{(_bd_d.today() - _bd_td(days=92))}")
+            elif _b_per == "올해":
+                _bfq.append(f"created_at=gte.{_bd_d.today().year}-01-01")
+            if (_b_q or "").strip():
+                _bk = _b_q.strip()
+                _bfq.append(f"or=(wo_number.ilike.*{_bk}*,"
+                            f"pn.ilike.*{_bk}*,w_lot.ilike.*{_bk}*)")
             try:
                 _wos = fetch("wo_tracking", "*",
-                    "order=created_at.desc", limit=300)
+                             "&".join(_bfq), limit=300)
+                if len(_wos) == 300:
+                    st.warning("조회가 300건에서 잘렸습니다 — 기간을 "
+                               "좁히거나 검색어로 필터하세요.")
+                else:
+                    st.caption(f"조회 {len(_wos)}건")
             except Exception as e:
                 st.error(f"현황 조회 실패: {e}")
 
