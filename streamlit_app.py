@@ -2523,6 +2523,28 @@ elif page == "마스터 관리":
                 f"{_pd.get('raw_material_name') or '(미연결)'}** — 소재 "
                 "정보의 진실은 BOM. 자재 변경은 BOM·공정 탭의 [자재 "
                 "교체]에서.")
+            # 이미 있는 단가 정보 표시 — 마스터 단가 입력의 참고값
+            # (2026-08-31 사용자 요청: 실적·legacy 값이 보이게)
+            try:
+                _ps9 = _db.fetch_one(
+                    "product_stats", f"product_id=eq.{_pid}",
+                    "last_unit_price,last_trade_date,avg_unit_price_12m")
+            except Exception:
+                _ps9 = None
+            _ref9 = []
+            if _ps9 and float(_ps9.get("last_unit_price") or 0) > 0:
+                _ref9.append(
+                    f"최근 출고가 **{float(_ps9['last_unit_price']):,.0f}"
+                    f"원** ({_ps9.get('last_trade_date') or '-'})")
+            if _ps9 and float(_ps9.get("avg_unit_price_12m") or 0) > 0:
+                _ref9.append(f"12M 평균 "
+                             f"{float(_ps9['avg_unit_price_12m']):,.0f}원"
+                             " (참고)")
+            if float(_pd.get("sale_price") or 0) <= 0:
+                _ref9.append("마스터 단가 미입력 — 입력 전까지 최근 "
+                             "출고가가 판매가로 쓰입니다")
+            if _ref9:
+                st.caption("단가 참고: " + " · ".join(_ref9))
             # st.form — 입력마다 rerun 하지 않고 저장 때 한 번만
             with st.form(f"pd_form_{_pid}"):
                 pe1, pe2, pe3, pe4 = st.columns(4)
@@ -14012,7 +14034,7 @@ elif page == "원가 확인":
                     margin_pct = (margin / sale * 100) if (margin is not None and sale > 0) else None
 
                     m1, m2, m3, m4 = st.columns(4)
-                    m1.metric("평균 판매가 (12M)", _money(sale))
+                    m1.metric("판매가 (마스터·최근 출고 순)", _money(sale))
                     m2.metric("추정 원가", _money(cost))
                     m3.metric("마진", _money(margin) if margin is not None else "-")
                     m4.metric("마진율", _pct(margin_pct) if margin_pct is not None else "-",
