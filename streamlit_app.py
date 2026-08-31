@@ -13261,6 +13261,193 @@ elif page == "원가 확인":
         )
 
     # ════════════════════════════════════════════════
+    # 매입내역 동기화 — 구글시트 → purchase_ledger + 자재 자동 매칭
+    # (2026-08-31 신설. 확인 → 실행 2단계, 자동 overwrite 없음)
+    # ════════════════════════════════════════════════
+    def _pl_fetch_pages(table, select, filt=""):
+        """PostgREST 1,000행 캡 대응 페이지네이션 (order 필수)"""
+        rows, off = [], 0
+        while True:
+            page = fetch(table, select,
+                         (filt + "&" if filt else "")
+                         + f"order=ledger_id&offset={off}", limit=1000)
+            rows += page
+            if len(page) < 1000:
+                return rows
+            off += 1000
+
+    with st.expander("매입내역 동기화 (구글시트 → 장부 → 소재 단가 자동 반영)",
+                     expanded=False):
+        from collections import defaultdict
+
+        from db import count_rows as _cnt_rows
+        from utils import purchase_sync as _psync
+        _sh_row = None
+        try:
+            _sh_row = _db.fetch_one("app_settings",
+                                    "key=eq.purchase_sheet_id", "value")
+        except Exception:
+            pass
+        _sheet_id = ((_sh_row or {}).get("value")
+                     or _psync.DEFAULT_SHEET_ID)
+
+        # 현황
+        try:
+            _pl_last = fetch("purchase_ledger", "trade_date,synced_at",
+                             "order=trade_date.desc.nullslast", limit=1)
+            _pl_cnt = _cnt_rows("purchase_ledger")
+            _pl_matched = _pl_fetch_pages(
+                "purchase_ledger", "ledger_id,matched_material_id",
+                "matched_material_id=not.is.null")
+        except Exception as _e:
+            st.error(f"장부 현황 조회 실패: {_e}")
+            _pl_last, _pl_cnt, _pl_matched = [], "-", []
+        _sc1, _sc2, _sc3 = st.columns(3)
+        _sc1.metric("장부 총 건수",
+                    f"{_pl_cnt:,}" if isinstance(_pl_cnt, int) else "-")
+        _sc2.metric("최근 거래일",
+                    (_pl_last[0]["trade_date"] if _pl_last else "-"))
+        _sc3.metric("자재 매칭", f"{len(_pl_matched):,}건")
+        st.caption(
+            "매칭 규칙: 재질+치수+형상(환봉/육각) 완전 일치 · EA 단위 · "
+            "단가>0 인 행만 자동 연결합니다. KG 단위 매입은 환산 로직 "
+            "도입 전까지 보류(행만 추가). 시트는 '링크가 있는 모든 사용자"
+            "(뷰어)' 공유가 필요합니다.")
+
+        if st.button("① 시트 확인 (변경 미리보기)", key="cost_sync_chk"):
+            try:
+                with st.spinner("시트 읽는 중…"):
+                    _tabs9 = _psync.load_sheet_tabs(_sheet_id)
+                    _srows = []
+                    for _t9, _v9 in _tabs9:
+                        _srows += _psync.parse_month_tab(_t9, _v9)
+                    _dbkeys = defaultdict(int)
+                    for _r9 in _pl_fetch_pages(
+                            "purchase_ledger",
+                            "trade_date,vendor,item,amount"):
+                        _dbkeys[_psync.dedup_key(_r9)] += 1
+                    _seen9 = defaultdict(int)
+                    _new9 = []
+                    for _r9 in _srows:
+                        _k9 = _psync.dedup_key(_r9)
+                        _seen9[_k9] += 1
+                        if _dbkeys.get(_k9, 0) < _seen9[_k9]:
+                            _new9.append(_r9)
+                    _mrows9 = fetch(
+                        "materials",
+                        "material_id,raw_name,material_type,spec,"
+                        "archived_at",
+                        "order=material_id&archived_at=is.null",
+                        limit=1000)
+                    _km9 = _psync.build_key_mats(_mrows9)
+                    _match_n = 0
+                    _miss9 = {}
+                    for _r9 in _new9:
+                        _mid9, _why9 = _psync.match_material(
+                            _r9["item"], _r9.get("unit"),
+                            _r9.get("unit_price"), _km9)
+                        if _mid9:
+                            _match_n += 1
+                        elif _why9 in ("NOMAT", "DUP"):
+                            _miss9[_r9["item"]] = _why9
+                    st.session_state["cost_sync_preview"] = {
+                        "new": _new9, "match_n": _match_n,
+                        "miss": _miss9, "sheet": len(_srows)}
+            except Exception as _e:
+                st.error(f"시트 확인 실패: {_e}")
+                st.session_state.pop("cost_sync_preview", None)
+
+        _prev = st.session_state.get("cost_sync_preview")
+        if _prev:
+            st.info(f"시트 {_prev['sheet']:,}행 중 **신규 "
+                    f"{len(_prev['new']):,}건** — 자재 자동 매칭 예상 "
+                    f"{_prev['match_n']}건")
+            if _prev["miss"]:
+                st.caption("소재로 인식됐지만 매칭 못 하는 품명 "
+                           f"{len(_prev['miss'])}종 — 자재 등록/정리 후 "
+                           "재동기화하면 자동 연결됩니다.")
+                toss_df(pd.DataFrame(
+                    [{"매입 품명": _i, "사유": ("자재 마스터에 없음"
+                                              if _w == "NOMAT"
+                                              else "동일 규격 자재 중복")}
+                     for _i, _w in sorted(_prev["miss"].items())]),
+                    use_container_width=True, hide_index=True,
+                    height=min(300, 60 + len(_prev["miss"]) * 35))
+            if not _prev["new"]:
+                st.success("추가할 신규 행이 없습니다 — 장부가 시트와 "
+                           "일치합니다.")
+            elif st.button(f"② 동기화 실행 — {len(_prev['new']):,}건 추가",
+                           type="primary", key="cost_sync_go"):
+                try:
+                    _pnset9 = {p9["pn"] for p9 in _pl_fetch_pages(
+                        "products", "product_id,pn")}
+                except Exception:
+                    _pnset9 = set()
+                _payload9 = []
+                for _r9 in _prev["new"]:
+                    _rk9 = _r9.get("remark") or ""
+                    _pn9 = _rk9.split()[0].strip() if _rk9 else ""
+                    _payload9.append({
+                        **{k9: _r9.get(k9) for k9 in (
+                            "trade_date", "vendor", "item", "unit",
+                            "qty", "weight", "unit_price", "amount",
+                            "vat", "total", "remark")},
+                        "matched_pn": _pn9 if _pn9 in _pnset9 else None,
+                    })
+                _ins9 = 0
+                _err9 = None
+                try:
+                    for _i9 in range(0, len(_payload9), 200):
+                        _ins9 += _db.insert("purchase_ledger",
+                                            _payload9[_i9:_i9 + 200])
+                except Exception as _e:
+                    _err9 = str(_e)
+                # 자동 매칭 (기존 미매칭 행 포함 전체 재평가)
+                _upd9, _mset9 = 0, set()
+                try:
+                    _mrows9 = fetch(
+                        "materials",
+                        "material_id,raw_name,material_type,spec,"
+                        "archived_at",
+                        "order=material_id&archived_at=is.null",
+                        limit=1000)
+                    _km9 = _psync.build_key_mats(_mrows9)
+                    _bymat9 = defaultdict(list)
+                    for _r9 in _pl_fetch_pages(
+                            "purchase_ledger",
+                            "ledger_id,item,unit,unit_price",
+                            "matched_material_id=is.null"):
+                        _mid9, _why9 = _psync.match_material(
+                            _r9["item"], _r9.get("unit"),
+                            _r9.get("unit_price"), _km9)
+                        if _mid9:
+                            _bymat9[_mid9].append(_r9["ledger_id"])
+                    for _mid9, _ids9 in _bymat9.items():
+                        for _i9 in range(0, len(_ids9), 50):
+                            _ok9 = _db.update(
+                                "purchase_ledger",
+                                "ledger_id=in.("
+                                + ",".join(map(str, _ids9[_i9:_i9 + 50]))
+                                + ")",
+                                {"matched_material_id": _mid9,
+                                 "mapping_status": "AUTO_DIMS"})
+                            if _ok9:
+                                _upd9 += len(_ids9[_i9:_i9 + 50])
+                                _mset9.add(_mid9)
+                except Exception as _e:
+                    _err9 = _err9 or str(_e)
+                st.session_state.pop("cost_sync_preview", None)
+                if _err9:
+                    st.error(f"동기화 중 오류: {_err9} — 추가 {_ins9}건, "
+                             f"매칭 {_upd9}건까지 반영됨. 다시 실행하면 "
+                             "중복 없이 이어서 처리됩니다.")
+                else:
+                    st.success(f"동기화 완료 — {_ins9:,}건 추가, 자재 "
+                               f"매칭 {_upd9}건({len(_mset9)}개 자재). "
+                               "소재 단가가 즉시 원가에 반영됩니다.")
+                    st.rerun()
+
+    # ════════════════════════════════════════════════
     # 📊 매입 단가 조회 (페이지 공통 보조 위젯)
     # ════════════════════════════════════════════════
     with st.expander("📊 매입 단가 조회 (자재명/품번으로 최근 거래가 확인)",
@@ -13413,14 +13600,208 @@ elif page == "원가 확인":
                         use_container_width=True, hide_index=True)
 
     # ⚠️ / 🧮 는 참고용 진단 탭
-    tabs = st.tabs(["마진 대시보드", "품목 분석",
+    tabs = st.tabs(["제품 원가", "마진 대시보드", "품목 분석",
                     "이상치 (참고)", "BOM 재산정 (참고)",
                     "원가 편집", "통합 view"])
 
     # ════════════════════════════════════════════════
-    # Tab 1: 마진 대시보드
+    # Tab 0: 제품 원가 — 실매입 단가 기반 표준 원가 (2026-08-31 개편)
     # ════════════════════════════════════════════════
     with tabs[0]:
+        st.caption("소재비 = 매입 장부 최근가(없으면 v11 legacy 환산가) "
+                   "· 공정비 = BOM 공정행 LOT단가 기준. 매입내역 동기화 "
+                   "때마다 최신 단가로 자동 갱신됩니다.")
+        try:
+            _pm_stat = fetch(
+                "product_material_price_status_v",
+                "product_id,material_id,price_source",
+                "archived_at=is.null", limit=1000)
+        except Exception:
+            _pm_stat = []
+        if _pm_stat:
+            _ps_cnt = {}
+            for _r0 in _pm_stat:
+                _k0 = _r0.get("price_source") or "NONE"
+                _ps_cnt[_k0] = _ps_cnt.get(_k0, 0) + 1
+            _pk1, _pk2, _pk3, _pk4 = st.columns(4)
+            _pk1.metric("실매입 단가", f"{_ps_cnt.get('PURCHASE_LAST', 0)}행")
+            _pk2.metric("legacy 환산가", f"{_ps_cnt.get('LEGACY', 0)}행")
+            _pk3.metric("단가 없음", f"{_ps_cnt.get('NONE', 0)}행",
+                        delta_color="inverse")
+            _pk4.metric("사급(0원)", f"{_ps_cnt.get('NA_SAGEUP', 0)}행")
+
+        try:
+            _pc_all = fetch(
+                "product_cost_full_v",
+                "product_id,pn,item_name,customer,bom_cost_per_pc,"
+                "material_cost_per_pc,heat_cost_per_pc,"
+                "surface_cost_per_pc,outsource_cost_per_pc,"
+                "other_cost_per_pc,final_cost_per_pc,cost_source,"
+                "recent_price,avg_unit_price,margin_pct_calc,"
+                "material_rows,rows_with_no_price",
+                "archived_at=is.null&order=pn", limit=1000)
+        except Exception as _e:
+            st.error(f"원가 로드 실패: {_e}")
+            _pc_all = []
+
+        _CS_KO = {"BOM_FULL": "실단가 전체", "BOM_PARTIAL": "일부 누락",
+                  "LEGACY_ONLY": "legacy 추정", "NO_DATA": "데이터 없음"}
+        _fc1, _fc2 = st.columns([3, 1.4])
+        _pc_q = _fc1.text_input(
+            "제품 검색", placeholder="품번 · 품명 · 거래처",
+            key="cost_pc_q", label_visibility="collapsed")
+        _pc_src = _fc2.selectbox(
+            "원가 출처", ["전체"] + list(_CS_KO.values()),
+            key="cost_pc_src", label_visibility="collapsed")
+        _pc_rows = _pc_all
+        if _pc_q:
+            _q0 = _pc_q.strip().lower()
+            _pc_rows = [r for r in _pc_rows if _q0 in (
+                (r.get("pn") or "") + " " + (r.get("item_name") or "")
+                + " " + (r.get("customer") or "")).lower()]
+        if _pc_src != "전체":
+            _pc_rows = [r for r in _pc_rows
+                        if _CS_KO.get(r.get("cost_source")) == _pc_src]
+
+        if not _pc_rows:
+            st.info("조건에 맞는 제품이 없습니다.")
+        else:
+            def _f0(v):
+                try:
+                    return round(float(v))
+                except (TypeError, ValueError):
+                    return None
+
+            _grid_rows = [{
+                "품번": r.get("pn"),
+                "거래처": r.get("customer") or "-",
+                "소재비": _f0(r.get("material_cost_per_pc")),
+                "공정비": _f0((float(r.get("heat_cost_per_pc") or 0)
+                              + float(r.get("surface_cost_per_pc") or 0)
+                              + float(r.get("outsource_cost_per_pc") or 0)
+                              + float(r.get("other_cost_per_pc") or 0))),
+                "총원가": _f0(r.get("bom_cost_per_pc")),
+                "판매가": _f0(r.get("recent_price")
+                             or r.get("avg_unit_price")),
+                "마진%": (round(float(r["margin_pct_calc"]), 1)
+                          if r.get("margin_pct_calc") is not None
+                          else None),
+                "출처": _CS_KO.get(r.get("cost_source"),
+                                   r.get("cost_source") or "-"),
+            } for r in _pc_rows]
+            _sel0 = toss_grid(
+                _grid_rows, key="cost_pc_grid",
+                num_cols=("소재비", "공정비", "총원가", "판매가", "마진%"),
+                strong_cols=("품번",), badge_cols=("출처",),
+                height=min(430, 60 + len(_grid_rows) * 35))
+            st.caption(f"{len(_grid_rows):,}종 — 행을 클릭하면 원가 "
+                       "구성을 펼칩니다. '일부 누락'은 BOM 행 중 단가 "
+                       "없는 행이 있다는 뜻입니다.")
+
+            if _sel0 is not None and _sel0 < len(_pc_rows):
+                _p0 = _pc_rows[_sel0]
+                st.markdown(f"##### {_p0['pn']} — "
+                            f"{_p0.get('item_name') or ''}")
+                _m1, _m2, _m3, _m4 = st.columns(4)
+                _m1.metric("소재비/PC",
+                           f"{_f0(_p0.get('material_cost_per_pc')) or 0:,}")
+                _m2.metric("공정비/PC", f"{(_f0(_p0.get('bom_cost_per_pc')) or 0) - (_f0(_p0.get('material_cost_per_pc')) or 0):,}")
+                _m3.metric("총원가/PC",
+                           f"{_f0(_p0.get('bom_cost_per_pc')) or 0:,}")
+                _sale0 = _f0(_p0.get("recent_price")
+                             or _p0.get("avg_unit_price"))
+                _m4.metric("판매가", f"{_sale0:,}" if _sale0 else "-",
+                           (f"마진 {float(_p0['margin_pct_calc']):.1f}%"
+                            if _p0.get("margin_pct_calc") is not None
+                            else None))
+
+                # 소재행 — 단가 출처까지
+                try:
+                    _mrows0 = fetch(
+                        "product_material_price_status_v",
+                        "material_id,bom_material_name,master_raw_name,"
+                        "qty_per_pc,shared_factor,price_source,"
+                        "effective_price,purchase_price_last,"
+                        "last_purchase_date,legacy_price",
+                        f"product_id=eq.{_p0['product_id']}", limit=50)
+                except Exception:
+                    _mrows0 = []
+                if _mrows0:
+                    _PS_KO = {"PURCHASE_LAST": "실매입 최근가",
+                              "PURCHASE_3M": "실매입 3M평균",
+                              "PURCHASE_12M": "실매입 12M평균",
+                              "LEGACY": "legacy 환산가",
+                              "NA_SAGEUP": "사급", "NONE": "없음"}
+                    st.markdown("**소재**")
+                    toss_df(pd.DataFrame([{
+                        "자재": r.get("material_id"),
+                        "자재명": (r.get("master_raw_name")
+                                  or r.get("bom_material_name")),
+                        "수량/PC": r.get("qty_per_pc"),
+                        "분할": r.get("shared_factor"),
+                        "적용 단가": _f0(r.get("effective_price")),
+                        "출처": _PS_KO.get(r.get("price_source"),
+                                           r.get("price_source")),
+                        "최근 매입일": r.get("last_purchase_date") or "-",
+                    } for r in _mrows0]), use_container_width=True,
+                        hide_index=True)
+
+                # 공정행
+                try:
+                    _prows0 = fetch(
+                        "bom",
+                        "process_type,raw_material_name,unit_price,"
+                        "qty_per_pc,lot_label",
+                        f"product_id=eq.{_p0['product_id']}"
+                        "&process_type=not.is.null&order=bom_id",
+                        limit=50)
+                except Exception:
+                    _prows0 = []
+                if _prows0:
+                    st.markdown("**공정**")
+                    toss_df(pd.DataFrame([{
+                        "공정": r.get("raw_material_name")
+                               or r.get("process_type"),
+                        "종류": r.get("process_type"),
+                        "단가": _f0(r.get("unit_price")),
+                        "기준": r.get("lot_label") or "EA",
+                        "수량/PC": r.get("qty_per_pc"),
+                    } for r in _prows0]), use_container_width=True,
+                        hide_index=True)
+                    if any(r.get("unit_price") is None for r in _prows0):
+                        st.caption("단가 없는 공정행은 원가에 0으로 "
+                                   "잡힙니다 — BOM 편집에서 LOT단가를 "
+                                   "입력하면 반영됩니다.")
+
+                # 최근 매입 이력
+                _mids0 = [r["material_id"] for r in _mrows0
+                          if r.get("material_id")]
+                if _mids0:
+                    try:
+                        _led0 = fetch(
+                            "purchase_ledger",
+                            "trade_date,vendor,item,qty,unit,unit_price",
+                            "matched_material_id=in.("
+                            + ",".join(f'"{m0}"' for m0 in _mids0)
+                            + ")&order=trade_date.desc", limit=8)
+                    except Exception:
+                        _led0 = []
+                    if _led0:
+                        st.markdown("**최근 매입** (매칭된 장부)")
+                        toss_df(pd.DataFrame([{
+                            "거래일": r.get("trade_date"),
+                            "거래처": r.get("vendor"),
+                            "품명": r.get("item"),
+                            "수량": _f0(r.get("qty")),
+                            "단위": r.get("unit"),
+                            "단가": _f0(r.get("unit_price")),
+                        } for r in _led0]), use_container_width=True,
+                            hide_index=True)
+
+    # ════════════════════════════════════════════════
+    # Tab 1: 마진 대시보드
+    # ════════════════════════════════════════════════
+    with tabs[1]:
         st.markdown("### 핵심 지표")
         try:
             # 활성 제품 전체 (마진/원가 통계 산출 기반)
@@ -13522,7 +13903,7 @@ elif page == "원가 확인":
     # ════════════════════════════════════════════════
     # Tab 2: 품목 분석 (단일 품번 상세)
     # ════════════════════════════════════════════════
-    with tabs[1]:
+    with tabs[2]:
         st.markdown("### 품목 검색")
         c1, c2 = st.columns([3, 1])
         with c1:
@@ -13936,7 +14317,7 @@ elif page == "원가 확인":
     # ════════════════════════════════════════════════
     # Tab 3: 이상치 탐지
     # ════════════════════════════════════════════════
-    with tabs[2]:
+    with tabs[3]:
         st.markdown("### 이상치 유형 선택")
         outlier_kind = st.radio(
             "유형",
@@ -14071,7 +14452,7 @@ elif page == "원가 확인":
     # ════════════════════════════════════════════════
     # Tab 4: BOM 재산정 보조 (shared_factor 적용 시뮬레이션)
     # ════════════════════════════════════════════════
-    with tabs[3]:
+    with tabs[4]:
         st.markdown("### 🧮 BOM 재산정 보조")
         st.caption(
             "원리: **실제 소재비/EA = (qty_per_pc × 자재단가) / shared_factor**. "
@@ -14350,7 +14731,7 @@ elif page == "원가 확인":
     # ════════════════════════════════════════════════
     # Tab 5: 원가 편집 (단건 또는 다건)
     # ════════════════════════════════════════════════
-    with tabs[4]:
+    with tabs[5]:
         st.markdown("### 원가 편집")
         st.caption("⚠️ 저장 시 products 테이블이 즉시 갱신됩니다. "
                    "estimated_cost_per_pc 는 자동 재계산되지 않으므로 직접 입력해 주세요.")
@@ -14572,7 +14953,7 @@ elif page == "원가 확인":
     # ════════════════════════════════════════════════
     # Tab 6: 통합 view (Beta) — product_cost_full_v 사용
     # ════════════════════════════════════════════════
-    with tabs[5]:
+    with tabs[6]:
         st.markdown("### 🏗 통합 원가 view (Beta)")
         st.caption(
             "Migration 007/008 적용 시 자동 활성. **BOM 기반 자동 원가 + legacy fallback + "
