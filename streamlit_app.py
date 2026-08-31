@@ -2481,7 +2481,7 @@ elif page == "마스터 관리":
                 "product_id,pn,item_name,customer,sub_class,material,"
                 "raw_material_name,raw_material_spec,procurement_type,"
                 "caution,active,archived_at,archive_reason,drawing_no,"
-                "alias_list,updated_at",
+                "alias_list,sale_price,updated_at",
                 "&".join(parts), limit=int(plim))
         except Exception as e:
             st.error(f"조회 실패: {e}"); prows = []
@@ -2510,10 +2510,10 @@ elif page == "마스터 관리":
                     "pn", "item_name", "customer", "sub_class",
                     "material", "raw_material_spec",
                     "procurement_type", "drawing_no", "caution",
-                    "alias_list", "archived_at")),
+                    "alias_list", "sale_price", "archived_at")),
                 tuple(f"pd_{p}_{_pid}" for p in (
                     "pn", "inm", "cu", "sub", "mat", "sp", "pr",
-                    "dw", "ct", "al", "arr")))
+                    "dw", "ct", "al", "slp", "arr")))
             st.markdown(
                 f"##### {_pd['pn']} — 상세 편집"
                 + (f" · 휴면 ({_pd.get('archive_reason') or '사유 없음'})"
@@ -2553,10 +2553,17 @@ elif page == "마스터 관리":
                 _pd_drw = pe8.text_input("도면번호",
                     value=_pd.get("drawing_no") or "",
                     key=f"pd_dw_{_pid}")
-                pe9, pe10 = st.columns(2)
-                _pd_caut = pe9.text_input("주의사항",
+                pe9, pe10, pe11 = st.columns([1, 1.5, 1.5])
+                _pd_slp = pe9.number_input(
+                    "판매 단가 (원/EA)", min_value=0.0, step=10.0,
+                    value=float(_pd.get("sale_price") or 0),
+                    key=f"pd_slp_{_pid}",
+                    help="표준(계약) 판매 단가 — 원가 확인의 판매가·"
+                         "마진이 이 값을 최근 출고가보다 우선 사용. "
+                         "0이면 출고 실적 단가로 대체")
+                _pd_caut = pe10.text_input("주의사항",
                     value=_pd.get("caution") or "", key=f"pd_ct_{_pid}")
-                _pd_alias = pe10.text_input("별칭 (콤마 구분)",
+                _pd_alias = pe11.text_input("별칭 (콤마 구분)",
                     value=_pd.get("alias_list") or "",
                     key=f"pd_al_{_pid}")
                 _pd_save = st.form_submit_button("변경 저장",
@@ -2576,8 +2583,12 @@ elif page == "마스터 관리":
                         ("drawing_no", (_pd_drw or "").strip() or None),
                         ("caution", (_pd_caut or "").strip() or None),
                         ("alias_list",
-                         (_pd_alias or "").strip() or None)):
-                    if _pd.get(_f9) != _nv9:
+                         (_pd_alias or "").strip() or None),
+                        ("sale_price", float(_pd_slp) or None)):
+                    _ov9 = _pd.get(_f9)
+                    if _f9 == "sale_price":
+                        _ov9 = float(_ov9) if _ov9 is not None else None
+                    if _ov9 != _nv9:
                         _pupd[_f9] = _nv9
                 if not (_pd_pn or "").strip():
                     st.error("품번은 비울 수 없습니다.")
@@ -13637,7 +13648,7 @@ elif page == "원가 확인":
                 "material_cost_per_pc,heat_cost_per_pc,"
                 "surface_cost_per_pc,outsource_cost_per_pc,"
                 "other_cost_per_pc,final_cost_per_pc,cost_source,"
-                "recent_price,avg_unit_price,margin_pct_calc,"
+                "sale_price,recent_price,avg_unit_price,margin_pct_calc,"
                 "material_rows,rows_with_no_price",
                 "archived_at=is.null&order=pn", limit=1000)
         except Exception as _e:
@@ -13681,8 +13692,7 @@ elif page == "원가 확인":
                               + float(r.get("outsource_cost_per_pc") or 0)
                               + float(r.get("other_cost_per_pc") or 0))),
                 "총원가": _f0(r.get("bom_cost_per_pc")),
-                "판매가": _f0(r.get("recent_price")
-                             or r.get("avg_unit_price")),
+                "판매가": _f0(r.get("sale_price")),
                 "마진%": (round(float(r["margin_pct_calc"]), 1)
                           if r.get("margin_pct_calc") is not None
                           else None),
@@ -13708,8 +13718,7 @@ elif page == "원가 확인":
                 _m2.metric("공정비/PC", f"{(_f0(_p0.get('bom_cost_per_pc')) or 0) - (_f0(_p0.get('material_cost_per_pc')) or 0):,}")
                 _m3.metric("총원가/PC",
                            f"{_f0(_p0.get('bom_cost_per_pc')) or 0:,}")
-                _sale0 = _f0(_p0.get("recent_price")
-                             or _p0.get("avg_unit_price"))
+                _sale0 = _f0(_p0.get("sale_price"))
                 _m4.metric("판매가", f"{_sale0:,}" if _sale0 else "-",
                            (f"마진 {float(_p0['margin_pct_calc']):.1f}%"
                             if _p0.get("margin_pct_calc") is not None
