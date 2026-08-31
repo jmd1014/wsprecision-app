@@ -136,9 +136,11 @@
   KG 단위 매입은 환산 로직 도입 전까지 매칭 보류(행만 추가). 회귀 테스트
   tests/test_purchase_sync.py (SCM440 재질 숫자를 지름으로 오인·형상 미구분 사고 방지)
 - **판매가 = products.sale_price(표준·계약가, 마스터 관리 제품 상세 입력) →
-  최근 출고가 → 12M 평균** 순 (Migration 050, product_cost_full_v 의
-  sale_price/avg_unit_price/마진이 이 우선순위). 실적 참고치는 recent_price /
-  avg_unit_price_12m 로 별도 유지
+  최근 출고가** 순 — 평균가는 판매가·마진 계산에서 제외 (Migration 050/051,
+  2026-08-31 사용자 확정: 단가는 특정 시기에 바뀌므로 변동 내역이 중요하고
+  평균은 무의미). 실적 참고치는 recent_price / avg_unit_price_12m 로 별도 유지.
+  **sale_price 변경은 master_change_log 에 자동 기록**(변경 사유 입력란 포함,
+  제품 상세 저장 시) — 이력은 원가 확인 > 제품 원가 상세에 표시
 - **매입내역 운영 방식 (2026-08-31 사용자 확정)**: 당분간 구글시트("YYYY년_매입내역",
   월별 탭, 날짜는 같은 날 연속 행 첫 행에만 기재)가 원본 — 원가 확인 페이지의
   "매입내역 동기화"(① 시트 확인 → ② 실행, 자동 overwrite 없음)로 DB 반영.

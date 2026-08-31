@@ -2513,7 +2513,7 @@ elif page == "마스터 관리":
                     "alias_list", "sale_price", "archived_at")),
                 tuple(f"pd_{p}_{_pid}" for p in (
                     "pn", "inm", "cu", "sub", "mat", "sp", "pr",
-                    "dw", "ct", "al", "slp", "arr")))
+                    "dw", "ct", "al", "slp", "slw", "arr")))
             st.markdown(
                 f"##### {_pd['pn']} — 상세 편집"
                 + (f" · 휴면 ({_pd.get('archive_reason') or '사유 없음'})"
@@ -2560,12 +2560,17 @@ elif page == "마스터 관리":
                     key=f"pd_slp_{_pid}",
                     help="표준(계약) 판매 단가 — 원가 확인의 판매가·"
                          "마진이 이 값을 최근 출고가보다 우선 사용. "
-                         "0이면 출고 실적 단가로 대체")
-                _pd_caut = pe10.text_input("주의사항",
-                    value=_pd.get("caution") or "", key=f"pd_ct_{_pid}")
+                         "0이면 최근 출고가로 대체. 변경하면 변동 "
+                         "이력이 자동 기록됩니다")
+                _pd_slp_why = pe10.text_input(
+                    "단가 변경 사유 (변경 시 이력에 기록)",
+                    key=f"pd_slw_{_pid}",
+                    placeholder="예: 2026 하반기 단가 인상 합의")
                 _pd_alias = pe11.text_input("별칭 (콤마 구분)",
                     value=_pd.get("alias_list") or "",
                     key=f"pd_al_{_pid}")
+                _pd_caut = st.text_input("주의사항",
+                    value=_pd.get("caution") or "", key=f"pd_ct_{_pid}")
                 _pd_save = st.form_submit_button("변경 저장",
                                                  type="primary")
             pb1, pb2, pb3 = st.columns([1, 1, 2])
@@ -2596,6 +2601,27 @@ elif page == "마스터 관리":
                     st.info("변경 사항 없음")
                 elif _db.update("products",
                                 f"product_id=eq.{_pid}", _pupd):
+                    # 판매 단가 변동 이력 — 특정 시기에 바뀌는 값이라
+                    # 내역 기록이 중요 (2026-08-31 사용자 확정)
+                    if "sale_price" in _pupd:
+                        try:
+                            _db.insert("master_change_log", [{
+                                "table_name": "products",
+                                "record_id": _pid,
+                                "field_name": "sale_price",
+                                "old_value": (str(_pd.get("sale_price"))
+                                              if _pd.get("sale_price")
+                                              is not None else None),
+                                "new_value": (str(_pupd["sale_price"])
+                                              if _pupd["sale_price"]
+                                              is not None else None),
+                                "changed_by": current_user_name(),
+                                "reason": (_pd_slp_why or "").strip()
+                                          or None,
+                            }])
+                        except Exception:
+                            st.warning("단가 변동 이력 기록 실패 — "
+                                       "값은 저장되었습니다.")
                     st.success(f"{_pd['pn']} — {len(_pupd)}개 항목 저장")
                     st.rerun()
                 else:
@@ -13723,6 +13749,28 @@ elif page == "원가 확인":
                            (f"마진 {float(_p0['margin_pct_calc']):.1f}%"
                             if _p0.get("margin_pct_calc") is not None
                             else None))
+
+                # 판매 단가 변동 이력 — 평균 대신 시점별 변동을 기록·확인
+                try:
+                    _hist0 = fetch(
+                        "master_change_log",
+                        "changed_at,old_value,new_value,changed_by,"
+                        "reason",
+                        f"table_name=eq.products&field_name=eq.sale_price"
+                        f"&record_id=eq.{_p0['product_id']}"
+                        "&order=changed_at.desc", limit=20)
+                except Exception:
+                    _hist0 = []
+                if _hist0:
+                    st.markdown("**판매 단가 변동 이력**")
+                    toss_df(pd.DataFrame([{
+                        "변경일": str(h.get("changed_at") or "")[:10],
+                        "이전": _f0(h.get("old_value")),
+                        "변경": _f0(h.get("new_value")),
+                        "변경자": h.get("changed_by") or "-",
+                        "사유": h.get("reason") or "-",
+                    } for h in _hist0]), use_container_width=True,
+                        hide_index=True)
 
                 # 소재행 — 단가 출처까지
                 try:
