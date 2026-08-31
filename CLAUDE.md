@@ -128,6 +128,19 @@
   BOM·공정 관리 완성 우선 ③ 외주·매입 실적이 쌓이면 LOT 별 실적 평가(표준 vs 실적)를
   추가. 완성도 감시: 정합 점검 PROC_NO_PRICE(단가 미입력)·PROC_NO_VENDOR(업체 미매칭,
   Migration 048 — 라우팅에 쓰이는 공정행 한정)
+- **소재비 = purchase_ledger 매칭 기반** (2026-08-31 활성화): 소재행 단가는
+  `purchase_ledger.matched_material_id` → `material_price_v.price_last` → legacy
+  `products.material_unit_price` 순 fallback (product_bom_cost_v). BOM 소재행
+  unit_price 에 소재 단가를 직접 넣지 않는다. 매칭 규칙(utils/purchase_sync.py):
+  재질+치수+형상(환봉/육각) 완전 일치 · 후보 1개 · EA 단위 · 단가>0 만 자동 —
+  KG 단위 매입은 환산 로직 도입 전까지 매칭 보류(행만 추가). 회귀 테스트
+  tests/test_purchase_sync.py (SCM440 재질 숫자를 지름으로 오인·형상 미구분 사고 방지)
+- **매입내역 운영 방식 (2026-08-31 사용자 확정)**: 당분간 구글시트("YYYY년_매입내역",
+  월별 탭, 날짜는 같은 날 연속 행 첫 행에만 기재)가 원본 — 원가 확인 페이지의
+  "매입내역 동기화"(① 시트 확인 → ② 실행, 자동 overwrite 없음)로 DB 반영.
+  장기적으로 발주 입고 시 매입 전표 자동 생성 + 전표/스캔 입력으로 전환 예정
+  (전제: 발주서 양식 안정화 먼저). 시트 ID 는 app_settings 'purchase_sheet_id'
+  (없으면 utils/purchase_sync.DEFAULT_SHEET_ID), 공개 링크(뷰어) 공유 필요
 - 상태값은 코드화: active '1'/'0', 조달 '도급'/'사급'
 
 ## DB 작업 규칙
