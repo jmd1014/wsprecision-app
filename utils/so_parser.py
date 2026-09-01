@@ -131,19 +131,33 @@ def _pick_line_nums(raw_nums: list[str]) -> list:
 
     PDF 가 "78,000,000"을 "7 8,000,000"으로 쪼개는 경우가 있어 병합
     후보를 만들되, 무조건 병합하면 정상 라인("100 6,000 600,000")까지
-    이어붙는 사고가 난다(2026-08-25 MJT-PO26-우성-708) — 수량 × 단가
-    = 금액이 성립하는 해석을 고르고, 없으면 그대로 읽는다."""
-    cands = [[_to_int(t) for t in raw_nums]]
-    for _i in range(len(raw_nums) - 1):
-        if ',' not in raw_nums[_i] and ',' in raw_nums[_i + 1]:
-            _mg = (raw_nums[:_i]
-                   + [raw_nums[_i] + raw_nums[_i + 1].replace(',', '')]
-                   + raw_nums[_i + 2:])
-            cands.append([_to_int(t) for t in _mg])
-    return next((c for c in cands
-                 if len(c) >= 3 and c[0] and c[1]
-                 and c[0] * c[1] == c[2]),
-                cands[0])
+    이어붙는 사고가 난다(2026-08-25 MJT-PO26-우성-708). 게다가 한
+    행에서 수량·금액이 동시에 쪼개지기도 한다("3 ,600 6,000 2
+    1,600,000" = 3,600 × 6,000 = 21,600,000 — 2026-09-01 우성-725)
+    — 겹치지 않는 병합 위치의 모든 조합을 후보로 만들고 수량 × 단가
+    = 금액이 성립하는 해석을 고른다. 없으면 그대로 읽는다."""
+    from itertools import combinations
+
+    positions = [i for i in range(len(raw_nums) - 1)
+                 if ',' not in raw_nums[i] and ',' in raw_nums[i + 1]]
+    subsets = [()]
+    for _r in range(1, len(positions) + 1):
+        for combo in combinations(positions, _r):
+            # 인접 위치 동시 병합은 토큰이 겹쳐 무효
+            if all(b - a >= 2 for a, b in zip(combo, combo[1:])):
+                subsets.append(combo)
+    cands = []
+    for combo in subsets:
+        toks = list(raw_nums)
+        for i in sorted(combo, reverse=True):
+            toks[i:i + 2] = [toks[i] + toks[i + 1].replace(',', '')]
+        cands.append([_to_int(t) for t in toks])
+    good = [c for c in cands if len(c) >= 3 and c[0] and c[1]
+            and c[0] * c[1] == c[2]]
+    if good:
+        # 숫자 3개(수량·단가·금액)로 딱 떨어지는 해석 우선
+        return sorted(good, key=len)[0]
+    return cands[0]
 
 
 def parse_mjt_pdf(file_bytes: bytes, filename: str = "") -> list[dict]:

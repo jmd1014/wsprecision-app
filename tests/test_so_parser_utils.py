@@ -38,6 +38,14 @@ def test_pick_line_nums_two_tokens_kept():
     assert _pick_line_nums(["50", "1,200"]) == [50, 1200]
 
 
+def test_pick_line_nums_double_split_merged():
+    """수량·금액이 한 행에서 동시에 쪼개진 경우 — MJT-PO26-우성-725
+    ("3 ,600 6,000 2 1,600,000" = 3,600 × 6,000 = 21,600,000).
+    단일 병합만 시도하던 버그는 3 / 600 / 6,000 으로 읽었다"""
+    assert _pick_line_nums(["3", ",600", "6,000", "2", "1,600,000"]) == \
+        [3600, 6000, 21600000]
+
+
 def test_to_date_formats():
     assert _to_date("2026-05-08") == date(2026, 5, 8)
     assert _to_date("2026/05/08") == date(2026, 5, 8)
