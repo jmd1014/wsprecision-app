@@ -459,6 +459,11 @@ if DB_AVAILABLE and not st.session_state.get("auth_user"):
                 "username": _uid,
                 "name": _users[_uid].get("name") or _uid,
                 "role": _users[_uid].get("role") or "worker"}
+            # 새 세션마다 토큰 재발급 — 앱을 계속 쓰는 한 14일
+            # 만료가 매번 뒤로 밀린다 (sliding, 2026-09-01)
+            st.session_state["auth_cookie_value"] = (
+                _b64.urlsafe_b64encode(_auth.make_token(
+                    _uid, _secret).encode("utf-8")).decode())
 
     # 2) 로그인 폼
     if not st.session_state.get("auth_user"):
@@ -488,9 +493,8 @@ if DB_AVAILABLE and not st.session_state.get("auth_user"):
                         "role": _u.get("role") or "worker"}
                     st.session_state.pop("auth_skip_cookie", None)
                     if _li_keep and _secret:
-                        # 여기서 바로 쓰면 rerun 에 잘려 저장 안 됨 —
-                        # 인증 후 안정 런에 예약
-                        st.session_state["auth_cookie_write"] = (
+                        # 매 런 기록 방식 — 아래 지속 기록 블록이 처리
+                        st.session_state["auth_cookie_value"] = (
                             _b64.urlsafe_b64encode(_auth.make_token(
                                 st.session_state["auth_user"]["username"],
                                 _secret).encode("utf-8")).decode())
@@ -499,12 +503,16 @@ if DB_AVAILABLE and not st.session_state.get("auth_user"):
                     st.error("아이디 또는 비밀번호가 맞지 않습니다.")
             st.stop()
 
-# 로그인 시 예약한 자동 로그인 쿠키 기록 — 인증 후 첫 안정 런에서 실행
-_pend_ck = st.session_state.pop("auth_cookie_write", None)
-if _pend_ck:
+# 자동 로그인 쿠키 — 인증된 매 런마다 다시 기록 (멱등).
+# 로그인 직후 한 번만 예약(pop)하던 방식은 첫 화면 로딩 중 사용자가
+# 클릭해 rerun 되면 iframe 이 잘려 쿠키가 영영 저장되지 않았다
+# (2026-09-01 로그인 유지 재발 원인). 매 런 기록이면 어느 런에서든
+# 반드시 저장되고, 새 세션마다 토큰이 재발급되어 만료가 계속 연장된다.
+if (st.session_state.get("auth_user")
+        and st.session_state.get("auth_cookie_value")):
     _cookie_js(
         "document.cookie='ws_auth={}; path=/; max-age=1209600; "
-        "SameSite=Lax';".format(_pend_ck))
+        "SameSite=Lax';".format(st.session_state["auth_cookie_value"]))
 
 
 # ─── 상태 표기 (영문 코드 → 한글 배지) ───
@@ -1076,6 +1084,7 @@ with st.sidebar:
             unsafe_allow_html=True)
         if st.button("로그아웃", use_container_width=True, key="auth_out"):
             st.session_state.pop("auth_user", None)
+            st.session_state.pop("auth_cookie_value", None)
             # 쿠키 삭제는 다음 런(로그인 화면)에서 실행 — 같은 런에서
             # 지우고 rerun 하면 컴포넌트가 잘려 삭제되지 않는다
             st.session_state["auth_cookie_clear"] = True
