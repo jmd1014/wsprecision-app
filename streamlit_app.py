@@ -2497,6 +2497,29 @@ elif page == "마스터 관리":
 
         st.caption(f"검색 결과: **{len(prows)}건**")
 
+        # 대표 판매가 (마스터 → 최근 출고가) — 리스트·상세에 항상 표시
+        # (2026-09-01 사용자 요청: 현재 대표 단가가 보여야 수정 판단 가능)
+        _eff9 = {}
+        if prows:
+            try:
+                _pid_in = ",".join(f'"{r["product_id"]}"' for r in prows)
+                for _c9 in fetch("product_cost_full_v",
+                                 "product_id,sale_price,recent_price",
+                                 f"product_id=in.({_pid_in})",
+                                 limit=len(prows) + 5):
+                    _eff9[_c9["product_id"]] = _c9
+            except Exception:
+                _eff9 = {}
+
+        def _slp_basis(r):
+            """(대표 단가, 근거 문구) — 마스터 입력 > 최근 출고가"""
+            if r.get("sale_price"):
+                return float(r["sale_price"]), "마스터"
+            _e = _eff9.get(r["product_id"]) or {}
+            if _e.get("recent_price"):
+                return float(_e["recent_price"]), "최근 출고가"
+            return None, "-"
+
         if prows:
             # ── 리스트에서 행 선택 → 아래 상세 편집 (2026-08-20 공통
             # 문법, 일괄 수정용 편집 표는 expander 보조) ──
@@ -2508,9 +2531,12 @@ elif page == "마스터 관리":
                 "재질": r.get("material") or "-",
                 "자재 (BOM)": r.get("raw_material_name") or "-",
                 "조달": r.get("procurement_type") or "-",
+                "판매가": _slp_basis(r)[0],
+                "단가 근거": _slp_basis(r)[1],
                 "상태": "휴면" if r.get("archived_at") else "활성",
             } for r in prows], key="prod_grid",
-                badge_cols=("상태",), strong_cols=("품번",))
+                badge_cols=("상태",), strong_cols=("품번",),
+                num_cols=("판매가",))
             _pd = prows[_pd_i if _pd_i is not None else 0]
             _pid = _pd["product_id"]
             # 선택·값이 바뀌면 카드 입력 기본값 리셋 (2026-08-27)
@@ -2522,7 +2548,7 @@ elif page == "마스터 관리":
                     "alias_list", "sale_price", "archived_at")),
                 tuple(f"pd_{p}_{_pid}" for p in (
                     "pn", "inm", "cu", "sub", "mat", "sp", "pr",
-                    "dw", "ct", "al", "slp", "slw", "arr")))
+                    "dw", "ct", "al", "slp", "slw", "slc", "arr")))
             st.markdown(
                 f"##### {_pd['pn']} — 상세 편집"
                 + (f" · 휴면 ({_pd.get('archive_reason') or '사유 없음'})"
@@ -2540,20 +2566,25 @@ elif page == "마스터 관리":
                     "last_unit_price,last_trade_date,avg_unit_price_12m")
             except Exception:
                 _ps9 = None
-            _ref9 = []
-            if _ps9 and float(_ps9.get("last_unit_price") or 0) > 0:
-                _ref9.append(
-                    f"최근 출고가 **{float(_ps9['last_unit_price']):,.0f}"
-                    f"원** ({_ps9.get('last_trade_date') or '-'})")
-            if _ps9 and float(_ps9.get("avg_unit_price_12m") or 0) > 0:
-                _ref9.append(f"12M 평균 "
-                             f"{float(_ps9['avg_unit_price_12m']):,.0f}원"
-                             " (참고)")
-            if float(_pd.get("sale_price") or 0) <= 0:
-                _ref9.append("마스터 단가 미입력 — 입력 전까지 최근 "
-                             "출고가가 판매가로 쓰입니다")
-            if _ref9:
-                st.caption("단가 참고: " + " · ".join(_ref9))
+            # 대표 단가 = 마스터 입력 > 최근 출고가. 입력칸에 그 값을
+            # 채우고 옆에 근거를 메모로 보인다 — 마스터 미입력이면
+            # 표시만 하고 저장하지 않는다(확정 체크 시에만 저장)
+            _pd_master_slp = (float(_pd["sale_price"])
+                              if _pd.get("sale_price") else None)
+            _pd_slp_default, _pd_slp_src = _slp_basis(_pd)
+            _pd_slp_default = _pd_slp_default or 0.0
+            _last9 = float((_ps9 or {}).get("last_unit_price") or 0)
+            _last_d9 = (_ps9 or {}).get("last_trade_date") or "-"
+            if _pd_master_slp is not None:
+                _pd_slp_memo = (f"마스터 입력 단가 (최근 출고가 "
+                                f"{_last9:,.0f}원 · {_last_d9})"
+                                if _last9 else "마스터 입력 단가")
+            elif _pd_slp_default:
+                _pd_slp_memo = (f"최근 출고가 {_last_d9} 기준 — 아직 "
+                                "마스터 확정 전 (아래 확정 체크 시 저장)")
+            else:
+                _pd_slp_memo = "판매 이력·마스터 단가 모두 없음"
+            st.caption(f"판매 단가 근거: {_pd_slp_memo}")
             # st.form — 입력마다 rerun 하지 않고 저장 때 한 번만
             with st.form(f"pd_form_{_pid}"):
                 pe1, pe2, pe3, pe4 = st.columns(4)
@@ -2586,13 +2617,18 @@ elif page == "마스터 관리":
                     key=f"pd_dw_{_pid}")
                 pe9, pe10, pe11 = st.columns([1, 1.5, 1.5])
                 _pd_slp = pe9.number_input(
-                    "판매 단가 (원/EA)", min_value=0.0, step=10.0,
-                    value=float(_pd.get("sale_price") or 0),
+                    f"판매 단가 (원/EA) — {_pd_slp_src}",
+                    min_value=0.0, step=10.0,
+                    value=float(_pd_slp_default),
                     key=f"pd_slp_{_pid}",
-                    help="표준(계약) 판매 단가 — 원가 확인의 판매가·"
-                         "마진이 이 값을 최근 출고가보다 우선 사용. "
-                         "0이면 최근 출고가로 대체. 변경하면 변동 "
-                         "이력이 자동 기록됩니다")
+                    help="대표 단가(마스터 입력 > 최근 출고가)가 채워져 "
+                         "있습니다. 값을 바꾸면 마스터 단가로 저장되고 "
+                         "변동 이력이 기록됩니다.")
+                _pd_slp_confirm = False
+                if _pd_master_slp is None and _pd_slp_default:
+                    _pd_slp_confirm = pe9.checkbox(
+                        "이 값을 마스터 단가로 확정",
+                        key=f"pd_slc_{_pid}")
                 _pd_slp_why = pe10.text_input(
                     "단가 변경 사유 (변경 시 이력에 기록)",
                     key=f"pd_slw_{_pid}",
@@ -2619,13 +2655,20 @@ elif page == "마스터 관리":
                         ("drawing_no", (_pd_drw or "").strip() or None),
                         ("caution", (_pd_caut or "").strip() or None),
                         ("alias_list",
-                         (_pd_alias or "").strip() or None),
-                        ("sale_price", float(_pd_slp) or None)):
-                    _ov9 = _pd.get(_f9)
-                    if _f9 == "sale_price":
-                        _ov9 = float(_ov9) if _ov9 is not None else None
-                    if _ov9 != _nv9:
+                         (_pd_alias or "").strip() or None)):
+                    if _pd.get(_f9) != _nv9:
                         _pupd[_f9] = _nv9
+                # 판매 단가: 마스터가 있으면 바뀐 값만, 없으면 값을 바꿨거나
+                # 확정 체크했을 때만 저장 (표시용 최근 출고가를 무단으로
+                # 마스터화하지 않음)
+                _slp_v = float(_pd_slp) or None
+                if _pd_master_slp is not None:
+                    if _slp_v != _pd_master_slp:
+                        _pupd["sale_price"] = _slp_v
+                elif _slp_v is not None and (
+                        abs(_slp_v - _pd_slp_default) > 0.5
+                        or _pd_slp_confirm):
+                    _pupd["sale_price"] = _slp_v
                 if not (_pd_pn or "").strip():
                     st.error("품번은 비울 수 없습니다.")
                 elif not _pupd:
