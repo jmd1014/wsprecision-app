@@ -8023,7 +8023,7 @@ elif page == "발주/입고":
                 st.markdown(
                     f"##### {_d9['식별 번호']} · {_d9['자재']} — "
                     f"입고 {_d9['입고']:,.0f} · {_d9['상태']}"
-                    + (f" · 공정: {_d9['공정 투입']}"
+                    + (f" · 공정: {_d9['공정 시작']}"
                        if _d9["공정 시작"] != "-" else ""))
 
                 from utils.label_generator import receipt_labels
