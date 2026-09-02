@@ -4564,7 +4564,7 @@ elif page == "수주 관리":
             'status=not.in.("CANCELLED","CANCELED")', limit=1000)}
         _ck_prod = {p["product_id"]: p for p in fetch("products",
             "product_id,pn,archived_at,archive_reason,sale_price,"
-            "customer,item_name", "order=product_id", limit=1000)}
+            "customer,item_name,material", "order=product_id", limit=1000)}
     except Exception:
         _ck_lines, _ck_so, _ck_prod = [], {}, {}
     _ck_groups = {}
@@ -4608,7 +4608,39 @@ elif page == "수주 관리":
                     + (f" · 납기 {_g['due']}" if _g["due"] else "")
                     + (f" · 수주 단가 {_g['price']:,.0f}원"
                        if _g["price"] else ""))
-                if _p:
+                # 처리 선택 — 휴면 매칭도 잘못된 매칭일 수 있다
+                # (4S20ABV-FL-01 → 316 제품 20ABV-FL-01 오매칭 사례)
+                _base9 = (_g["cpn"].split(";")[0].strip()
+                          if ";" in _g["cpn"] else _g["cpn"])
+                _sugg9 = _so_strip_prefix(_base9)
+                # 접두어를 뗀 품번이 이미 다른(휴면) 제품이면 신규 등록
+                # 제안 품번은 접두어를 유지 (4S = 304 계열 별도 품번)
+                _sugg_new9 = (_base9 if (_p and (_p.get("pn") or "").upper()
+                                         == _sugg9.upper()) else _sugg9)
+                _opts9 = (["휴면 해제(활성화)", "다른 제품에 매핑", "신규 등록"]
+                          if _p else ["기존 제품에 매핑", "신규 등록"])
+                _mode9 = st.radio("처리", _opts9, horizontal=True,
+                                  key=f"{_kid}_mode",
+                                  label_visibility="collapsed")
+                _soi9 = ",".join(str(l["soi_id"]) for l in _g["lines"])
+
+                def _link_lines(_pid9, _pn9, _g=_g, _soi9=_soi9):
+                    _ok9 = _db.update("sales_order_items",
+                                      f"soi_id=in.({_soi9})",
+                                      {"product_id": _pid9,
+                                       "canonical_pn": _pn9})
+                    try:
+                        _db.insert("customer_part_mapping", [{
+                            "customer": _g["customer"],
+                            "customer_part_no": _g["cpn"],
+                            "product_id": _pid9, "canonical_pn": _pn9,
+                            "customer_item_name": _g["iname"] or None,
+                            "verified": True}])
+                    except Exception:
+                        pass   # 매핑 사전은 보조 — 실패해도 라인 연결 유지
+                    return _ok9
+
+                if _p and _mode9 == "휴면 해제(활성화)":
                     # ── 휴면 제품: 변동 확인 후 활성화 ──
                     _ps9 = None
                     try:
@@ -4650,7 +4682,9 @@ elif page == "수주 관리":
                             for m in _mrows9))
                     else:
                         _ref9.append("BOM 소재행 없음 — 활성화 후 BOM 편집 필요")
-                    st.caption(f"{_p['pn']} — " + " · ".join(_ref9))
+                    st.caption(f"{_p['pn']}"
+                               + (f" ({_p['material']})" if _p.get("material")
+                                  else "") + " — " + " · ".join(_ref9))
                     _ac1, _ac2 = st.columns([2, 1])
                     _upd_price = False
                     if _g["price"] and abs(_g["price"] - _msp9) > 0.5:
@@ -4680,33 +4714,7 @@ elif page == "수주 관리":
                             st.rerun()
                         else:
                             st.error("활성화 실패 — 다시 시도해 주세요.")
-                else:
-                    # ── 미등록: 기존 제품 매핑 또는 최소 정보 신규 등록 ──
-                    _base9 = (_g["cpn"].split(";")[0].strip()
-                              if ";" in _g["cpn"] else _g["cpn"])
-                    _sugg9 = _so_strip_prefix(_base9)
-                    _mode9 = st.radio("처리", ["기존 제품에 매핑", "신규 등록"],
-                                      horizontal=True, key=f"{_kid}_mode",
-                                      label_visibility="collapsed")
-                    _soi9 = ",".join(str(l["soi_id"]) for l in _g["lines"])
-
-                    def _link_lines(_pid9, _pn9, _g=_g, _soi9=_soi9):
-                        _ok9 = _db.update("sales_order_items",
-                                          f"soi_id=in.({_soi9})",
-                                          {"product_id": _pid9,
-                                           "canonical_pn": _pn9})
-                        try:
-                            _db.insert("customer_part_mapping", [{
-                                "customer": _g["customer"],
-                                "customer_part_no": _g["cpn"],
-                                "product_id": _pid9, "canonical_pn": _pn9,
-                                "customer_item_name": _g["iname"] or None,
-                                "verified": True}])
-                        except Exception:
-                            pass   # 매핑 사전은 보조 — 실패해도 라인 연결 유지
-                        return _ok9
-
-                    if _mode9 == "기존 제품에 매핑":
+                elif _mode9 in ("기존 제품에 매핑", "다른 제품에 매핑"):
                         _mc1, _mc2 = st.columns([2, 1])
                         _q9 = _mc1.text_input("품번 검색", value=_sugg9,
                                               key=f"{_kid}_q",
@@ -4738,13 +4746,13 @@ elif page == "수주 관리":
                                     st.error("연결 실패 — 다시 시도해 주세요.")
                         elif (_q9 or "").strip():
                             _mc1.caption("일치하는 활성 제품 없음 — '신규 등록'으로")
-                    else:
+                else:
                         st.caption("수주에서 확인되는 정보만 등록합니다 — "
                                    "BOM·소재·라우팅은 마스터 관리 → BOM 편집에서 "
                                    "(정합 점검 BOM_NONE 으로 추적).")
                         with st.form(f"{_kid}_new"):
                             _n1, _n2, _n3 = st.columns(3)
-                            _npn9 = _n1.text_input("품번 *", value=_sugg9)
+                            _npn9 = _n1.text_input("품번 *", value=_sugg_new9)
                             _nin9 = _n2.text_input("품명", value=_g["iname"])
                             _ncu9 = _n3.text_input("거래처", value=_g["customer"])
                             _n4, _n5, _n6 = st.columns(3)
@@ -4938,11 +4946,12 @@ elif page == "수주 관리":
                     cm = {}
                     _mk = _so_mk
                     for p in products:
-                        cm.setdefault(_mk(p['pn']), (p['pn'], p['product_id']))
+                        _v = (p['pn'], p['product_id'], bool(p.get('archived_at')))
+                        cm.setdefault(_mk(p['pn']), _v)
                         if p.get('alias_list'):
                             for a in str(p['alias_list']).split(','):
                                 a = a.strip()
-                                if a: cm.setdefault(_mk(a), (p['pn'], p['product_id']))
+                                if a: cm.setdefault(_mk(a), _v)
                     _cpm = {}
                     try:
                         for _m in fetch("customer_part_mapping",
@@ -4950,7 +4959,7 @@ elif page == "수주 관리":
                                 f"customer=eq.{items[0]['customer']}", limit=500):
                             if _m.get("product_id"):
                                 _cpm[_mk(_m["customer_part_no"])] = (
-                                    _m["canonical_pn"], _m["product_id"])
+                                    _m["canonical_pn"], _m["product_id"], False)
                     except Exception:
                         _cpm = {}
 
@@ -4979,10 +4988,16 @@ elif page == "수주 관리":
                             _strip_prefix(base),
                         ]
                         m = _cpm.get(_mk(pn_hint)) or _cpm.get(_mk(base))
-                        for c in candidates:
+                        for _ci, c in enumerate(candidates):
                             if m: break
                             if not c: continue
                             m = cm.get(_mk(c))
+                            # 접두어를 뗀 후보(3·4번째)가 휴면 제품에만
+                            # 닿으면 미매칭으로 — 4S(304)/S(316) 계열 품번을
+                            # 다른 재질 제품에 붙이던 오매칭 방지 (2026-09-01).
+                            # 수주 단계 '제품 확인 필요'에서 사람이 정한다
+                            if m and _ci >= 2 and m[2]:
+                                m = None
                         if m:
                             it["matched_pn"] = m[0]
                             it["matched_pid"] = m[1]
