@@ -4476,6 +4476,291 @@ elif page == "수주 관리":
     sk4.metric("이번 달 수주", f"{_sk_month:,}건")
     st.divider()
 
+    # ── 품번 정규화 헬퍼 (업로드 매칭·확인 패널 공용) ──
+    def _so_mk(s):
+        if not s: return ""
+        s = str(s).upper()
+        s = _re.sub(r'\([^)]*\)', '', s)
+        s = _re.sub(r'[\s\-_·,\.]+', '', s)
+        return s
+
+    def _so_strip_prefix(s):
+        """4S/S 접두어 제거 (PMLib _getBasePn)"""
+        if not s: return ""
+        p = str(s).upper().strip()
+        if p.startswith('4S') and len(p) > 2 and (p[2].isalnum()):
+            return p[2:]
+        if p.startswith('S') and len(p) > 1 and (p[1].isalnum()):
+            excluded = ('SP-','SDF','SUS','SODV','SFB','SCM','SKD','SKH',
+                        'S45','S20','S30','S304','S316','S630')
+            if not any(p.startswith(e) for e in excluded):
+                return p[1:]
+        return p
+
+    def _so_log(table, rid, field, old, new, reason):
+        try:
+            _db.insert("master_change_log", [{
+                "table_name": table, "record_id": rid,
+                "field_name": field,
+                "old_value": (str(old) if old is not None else None),
+                "new_value": (str(new) if new is not None else None),
+                "changed_by": current_user_name(), "reason": reason}])
+        except Exception:
+            pass
+
+    # ════════ 제품 확인 필요 — 미납 수주가 미등록·휴면 제품에 걸린 경우 ════════
+    # 수주 = 진행 의사 (2026-09-01 사용자 확정). 마스터로 가지 않고 수주
+    # 단계에서 바로 활성화 / 기존 제품 매핑 / 최소 정보로 신규 등록.
+    try:
+        _ck_lines = fetch("sales_order_items",
+            "soi_id,so_id,line_no,customer_part_no,customer_item_name,"
+            "product_id,canonical_pn,pending_qty,unit_price,due_date",
+            "pending_qty=gt.0&order=soi_id", limit=2000)
+        _ck_so = {s["so_id"]: s for s in fetch("sales_orders",
+            "so_id,so_number,customer,status",
+            'status=not.in.("CANCELLED","CANCELED")', limit=1000)}
+        _ck_prod = {p["product_id"]: p for p in fetch("products",
+            "product_id,pn,archived_at,archive_reason,sale_price,"
+            "customer,item_name", "order=product_id", limit=1000)}
+    except Exception:
+        _ck_lines, _ck_so, _ck_prod = [], {}, {}
+    _ck_groups = {}
+    for _l in _ck_lines:
+        _s = _ck_so.get(_l["so_id"])
+        if not _s:
+            continue
+        _p = _ck_prod.get(_l.get("product_id") or "")
+        if _p and not _p.get("archived_at"):
+            continue
+        _gk = (_s.get("customer") or "-", _l.get("customer_part_no") or "-",
+               (_p or {}).get("product_id") or "")
+        _g = _ck_groups.setdefault(_gk, {
+            "customer": _gk[0], "cpn": _gk[1], "prod": _p, "lines": [],
+            "qty": 0.0, "due": None, "price": None,
+            "iname": _l.get("customer_item_name") or "", "sos": set()})
+        _g["lines"].append(_l)
+        _g["qty"] += float(_l.get("pending_qty") or 0)
+        _g["sos"].add(_s.get("so_number") or "-")
+        if _l.get("unit_price"):
+            _g["price"] = float(_l["unit_price"])
+        if _l.get("due_date") and (_g["due"] is None
+                                   or _l["due_date"] < _g["due"]):
+            _g["due"] = _l["due_date"]
+
+    if _ck_groups:
+        with st.expander(
+                f"제품 확인 필요 {len(_ck_groups)}건 — 미등록·휴면 제품에 "
+                "걸린 미납 수주 (진행 전 조치)", expanded=True):
+            st.caption("수주가 들어왔다는 건 진행한다는 뜻 — 여기서 바로 "
+                       "활성화하거나 등록하면 투입·현황판·부족 계산에 "
+                       "포함됩니다. 휴면 제품은 단가·소재비 변동을 확인한 "
+                       "뒤 활성화하세요.")
+            for _gi, (_gk, _g) in enumerate(sorted(
+                    _ck_groups.items(), key=lambda x: (x[1]["due"] or "9999"))):
+                _p = _g["prod"]
+                _kid = f"sochk_{_gi}"
+                st.markdown(
+                    f"**{_g['cpn']}** · {_g['customer']} · 미납 "
+                    f"{_g['qty']:,.0f} · 수주 {', '.join(sorted(_g['sos']))}"
+                    + (f" · 납기 {_g['due']}" if _g["due"] else "")
+                    + (f" · 수주 단가 {_g['price']:,.0f}원"
+                       if _g["price"] else ""))
+                if _p:
+                    # ── 휴면 제품: 변동 확인 후 활성화 ──
+                    _ps9 = None
+                    try:
+                        _ps9 = _db.fetch_one("product_stats",
+                            f"product_id=eq.{_p['product_id']}",
+                            "last_unit_price,last_trade_date")
+                    except Exception:
+                        pass
+                    _last9 = float((_ps9 or {}).get("last_unit_price") or 0)
+                    _msp9 = float(_p.get("sale_price") or 0)
+                    _ref9 = [f"휴면 {str(_p.get('archived_at') or '')[:10]}"
+                             f" ({_p.get('archive_reason') or '사유 없음'})"]
+                    _base9 = _msp9 or _last9
+                    if _base9:
+                        _ref9.append(
+                            ("마스터 단가" if _msp9 else "최근 출고가")
+                            + f" {_base9:,.0f}원"
+                            + (f" ({(_ps9 or {}).get('last_trade_date')})"
+                               if not _msp9 and _ps9 else ""))
+                        if _g["price"]:
+                            _chg9 = _g["price"] / _base9 - 1
+                            _ref9.append(f"수주 단가 대비 {_chg9:+.1%}")
+                    try:
+                        _mrows9 = fetch("product_material_price_status_v",
+                            "material_id,master_raw_name,price_source,"
+                            "effective_price,last_purchase_date",
+                            f"product_id=eq.{_p['product_id']}", limit=10)
+                    except Exception:
+                        _mrows9 = []
+                    if _mrows9:
+                        _PS9 = {"PURCHASE_LAST": "실매입", "LEGACY": "legacy",
+                                "NA_SAGEUP": "사급", "NONE": "없음"}
+                        _ref9.append("소재비 " + " / ".join(
+                            f"{m.get('master_raw_name') or m.get('material_id')}"
+                            f" {float(m.get('effective_price') or 0):,.0f}원"
+                            f"({_PS9.get(m.get('price_source'), m.get('price_source'))}"
+                            + (f", 최근매입 {m['last_purchase_date']}"
+                               if m.get("last_purchase_date") else "") + ")"
+                            for m in _mrows9))
+                    else:
+                        _ref9.append("BOM 소재행 없음 — 활성화 후 BOM 편집 필요")
+                    st.caption(f"{_p['pn']} — " + " · ".join(_ref9))
+                    _ac1, _ac2 = st.columns([2, 1])
+                    _upd_price = False
+                    if _g["price"] and abs(_g["price"] - _msp9) > 0.5:
+                        _upd_price = _ac1.checkbox(
+                            f"판매 단가를 수주 단가 {_g['price']:,.0f}원으로 "
+                            "갱신 (변동 이력 기록)", value=not _msp9,
+                            key=f"{_kid}_up")
+                    if _ac2.button("활성화하고 진행", type="primary",
+                                   key=f"{_kid}_act",
+                                   use_container_width=True):
+                        _sos9 = ", ".join(sorted(_g["sos"]))
+                        if _db.update("products",
+                                      f"product_id=eq.{_p['product_id']}",
+                                      {"archived_at": None,
+                                       "archive_reason": None}):
+                            _so_log("products", _p["product_id"],
+                                    "archived_at", str(_p.get("archived_at")),
+                                    None, f"수주 {_sos9} 진행 — 수주 단계 활성화")
+                            if _upd_price:
+                                _db.update("products",
+                                           f"product_id=eq.{_p['product_id']}",
+                                           {"sale_price": _g["price"]})
+                                _so_log("products", _p["product_id"],
+                                        "sale_price", _p.get("sale_price"),
+                                        _g["price"], f"수주 {_sos9} 단가 반영")
+                            st.success(f"{_p['pn']} 활성화")
+                            st.rerun()
+                        else:
+                            st.error("활성화 실패 — 다시 시도해 주세요.")
+                else:
+                    # ── 미등록: 기존 제품 매핑 또는 최소 정보 신규 등록 ──
+                    _base9 = (_g["cpn"].split(";")[0].strip()
+                              if ";" in _g["cpn"] else _g["cpn"])
+                    _sugg9 = _so_strip_prefix(_base9)
+                    _mode9 = st.radio("처리", ["기존 제품에 매핑", "신규 등록"],
+                                      horizontal=True, key=f"{_kid}_mode",
+                                      label_visibility="collapsed")
+                    _soi9 = ",".join(str(l["soi_id"]) for l in _g["lines"])
+
+                    def _link_lines(_pid9, _pn9, _g=_g, _soi9=_soi9):
+                        _ok9 = _db.update("sales_order_items",
+                                          f"soi_id=in.({_soi9})",
+                                          {"product_id": _pid9,
+                                           "canonical_pn": _pn9})
+                        try:
+                            _db.insert("customer_part_mapping", [{
+                                "customer": _g["customer"],
+                                "customer_part_no": _g["cpn"],
+                                "product_id": _pid9, "canonical_pn": _pn9,
+                                "customer_item_name": _g["iname"] or None,
+                                "verified": True}])
+                        except Exception:
+                            pass   # 매핑 사전은 보조 — 실패해도 라인 연결 유지
+                        return _ok9
+
+                    if _mode9 == "기존 제품에 매핑":
+                        _mc1, _mc2 = st.columns([2, 1])
+                        _q9 = _mc1.text_input("품번 검색", value=_sugg9,
+                                              key=f"{_kid}_q",
+                                              label_visibility="collapsed",
+                                              placeholder="우성 품번 검색")
+                        _cands9 = []
+                        if (_q9 or "").strip():
+                            try:
+                                _cands9 = fetch("products", "product_id,pn,customer",
+                                    f"pn=ilike.*{_q9.strip()}*"
+                                    "&archived_at=is.null&order=pn", limit=20)
+                            except Exception:
+                                _cands9 = []
+                        if _cands9:
+                            _pick9 = _mc1.selectbox(
+                                "제품", _cands9, key=f"{_kid}_pick",
+                                format_func=lambda c: f"{c['pn']} · "
+                                                      f"{c.get('customer') or '-'}",
+                                label_visibility="collapsed")
+                            if _mc2.button("매핑 저장", type="primary",
+                                           key=f"{_kid}_map",
+                                           use_container_width=True):
+                                if _link_lines(_pick9["product_id"], _pick9["pn"]):
+                                    st.success(f"{_g['cpn']} → {_pick9['pn']} "
+                                               f"연결 ({len(_g['lines'])}라인) — "
+                                               "다음 업로드부터 자동 매칭")
+                                    st.rerun()
+                                else:
+                                    st.error("연결 실패 — 다시 시도해 주세요.")
+                        elif (_q9 or "").strip():
+                            _mc1.caption("일치하는 활성 제품 없음 — '신규 등록'으로")
+                    else:
+                        st.caption("수주에서 확인되는 정보만 등록합니다 — "
+                                   "BOM·소재·라우팅은 마스터 관리 → BOM 편집에서 "
+                                   "(정합 점검 BOM_NONE 으로 추적).")
+                        with st.form(f"{_kid}_new"):
+                            _n1, _n2, _n3 = st.columns(3)
+                            _npn9 = _n1.text_input("품번 *", value=_sugg9)
+                            _nin9 = _n2.text_input("품명", value=_g["iname"])
+                            _ncu9 = _n3.text_input("거래처", value=_g["customer"])
+                            _n4, _n5, _n6 = st.columns(3)
+                            _nsp9 = _n4.number_input(
+                                "판매 단가", min_value=0.0, step=10.0,
+                                value=float(_g["price"] or 0))
+                            _npr9 = _n5.selectbox("조달", ["도급", "사급"])
+                            _nmt9 = _n6.text_input("재질 (선택)")
+                            _ngo9 = st.form_submit_button("등록하고 진행",
+                                                          type="primary")
+                        if _ngo9:
+                            _npn9 = (_npn9 or "").strip()
+                            _dup9 = None
+                            if _npn9:
+                                try:
+                                    _dup9 = _db.fetch_one(
+                                        "products", f"pn=eq.{_npn9}",
+                                        "product_id,archived_at")
+                                except Exception:
+                                    _dup9 = None
+                            if not _npn9:
+                                st.error("품번을 입력하세요.")
+                            elif _dup9:
+                                st.error(f"품번 {_npn9} 은 이미 있습니다"
+                                         + (" (휴면)" if _dup9.get("archived_at")
+                                            else "") + " — '기존 제품에 매핑'으로 "
+                                         "연결하세요.")
+                            else:
+                                try:
+                                    _lt9 = fetch("products", "product_id",
+                                        "product_id=like.P*&order=product_id.desc",
+                                        limit=1)
+                                    _nn9 = (int(_lt9[0]["product_id"][1:]) + 1
+                                            if _lt9 else 1)
+                                except Exception:
+                                    _nn9 = 9000
+                                _npid9 = f"P{_nn9:04d}"
+                                try:
+                                    _db.insert("products", [{
+                                        "product_id": _npid9, "pn": _npn9,
+                                        "customer": (_ncu9 or "").strip() or None,
+                                        "item_name": (_nin9 or "").strip() or None,
+                                        "material": (_nmt9 or "").strip() or None,
+                                        "procurement_type": _npr9,
+                                        "sale_price": float(_nsp9) or None,
+                                        "active": "1"}])
+                                    if float(_nsp9) > 0:
+                                        _so_log("products", _npid9, "sale_price",
+                                                None, float(_nsp9),
+                                                f"수주 {', '.join(sorted(_g['sos']))}"
+                                                " 등록 시 단가")
+                                    _link_lines(_npid9, _npn9)
+                                    st.success(f"{_npn9} 등록({_npid9}) + "
+                                               f"{len(_g['lines'])}라인 연결")
+                                    st.rerun()
+                                except Exception as _e:
+                                    st.error(f"등록 실패: {_e}")
+                st.divider()
+
     tab_input, tab_list, tab_sched = st.tabs(
         ["새 수주 입력", "수주 목록", "납품 스케줄"])
 
@@ -4600,20 +4885,31 @@ elif page == "수주 관리":
                                        f"**{len(items)}행** 저장 예정.")
 
                     # 우성정밀 품번 매칭
-                    products = fetch("products", "product_id,pn,alias_list", limit=1500)
+                    # 활성 제품 우선 (휴면 제품은 같은 키가 없을 때만) +
+                    # 수주 단계에서 확정한 거래처 품번 매핑 사전 우선
+                    # (2026-09-01: 휴면 제품에 미납 수주가 걸리던 원인 보정)
+                    products = fetch("products",
+                                     "product_id,pn,alias_list,archived_at",
+                                     "order=product_id", limit=1500)
+                    products.sort(key=lambda p: bool(p.get("archived_at")))
                     cm = {}
-                    def _mk(s):
-                        if not s: return ""
-                        s = str(s).upper()
-                        s = _re.sub(r'\([^)]*\)', '', s)
-                        s = _re.sub(r'[\s\-_·,\.]+', '', s)
-                        return s
+                    _mk = _so_mk
                     for p in products:
-                        cm[_mk(p['pn'])] = (p['pn'], p['product_id'])
+                        cm.setdefault(_mk(p['pn']), (p['pn'], p['product_id']))
                         if p.get('alias_list'):
                             for a in str(p['alias_list']).split(','):
                                 a = a.strip()
                                 if a: cm.setdefault(_mk(a), (p['pn'], p['product_id']))
+                    _cpm = {}
+                    try:
+                        for _m in fetch("customer_part_mapping",
+                                "customer_part_no,product_id,canonical_pn",
+                                f"customer=eq.{items[0]['customer']}", limit=500):
+                            if _m.get("product_id"):
+                                _cpm[_mk(_m["customer_part_no"])] = (
+                                    _m["canonical_pn"], _m["product_id"])
+                    except Exception:
+                        _cpm = {}
 
                     def _strip_prefix(s):
                         """4S/S 접두어 제거 (PMLib _getBasePn)"""
@@ -4639,11 +4935,11 @@ elif page == "수주 관리":
                             _strip_prefix(pn_hint),
                             _strip_prefix(base),
                         ]
-                        m = None
+                        m = _cpm.get(_mk(pn_hint)) or _cpm.get(_mk(base))
                         for c in candidates:
+                            if m: break
                             if not c: continue
                             m = cm.get(_mk(c))
-                            if m: break
                         if m:
                             it["matched_pn"] = m[0]
                             it["matched_pid"] = m[1]
