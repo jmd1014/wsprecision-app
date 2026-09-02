@@ -3077,6 +3077,62 @@ elif page == "마스터 관리":
                 f"{_md.get('unit') or 'EA'} — 재고의 진실은 원장"
                 "(입고·투입·조정). 직접 정정이 필요하면 일괄 편집 표 "
                 "또는 품번별 맞추기에서.")
+            # 이 자재를 쓰는 제품 — BOM 소재행 역조회 (2026-09-01 사용자 요청)
+            try:
+                _mu_bom = fetch("bom",
+                    "product_id,qty_per_pc,shared_factor,process_type",
+                    f"material_id=eq.{_mid}", limit=200)
+                _mu_bom = [b for b in _mu_bom
+                           if (b.get("process_type") or "MATERIAL")
+                           == "MATERIAL" and b.get("product_id")]
+            except Exception:
+                _mu_bom = []
+            if _mu_bom:
+                _mu_pids = sorted({b["product_id"] for b in _mu_bom})
+                _mu_in = ",".join(f'"{p}"' for p in _mu_pids)
+                try:
+                    _mu_prod = {p["product_id"]: p for p in fetch(
+                        "products", "product_id,pn,item_name,customer,"
+                        "archived_at", f"product_id=in.({_mu_in})",
+                        limit=len(_mu_pids) + 5)}
+                except Exception:
+                    _mu_prod = {}
+                _mu_pend = {}
+                try:
+                    for _s in fetch("sales_order_items",
+                                    "product_id,pending_qty",
+                                    f"product_id=in.({_mu_in})"
+                                    "&pending_qty=gt.0", limit=500):
+                        _mu_pend[_s["product_id"]] = (
+                            _mu_pend.get(_s["product_id"], 0)
+                            + float(_s.get("pending_qty") or 0))
+                except Exception:
+                    pass
+                _mu_rows = []
+                for b in _mu_bom:
+                    p = _mu_prod.get(b["product_id"]) or {}
+                    _mu_rows.append({
+                        "품번": p.get("pn") or b["product_id"],
+                        "품명": p.get("item_name") or "-",
+                        "고객사": p.get("customer") or "-",
+                        "수량/PC": b.get("qty_per_pc"),
+                        "분할": b.get("shared_factor"),
+                        "미납 수주": _mu_pend.get(b["product_id"], 0) or None,
+                        "상태": "휴면" if p.get("archived_at") else "활성",
+                    })
+                _mu_rows.sort(key=lambda r: (r["상태"] != "활성",
+                                             -(r["미납 수주"] or 0),
+                                             r["품번"]))
+                _n_act = sum(1 for r in _mu_rows if r["상태"] == "활성")
+                with st.expander(
+                        f"이 자재를 쓰는 제품 {len(_mu_rows)}종 "
+                        f"(활성 {_n_act}) — 미납 수주 있는 제품 우선",
+                        expanded=True):
+                    toss_df(pd.DataFrame(_mu_rows),
+                            use_container_width=True, hide_index=True,
+                            height=min(300, 60 + len(_mu_rows) * 35))
+            else:
+                st.caption("이 자재를 소재로 쓰는 BOM 제품 없음")
             # st.form — 입력마다 rerun 하지 않고 저장 때 한 번만
             with st.form(f"md_form_{_mid}"):
                 me1, me2, me3 = st.columns(3)
