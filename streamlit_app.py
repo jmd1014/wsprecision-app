@@ -4617,11 +4617,10 @@ elif page == "수주 관리":
                 # 제안 품번은 접두어를 유지 (4S = 304 계열 별도 품번)
                 _sugg_new9 = (_base9 if (_p and (_p.get("pn") or "").upper()
                                          == _sugg9.upper()) else _sugg9)
-                _opts9 = (["휴면 해제(활성화)", "다른 제품에 매핑", "신규 등록"]
-                          if _p else ["기존 제품에 매핑", "신규 등록"])
-                _mode9 = st.radio("처리", _opts9, horizontal=True,
-                                  key=f"{_kid}_mode",
-                                  label_visibility="collapsed")
+                # 정상 경로는 두 가지뿐 — 휴면이면 해제, 없으면 신규 등록
+                # (2026-09-01 사용자 확정: 그 외는 매핑 로직이 완전하면
+                # 생기지 않는 이레귤러라 별도 준비 안 함)
+                _mode9 = "휴면 해제(활성화)" if _p else "신규 등록"
                 _soi9 = ",".join(str(l["soi_id"]) for l in _g["lines"])
 
                 def _link_lines(_pid9, _pn9, _g=_g, _soi9=_soi9):
@@ -4714,38 +4713,6 @@ elif page == "수주 관리":
                             st.rerun()
                         else:
                             st.error("활성화 실패 — 다시 시도해 주세요.")
-                elif _mode9 in ("기존 제품에 매핑", "다른 제품에 매핑"):
-                        _mc1, _mc2 = st.columns([2, 1])
-                        _q9 = _mc1.text_input("품번 검색", value=_sugg9,
-                                              key=f"{_kid}_q",
-                                              label_visibility="collapsed",
-                                              placeholder="우성 품번 검색")
-                        _cands9 = []
-                        if (_q9 or "").strip():
-                            try:
-                                _cands9 = fetch("products", "product_id,pn,customer",
-                                    f"pn=ilike.*{_q9.strip()}*"
-                                    "&archived_at=is.null&order=pn", limit=20)
-                            except Exception:
-                                _cands9 = []
-                        if _cands9:
-                            _pick9 = _mc1.selectbox(
-                                "제품", _cands9, key=f"{_kid}_pick",
-                                format_func=lambda c: f"{c['pn']} · "
-                                                      f"{c.get('customer') or '-'}",
-                                label_visibility="collapsed")
-                            if _mc2.button("매핑 저장", type="primary",
-                                           key=f"{_kid}_map",
-                                           use_container_width=True):
-                                if _link_lines(_pick9["product_id"], _pick9["pn"]):
-                                    st.success(f"{_g['cpn']} → {_pick9['pn']} "
-                                               f"연결 ({len(_g['lines'])}라인) — "
-                                               "다음 업로드부터 자동 매칭")
-                                    st.rerun()
-                                else:
-                                    st.error("연결 실패 — 다시 시도해 주세요.")
-                        elif (_q9 or "").strip():
-                            _mc1.caption("일치하는 활성 제품 없음 — '신규 등록'으로")
                 else:
                         st.caption("수주에서 확인되는 정보만 등록합니다 — "
                                    "BOM·소재·라우팅은 마스터 관리 → BOM 편집에서 "
