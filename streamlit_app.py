@@ -10103,12 +10103,37 @@ elif page == "공정 관리":
 
                 _wo_ok = bool(_pe_re.fullmatch(r"\d{8}-\d{3}",
                                               (_wo_no or "").strip()))
+                # 지시번호 중복 검사 (2026-09-01): 같은 번호가 다른 품번에
+                # 이미 쓰이면 오입력 — 배치 번호(NO-A)까지 충돌해 배치
+                # 없는 지시가 생겼다(20260901-001 사고). 같은 품번의 추가
+                # 투입은 허용하되 배치 접미사를 이어 붙인다.
+                _wo_dups = []
+                if _wo_ok:
+                    try:
+                        _wo_dups = fetch(
+                            "wo_tracking", "wo_id,pn,status,w_lot",
+                            f"wo_number=eq.{(_wo_no or '').strip()}",
+                            limit=20)
+                    except Exception:
+                        _wo_dups = []
+                _wo_other_pn = [d for d in _wo_dups
+                                if (d.get("pn") or "") !=
+                                (_in_pn or "").strip()]
                 if _wo_no and not _wo_ok:
                     st.error("작업지시 NO 형식이 다릅니다 — YYYYMMDD-NNN "
                              "(예: 20260723-001)")
                 elif not _wo_no:
                     st.warning("작업지시 NO는 필수입니다 — 입력해야 "
                                "투입 등록 버튼이 열립니다.")
+                elif _wo_other_pn:
+                    _wo_ok = False
+                    st.error(f"작업지시 NO {_wo_no.strip()} 는 이미 다른 "
+                             f"품번({_wo_other_pn[0].get('pn')})에 등록돼 "
+                             "있습니다 — MES 지시번호를 다시 확인하세요.")
+                elif _wo_dups:
+                    st.info(f"같은 지시({_wo_no.strip()})에 이미 투입 "
+                            f"{len(_wo_dups)}건 — 추가 투입으로 기록되며 "
+                            "배치 번호가 이어집니다.")
 
                 if st.button(
                         f"투입 등록 (제품 {_in_prod_qty:,.0f})",
@@ -10146,11 +10171,19 @@ elif page == "공정 관리":
                                  "step_name": "생산"})
                         _new_batch_id = None
                         try:
+                            # 방금 만든 지시 행 (같은 지시 추가 투입 대비
+                            # 최신 wo_id) + 배치 접미사는 기존 배치 수
+                            # 다음 글자 (A, B, C …)
                             _nwo = _db.fetch_one("wo_tracking",
-                                f"wo_number=eq.{_wo}&w_lot=eq.{_sel_lot}",
+                                f"wo_number=eq.{_wo}&w_lot=eq.{_sel_lot}"
+                                "&order=wo_id.desc",
                                 "wo_id")
+                            _prev_b = fetch("wo_batches", "batch_id",
+                                            f"wo_number=eq.{_wo}",
+                                            limit=100)
+                            _sfx = chr(ord("A") + min(len(_prev_b), 25))
                             _db.insert("wo_batches", [{
-                                "batch_no": f"{_wo}-A",
+                                "batch_no": f"{_wo}-{_sfx}",
                                 "wo_id": (_nwo or {}).get("wo_id"),
                                 "wo_number": _wo,
                                 "product_id":
@@ -10165,7 +10198,7 @@ elif page == "공정 관리":
                                 "step_status": "WAIT",
                                 "created_by": current_user_name()}])
                             _nb = _db.fetch_one("wo_batches",
-                                f"batch_no=eq.{_wo}-A", "batch_id")
+                                f"batch_no=eq.{_wo}-{_sfx}", "batch_id")
                             _new_batch_id = (_nb or {}).get("batch_id")
                         except Exception:
                             pass   # 배치는 병행 기록 — 실패해도 투입 진행
