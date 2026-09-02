@@ -2429,8 +2429,10 @@ elif page == "마스터 관리":
                    "원가 확인 → 단가 관리** 에서 관리. 여기서는 "
                    "분류·재질·조달·상태 등 일반 정보만.")
 
-        # ── 검색 / 필터 ──
-        with st.expander("검색 / 필터", expanded=True):
+        # ── 검색 / 필터 — 폼으로 묶어 [검색] 한 번에 조회 (2026-09-02
+        # 사용자 요청: 필터 8개를 바꿀 때마다 재조회되던 것 방지) ──
+        with st.expander("검색 / 필터", expanded=True), \
+                st.form("prod_filter_form"):
             pfc1, pfc2, pfc3, pfc4 = st.columns(4)
             with pfc1:
                 fpn = st.text_input("품번", placeholder="MRG6, 8HFDV",
@@ -2446,7 +2448,7 @@ elif page == "마스터 관리":
                 fgroup = st.text_input("제품군", placeholder="YPBV, LJF, ABV",
                                        key="prod_f_group")
 
-            pfc5, pfc6, pfc7, pfc8 = st.columns([1, 2, 2, 1])
+            pfc5, pfc6, pfc7, pfc8, pfc9 = st.columns([1, 2, 1.5, 1, 1])
             with pfc5:
                 fstatus = st.selectbox("상태",
                     ["활성", "휴면", "전체"], key="prod_f_status")
@@ -2460,6 +2462,11 @@ elif page == "마스터 관리":
             with pfc8:
                 plim = st.number_input("행수", 20, 1000, 100, 20,
                                        key="prod_lim")
+            with pfc9:
+                st.markdown("<div style='height:28px'></div>",
+                            unsafe_allow_html=True)
+                st.form_submit_button("검색", type="primary",
+                                      use_container_width=True)
 
         # ── 쿼리 빌드 ──
         parts = ["order=pn.asc"]
@@ -3023,13 +3030,24 @@ elif page == "마스터 관리":
     # ─── Tab: 자재 편집 ───
     with tab_mat:
         st.caption("모든 자재 단위는 **EA**로 통일됨 (수주·발주·생산·출고 일관성)")
-        mc1, mc2, mc3 = st.columns([2, 2, 1])
-        with mc1:
-            mat_q = st.text_input("자재 검색", placeholder="예: STS304, 환봉, 8HFDV")
-        with mc2:
-            mat_type_q = st.text_input("재질 필터", placeholder="예: SUS304")
-        with mc3:
-            mat_limit = st.number_input("행수", 20, 500, 100, 20)
+        # 검색 폼 — [검색] 한 번에 조회 (2026-09-02)
+        with st.form("mat_filter_form"):
+            mc1, mc2, mc3, mc4 = st.columns([2, 2, 1, 1])
+            with mc1:
+                mat_q = st.text_input("자재 검색",
+                                      placeholder="예: STS304, 환봉, 8HFDV",
+                                      key="mat_f_q")
+            with mc2:
+                mat_type_q = st.text_input("재질 필터", placeholder="예: SUS304",
+                                           key="mat_f_type")
+            with mc3:
+                mat_limit = st.number_input("행수", 20, 500, 100, 20,
+                                            key="mat_f_lim")
+            with mc4:
+                st.markdown("<div style='height:28px'></div>",
+                            unsafe_allow_html=True)
+                st.form_submit_button("검색", type="primary",
+                                      use_container_width=True)
 
         mfq = ["order=material_id.asc"]
         if mat_q:
