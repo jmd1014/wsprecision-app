@@ -2453,8 +2453,8 @@ elif page == "마스터 관리":
                 fstatus = st.selectbox("상태",
                     ["활성", "휴면", "전체"], key="prod_f_status")
             with pfc6:
-                fmat = st.text_input("재질/규격/자재명",
-                    placeholder="STS304, 환봉, SCM440",
+                fmat = st.text_input("재질/사이즈/자재명",
+                    placeholder="STS304, 환봉, Ø40",
                     key="prod_f_mat")
             with pfc7:
                 fproc = st.selectbox("조달",
@@ -2483,7 +2483,7 @@ elif page == "마스터 관리":
             mq = fmat.strip()
             parts.append(
                 f"or=(material.ilike.*{mq}*,raw_material_name.ilike.*{mq}*,"
-                f"raw_material_spec.ilike.*{mq}*)"
+                f"product_size.ilike.*{mq}*)"
             )
         if fstatus == "활성":
             parts.append("archived_at=is.null")
@@ -2495,7 +2495,7 @@ elif page == "마스터 관리":
         try:
             prows = fetch("products",
                 "product_id,pn,item_name,customer,sub_class,material,"
-                "raw_material_name,raw_material_spec,procurement_type,"
+                "raw_material_name,product_size,procurement_type,"
                 "caution,active,archived_at,archive_reason,drawing_no,"
                 "alias_list,sale_price,updated_at",
                 "&".join(parts), limit=int(plim))
@@ -2536,6 +2536,7 @@ elif page == "마스터 관리":
                 "고객사": r.get("customer") or "-",
                 "제품군": r.get("sub_class") or "-",
                 "재질": r.get("material") or "-",
+                "제품 사이즈": r.get("product_size") or "-",
                 "자재 (BOM)": r.get("raw_material_name") or "-",
                 "조달": r.get("procurement_type") or "-",
                 "판매가": _slp_basis(r)[0],
@@ -2550,7 +2551,7 @@ elif page == "마스터 관리":
             fresh_keys("pdcard",
                 (_pid,) + tuple(str(_pd.get(k)) for k in (
                     "pn", "item_name", "customer", "sub_class",
-                    "material", "raw_material_spec",
+                    "material", "product_size",
                     "procurement_type", "drawing_no", "caution",
                     "alias_list", "sale_price", "archived_at")),
                 tuple(f"pd_{p}_{_pid}" for p in (
@@ -2609,9 +2610,12 @@ elif page == "마스터 관리":
                 pe5, pe6, pe7, pe8 = st.columns(4)
                 _pd_mat = pe5.text_input("재질",
                     value=_pd.get("material") or "", key=f"pd_mat_{_pid}")
-                _pd_spec = pe6.text_input("자재 규격",
-                    value=_pd.get("raw_material_spec") or "",
-                    key=f"pd_sp_{_pid}")
+                _pd_spec = pe6.text_input("제품 사이즈",
+                    value=_pd.get("product_size") or "",
+                    key=f"pd_sp_{_pid}",
+                    placeholder="예: Ø40*23.5L",
+                    help="완성품 치수 — 발주서 품명 괄호에 인쇄됩니다. "
+                         "자재(소재) 치수는 BOM 자재에서 옵니다")
                 _pd_proc_opts = ["", "도급", "사급"]
                 _pd_proc = pe7.selectbox("조달", _pd_proc_opts,
                     index=(_pd_proc_opts.index(
@@ -2656,7 +2660,7 @@ elif page == "마스터 관리":
                         ("customer", (_pd_cust or "").strip() or None),
                         ("sub_class", (_pd_sub or "").strip() or None),
                         ("material", (_pd_mat or "").strip() or None),
-                        ("raw_material_spec",
+                        ("product_size",
                          (_pd_spec or "").strip() or None),
                         ("procurement_type", _pd_proc or None),
                         ("drawing_no", (_pd_drw or "").strip() or None),
@@ -2740,7 +2744,7 @@ elif page == "마스터 관리":
                 pdf = pd.DataFrame(prows)
                 # 표시할 컬럼 (편집/조회용)
                 show_cols = ["product_id","pn","item_name","customer","sub_class",
-                             "material","raw_material_name","raw_material_spec",
+                             "material","raw_material_name","product_size",
                              "procurement_type","caution","active","archived_at",
                              "archive_reason","drawing_no","alias_list"]
                 show_cols = [c for c in show_cols if c in pdf.columns]
@@ -2773,8 +2777,8 @@ elif page == "마스터 관리":
                         help="소재 정보의 진실은 BOM — BOM·공정 탭에서 "
                              "자재를 연결하면 여기 자동 반영됩니다 "
                              "(2026-08-19 정합 원칙)"),
-                    "raw_material_spec": st.column_config.TextColumn(
-                        "규격", width="small"),
+                    "product_size": st.column_config.TextColumn(
+                        "제품 사이즈", width="small"),
                     "procurement_type": st.column_config.SelectboxColumn("조달",
                         options=["", "도급", "사급"], width="small"),
                     "caution": st.column_config.TextColumn("주의사항",
@@ -2805,7 +2809,7 @@ elif page == "마스터 관리":
                 if _pb_save:
                     chg = 0
                     editable_keys = ("pn", "item_name", "customer", "sub_class",
-                                     "material", "raw_material_name", "raw_material_spec",
+                                     "material", "raw_material_name", "product_size",
                                      "procurement_type", "caution", "active",
                                      "archive_reason", "drawing_no", "alias_list")
                     for orig, new in zip(prows, edited_p.to_dict("records")):
@@ -2878,8 +2882,9 @@ elif page == "마스터 관리":
 
         npc7, npc8 = st.columns([2, 1])
         with npc7:
-            new_spec = st.text_input("자재 규격", key="np_spec",
-                placeholder="예: ⌀25 × 400, S630")
+            new_spec = st.text_input("제품 사이즈", key="np_spec",
+                placeholder="예: Ø40*23.5L (완성품 치수)",
+                help="자재 치수는 아래 자재 연결(BOM)에서 옵니다")
         with npc8:
             new_drawing = st.text_input("도면번호 (선택)", key="np_drw")
 
@@ -2930,7 +2935,8 @@ elif page == "마스터 관리":
                 _np_newmat = {
                     "raw_name": _np_nm_name.strip(),
                     "material_type": (new_mat or "").strip() or None,
-                    "spec": (new_spec or "").strip() or None,
+                    # 자재 규격은 자재명에서 — 제품 사이즈와 별개
+                    "spec": None,
                     "main_supplier": (_np_nm_sup or "").strip() or None,
                     "procurement_type": new_proc or None,
                 }
@@ -2981,7 +2987,7 @@ elif page == "마스터 관리":
                         "sub_class":
                             (new_subclass or "").strip() or None,
                         "material": (new_mat or "").strip() or None,
-                        "raw_material_spec":
+                        "product_size":
                             (new_spec or "").strip() or None,
                         "procurement_type": new_proc or None,
                         "drawing_no":
@@ -5211,8 +5217,8 @@ elif page == "수주 관리":
                 mq_mat = nq2.text_input("재질", key="mq_mat",
                     placeholder="예: STS630, SCM440")
                 nq3, nq4 = st.columns(2)
-                mq_spec = nq3.text_input("자재 규격", key="mq_spec",
-                    placeholder="예: ⌀25 × 400")
+                mq_spec = nq3.text_input("제품 사이즈", key="mq_spec",
+                    placeholder="예: Ø40*23.5L (완성품 치수)")
                 mq_cust2 = nq4.text_input("거래처", key="mq_cust2",
                     placeholder="비우면 위 거래처명 사용")
                 if st.button("품목 등록", key="mq_add",
@@ -5246,7 +5252,7 @@ elif page == "수주 관리":
                                              or "").strip() or None,
                                 "material": (mq_mat or "").strip()
                                             or None,
-                                "raw_material_spec":
+                                "product_size":
                                     (mq_spec or "").strip() or None,
                                 "active": "1",
                             }])
@@ -8871,9 +8877,11 @@ elif page == "발주/입고":
                      "해제하면 전체 품목에서 검색")
             if search_q and len(search_q) >= 2:
                 try:
-                    res = fetch("active_products",
-                                "product_id,pn,raw_material_name,raw_material_spec,material,bom_material_name,material_unit_price",
-                                f"or=(pn.ilike.*{search_q}*,alias_list.ilike.*{search_q}*,item_name.ilike.*{search_q}*,bom_material_name.ilike.*{search_q}*)&limit=20")
+                    # products 직접 조회 — 제품 사이즈(product_size) 포함,
+                    # 규격은 BOM 자재명(raw_material_name)이 진실 (2026-09-02)
+                    res = fetch("products",
+                                "product_id,pn,raw_material_name,product_size,material,bom_material_name,material_unit_price",
+                                f"archived_at=is.null&or=(pn.ilike.*{search_q}*,alias_list.ilike.*{search_q}*,item_name.ilike.*{search_q}*,bom_material_name.ilike.*{search_q}*)&limit=20")
                 except Exception as e:
                     st.error(f"검색 실패: {e}"); res = []
                 if _vh_only and _vh_pns:
@@ -8905,7 +8913,9 @@ elif page == "발주/입고":
                         cols = st.columns([3, 2, 2, 2, 1])
                         cols[0].write(f"**{p['pn']}**")
                         cols[1].write(p.get("material") or "-")
-                        cols[2].write(p.get("raw_material_spec") or p.get("bom_material_name") or "-")
+                        cols[2].write(
+                            (p.get("raw_material_name") or p.get("bom_material_name") or "-")
+                            + (f" · 제품 {p['product_size']}" if p.get("product_size") else ""))
                         # 거래처별 최근 단가·수량 프리필 (반복 발주 대응)
                         vendor_price, vendor_qty = _get_vendor_recent_line(
                             vendor["vendor_id"], p["pn"])
@@ -8920,11 +8930,14 @@ elif page == "발주/입고":
                             cols[3].write(f"₩{upd:,}" if upd else "-")
                         if cols[4].button("추가", key=f"add_{p['product_id']}"):
                             import uuid as _uuid
+                            # 발주서 양식: 품명 = "품번 (제품 사이즈)", 규격 = BOM 자재명
                             st.session_state.po_items.append({
                                 "_uid": str(_uuid.uuid4())[:8],
-                                "product_id": p["product_id"], "item_name": p["pn"],
+                                "product_id": p["product_id"],
+                                "item_name": (f"{p['pn']} ({p['product_size']})"
+                                              if p.get("product_size") else p["pn"]),
                                 "material": p.get("material") or "",
-                                "spec": p.get("raw_material_spec") or "",
+                                "spec": p.get("raw_material_name") or "",
                                 "qty": vendor_qty or 0,
                                 "unit_price": upd, "memo": "",
                             })
@@ -8941,9 +8954,9 @@ elif page == "발주/입고":
                     added = 0; notfound = []
                     for pn in pns:
                         try:
-                            r = fetch("active_products",
-                                "product_id,pn,raw_material_name,raw_material_spec,material,material_unit_price",
-                                f"or=(pn.eq.{pn},alias_list.ilike.*{pn}*)&limit=1")
+                            r = fetch("products",
+                                "product_id,pn,raw_material_name,product_size,material,material_unit_price",
+                                f"archived_at=is.null&or=(pn.eq.{pn},alias_list.ilike.*{pn}*)&limit=1")
                         except: r = []
                         if not r:
                             notfound.append(pn); continue
@@ -8953,9 +8966,11 @@ elif page == "발주/입고":
                         upd = vp or int(p.get("material_unit_price") or 0)
                         st.session_state.po_items.append({
                             "_uid": str(_uuid_bulk.uuid4())[:8],
-                            "product_id": p["product_id"], "item_name": p["pn"],
+                            "product_id": p["product_id"],
+                            "item_name": (f"{p['pn']} ({p['product_size']})"
+                                          if p.get("product_size") else p["pn"]),
                             "material": p.get("material") or "",
-                            "spec": p.get("raw_material_spec") or "",
+                            "spec": p.get("raw_material_name") or "",
                             "qty": vq or 0, "unit_price": upd, "memo": "",
                         })
                         added += 1
@@ -10370,11 +10385,24 @@ elif page == "공정 관리":
                 if _ref_poi:
                     try:
                         _poi_row = _db.fetch_one("purchase_order_items",
-                            f"poi_id=eq.{_ref_poi}", "item_name")
-                        _cand_pn = (_poi_row or {}).get("item_name") or ""
-                        if _cand_pn and _db.fetch_one(
-                                "products", f"pn=eq.{_cand_pn}",
-                                "product_id"):
+                            f"poi_id=eq.{_ref_poi}", "item_name,product_id")
+                        # 발주 라인에 제품이 연결돼 있으면 그 품번 (품명이
+                        # "품번 (사이즈)" 형식이어도 정확, 2026-09-02),
+                        # 없으면 품명 = 품번인 경우만
+                        _cand_pn = ""
+                        if (_poi_row or {}).get("product_id"):
+                            _pp9 = _db.fetch_one(
+                                "products",
+                                f"product_id=eq.{_poi_row['product_id']}",
+                                "pn")
+                            _cand_pn = (_pp9 or {}).get("pn") or ""
+                        if not _cand_pn:
+                            _cand_pn = (_poi_row or {}).get("item_name") or ""
+                            if not (_cand_pn and _db.fetch_one(
+                                    "products", f"pn=eq.{_cand_pn}",
+                                    "product_id")):
+                                _cand_pn = ""
+                        if _cand_pn:
                             _pn_hint, _pn_src = _cand_pn, "발주 라인"
                     except Exception:
                         pass
@@ -14504,7 +14532,7 @@ elif page == "원가 확인":
                     info_rows = [
                         ("품명", row.get("item_name") or "-"),
                         ("재질", row.get("material") or row.get("raw_material_name") or "-"),
-                        ("규격", row.get("raw_material_spec") or "-"),
+                        ("제품 사이즈", row.get("product_size") or "-"),
                         ("제품군", row.get("sub_class") or "-"),
                         ("ABC 등급", row.get("abc_grade") or "-"),
                         ("12M 매출액", _money(row.get("total_sales_12m"))),

@@ -162,6 +162,10 @@
   장기적으로 발주 입고 시 매입 전표 자동 생성 + 전표/스캔 입력으로 전환 예정
   (전제: 발주서 양식 안정화 먼저). 시트 ID 는 app_settings 'purchase_sheet_id'
   (없으면 utils/purchase_sync.DEFAULT_SHEET_ID), 공개 링크(뷰어) 공유 필요
+- **제품 사이즈 = products.product_size** (완성품 치수, 발주서 품명 괄호 "4PDVN-03 (Ø40*23.5L)")
+  — Migration 052 (2026-09-02 사용자 확정). 자재(소재) 치수는 BOM 자재의 spec 이 진실.
+  `products.raw_material_spec` 은 옛 소재 규격 스냅샷으로 **deprecated — UI·프리필에 쓰지 않는다**.
+  발주 라인 프리필: 품명 = "품번 (제품 사이즈)", 규격 = BOM 자재명
 - 상태값은 코드화: active '1'/'0', 조달 '도급'/'사급'
 
 ## DB 작업 규칙
