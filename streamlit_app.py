@@ -793,7 +793,12 @@ def toss_grid(rows, *, key, badge_cols=(), num_cols=(), strong_cols=(),
         gb.configure_grid_options(
             headerHeight=42, rowHeight=42, suppressCellFocus=True,
             suppressColumnVirtualisation=True,
-            **({"domLayout": "autoHeight"} if _auto else {}))
+            # 탭 안에서 숨겨진 채 초기화되면 AG Grid 가 스크롤바 폭을 0 으로
+            # 측정·캐시해 세로 스크롤바가 사라진다 — CSS 와 같은 10px 로
+            # 고정하고 세로 스크롤바는 항상 표시 (2026-09-03)
+            scrollbarWidth=10,
+            **({"domLayout": "autoHeight"} if _auto
+               else {"alwaysShowVerticalScroll": True}))
         # autoHeight 여도 iframe 은 기본 400px 를 차지해 행이 적으면
         # 큰 공백이 남는다 — 행 수에 맞춰 iframe 높이 지정 (2026-08-28)
         _kw2 = ({"height": 46 + 42 * (len(rows) + 1)} if _auto
