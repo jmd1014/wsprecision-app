@@ -789,21 +789,22 @@ def toss_grid(rows, *, key, badge_cols=(), num_cols=(), strong_cols=(),
             if _kw:
                 gb.configure_column(c, **_kw)
         gb.configure_selection("single")
-        # 항상 전체 펼침(autoHeight) — 그리드 내부 스크롤은 탭 안 초기화·
-        # Streamlit 버전에 따라 스크롤바가 죽거나 사라지는 사고가 반복돼
-        # (2026-09-03 제품 편집) 페이지 스크롤로만 쓴다. 리스트 길이는
-        # 검색 버튼·행수 필터로 통제. height 인자는 호환용으로 무시
-        _auto = True
-        # 행 가상화도 끈다 — iframe(scrolling=no) 안에서는 AG Grid 가
-        # 처음 화면분(11행)만 그리고 페이지를 내리면 빈 공간이 남는다
+        # 12행 이하는 전체 펼침, 그 이상은 고정 높이 + 리스트 내부 스크롤
+        # (2026-09-03 사용자 확정: 전체 펼침은 페이지가 너무 길어 불편).
+        # 내부 스크롤이 죽던 원인은 별도로 잡았다 — iframe·컨테이너 폭
+        # 강제(CSS), 스크롤바 폭 명시, 세로 스크롤바 항상 표시
+        _auto = height is None and len(rows) <= 12
         gb.configure_grid_options(
             headerHeight=42, rowHeight=42, suppressCellFocus=True,
             suppressColumnVirtualisation=True,
             suppressRowVirtualisation=True,
-            scrollbarWidth=10, domLayout="autoHeight")
+            scrollbarWidth=10,
+            **({"domLayout": "autoHeight"} if _auto
+               else {"alwaysShowVerticalScroll": True}))
         # autoHeight 여도 iframe 은 기본 400px 를 차지해 행이 적으면
         # 큰 공백이 남는다 — 행 수에 맞춰 iframe 높이 지정 (2026-08-28)
-        _kw2 = {"height": 46 + 42 * (len(rows) + 1)}
+        _kw2 = ({"height": 46 + 42 * (len(rows) + 1)} if _auto
+                else {"height": height or 520})
         _g = AgGrid(_df, gridOptions=gb.build(),
                     update_on=["selectionChanged"],
                     allow_unsafe_jscode=True,
