@@ -810,7 +810,11 @@ def toss_grid(rows, *, key, badge_cols=(), num_cols=(), strong_cols=(),
             else:
                 _recs = list(_sel)
             if _recs and _recs[0].get("_i") is not None:
-                return int(_recs[0]["_i"])
+                _ix = int(_recs[0]["_i"])
+                # 같은 key 의 그리드는 이전 검색의 선택(예: 57번째 행)을
+                # 기억한다 — 새 결과가 더 짧으면 범위 밖 → IndexError
+                # (2026-09-03 제품 검색 3건 결과에서 발생). 범위 밖이면 첫 행
+                return _ix if 0 <= _ix < len(rows) else 0
         return 0
     except Exception:
         # 폴백 — st.dataframe 행 선택 (AppTest·미설치 환경)
