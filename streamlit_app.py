@@ -37,6 +37,10 @@ st.markdown("""
   --primary-bg:#e8f3ff;--blue-bg:#e8f3ff;
   --shadow:0 1px 3px rgba(2,32,71,.05),0 5px 14px rgba(2,32,71,.06);
 }
+/* AgGrid iframe — 탭 안에서 숨겨진 채 마운트되면 Streamlit 이 기본 300px
+   폭으로 두고 갱신하지 않아 그리드가 접힌다. 항상 컨테이너 폭에 맞춤
+   (2026-09-03 제품 편집 스크롤 불능 수정) */
+iframe.stCustomComponentV1[title="st_aggrid.AgGrid.agGrid"]{width:100% !important;}
 html, body, [class*="css"], font, div, span, p, label, input, textarea,
 button, select {
   font-family:'Pretendard',-apple-system,sans-serif !important;
@@ -696,6 +700,11 @@ _TOSS_GRID_CSS = {
     ".b-amber": {"background": "#fff3e0", "color": "#dd6b02"},
     ".b-blue": {"background": "#e8f3ff", "color": "#1b64da"},
     ".b-gray": {"background": "#f2f4f6", "color": "#8b95a1"},
+    # 탭 안에서 숨겨진 채 마운트되면 st_aggrid 컨테이너 폭이 0 으로
+    # 굳어 그리드가 접힌 채(스크롤 높이 = 화면 높이) 남는다 — 폭을
+    # iframe 에 맞춰 강제 (2026-09-03 제품 편집 스크롤 불능 원인)
+    "#gridContainer, #gridContainer > div": {
+        "width": "100% !important", "min-width": "100% !important"},
     # 스크롤바 상시 표시 — AG Grid 기본은 OS 오버레이라 안 보여서
     # 긴 리스트가 스크롤 안 되는 것처럼 오해됨 (2026-08-21)
     "::-webkit-scrollbar": {"width": "10px", "height": "10px"},
