@@ -121,11 +121,15 @@
 - **상세 편집 카드·일괄 편집 표·라우팅 편집기는 `st.form` 으로 감싼다** (2026-08-20
   사용자 피드백: 입력/셀 수정마다 rerun 로딩 방지 — 저장 제출 때 한 번만 실행).
   단, 검색→후보 표시처럼 입력에 반응해야 하는 흐름은 form 밖에 둔다
-- **toss_grid 리스트는 항상 전체 펼침(autoHeight, 행 가상화 해제) — 페이지 스크롤로만**
-  (2026-09-03). 그리드 내부 스크롤은 탭 안에서 숨겨진 채 초기화되거나 Streamlit 버전이
-  바뀔 때 스크롤바가 죽거나 사라지는 사고가 반복돼 폐기. 리스트 길이는 검색 버튼(폼)·
-  행수 필터로 통제한다. 검증은 AppTest 로 안 되므로(AgGrid 는 iframe) 로컬 브라우저
-  (운영과 같은 Streamlit 버전)에서 렌더 행수·행 클릭까지 확인할 것
+- **toss_grid 리스트: 12행 이하 전체 펼침, 13행 이상 고정 높이(520) + 내부 스크롤**
+  (2026-09-03 사용자 확정 — 전체 펼침은 페이지가 길어 불편). 내부 스크롤이 죽던 원인과
+  대책은 유지할 것: ① 탭 안에서 숨겨진 채 마운트되면 iframe 300px·컨테이너 폭 0 으로
+  굳음 → 전역 CSS `iframe[title=st_aggrid…]{width:100%}` + custom_css `#gridContainer
+  {width:100%}` ② 스크롤바 폭 0 측정·캐시 → gridOptions `scrollbarWidth=10` +
+  `alwaysShowVerticalScroll` ③ 행 가상화가 iframe 안에서 첫 화면만 그림 →
+  `suppressRowVirtualisation`. 검증은 AppTest 로 안 되므로(AgGrid 는 iframe) 운영과 같은
+  Streamlit 버전의 브라우저에서 휠·드래그·행 클릭까지 확인할 것 (자동화 도구의 첫 휠
+  이벤트는 iframe 에 안 들어가니 두 번째 휠로 판단)
 - **정합 감시 = `data_quality_v`** → 마스터 관리 > 정합 점검 탭. 전 항목 0건 유지가 목표.
   새 규칙을 만들면 검사도 이 뷰에 추가할 것
 - **원가 로드맵 (2026-08-21 사용자 확정)**: ① 표준 단가 = BOM 공정행 unit_price
