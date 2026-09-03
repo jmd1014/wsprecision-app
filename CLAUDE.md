@@ -130,6 +130,13 @@
   `suppressRowVirtualisation`. 검증은 AppTest 로 안 되므로(AgGrid 는 iframe) 운영과 같은
   Streamlit 버전의 브라우저에서 휠·드래그·행 클릭까지 확인할 것 (자동화 도구의 첫 휠
   이벤트는 iframe 에 안 들어가니 두 번째 휠로 판단)
+- **자동 로그인(로그인 유지) = 브라우저 컴포넌트가 쿠키를 읽는다** (2026-09-03 재설계,
+  실제 크롬으로 운영 검증). Streamlit Cloud 프록시는 **쿠키 헤더를 앱 서버에 전달하지
+  않아 `st.context.cookies` 가 운영에서 항상 비어 있다** — 서버 헤더 기반 자동 로그인은
+  로컬에서만 된다. 읽기는 `extra_streamlit_components.CookieManager(key="ws_cm").get_all()`
+  (첫 런 None → 마운트 후 값과 함께 rerun, 그래서 로그인 폼을 같이 그려 둔다),
+  쓰기·삭제는 components.html JS(매 런 기록, 로그아웃 시 삭제) 유지. 토큰은 HMAC
+  `user|exp|sig` 14일 sliding. `auth_skip_cookie` 는 로그아웃 직후 재로그인 루프 방지
 - **정합 감시 = `data_quality_v`** → 마스터 관리 > 정합 점검 탭. 전 항목 0건 유지가 목표.
   새 규칙을 만들면 검사도 이 뷰에 추가할 것
 - **원가 로드맵 (2026-08-21 사용자 확정)**: ① 표준 단가 = BOM 공정행 unit_price

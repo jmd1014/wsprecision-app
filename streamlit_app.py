@@ -500,21 +500,9 @@ if DB_AVAILABLE and not st.session_state.get("auth_user"):
                 st.stop()
             with st.form("ws_login"):
                 st.markdown("#### 로그인")
-                # 진단 (2026-09-03, 재설계 검증 후 제거 예정): 쿠키가 어느
-                # 경로로 앱에 도달했는지 표시 (값은 노출하지 않음)
-                try:
-                    _hdr_names = sorted(dict(st.context.cookies).keys())
-                except Exception:
-                    _hdr_names = []
-                _cm_state = ("대기중" if _ck_all is None
-                             else f"쿠키 {len(_ck_all)}개"
-                             + (" · ws_auth 감지" if "ws_auth" in _ck_all
-                                else " · ws_auth 없음"))
-                st.caption(f"자동 로그인 진단 — 브라우저 컴포넌트: {_cm_state}"
-                           f" / 서버 헤더: "
-                           + ("ws_auth 있음" if "ws_auth" in _hdr_names
-                              else "없음")
-                           + (f" / 토큰 출처: {_ck_src}" if _ck_src else ""))
+                if _ck_all is None and not st.session_state.get(
+                        "auth_skip_cookie"):
+                    st.caption("자동 로그인 확인 중…")
                 _li_id = st.text_input("아이디")
                 _li_pw = st.text_input("비밀번호", type="password")
                 _li_keep = st.checkbox("이 기기에서 자동 로그인 (14일)",
