@@ -445,9 +445,27 @@ if DB_AVAILABLE and not st.session_state.get("auth_user"):
     _users = _auth.load_users(_adb)
     _secret = _auth.load_secret(_adb)
 
-    # 1) 쿠키 자동 로그인 — st.context (동기 읽기, 로그아웃 직후 제외)
+    # 1) 쿠키 자동 로그인 — 브라우저 컴포넌트가 document.cookie 를 읽어
+    #    값으로 넘긴다 (2026-09-03 재설계: Streamlit Cloud 프록시는 쿠키
+    #    헤더를 앱 서버에 전달하지 않아 st.context.cookies 가 항상 비어
+    #    있었다 — 운영에서만 자동 로그인이 안 되던 원인). 컴포넌트는
+    #    첫 런에 None 을 주고 마운트 후 값과 함께 rerun 하므로 로그인
+    #    폼을 같이 그려 두고, 값이 오면 그 런에서 통과시킨다.
+    #    st.context 는 로컬(프록시 없음)용 보조 경로로 유지.
+    _ck_src, _ck_all = "", None
     if _users and _secret and not st.session_state.get("auth_skip_cookie"):
-        _tok_b64 = _cookie_read("ws_auth")
+        try:
+            import extra_streamlit_components as _stx
+            _ck_all = _stx.CookieManager(key="ws_cm").get_all()
+        except Exception:
+            _ck_all = None
+        _tok_b64 = (_ck_all or {}).get("ws_auth") if _ck_all else None
+        if _tok_b64:
+            _ck_src = "브라우저 컴포넌트"
+        else:
+            _tok_b64 = _cookie_read("ws_auth")
+            if _tok_b64:
+                _ck_src = "서버 헤더"
         _tok = None
         if _tok_b64:
             try:
@@ -482,17 +500,21 @@ if DB_AVAILABLE and not st.session_state.get("auth_user"):
                 st.stop()
             with st.form("ws_login"):
                 st.markdown("#### 로그인")
-                # 진단 (2026-09-03): 브라우저엔 ws_auth 쿠키가 있는데
-                # 운영에서 자동 로그인이 안 되는 원인 확인 — 서버가 요청
-                # 헤더에서 쿠키를 봤는지 표시 (값은 노출하지 않음)
+                # 진단 (2026-09-03, 재설계 검증 후 제거 예정): 쿠키가 어느
+                # 경로로 앱에 도달했는지 표시 (값은 노출하지 않음)
                 try:
-                    _ck_names = sorted(dict(st.context.cookies).keys())
+                    _hdr_names = sorted(dict(st.context.cookies).keys())
                 except Exception:
-                    _ck_names = []
-                st.caption("자동 로그인 진단 — 서버가 받은 쿠키: "
-                           + (", ".join(_ck_names) if _ck_names else "없음")
-                           + (" · ws_auth 감지" if "ws_auth" in _ck_names
-                              else " · ws_auth 없음"))
+                    _hdr_names = []
+                _cm_state = ("대기중" if _ck_all is None
+                             else f"쿠키 {len(_ck_all)}개"
+                             + (" · ws_auth 감지" if "ws_auth" in _ck_all
+                                else " · ws_auth 없음"))
+                st.caption(f"자동 로그인 진단 — 브라우저 컴포넌트: {_cm_state}"
+                           f" / 서버 헤더: "
+                           + ("ws_auth 있음" if "ws_auth" in _hdr_names
+                              else "없음")
+                           + (f" / 토큰 출처: {_ck_src}" if _ck_src else ""))
                 _li_id = st.text_input("아이디")
                 _li_pw = st.text_input("비밀번호", type="password")
                 _li_keep = st.checkbox("이 기기에서 자동 로그인 (14일)",
