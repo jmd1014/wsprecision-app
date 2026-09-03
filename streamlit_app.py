@@ -718,13 +718,18 @@ _TOSS_GRID_CSS = {
         "width": "100% !important", "min-width": "100% !important"},
     # 스크롤바 상시 표시 — AG Grid 기본은 OS 오버레이라 안 보여서
     # 긴 리스트가 스크롤 안 되는 것처럼 오해됨 (2026-08-21)
-    "::-webkit-scrollbar": {"width": "10px", "height": "10px"},
-    "::-webkit-scrollbar-thumb": {"background": "#d1d6db",
+    # 흰 트랙에 연회색 썸은 운영 크롬에서 사실상 안 보였다(2026-09-03
+    # 실제 크롬 확인) — 트랙을 연회색, 썸을 진회색으로
+    "::-webkit-scrollbar": {"width": "12px", "height": "12px",
+                            "background": "#eef1f4"},
+    "::-webkit-scrollbar-thumb": {"background": "#8b95a1",
                                   "border-radius": "8px",
-                                  "border": "2px solid #ffffff"},
-    "::-webkit-scrollbar-thumb:hover": {"background": "#b0b8c1"},
-    "::-webkit-scrollbar-track": {"background": "#ffffff",
+                                  "border": "2px solid #eef1f4"},
+    "::-webkit-scrollbar-thumb:hover": {"background": "#6b7684"},
+    "::-webkit-scrollbar-track": {"background": "#eef1f4",
                                   "border-radius": "8px"},
+    ".ag-body-vertical-scroll, .ag-body-horizontal-scroll":
+        {"background": "#eef1f4"},
 }
 
 
