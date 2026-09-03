@@ -482,6 +482,17 @@ if DB_AVAILABLE and not st.session_state.get("auth_user"):
                 st.stop()
             with st.form("ws_login"):
                 st.markdown("#### 로그인")
+                # 진단 (2026-09-03): 브라우저엔 ws_auth 쿠키가 있는데
+                # 운영에서 자동 로그인이 안 되는 원인 확인 — 서버가 요청
+                # 헤더에서 쿠키를 봤는지 표시 (값은 노출하지 않음)
+                try:
+                    _ck_names = sorted(dict(st.context.cookies).keys())
+                except Exception:
+                    _ck_names = []
+                st.caption("자동 로그인 진단 — 서버가 받은 쿠키: "
+                           + (", ".join(_ck_names) if _ck_names else "없음")
+                           + (" · ws_auth 감지" if "ws_auth" in _ck_names
+                              else " · ws_auth 없음"))
                 _li_id = st.text_input("아이디")
                 _li_pw = st.text_input("비밀번호", type="password")
                 _li_keep = st.checkbox("이 기기에서 자동 로그인 (14일)",
