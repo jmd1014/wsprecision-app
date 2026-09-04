@@ -7060,9 +7060,16 @@ elif page == "출고 관리":
         from datetime import date as _cf_dt
         from utils.delivery_alloc import allocate_rounds as _cf_alloc
         from utils.shipment_adjust import split_round_alloc as _cf_split
-        from utils.statement_generator import (
-            delivery_list_html as _cf_list,
-            transaction_statements_html as _cf_stmt)
+        import utils.statement_generator as _cf_sg
+        import inspect as _cf_insp
+        if "rev_label" not in _cf_insp.signature(
+                _cf_sg.delivery_list_html).parameters:
+            # Cloud 재배포 시 sys.modules 에 옛 모듈이 남아 새 인자를
+            # 못 받던 TypeError (2026-09-04) — 영업 보고와 같은 가드
+            import importlib as _cf_il
+            _cf_sg = _cf_il.reload(_cf_sg)
+        _cf_list = _cf_sg.delivery_list_html
+        _cf_stmt = _cf_sg.transaction_statements_html
         st.caption(
             "등록된 전표를 열어 **확인용 리스트 인쇄 → 현장 확인 → "
             "정정 저장 → 출고 확정** 순서로 진행합니다. 확정된 전표는 "
