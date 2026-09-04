@@ -182,11 +182,29 @@
   — Migration 052 (2026-09-02 사용자 확정). 자재(소재) 치수는 BOM 자재의 spec 이 진실.
   `products.raw_material_spec` 은 옛 소재 규격 스냅샷으로 **deprecated — UI·프리필에 쓰지 않는다**.
   발주 라인 프리필: 품명 = "품번 (제품 사이즈)", 규격 = BOM 자재명
+- **확정 출고 전표의 정정 = 같은 전표번호 유지 + 차이(delta)만 역반영** (2026-09-04
+  사용자 확정, Migration 053/054). 확정은 실물 출고 시점 그대로(재고·수주의 진실),
+  정정은 출고 관리 > 출고 전표 > 확정 전표의 [전표 정정] — 라인 수량 변경(0 = 라인
+  제외), 사유 필수, confirm_gate. 감소분은 그 라인이 차감한 LOT 를 마지막 LOT 부터
+  **양수 ISSUE 행**으로 복원(원장 append-only, `issued_lots` 는 LOT 별 net), 회차
+  납품완료는 `shipment_allocations`(확정 때 라인→회차 충당 저장) 역순으로 되돌림
+  (저장 없는 옛 전표는 지정 회차 → 최근 납품 회차 폴백), 수주 라인 received/pending/
+  status 재계산. 증가분은 확정과 같은 규칙(미납 한도·재고 검사·회차 충당·FIFO).
+  이력은 `shipment_revisions`(이전/이후 수량·사유·담당), 헤더 `rev_no`/`revised_at`,
+  재발행 문서에 '정정본 vN · 날짜' 표기(옛 출력물 파기 안내). **[전표 취소]** 는 전
+  라인 0 역반영 + CANCELLED(라인 수량은 기록 보존, 사유 필수). 순수 계산은
+  utils/shipment_adjust.py(tests/test_shipment_adjust.py), 흐름은
+  tests/test_shipment_revision_flow.py. 거래명세서 수령 확인 단계는 규모가 커지면
+  추가(현재는 부가 업무라 보류 — 사용자 결정)
+- **월 마감 잠금 = `sales_month_close`** (영업 보고 > 월 마감, 관리자만 잠금/해제,
+  confirm_gate). 마감된 달의 출고일 전표는 확정·정정·취소가 차단된다 — 세금계산서
+  발행 후 수량 변경으로 매출 집계가 어긋나는 것을 막는 장치. 정합 점검
+  `SHIP_ALLOC_MISMATCH`(2026-09-05 이후 확정분의 라인 수량 vs 회차 충당 합)
 - 상태값은 코드화: active '1'/'0', 조달 '도급'/'사급'
 
 ## DB 작업 규칙
 
-- 스키마 변경은 Supabase MCP `apply_migration`으로 (이력 유지). 2026-08-21 기준 마이그레이션 048까지
+- 스키마 변경은 Supabase MCP `apply_migration`으로 (이력 유지). 2026-09-04 기준 마이그레이션 054까지
 - **뷰 재정의는 항상 전체 정의를 명시** — `create or replace view v as select * from v ...`
   같은 자기 참조는 DDL 은 통과하지만 조회 시 무한 재귀로 뷰가 죽는다 (046 사고, 047 복구).
   기존 검사에 추가할 때도 전체 UNION 을 다시 쓴다

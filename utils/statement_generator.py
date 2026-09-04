@@ -179,12 +179,14 @@ def _statement_page(customer, vendor, rows, date_s, accent, copy_label,
 """
 
 
-def transaction_statements_html(batch, vendors_map=None):
+def transaction_statements_html(batch, vendors_map=None, rev_label=None):
     """거래처별 거래명세서 — 공급자용(주황)·공급받는자용(초록) 각 1장.
 
     batch: {"date": "YYYY-MM-DD", "rows": [{customer, customer_pn, pn,
             item_name, spec, qty, unit, unit_price, remark, date}]}
     vendors_map: {거래처명: vendors 행}
+    rev_label: 확정 후 정정된 전표의 재발행 표기 (예: '정정본 v2 · 2026-09-04')
+        — 파기되지 않은 옛 출력물과 구분하기 위해 사본 라벨 옆에 찍는다
     """
     vendors_map = vendors_map or {}
     date_s = str(batch.get("date") or "")
@@ -201,7 +203,8 @@ def transaction_statements_html(batch, vendors_map=None):
             for pi, ch in enumerate(chunks, 1):
                 pages.append((accent, _statement_page(
                     cust, vendors_map.get(cust), ch, date_s, accent,
-                    label, pi, len(chunks))))
+                    label + (f" · {rev_label}" if rev_label else ""),
+                    pi, len(chunks))))
     # 강조색은 페이지 생성 시 이미 반영됨 (공급자용 주황 / 받는자용 초록)
     return ("<!doctype html><html><head><meta charset='utf-8'>"
             f"<title>거래명세서 {date_s}</title>"
@@ -211,7 +214,7 @@ def transaction_statements_html(batch, vendors_map=None):
               "()=>window.print(),300)</script></body></html>")
 
 
-def delivery_list_html(batch, draft=False):
+def delivery_list_html(batch, draft=False, rev_label=None):
     """내부 출고 리스트 — 상차·검수 확인용 (A4, 확인란 포함).
 
     사내 품번 기준으로 준비하므로 거래처 표기·수주번호는 싣지 않고
@@ -255,7 +258,9 @@ def delivery_list_html(batch, draft=False):
 <title>{title} {date_s}</title><style>{css}</style></head><body>
 <div class="page">
  <div class="hd"><span class="t">출고 리스트</span>
-  <span class="copy">{'(현장 확인용)' if draft else '(확정)'}</span>
+  <span class="copy">{'(현장 확인용)' if draft
+                      else f'(확정 · {rev_label})' if rev_label
+                      else '(확정)'}</span>
   <span class="meta">{date_s} · {len(rows)}건 · 총 {_num(total)}개</span>
  </div>
  <table class="items">

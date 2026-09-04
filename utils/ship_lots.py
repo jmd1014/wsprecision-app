@@ -21,15 +21,22 @@ def format_lots(pairs):
 
 
 def issued_lots(txns):
-    """ISSUE 원장 행(qty 음수 저장) → {si_id: LOT 표기}."""
+    """ISSUE 원장 행 → {si_id: LOT 표기}.
+
+    차감은 qty 음수, 정정 복원은 같은 ref 로 양수 행이 덧붙는다
+    (2026-09-04 확정 전표 정정) — LOT 별로 net 을 낸 뒤 표기한다.
+    """
     by_si = {}
     for t in txns:
         si = t.get("ref_id")
         if si is None:
             continue
-        by_si.setdefault(si, []).append(
-            (t.get("lot_number"), -float(t.get("qty") or 0)))
-    return {si: format_lots(ps) for si, ps in by_si.items()}
+        lots = by_si.setdefault(si, {})
+        lot = t.get("lot_number")
+        if lot not in lots:
+            lots[lot] = 0.0
+        lots[lot] += -float(t.get("qty") or 0)
+    return {si: format_lots(list(ps.items())) for si, ps in by_si.items()}
 
 
 def fifo_preview(items, lots_by_pid):
