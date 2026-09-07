@@ -8898,7 +8898,8 @@ elif page == "생산 계획":
                     "log_id")
                 _agg = _os.aggregate(_logs)
                 _ex = {(r["pn"], r["process"]): r for r in _std_fetch_all(
-                    "product_op_std", "op_id,pn,process,std_status", "op_id")}
+                    "product_op_std", "op_id,pn,process,std_status,uph_sheet",
+                    "op_id")}
                 _pn2pid = {p["pn"]: p["product_id"] for p in _std_fetch_all(
                     "products", "pn,product_id", "product_id")}
                 _now = _std_now.now().isoformat()
@@ -8917,7 +8918,10 @@ elif page == "생산 계획":
                     ex = _ex.get(k)
                     if ex:
                         if ex.get("std_status") != "CONFIRMED":
-                            rec["uph_std"] = o["uph_auto"]
+                            # 시트 UPH 목표(사내 기준)가 있으면 그것이
+                            # 표준, 실적 중앙값은 보조
+                            rec["uph_std"] = (ex.get("uph_sheet")
+                                              or o["uph_auto"])
                         _db.update("product_op_std",
                                    f"op_id=eq.{ex['op_id']}", rec)
                         _n_upd += 1
@@ -13543,7 +13547,8 @@ elif page == "생산 보고":
             d_shift = st.selectbox("교대", ["전체", "주간", "야간"],
                 key="dash_shift")
         with fc3:
-            d_src = st.selectbox("소스", ["전체", "📥 MES", "📝 수기"],
+            d_src = st.selectbox("소스", ["전체", "📊 생산일정 시트",
+                                         "📥 MES", "📝 수기"],
                 key="dash_src")
 
         _today = _pb_date.today()
@@ -13567,6 +13572,8 @@ elif page == "생산 보고":
             q.append(f"shift=eq.{d_shift}")
         if d_src == "📥 MES":
             q.append("source=eq.MES_UPLOAD")
+        elif d_src == "📊 생산일정 시트":
+            q.append("source=eq.SHEET_DB")
         elif d_src == "📝 수기":
             q.append("source=eq.MANUAL")
         try:
@@ -13633,7 +13640,17 @@ elif page == "생산 보고":
                 for (d_, s_, m_), g in df_.groupby(
                         ["log_date", "shift", "machine"]):
                     ivs = []
+                    _hrs_direct = 0.0   # 시트 동기화 행: 가동시간(H) 직접
                     for _, r_ in g.iterrows():
+                        _uh = r_.get("uptime_hours")
+                        try:
+                            _uh = float(_uh) if _uh not in (None, "") \
+                                and _uh == _uh else 0.0
+                        except (TypeError, ValueError):
+                            _uh = 0.0
+                        if _uh > 0:
+                            _hrs_direct += _uh
+                            continue
                         a = _hhmm_min(r_.get("work_start"))
                         b = _hhmm_min(r_.get("work_end"))
                         if a is None or b is None or a == b:
@@ -13646,17 +13663,20 @@ elif page == "생산 보고":
                         if b < a:
                             b += 1440
                         ivs.append((a, b))
-                    if not ivs:
+                    if not ivs and _hrs_direct <= 0:
                         continue
-                    ivs.sort()
-                    tot, (cs, ce) = 0, ivs[0]
-                    for a, b in ivs[1:]:
-                        if a <= ce:
-                            ce = max(ce, b)
-                        else:
-                            tot += ce - cs
-                            cs, ce = a, b
-                    tot += ce - cs
+                    tot = 0
+                    if ivs:
+                        ivs.sort()
+                        (cs, ce) = ivs[0]
+                        for a, b in ivs[1:]:
+                            if a <= ce:
+                                ce = max(ce, b)
+                            else:
+                                tot += ce - cs
+                                cs, ce = a, b
+                        tot += ce - cs
+                    tot += _hrs_direct * 60.0
                     recs.append({"log_date": d_, "shift": s_,
                                  "util": min(1.0, tot / 60.0 / 9.0)})
                 if not recs:
@@ -14029,6 +14049,165 @@ elif page == "생산 보고":
             parse_mes_daily_report, parse_date_from_filename,
             match_product_pn, guess_shift, PROCESS_STEP_RE)
 
+        # ── 생산일정 시트 동기화 (2026-09-07): [데이터DB] 탭 = 실적 원본,
+        # [제품별 목표생산량] 탭 = 공정 표준 1차 출처. 매입내역 동기화와
+        # 같은 2단계(확인 → 반영), 이미 반영된 행(sheet_key)은 건너뜀 ──
+        with st.expander("생산일정 시트 동기화 (데이터DB · 공정 표준)",
+                         expanded=False):
+            import utils.prod_sheet as _psh
+            from utils.purchase_sync import download_sheet_xlsx as _ps_dl
+            st.caption(
+                "구글시트 **26년 생산일정**의 [데이터DB] 탭을 공정 실적으로, "
+                "[제품별 목표생산량] 탭을 공정 표준(UPH 목표·C.T.)으로 "
+                "가져옵니다. ① 시트 확인 → ② 반영. 반영 후 생산 계획 > "
+                "공정 표준에서 [실적에서 표준 재산출] 을 누르세요.")
+            try:
+                _psh_row = _db.fetch_one("app_settings",
+                                         "key=eq.production_sheet_id", "value")
+                _psh_id = ((_psh_row or {}).get("value")
+                           or _psh.DEFAULT_SHEET_ID)
+            except Exception:
+                _psh_id = _psh.DEFAULT_SHEET_ID
+            ps1, ps2 = st.columns([1, 1])
+            _psh_up = ps1.file_uploader(
+                "시트를 xlsx 로 내려받아 올리기 (공유 설정 없이 가능)",
+                type=["xlsx"], key="psh_file")
+            _psh_go = ps2.button("① 시트에서 직접 확인", key="psh_check",
+                                 help="시트가 '링크가 있는 모든 사용자(뷰어)'"
+                                      " 로 공유돼 있어야 합니다",
+                                 use_container_width=True)
+            _psh_bytes = None
+            if _psh_up is not None:
+                _psh_bytes = _psh_up.getvalue()
+            elif _psh_go:
+                try:
+                    _psh_bytes = _ps_dl(_psh_id)
+                except Exception as e:
+                    st.error(str(e))
+            if _psh_bytes:
+                import io as _psh_io
+                import tempfile as _psh_tmp
+                try:
+                    with _psh_tmp.NamedTemporaryFile(
+                            suffix=".xlsx", delete=False) as _tf:
+                        _tf.write(_psh_bytes)
+                        _tf_path = _tf.name
+                    _d_rows, _s_rows = _psh.load_workbook_tabs(_tf_path)
+                    _prods9 = []
+                    _off9 = 0
+                    while True:
+                        _pg9 = fetch("products",
+                                     "product_id,pn,alias_list,archived_at",
+                                     f"order=product_id&offset={_off9}",
+                                     limit=1000)
+                        _prods9 += _pg9
+                        if len(_pg9) < 1000:
+                            break
+                        _off9 += 1000
+                    _pidx = _psh.build_pn_index(_prods9)
+                    _recs, _pst = _psh.parse_data_rows(_d_rows, _pidx)
+                    _stds9 = _psh.parse_std_rows(_s_rows, _pidx)
+                    _have = set()
+                    _off9 = 0
+                    while True:
+                        _pg9 = fetch("production_log", "sheet_key",
+                                     "sheet_key=not.is.null&order=log_id"
+                                     f"&offset={_off9}", limit=1000)
+                        _have |= {x["sheet_key"] for x in _pg9}
+                        if len(_pg9) < 1000:
+                            break
+                        _off9 += 1000
+                    _new = [r for r in _recs if r["sheet_key"] not in _have]
+                    st.session_state["psh_preview"] = {
+                        "new": _new, "stds": _stds9, "stats": _pst,
+                        "have": len(_have)}
+                except Exception as e:
+                    st.error(f"시트 읽기 실패: {e}")
+            _pv = st.session_state.get("psh_preview")
+            if _pv:
+                _pst = _pv["stats"]
+                st.markdown(
+                    "시트 {rows:,}행 (가동 {run:,} · 비가동 {stop:,}) · 품번 "
+                    "매칭 {m:,}/{run:,} · **신규 {new:,}행** (이미 반영 "
+                    "{have:,}) · 표준 {std}건 (매칭 {sm})".format(
+                        rows=_pst["rows"], run=_pst["run"],
+                        stop=_pst["stop"], m=_pst["matched"],
+                        new=len(_pv["new"]), have=_pv["have"],
+                        std=len(_pv["stds"]),
+                        sm=sum(1 for v in _pv["stds"].values()
+                               if v.get("product_id"))))
+                if _pst["unmatched"]:
+                    st.caption("미매칭 품번(시트 표기 그대로 저장): "
+                               + ", ".join(
+                                   f"{k}({v})" for k, v in sorted(
+                                       _pst["unmatched"].items(),
+                                       key=lambda x: -x[1])[:15]))
+                if _pv["new"]:
+                    _dd9 = sorted({r["log_date"] for r in _pv["new"]})
+                    st.caption(f"신규 기간 {_dd9[0]} ~ {_dd9[-1]}")
+                if st.button("② 반영 (실적 추가 + 표준 갱신)",
+                             key="psh_apply", type="primary",
+                             disabled=not (_pv["new"] or _pv["stds"])) \
+                        and click_guard("psh_apply"):
+                    try:
+                        _n_ins = 0
+                        for i in range(0, len(_pv["new"]), 200):
+                            _n_ins += _db.insert("production_log",
+                                                 _pv["new"][i:i + 200])
+                        # 표준: 있으면 시트값 갱신(확정은 uph_std 유지),
+                        # 없으면 신규(AUTO, 출처 SHEET)
+                        _ex9 = {}
+                        _off9 = 0
+                        while True:
+                            _pg9 = fetch("product_op_std",
+                                         "op_id,pn,process,std_status",
+                                         f"order=op_id&offset={_off9}",
+                                         limit=1000)
+                            _ex9.update({(x["pn"], x["process"]): x
+                                         for x in _pg9})
+                            if len(_pg9) < 1000:
+                                break
+                            _off9 += 1000
+                        _ins9, _upd9 = [], 0
+                        for k, v in _pv["stds"].items():
+                            # PostgREST 일괄 insert 는 모든 행의 키가 같아야
+                            # 하므로 키를 항상 전부 넣는다 (값은 None 허용)
+                            rec = {"uph_sheet": v["uph_sheet"],
+                                   "ct_sec": v["ct_sec"],
+                                   "idle_sec": v["idle_sec"],
+                                   "std_source": "SHEET",
+                                   "group_code": v.get("group_code"),
+                                   "product_id": v.get("product_id")}
+                            ex = _ex9.get(k)
+                            if ex:
+                                if ex.get("std_status") != "CONFIRMED":
+                                    rec["uph_std"] = v["uph_sheet"]
+                                _db.update(
+                                    "product_op_std",
+                                    f"op_id=eq.{ex['op_id']}",
+                                    {kk: vv for kk, vv in rec.items()
+                                     if vv is not None
+                                     or kk in ("ct_sec", "idle_sec")})
+                                _upd9 += 1
+                            else:
+                                rec.update({
+                                    "pn": v["pn"], "process": v["process"],
+                                    "step": v["step"],
+                                    "uph_std": v["uph_sheet"],
+                                    "std_status": "AUTO",
+                                    "note": v.get("note")})
+                                _ins9.append(rec)
+                        for i in range(0, len(_ins9), 200):
+                            _db.insert("product_op_std", _ins9[i:i + 200])
+                        st.session_state.pop("psh_preview", None)
+                        st.success("반영 완료 — 실적 {:,}행 추가 · 표준 신규 "
+                                   "{} · 갱신 {}. 생산 계획 > 공정 표준에서 "
+                                   "재산출하세요.".format(
+                                       _n_ins, len(_ins9), _upd9))
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"반영 실패: {e}")
+
         mes_file = st.file_uploader(
             "MES 일간 생산보고서 (.xls)", type=["xls", "html", "htm"],
             key="mes_file",
@@ -14292,7 +14471,8 @@ elif page == "생산 보고":
             ldf = pd.DataFrame([{
                 "일자": l.get("log_date"),
                 "교대": l.get("shift") or "-",
-                "소스": "MES" if l.get("source") == "MES_UPLOAD" else "수기",
+                "소스": {"MES_UPLOAD": "MES", "SHEET_DB": "시트"}.get(
+                    l.get("source") or "", "수기"),
                 "설비": l.get("machine") or "-",
                 "품번": l.get("pn"),
                 "공정": l.get("process") or "-",

@@ -22,7 +22,9 @@ def normalize_machine(name):
     """'MCT 03' / 'mct-3' / 'CNC07' → 'MCT03' / 'MCT03' / 'CNC07'."""
     if not name:
         return None
-    m = _MACHINE_RE.match(str(name))
+    # 'CNC13(다인로봇)' 처럼 괄호 설명이 붙은 표기는 괄호 앞만 (2026-09-07)
+    base = re.split(r"[(\[（]", str(name), 1)[0]
+    m = _MACHINE_RE.match(base)
     if not m:
         return str(name).strip().upper().replace(" ", "")
     return f"{m.group(1).upper()}{int(m.group(2)):02d}"
@@ -86,8 +88,15 @@ def aggregate(rows, min_hours=0.25):
         qty = float(r.get("total_qty") or 0)
         if not pn or not proc or qty <= 0:
             continue
-        h = row_hours(r.get("work_start"), r.get("work_end"),
-                      r.get("shift"))
+        # 시트 동기화 행은 가동시간(H)이 직접 있다 — 우선 사용
+        h = r.get("uptime_hours")
+        try:
+            h = float(h) if h not in (None, "") else None
+        except (TypeError, ValueError):
+            h = None
+        if h is None or h <= 0:
+            h = row_hours(r.get("work_start"), r.get("work_end"),
+                          r.get("shift"))
         if h is None or h < min_hours:
             continue
         uph = qty / h
