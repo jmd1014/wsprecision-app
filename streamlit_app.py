@@ -2134,53 +2134,144 @@ elif page == "마스터 관리":
                     } for l in _ft["lots"]]),
                     use_container_width=True, hide_index=True)
 
-            ac1, ac2, ac3 = st.columns([1, 1, 1])
-            ac1.metric("장부 완성재고", f"{_ft['stock']:,.0f}")
-            # 장부가 음수인 품목도 열리도록 초기값은 0 미만 방지
-            # (음수 장부 = 미기록 생산분 — 실사값 입력으로 바로잡는 대상)
-            _real = ac2.number_input("실사 수량", 0.0, 1_000_000.0,
-                                     max(0.0, float(_ft["stock"])), 1.0,
-                                     key="ft_real")
-            _diff = float(_real) - _ft["stock"]
-            ac3.metric("조정될 차이", f"{_diff:+,.0f}",
-                       delta=None if _diff == 0 else
-                       ("과잉 — 재고를 늘립니다" if _diff > 0
-                        else "부족 — 재고를 줄입니다"),
-                       delta_color="off")
-            _amemo = st.text_input(
-                "조정 사유", key="ft_amemo",
-                placeholder="예: 8/1 창고 실사, 미기록 완성분 반영")
-            if st.button("완성재고 조정", type="primary",
-                         disabled=(_diff == 0), key="ft_adj_go"):
-                if not _amemo.strip():
-                    st.error("조정 사유는 반드시 남겨야 합니다 — 나중에 "
-                             "왜 숫자가 바뀌었는지 추적할 수 없습니다.")
+            # 실사 방식 (2026-09-07 사용자 확정): 추적 가능한 실물은
+            # LOT 별로, LOT 을 알 수 없는 이전 재고는 기초 재고 LOT(OB)
+            # 으로 묶는다. 제품 합계 조정은 LOT 정보가 없을 때의 폴백.
+            _ft_today = _ft_date.today()
+            _ft_mode = st.radio(
+                "실사 방식",
+                ["LOT별 실사", "기초 재고 LOT (OB)", "제품 합계 조정"],
+                horizontal=True, key="ft_mode",
+                help="LOT별 실사 = 라벨·이동표로 LOT 을 아는 실물 · "
+                     "OB = LOT 을 알 수 없는 이전 재고를 실사일 기초 LOT "
+                     "으로 등록 · 제품 합계 = LOT 없이 총량만 맞춤")
+            st.caption("장부 완성재고 **{:,.0f}** (LOT 합계 {:,.0f})".format(
+                _ft["stock"],
+                sum(float(l.get("remain_qty") or 0) for l in _ft["lots"])))
+
+            def _ft_adj(qty, lot, memo, kind):
+                _db.insert("inventory_transactions", [{
+                    "material_id": None, "product_id": _pid,
+                    "txn_type": "ADJUSTMENT", "qty": float(qty),
+                    "unit": _unit, "lot_number": lot,
+                    "ref_table": None, "ref_id": None,
+                    "txn_date": _ft_today.isoformat(),
+                    "remark": f"{kind} · {memo}",
+                    "created_by": current_user_name()}])
+
+            if _ft_mode == "LOT별 실사":
+                if not _ft["lots"]:
+                    st.info("잔량이 있는 LOT 이 없습니다 — LOT 을 아는 "
+                            "실물이면 '기초 재고 LOT' 에서 LOT 번호를 직접 "
+                            "적어 등록하세요.")
                 else:
-                    _alot = "ADJ-{:%Y%m%d}".format(_ft_date.today())
+                    _lot_df = pd.DataFrame([{
+                        "완성 LOT": l["lot_number"],
+                        "장부 잔여": float(l.get("remain_qty") or 0),
+                        "실사 수량": float(l.get("remain_qty") or 0),
+                    } for l in _ft["lots"]])
+                    _lot_ed = st.data_editor(
+                        _lot_df, hide_index=True, use_container_width=True,
+                        key=f"ft_lot_ed_{_pid}_{len(_ft['lots'])}",
+                        column_config={
+                            "실사 수량": st.column_config.NumberColumn(
+                                min_value=0, step=1),
+                            "완성 LOT": st.column_config.Column(
+                                disabled=True),
+                            "장부 잔여": st.column_config.Column(
+                                disabled=True)})
+                    _lot_ch = []
+                    for _bi, _brow in _lot_ed.iterrows():
+                        _l0 = _ft["lots"][int(_bi)]
+                        _nv = float(pd.to_numeric(
+                            _brow.get("실사 수량"), errors="coerce") or 0)
+                        _dv = _nv - float(_l0.get("remain_qty") or 0)
+                        if abs(_dv) > 1e-9:
+                            _lot_ch.append((_l0["lot_number"], _dv, _nv))
+                    _lmemo = st.text_input(
+                        "조정 사유", key="ft_lmemo",
+                        placeholder="예: 9/7 창고 실사 (라벨 확인)")
+                    if _lot_ch:
+                        st.caption("조정 {}건 — ".format(len(_lot_ch))
+                                   + ", ".join(f"{l} {d:+,.0f}"
+                                               for l, d, _ in _lot_ch))
+                    if st.button("LOT별 조정 기록", type="primary",
+                                 key="ft_lot_go",
+                                 disabled=not (_lot_ch and _lmemo.strip())):
+                        try:
+                            for _l, _d, _ in _lot_ch:
+                                _ft_adj(_d, _l, _lmemo.strip(),
+                                        "LOT 실사 조정")
+                            st.success(f"LOT 조정 {len(_lot_ch)}건 기록")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"조정 실패: {e}")
+            elif _ft_mode == "기초 재고 LOT (OB)":
+                st.caption("LOT 을 알 수 없는 이전 재고를 실사일 기준 "
+                           "**기초 재고 LOT** 으로 등록합니다. 조정일이 "
+                           "완성일로 잡혀 새 완성 LOT 보다 먼저 출고됩니다. "
+                           "LOT 을 아는 실물인데 장부에 LOT 이 없으면 그 "
+                           "LOT 번호를 직접 적어도 됩니다.")
+                ob1, ob2 = st.columns([1, 1])
+                _ob_lot = ob1.text_input(
+                    "LOT 번호", "OB-{:%Y%m%d}".format(_ft_today),
+                    key=f"ft_ob_lot_{_pid}")
+                _ob_qty = ob2.number_input("실물 수량", 0.0, 1_000_000.0,
+                                           0.0, 1.0, key=f"ft_ob_qty_{_pid}")
+                _omemo = st.text_input(
+                    "조정 사유", key="ft_omemo",
+                    placeholder="예: 9/7 실사 — 8월 이전 재고 (LOT 미상)")
+                if st.button("기초 재고 LOT 등록", type="primary",
+                             key="ft_ob_go",
+                             disabled=not (_ob_qty > 0 and _omemo.strip()
+                                           and _ob_lot.strip())):
                     try:
-                        _db.insert("inventory_transactions", [{
-                            "material_id": None,
-                            "product_id": _pid,
-                            "txn_type": "ADJUSTMENT",
-                            "qty": float(_diff),
-                            "unit": _unit,
-                            "lot_number": _alot if _diff > 0 else None,
-                            "ref_table": None, "ref_id": None,
-                            "txn_date": _ft_date.today().isoformat(),
-                            "remark": f"실사 조정 · {_amemo.strip()}",
-                            "created_by": current_user_name(),
-                        }])
-                        st.success(
-                            "조정 완료 — {:+,.0f} (완성재고 {:,.0f} → "
-                            "{:,.0f})".format(_diff, _ft["stock"], _real))
+                        _ft_adj(_ob_qty, _ob_lot.strip(), _omemo.strip(),
+                                "기초 재고 (OB)")
+                        st.success("{} +{:,.0f} 등록".format(
+                            _ob_lot.strip(), _ob_qty))
                         st.rerun()
                     except Exception as e:
-                        st.error(f"조정 실패: {e}")
-            if _diff < 0 and _ft["lots"]:
-                st.caption(
-                    "감소 조정은 LOT 없이 기록되어 전체 재고에서만 "
-                    "빠집니다. 특정 LOT 을 줄여야 하면 사유에 LOT 번호를 "
-                    "적어 두세요.")
+                        st.error(f"등록 실패: {e}")
+            else:
+                ac1, ac2, ac3 = st.columns([1, 1, 1])
+                ac1.metric("장부 완성재고", f"{_ft['stock']:,.0f}")
+                # 장부가 음수인 품목도 열리도록 초기값은 0 미만 방지
+                # (음수 장부 = 미기록 생산분 — 실사값 입력으로 바로잡는 대상)
+                _real = ac2.number_input("실사 수량", 0.0, 1_000_000.0,
+                                         max(0.0, float(_ft["stock"])), 1.0,
+                                         key="ft_real")
+                _diff = float(_real) - _ft["stock"]
+                ac3.metric("조정될 차이", f"{_diff:+,.0f}",
+                           delta=None if _diff == 0 else
+                           ("과잉 — 재고를 늘립니다" if _diff > 0
+                            else "부족 — 재고를 줄입니다"),
+                           delta_color="off")
+                _amemo = st.text_input(
+                    "조정 사유", key="ft_amemo",
+                    placeholder="예: 8/1 창고 실사, 미기록 완성분 반영")
+                if st.button("완성재고 조정", type="primary",
+                             disabled=(_diff == 0), key="ft_adj_go"):
+                    if not _amemo.strip():
+                        st.error("조정 사유는 반드시 남겨야 합니다 — 나중에 "
+                                 "왜 숫자가 바뀌었는지 추적할 수 없습니다.")
+                    else:
+                        _alot = "OB-{:%Y%m%d}".format(_ft_today)
+                        try:
+                            _ft_adj(_diff, _alot if _diff > 0 else None,
+                                    _amemo.strip(), "실사 조정")
+                            st.success(
+                                "조정 완료 — {:+,.0f} (완성재고 {:,.0f} → "
+                                "{:,.0f})".format(_diff, _ft["stock"],
+                                                  _real))
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"조정 실패: {e}")
+                if _diff < 0 and _ft["lots"]:
+                    st.caption(
+                        "감소 조정은 LOT 없이 기록되어 전체 재고에서만 "
+                        "빠집니다. 특정 LOT 을 줄여야 하면 'LOT별 실사' 로 "
+                        "하세요.")
 
             # ══ 4) 최근 원장 ══
             with st.expander("이 품번의 최근 재고 원장 15건"):
@@ -8363,7 +8454,7 @@ elif page == "출고 관리":
 
 
 elif page == "생산 계획":
-    st.subheader("생산 계획 — 자재 필요량 자동 산출")
+    st.subheader("생산 계획 — 자재 필요량 · 공정 표준")
     if not DB_AVAILABLE: st.error("DB 연결 필요"); st.stop()
 
     import db as _db
@@ -8519,7 +8610,9 @@ elif page == "생산 계획":
     st.divider()
 
     # ── 7) 탭 구조 ──
-    tab_mat, tab_so, tab_po = st.tabs(["자재별 필요량", "수주별 BOM 전개", "발주 자동 제안"])
+    tab_mat, tab_so, tab_po, tab_std, tab_mc = st.tabs(
+        ["자재별 필요량", "수주별 BOM 전개", "발주 자동 제안",
+         "공정 표준", "설비"])
 
     # ─── 탭 1: 자재별 ───
     with tab_mat:
@@ -8768,6 +8861,352 @@ elif page == "생산 계획":
                         st.success(f"'{_target}'의 {len(mats)}개 품목이 발주서 작성에 임시 저장됨. "
                                    f"좌측 **발주/입고** 메뉴로 이동해서 검토하세요. "
                                    f"(출처 수주: {len(src_so_numbers)}건)")
+
+
+    # ─── 탭 4: 공정 표준 (품번 × 공정 스텝 UPH) — 생산 계획의 기초 ───
+    # 계획 단위 = 작업(품번 × 공정 스텝), 장비군에 배정 (2026-09-07 확정).
+    # 표준 UPH 는 실적 중앙값으로 자동 산출 → 확인 후 확정. 확정 표준은
+    # 재산출해도 유지(자동값만 갱신) — 표준이 흔들리면 전개가 힘들다.
+    with tab_std:
+        import utils.op_std as _os
+        from datetime import datetime as _std_now
+        st.caption(
+            "**계획 단위 = 작업(품번 × 공정 스텝)**, 작업은 장비군(CNC/MCT)에 "
+            "배정됩니다. 표준 UPH 는 생산 보고에 올린 MES 실적에서 자동 "
+            "산출(구간별 UPH 중앙값)하고, 확인 후 **[표준 확정]** 하면 "
+            "이후 재산출에도 유지됩니다. 가동률 = 표준 UPH 대비 생산량.")
+
+        def _std_fetch_all(table, cols, order):
+            out, off = [], 0
+            while True:
+                page_ = fetch(table, cols, f"order={order}&offset={off}",
+                              limit=1000)
+                out += page_
+                if len(page_) < 1000:
+                    return out
+                off += 1000
+
+        sc1, sc2 = st.columns([1, 3])
+        if sc1.button("실적에서 표준 재산출", key="std_recalc",
+                      use_container_width=True) \
+                and click_guard("std_recalc"):
+            try:
+                _logs = _std_fetch_all(
+                    "production_log",
+                    "pn,product_id,process,process_step,machine,shift,"
+                    "total_qty,defect_qty,work_start,work_end,log_date",
+                    "log_id")
+                _agg = _os.aggregate(_logs)
+                _ex = {(r["pn"], r["process"]): r for r in _std_fetch_all(
+                    "product_op_std", "op_id,pn,process,std_status", "op_id")}
+                _pn2pid = {p["pn"]: p["product_id"] for p in _std_fetch_all(
+                    "products", "pn,product_id", "product_id")}
+                _now = _std_now.now().isoformat()
+                _ins, _n_upd = [], 0
+                for k, o in _agg["ops"].items():
+                    rec = {
+                        "pn": o["pn"], "process": o["process"],
+                        "step": o["step"], "group_code": o["group"],
+                        "product_id": (o["product_id"]
+                                       or _pn2pid.get(o["pn"])),
+                        "uph_auto": o["uph_auto"], "uph_mean": o["uph_mean"],
+                        "sample_n": o["sample_n"], "hours_n": o["hours"],
+                        "machines_used": ",".join(o["machines"]),
+                        "calc_at": _now, "first_date": o["first_date"],
+                        "last_date": o["last_date"], "updated_at": _now}
+                    ex = _ex.get(k)
+                    if ex:
+                        if ex.get("std_status") != "CONFIRMED":
+                            rec["uph_std"] = o["uph_auto"]
+                        _db.update("product_op_std",
+                                   f"op_id=eq.{ex['op_id']}", rec)
+                        _n_upd += 1
+                    else:
+                        rec["uph_std"] = o["uph_auto"]
+                        rec["std_status"] = "AUTO"
+                        _ins.append(rec)
+                for i in range(0, len(_ins), 200):
+                    _db.insert("product_op_std", _ins[i:i + 200])
+                # 능력 매트릭스(품번×공정×설비)는 통째로 재생성
+                _db.delete("product_op_machine", "pom_id=gt.0")
+                _mrows = [{
+                    "pn": m["pn"], "process": m["process"],
+                    "machine_id": m["machine"], "runs": m["runs"],
+                    "hours": m["hours"], "qty": m["qty"],
+                    "uph_actual": m["uph_actual"],
+                    "last_date": m["last_date"], "calc_at": _now}
+                    for m in _agg["machines"].values()]
+                for i in range(0, len(_mrows), 200):
+                    _db.insert("product_op_machine", _mrows[i:i + 200])
+                # 실적에 새로 나온 설비는 마스터에 추가
+                _known = {m["machine_id"] for m in fetch(
+                    "machines", "machine_id", limit=500)}
+                _newm = sorted({m["machine"] for m in _agg["machines"].values()
+                                if m["machine"] and m["machine"] not in _known})
+                if _newm:
+                    _db.insert("machines", [{
+                        "machine_id": m, "name": m,
+                        "group_code": _os.machine_group(m) or "ETC"}
+                        for m in _newm])
+                st.success("표준 재산출 — 신규 {} · 갱신 {} · 설비 매트릭스 "
+                           "{}건 · 새 설비 {}대 (실적 {}행)".format(
+                               len(_ins), _n_upd, len(_mrows), len(_newm),
+                               len(_logs)))
+                st.rerun()
+            except Exception as e:
+                st.error(f"표준 재산출 실패: {e}")
+
+        try:
+            _stds = _std_fetch_all(
+                "product_op_std",
+                "op_id,product_id,pn,process,step,group_code,uph_std,"
+                "uph_auto,uph_mean,sample_n,hours_n,machines_used,setup_min,"
+                "std_status,calc_at,first_date,last_date,confirmed_by,"
+                "confirmed_at,note", "pn,step,process")
+        except Exception as e:
+            st.error(f"표준 조회 실패: {e}")
+            _stds = []
+        _std_pns = {s["pn"] for s in _stds}
+        _need_pns = {i.get("canonical_pn") for i in sois
+                     if i.get("canonical_pn")}
+        _n_conf = sum(1 for s in _stds if s.get("std_status") == "CONFIRMED")
+        sc2.markdown(
+            '<div class="kpi-row">'
+            '<div class="kpi"><div class="k">표준(작업)</div>'
+            f'<div class="v">{len(_stds)}</div>'
+            f'<div class="s">확정 {_n_conf} · 자동 {len(_stds) - _n_conf}'
+            '</div></div>'
+            '<div class="kpi {c}"><div class="k">미납 품번 커버리지</div>'
+            '<div class="v">{a}/{b}</div><div class="s">표준 있는 품번 / '
+            '미납 품번</div></div></div>'.format(
+                a=len(_need_pns & _std_pns), b=len(_need_pns),
+                c="good" if _need_pns and _need_pns <= _std_pns
+                else "warn"),
+            unsafe_allow_html=True)
+        _miss_pns = sorted(_need_pns - _std_pns)
+        if _miss_pns:
+            with st.expander(f"표준 없는 미납 품번 {len(_miss_pns)}종 "
+                             "(실적 업로드 또는 수동 등록 필요)"):
+                st.write(", ".join(_miss_pns))
+
+        if not _stds:
+            st.info("아직 표준이 없습니다 — 생산 보고에 MES 생산일보를 올린 "
+                    "뒤 [실적에서 표준 재산출] 을 누르세요.")
+        else:
+            with st.form("std_filter_form"):
+                sf1, sf2, sf3 = st.columns([2, 1, 1])
+                _sq = sf1.text_input("품번 검색", key="std_q",
+                                     placeholder="품번 일부")
+                _sst = sf2.selectbox("상태", ["전체", "자동", "확정"],
+                                     key="std_st")
+                sf3.form_submit_button("검색", use_container_width=True)
+            _sv = [s for s in _stds
+                   if (not _sq.strip() or _sq.strip().lower()
+                       in (s.get("pn") or "").lower())
+                   and (_sst == "전체"
+                        or (_sst == "확정") == (s.get("std_status")
+                                              == "CONFIRMED"))]
+            if not _sv:
+                st.info("조건에 맞는 표준이 없습니다.")
+            else:
+                _si = toss_grid([{
+                    "품번": s["pn"], "공정": s["process"],
+                    "장비군": s.get("group_code") or "-",
+                    "표준 UPH": float(s.get("uph_std") or 0),
+                    "자동 UPH": float(s.get("uph_auto") or 0),
+                    "표본": int(s.get("sample_n") or 0),
+                    "실적 시간": float(s.get("hours_n") or 0),
+                    "설비": s.get("machines_used") or "-",
+                    "상태": ("확정" if s.get("std_status") == "CONFIRMED"
+                           else "자동"),
+                    "최근 실적": s.get("last_date") or "-",
+                } for s in _sv], key="std_grid",
+                    badge_cols=("상태",), strong_cols=("품번",),
+                    num_cols=("표준 UPH", "자동 UPH", "표본", "실적 시간"))
+                _sp = _sv[_si if _si is not None else 0]
+                fresh_keys("std", (_sp["op_id"],),
+                           ("std_uph", "std_setup", "std_grp", "std_note"))
+                _grps = sorted({m["group_code"] for m in fetch(
+                    "machines", "group_code", limit=500)}
+                    | {_sp.get("group_code") or "ETC"})
+                st.markdown(f"##### {_sp['pn']} · {_sp['process']}")
+                st.caption(
+                    "자동 UPH {:,.1f} (중앙값) · 평균 {:,.1f} · 표본 {}구간 "
+                    "{:,.1f}h · 실적 {} ~ {} · 설비 {}".format(
+                        float(_sp.get("uph_auto") or 0),
+                        float(_sp.get("uph_mean") or 0),
+                        _sp.get("sample_n") or 0,
+                        float(_sp.get("hours_n") or 0),
+                        _sp.get("first_date") or "-",
+                        _sp.get("last_date") or "-",
+                        _sp.get("machines_used") or "-")
+                    + (" · 확정 {} {}".format(
+                        str(_sp.get("confirmed_at") or "")[:10],
+                        _sp.get("confirmed_by") or "")
+                       if _sp.get("std_status") == "CONFIRMED" else ""))
+                with st.form("std_edit_form"):
+                    se1, se2, se3 = st.columns(3)
+                    _e_uph = se1.number_input(
+                        "표준 UPH", 0.0, 100000.0,
+                        float(_sp.get("uph_std") or 0), 0.5, key="std_uph")
+                    _e_setup = se2.number_input(
+                        "준비시간 (분)", 0.0, 1440.0,
+                        float(_sp.get("setup_min") or 0), 5.0,
+                        key="std_setup")
+                    _e_grp = se3.selectbox(
+                        "장비군", _grps,
+                        index=_grps.index(_sp.get("group_code") or "ETC"),
+                        key="std_grp")
+                    _e_note = st.text_input("메모", _sp.get("note") or "",
+                                            key="std_note")
+                    if st.form_submit_button("표준 확정 (저장)",
+                                             type="primary"):
+                        try:
+                            _ok = _db.update(
+                                "product_op_std", f"op_id=eq.{_sp['op_id']}",
+                                {"uph_std": _e_uph, "setup_min": _e_setup,
+                                 "group_code": _e_grp,
+                                 "note": _e_note.strip() or None,
+                                 "std_status": "CONFIRMED",
+                                 "confirmed_by": current_user_name(),
+                                 "confirmed_at": _std_now.now().isoformat(),
+                                 "updated_at": _std_now.now().isoformat()})
+                            if _ok:
+                                st.success("표준 확정 — 재산출해도 유지됩니다")
+                                st.rerun()
+                            else:
+                                st.error("저장 실패 (DB 응답 없음)")
+                        except Exception as e:
+                            st.error(f"저장 실패: {e}")
+                if _sp.get("std_status") == "CONFIRMED" \
+                        and st.button("자동값으로 되돌리기", key="std_reset"):
+                    try:
+                        _db.update("product_op_std",
+                                   f"op_id=eq.{_sp['op_id']}",
+                                   {"std_status": "AUTO",
+                                    "uph_std": _sp.get("uph_auto"),
+                                    "confirmed_by": None,
+                                    "confirmed_at": None})
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"되돌리기 실패: {e}")
+                try:
+                    _pm = fetch("product_op_machine",
+                                "machine_id,runs,hours,qty,uph_actual,"
+                                "last_date",
+                                f"pn=eq.{_sp['pn']}&process=eq.{_sp['process']}"
+                                "&order=runs.desc", limit=100)
+                except Exception:
+                    _pm = []
+                if _pm:
+                    st.markdown("**설비별 실적 (능력 매트릭스)**")
+                    toss_table([{
+                        "설비": m["machine_id"],
+                        "실적 UPH": float(m.get("uph_actual") or 0),
+                        "구간": int(m.get("runs") or 0),
+                        "시간": float(m.get("hours") or 0),
+                        "수량": float(m.get("qty") or 0),
+                        "최근": m.get("last_date") or "-",
+                    } for m in _pm], num_cols=("실적 UPH", "구간", "시간",
+                                               "수량"),
+                        strong_cols=("설비",))
+
+    # ─── 탭 5: 설비 마스터 ───
+    with tab_mc:
+        st.caption("설비 마스터 — 장비군·교대(주야 2교대)·교대당 시간·가동 "
+                   "여부. 실적에 새 설비명이 나오면 [실적에서 표준 재산출] "
+                   "때 자동 추가됩니다. 장비군 일 가용시간 = 가동 설비 × "
+                   "교대 × 교대당 시간.")
+        try:
+            _mcs = fetch("machines",
+                         "machine_id,name,group_code,shifts,hours_per_shift,"
+                         "active,note", "order=machine_id", limit=500)
+        except Exception as e:
+            st.error(f"설비 조회 실패: {e}")
+            _mcs = []
+        if not _mcs:
+            st.info("등록된 설비가 없습니다 — 공정 표준 탭에서 재산출하면 "
+                    "실적의 설비가 자동 등록됩니다.")
+        else:
+            _cap = {}
+            for m in _mcs:
+                if m.get("active"):
+                    g = m.get("group_code") or "ETC"
+                    _cap[g] = _cap.get(g, 0) + (
+                        float(m.get("shifts") or 0)
+                        * float(m.get("hours_per_shift") or 0))
+            st.markdown(
+                '<div class="kpi-row">' + "".join(
+                    '<div class="kpi good"><div class="k">{g} 일 가용</div>'
+                    '<div class="v">{h:,.0f}h</div><div class="s">가동 {n}대'
+                    '</div></div>'.format(
+                        g=g, h=h, n=sum(1 for m in _mcs
+                                       if m.get("active")
+                                       and (m.get("group_code") or "ETC")
+                                       == g))
+                    for g, h in sorted(_cap.items()))
+                + "</div>", unsafe_allow_html=True)
+            _mc_df = pd.DataFrame([{
+                "설비": m["machine_id"], "이름": m.get("name") or "",
+                "장비군": m.get("group_code") or "",
+                "교대": int(m.get("shifts") or 2),
+                "교대당 시간": float(m.get("hours_per_shift") or 9),
+                "가동": bool(m.get("active")),
+                "메모": m.get("note") or "",
+            } for m in _mcs])
+            _mc_nonce = st.session_state.setdefault("mc_nonce", 0)
+            with st.form("mc_form"):
+                _mc_ed = st.data_editor(
+                    _mc_df, hide_index=True, use_container_width=True,
+                    key=f"mc_ed_{_mc_nonce}",
+                    column_config={
+                        "설비": st.column_config.Column(disabled=True),
+                        "교대": st.column_config.NumberColumn(
+                            min_value=1, max_value=3, step=1),
+                        "교대당 시간": st.column_config.NumberColumn(
+                            min_value=1.0, max_value=12.0, step=0.5),
+                        "가동": st.column_config.CheckboxColumn()})
+                mb1, mb2 = st.columns(2)
+                _mc_save = mb1.form_submit_button("변경 내용 저장",
+                                                  type="primary",
+                                                  use_container_width=True)
+                _mc_cancel = mb2.form_submit_button("편집 취소",
+                                                    use_container_width=True)
+            if _mc_cancel:
+                st.session_state["mc_nonce"] = _mc_nonce + 1
+                st.rerun()
+            if _mc_save:
+                _n_mc = 0
+                for _bi, _brow in _mc_ed.iterrows():
+                    _m0 = _mcs[int(_bi)]
+                    _new = {
+                        "name": str(_brow.get("이름") or "").strip() or None,
+                        "group_code": (str(_brow.get("장비군") or "")
+                                       .strip().upper() or "ETC"),
+                        "shifts": int(_brow.get("교대") or 2),
+                        "hours_per_shift": float(_brow.get("교대당 시간")
+                                                 or 9),
+                        "active": bool(_brow.get("가동")),
+                        "note": str(_brow.get("메모") or "").strip() or None}
+                    _old = {
+                        "name": _m0.get("name") or None,
+                        "group_code": _m0.get("group_code") or "ETC",
+                        "shifts": int(_m0.get("shifts") or 2),
+                        "hours_per_shift": float(_m0.get("hours_per_shift")
+                                                 or 9),
+                        "active": bool(_m0.get("active")),
+                        "note": _m0.get("note") or None}
+                    if _new != _old:
+                        try:
+                            if _db.update("machines",
+                                          f"machine_id=eq.{_m0['machine_id']}",
+                                          _new):
+                                _n_mc += 1
+                        except Exception as e:
+                            st.error(f"{_m0['machine_id']} 저장 실패: {e}")
+                st.success(f"설비 {_n_mc}대 저장")
+                st.session_state["mc_nonce"] = _mc_nonce + 1
+                st.rerun()
 
 
 elif page == "발주/입고":

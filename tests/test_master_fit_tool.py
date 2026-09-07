@@ -109,6 +109,14 @@ def _open_master(fit_db):
     return at
 
 
+def _mode(at, label):
+    """실사 방식 라디오 (LOT별 실사 / 기초 재고 LOT (OB) / 제품 합계 조정)."""
+    next(r for r in at.radio if r.key == "ft_mode").set_value(label)
+    at.run()
+    assert not at.exception, [str(e.value) for e in at.exception]
+    return at
+
+
 def _kpi(at):
     return next((m.value for m in at.markdown
                  if 'class="kpi-row"' in m.value and "미납 수주" in m.value),
@@ -148,6 +156,7 @@ def test_bom_shared_factor_halves_requirement(fit_db):
 def test_adjust_requires_reason(fit_db):
     """사유 없이 조정하면 원장에 아무것도 안 남고 오류를 띄운다"""
     at = _open_master(fit_db)
+    _mode(at, "제품 합계 조정")
     real = next(n for n in at.number_input if n.key == "ft_real")
     real.set_value(350.0)          # 장부 300 → 실사 350, 차이 +50
     at.run()
@@ -162,6 +171,7 @@ def test_adjust_requires_reason(fit_db):
 def test_adjust_writes_adjustment_with_lot(fit_db):
     """사유가 있으면 차이만큼 ADJUSTMENT — 증가분에는 LOT 을 붙인다"""
     at = _open_master(fit_db)
+    _mode(at, "제품 합계 조정")
     next(n for n in at.number_input if n.key == "ft_real").set_value(350.0)
     at.run()
     next(t for t in at.text_input if t.key == "ft_amemo").set_value("8/1 실사")
@@ -176,13 +186,14 @@ def test_adjust_writes_adjustment_with_lot(fit_db):
     assert r["txn_type"] == "ADJUSTMENT"
     assert r["qty"] == 50
     assert r["product_id"] == 7 and r["material_id"] is None
-    assert str(r["lot_number"]).startswith("ADJ-")
+    assert str(r["lot_number"]).startswith("OB-")
     assert "8/1 실사" in r["remark"]
 
 
 def test_adjust_decrease_has_no_lot(fit_db):
     """감소 조정은 특정 LOT 을 특정할 수 없으므로 LOT 없이 기록"""
     at = _open_master(fit_db)
+    _mode(at, "제품 합계 조정")
     next(n for n in at.number_input if n.key == "ft_real").set_value(250.0)
     at.run()
     next(t for t in at.text_input if t.key == "ft_amemo").set_value("파손 폐기")
@@ -193,6 +204,27 @@ def test_adjust_decrease_has_no_lot(fit_db):
             for r in recs]
     assert rows[0]["qty"] == -50
     assert rows[0]["lot_number"] is None
+
+
+def test_ob_lot_mode_registers_opening_balance(fit_db):
+    """기초 재고 LOT(OB): LOT 을 알 수 없는 이전 재고를 OB LOT 으로 +등록"""
+    at = _open_master(fit_db)
+    _mode(at, "기초 재고 LOT (OB)")
+    next(n for n in at.number_input if n.key.startswith("ft_ob_qty_")
+         ).set_value(120.0)
+    at.run()
+    next(t for t in at.text_input if t.key == "ft_omemo"
+         ).set_value("9/7 실사 LOT 미상")
+    at.run()
+    next(b for b in at.button if b.key == "ft_ob_go").click()
+    at.run()
+    assert not at.exception, [str(e.value) for e in at.exception]
+    rows = [r for t, recs in INSERTED if t == "inventory_transactions"
+            for r in recs]
+    assert len(rows) == 1 and rows[0]["txn_type"] == "ADJUSTMENT"
+    assert rows[0]["qty"] == 120
+    assert str(rows[0]["lot_number"]).startswith("OB-")
+    assert "기초 재고" in rows[0]["remark"]
 
 
 # ─── 3. 발주 없는 소재 입고 ────────────────────────────
