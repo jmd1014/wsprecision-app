@@ -8654,11 +8654,139 @@ elif page == "생산 계획":
     st.divider()
 
     # ── 7) 탭 구조 ──
-    tab_mat, tab_so, tab_po, tab_sb, tab_std, tab_mc = st.tabs(
-        ["자재별 필요량", "수주별 BOM 전개", "발주 자동 제안",
-         "설비 스케줄", "공정 표준", "설비"])
+    tab_prod, tab_mat, tab_so, tab_po, tab_sb, tab_std, tab_mc = st.tabs(
+        ["제품별 자재 필요량", "자재별 필요량 (구매)", "수주별 BOM 전개",
+         "발주 자동 제안", "설비 스케줄", "공정 표준", "설비"])
 
-    # ─── 탭 1: 자재별 ───
+    # ─── 탭 0: 제품별 자재 필요량 (2026-09-07 사용자 요청 — 업무 기본 지표) ───
+    # 제품 한 줄 = 미납 합 · 완성 재고 충당 · 순생산필요 · 가장 이른 납기 ·
+    # 소재 필요량 · 소재 재고(납기순 선착 배분) · 부족. 자재별 탭은 구매용.
+    with tab_prod:
+        _pp = {}
+        for soi in sois:
+            pid = soi.get("product_id")
+            if not pid:
+                continue
+            e = _pp.setdefault(pid, {
+                "pid": pid, "pn": soi.get("canonical_pn") or pid,
+                "pending": 0.0, "used": 0.0, "net": 0.0, "lines": [],
+                "due": None, "custs": set()})
+            e["pending"] += float(soi.get("pending_qty") or 0)
+            e["used"] += float(soi.get("prod_stock_used") or 0)
+            e["net"] += float(soi.get("net_pending")
+                              if soi.get("net_pending") is not None
+                              else soi.get("pending_qty") or 0)
+            e["lines"].append(soi)
+            _dd0 = str(soi.get("due_date") or "")[:10]
+            if _dd0 and (e["due"] is None or _dd0 < e["due"]):
+                e["due"] = _dd0
+            _cu0 = so_map.get(soi["so_id"], {}).get("customer")
+            if _cu0:
+                e["custs"].add(_cu0)
+        # 소재 재고를 납기순으로 선착 배분 → 제품별 부족
+        _mat_left = {mid: float(m.get("stock_qty") or 0)
+                     for mid, m in mat_map.items()}
+        _prod_rows = []
+        for e in sorted(_pp.values(), key=lambda x: (x["due"] or "9999",
+                                                     x["pn"])):
+            boms = [b for b in bom_by_pid.get(e["pid"], [])
+                    if b.get("material_id")]
+            e["mats"] = []
+            _short_sum = 0.0
+            for b in boms:
+                mid = b["material_id"]
+                qpp = float(b.get("qty_per_pc") or 1)
+                sf = float(b.get("shared_factor") or 1) or 1
+                need = e["net"] * qpp / sf if e["net"] > 0 else 0.0
+                take = min(max(_mat_left.get(mid, 0.0), 0.0), need)
+                _mat_left[mid] = _mat_left.get(mid, 0.0) - take
+                short = need - take
+                _short_sum += short
+                mat = mat_map.get(mid, {})
+                e["mats"].append({
+                    "mid": mid, "name": mat.get("raw_name") or mid,
+                    "spec": mat.get("spec") or "-",
+                    "unit": mat.get("unit") or "EA", "qpp": qpp, "sf": sf,
+                    "need": need, "stock": float(mat.get("stock_qty") or 0),
+                    "take": take, "short": short})
+            e["short"] = _short_sum
+            _first = e["mats"][0] if e["mats"] else None
+            _prod_rows.append({
+                "품번": e["pn"],
+                "거래처": ", ".join(sorted(e["custs"]))[:24] or "-",
+                "납기": e["due"] or "-",
+                "미납": e["pending"],
+                "완성재고 충당": e["used"],
+                "순생산필요": e["net"],
+                "소재": ((_first["name"] + (f" 외 {len(e['mats']) - 1}"
+                                           if len(e["mats"]) > 1 else ""))
+                        if _first else "BOM 없음"),
+                "소재 필요량": sum(m["need"] for m in e["mats"]),
+                "소재 부족": _short_sum,
+                "상태": ("BOM 없음" if not boms
+                       else "충당" if e["net"] <= 0
+                       else "부족" if _short_sum > 0.5 else "가능"),
+            })
+        if not _prod_rows:
+            st.info("미납 제품이 없습니다.")
+        else:
+            with st.form("prod_req_filter"):
+                pf1, pf2, pf3 = st.columns([2, 1, 1])
+                _pq = pf1.text_input("품번 · 거래처 검색", key="prod_req_q")
+                _pst = pf2.selectbox("상태", ["전체", "부족", "가능", "충당",
+                                            "BOM 없음"], key="prod_req_st")
+                pf3.form_submit_button("검색", use_container_width=True)
+            _pv = [r for r in _prod_rows
+                   if (not _pq.strip() or _pq.strip().lower() in
+                       (r["품번"] + " " + r["거래처"]).lower())
+                   and (_pst == "전체" or r["상태"] == _pst)]
+            st.caption("납기순 · 순생산필요 = 미납 − 완성 재고 · 소재 재고는 "
+                       "납기 빠른 제품부터 선착 배분 (뒤 제품이 부족으로 표시)")
+            if not _pv:
+                st.info("조건에 맞는 제품이 없습니다.")
+            else:
+                _pi = toss_grid(_pv, key="prod_req_grid",
+                                badge_cols=("상태",), strong_cols=("품번",),
+                                num_cols=("미납", "완성재고 충당", "순생산필요",
+                                          "소재 필요량", "소재 부족"))
+                _pr = _pv[_pi if _pi is not None else 0]
+                _pe = next(e for e in _pp.values() if e["pn"] == _pr["품번"])
+                st.markdown(f"##### {_pe['pn']} — 순생산필요 "
+                            f"{_pe['net']:,.0f} · 납기 {_pe['due'] or '-'}")
+                pc1, pc2 = st.columns([1.3, 1])
+                with pc1:
+                    st.markdown("**소재 (BOM)**")
+                    if _pe["mats"]:
+                        toss_table([{
+                            "자재": m["name"], "규격": m["spec"],
+                            "EA/PC": (f"{m['qpp']:g}" + (f" ÷ {m['sf']:g}"
+                                                         if m["sf"] != 1
+                                                         else "")),
+                            "필요량": m["need"], "재고": m["stock"],
+                            "이 제품 배분": m["take"], "부족": m["short"],
+                            "단위": m["unit"],
+                        } for m in _pe["mats"]],
+                            num_cols=("필요량", "재고", "이 제품 배분", "부족"),
+                            strong_cols=("자재",))
+                    else:
+                        st.warning("BOM 소재가 없습니다 — 마스터 관리 > BOM "
+                                   "편집에서 등록하세요.")
+                with pc2:
+                    st.markdown("**미납 수주 라인**")
+                    toss_table([{
+                        "수주": so_map.get(l["so_id"], {}).get("so_number")
+                        or "-",
+                        "납기": str(l.get("due_date") or "-")[:10],
+                        "미납": float(l.get("pending_qty") or 0),
+                        "순생산": float(l.get("net_pending")
+                                     if l.get("net_pending") is not None
+                                     else l.get("pending_qty") or 0),
+                    } for l in sorted(_pe["lines"],
+                                      key=lambda l: str(l.get("due_date")
+                                                        or "9999"))],
+                        num_cols=("미납", "순생산"), strong_cols=("수주",))
+
+    # ─── 탭 1: 자재별 (구매용) ───
     with tab_mat:
         rows = []
         for mid, info in mat_req.items():
@@ -8907,18 +9035,19 @@ elif page == "생산 계획":
                                    f"(출처 수주: {len(src_so_numbers)}건)")
 
 
-    # ─── 탭 4: 공정 표준 (품번 × 공정 스텝 UPH) — 생산 계획의 기초 ───
-    # 계획 단위 = 작업(품번 × 공정 스텝), 장비군에 배정 (2026-09-07 확정).
-    # 표준 UPH 는 실적 중앙값으로 자동 산출 → 확인 후 확정. 확정 표준은
-    # 재산출해도 유지(자동값만 갱신) — 표준이 흔들리면 전개가 힘들다.
+    # ─── 탭: 공정 표준 (품번 → 세부 공정) — 생산 계획의 기초 ───
+    # 2026-09-07 개편: 품번 리스트 → 그 품번의 작업(공정 스텝) 표를 편집.
+    # 표준 = 공정 설계 단계에서 정하는 작업 표준(공정 개선 때만 바뀜).
+    # 시트 UPH 목표·실적 중앙값은 참고 컬럼. 저장한 행은 CONFIRMED 로 잠기고
+    # 재산출은 자동값만 갱신. 변경은 product_op_std_log 에 남는다.
     with tab_std:
         import utils.op_std as _os
         from datetime import datetime as _std_now
         st.caption(
-            "**계획 단위 = 작업(품번 × 공정 스텝)**, 작업은 장비군(CNC/MCT)에 "
-            "배정됩니다. 표준 UPH 는 생산 보고에 올린 MES 실적에서 자동 "
-            "산출(구간별 UPH 중앙값)하고, 확인 후 **[표준 확정]** 하면 "
-            "이후 재산출에도 유지됩니다. 가동률 = 표준 UPH 대비 생산량.")
+            "**계획 단위 = 작업(품번 × 공정 스텝)**. 품번을 고르면 그 품번의 "
+            "공정별 표준(UPH·준비시간·장비군)을 표에서 바로 고칩니다. 저장한 "
+            "행은 **확정**되어 실적 재산출에도 유지되고, 시트 UPH 목표와 실적 "
+            "중앙값은 참고로만 보입니다. 안 쓰는 변형 공정은 '사용' 을 끄세요.")
 
         def _std_fetch_all(table, cols, order):
             out, off = [], 0
@@ -8931,15 +9060,17 @@ elif page == "생산 계획":
                 off += 1000
 
         sc1, sc2 = st.columns([1, 3])
-        if sc1.button("실적에서 표준 재산출", key="std_recalc",
-                      use_container_width=True) \
+        if sc1.button("실적에서 자동값 재산출", key="std_recalc",
+                      use_container_width=True,
+                      help="실적 중앙값·설비 매트릭스만 갱신. 확정 표준은 "
+                           "건드리지 않음") \
                 and click_guard("std_recalc"):
             try:
                 _logs = _std_fetch_all(
                     "production_log",
                     "pn,product_id,process,process_step,machine,shift,"
-                    "total_qty,defect_qty,work_start,work_end,log_date",
-                    "log_id")
+                    "total_qty,defect_qty,work_start,work_end,log_date,"
+                    "uptime_hours", "log_id")
                 _agg = _os.aggregate(_logs)
                 _ex = {(r["pn"], r["process"]): r for r in _std_fetch_all(
                     "product_op_std", "op_id,pn,process,std_status,uph_sheet",
@@ -8962,20 +9093,20 @@ elif page == "생산 계획":
                     ex = _ex.get(k)
                     if ex:
                         if ex.get("std_status") != "CONFIRMED":
-                            # 시트 UPH 목표(사내 기준)가 있으면 그것이
-                            # 표준, 실적 중앙값은 보조
                             rec["uph_std"] = (ex.get("uph_sheet")
                                               or o["uph_auto"])
+                        rec.pop("group_code", None)   # 확정한 장비군 유지
+                        rec.pop("product_id", None)
                         _db.update("product_op_std",
                                    f"op_id=eq.{ex['op_id']}", rec)
                         _n_upd += 1
                     else:
                         rec["uph_std"] = o["uph_auto"]
                         rec["std_status"] = "AUTO"
+                        rec["std_source"] = "LOG"
                         _ins.append(rec)
                 for i in range(0, len(_ins), 200):
                     _db.insert("product_op_std", _ins[i:i + 200])
-                # 능력 매트릭스(품번×공정×설비)는 통째로 재생성
                 _db.delete("product_op_machine", "pom_id=gt.0")
                 _mrows = [{
                     "pn": m["pn"], "process": m["process"],
@@ -8986,7 +9117,6 @@ elif page == "생산 계획":
                     for m in _agg["machines"].values()]
                 for i in range(0, len(_mrows), 200):
                     _db.insert("product_op_machine", _mrows[i:i + 200])
-                # 실적에 새로 나온 설비는 마스터에 추가
                 _known = {m["machine_id"] for m in fetch(
                     "machines", "machine_id", limit=500)}
                 _newm = sorted({m["machine"] for m in _agg["machines"].values()
@@ -8996,168 +9126,376 @@ elif page == "생산 계획":
                         "machine_id": m, "name": m,
                         "group_code": _os.machine_group(m) or "ETC"}
                         for m in _newm])
-                st.success("표준 재산출 — 신규 {} · 갱신 {} · 설비 매트릭스 "
-                           "{}건 · 새 설비 {}대 (실적 {}행)".format(
+                st.success("재산출 — 신규 {} · 갱신 {} · 설비 매트릭스 {}건 · "
+                           "새 설비 {}대 (실적 {}행)".format(
                                len(_ins), _n_upd, len(_mrows), len(_newm),
                                len(_logs)))
                 st.rerun()
             except Exception as e:
-                st.error(f"표준 재산출 실패: {e}")
+                st.error(f"재산출 실패: {e}")
 
         try:
             _stds = _std_fetch_all(
                 "product_op_std",
                 "op_id,product_id,pn,process,step,group_code,uph_std,"
-                "uph_auto,uph_mean,sample_n,hours_n,machines_used,setup_min,"
-                "std_status,calc_at,first_date,last_date,confirmed_by,"
-                "confirmed_at,note", "pn,step,process")
+                "uph_auto,uph_mean,uph_sheet,ct_sec,sample_n,hours_n,"
+                "machines_used,setup_min,std_status,std_source,active,"
+                "calc_at,first_date,last_date,confirmed_by,confirmed_at,note",
+                "pn,step,process")
         except Exception as e:
             st.error(f"표준 조회 실패: {e}")
             _stds = []
-        _std_pns = {s["pn"] for s in _stds}
+        _need_pids = {i.get("product_id") for i in sois if i.get("product_id")}
         _need_pns = {i.get("canonical_pn") for i in sois
                      if i.get("canonical_pn")}
-        _n_conf = sum(1 for s in _stds if s.get("std_status") == "CONFIRMED")
+        _std_pids = {s["product_id"] for s in _stds if s.get("product_id")
+                     and s.get("active", True)}
+        _n_conf = sum(1 for s in _stds if s.get("std_status") == "CONFIRMED"
+                      and s.get("active", True))
+        _n_act = sum(1 for s in _stds if s.get("active", True))
         sc2.markdown(
             '<div class="kpi-row">'
-            '<div class="kpi"><div class="k">표준(작업)</div>'
-            f'<div class="v">{len(_stds)}</div>'
-            f'<div class="s">확정 {_n_conf} · 자동 {len(_stds) - _n_conf}'
-            '</div></div>'
+            '<div class="kpi"><div class="k">작업 표준</div>'
+            f'<div class="v">{_n_act}</div>'
+            f'<div class="s">확정 {_n_conf} · 자동 {_n_act - _n_conf} · '
+            f'제외 {len(_stds) - _n_act}</div></div>'
             '<div class="kpi {c}"><div class="k">미납 품번 커버리지</div>'
             '<div class="v">{a}/{b}</div><div class="s">표준 있는 품번 / '
             '미납 품번</div></div></div>'.format(
-                a=len(_need_pns & _std_pns), b=len(_need_pns),
-                c="good" if _need_pns and _need_pns <= _std_pns
+                a=len(_need_pids & _std_pids), b=len(_need_pids),
+                c="good" if _need_pids and _need_pids <= _std_pids
                 else "warn"),
             unsafe_allow_html=True)
-        _miss_pns = sorted(_need_pns - _std_pns)
+        _miss_pns = sorted({i.get("canonical_pn") for i in sois
+                            if i.get("product_id")
+                            and i["product_id"] not in _std_pids
+                            and i.get("canonical_pn")})
         if _miss_pns:
             with st.expander(f"표준 없는 미납 품번 {len(_miss_pns)}종 "
-                             "(실적 업로드 또는 수동 등록 필요)"):
+                             "(아래에서 품번을 새로 등록하거나 시트 품번을 "
+                             "제품에 연결)"):
                 st.write(", ".join(_miss_pns))
 
-        if not _stds:
-            st.info("아직 표준이 없습니다 — 생산 보고에 MES 생산일보를 올린 "
-                    "뒤 [실적에서 표준 재산출] 을 누르세요.")
-        else:
-            with st.form("std_filter_form"):
-                sf1, sf2, sf3 = st.columns([2, 1, 1])
-                _sq = sf1.text_input("품번 검색", key="std_q",
-                                     placeholder="품번 일부")
-                _sst = sf2.selectbox("상태", ["전체", "자동", "확정"],
-                                     key="std_st")
-                sf3.form_submit_button("검색", use_container_width=True)
-            _sv = [s for s in _stds
-                   if (not _sq.strip() or _sq.strip().lower()
-                       in (s.get("pn") or "").lower())
-                   and (_sst == "전체"
-                        or (_sst == "확정") == (s.get("std_status")
-                                              == "CONFIRMED"))]
-            if not _sv:
-                st.info("조건에 맞는 표준이 없습니다.")
-            else:
-                _si = toss_grid([{
-                    "품번": s["pn"], "공정": s["process"],
-                    "장비군": s.get("group_code") or "-",
-                    "표준 UPH": float(s.get("uph_std") or 0),
-                    "자동 UPH": float(s.get("uph_auto") or 0),
-                    "표본": int(s.get("sample_n") or 0),
-                    "실적 시간": float(s.get("hours_n") or 0),
-                    "설비": s.get("machines_used") or "-",
-                    "상태": ("확정" if s.get("std_status") == "CONFIRMED"
-                           else "자동"),
-                    "최근 실적": s.get("last_date") or "-",
-                } for s in _sv], key="std_grid",
-                    badge_cols=("상태",), strong_cols=("품번",),
-                    num_cols=("표준 UPH", "자동 UPH", "표본", "실적 시간"))
-                _sp = _sv[_si if _si is not None else 0]
-                fresh_keys("std", (_sp["op_id"],),
-                           ("std_uph", "std_setup", "std_grp", "std_note"))
-                _grps = sorted({m["group_code"] for m in fetch(
-                    "machines", "group_code", limit=500)}
-                    | {_sp.get("group_code") or "ETC"})
-                st.markdown(f"##### {_sp['pn']} · {_sp['process']}")
-                st.caption(
-                    "자동 UPH {:,.1f} (중앙값) · 평균 {:,.1f} · 표본 {}구간 "
-                    "{:,.1f}h · 실적 {} ~ {} · 설비 {}".format(
-                        float(_sp.get("uph_auto") or 0),
-                        float(_sp.get("uph_mean") or 0),
-                        _sp.get("sample_n") or 0,
-                        float(_sp.get("hours_n") or 0),
-                        _sp.get("first_date") or "-",
-                        _sp.get("last_date") or "-",
-                        _sp.get("machines_used") or "-")
-                    + (" · 확정 {} {}".format(
-                        str(_sp.get("confirmed_at") or "")[:10],
-                        _sp.get("confirmed_by") or "")
-                       if _sp.get("std_status") == "CONFIRMED" else ""))
-                with st.form("std_edit_form"):
-                    se1, se2, se3 = st.columns(3)
-                    _e_uph = se1.number_input(
-                        "표준 UPH", 0.0, 100000.0,
-                        float(_sp.get("uph_std") or 0), 0.5, key="std_uph")
-                    _e_setup = se2.number_input(
-                        "준비시간 (분)", 0.0, 1440.0,
-                        float(_sp.get("setup_min") or 0), 5.0,
-                        key="std_setup")
-                    _e_grp = se3.selectbox(
-                        "장비군", _grps,
-                        index=_grps.index(_sp.get("group_code") or "ETC"),
-                        key="std_grp")
-                    _e_note = st.text_input("메모", _sp.get("note") or "",
-                                            key="std_note")
-                    if st.form_submit_button("표준 확정 (저장)",
-                                             type="primary"):
+        # ── 품번 리스트 (품번당 한 줄) ──
+        _by_pn = {}
+        for s in _stds:
+            _by_pn.setdefault(s["pn"], []).append(s)
+        _pid_nm = {}
+        try:
+            _pids_s = sorted({s["product_id"] for s in _stds
+                              if s.get("product_id")})
+            for _i0 in range(0, len(_pids_s), 80):
+                _pid_nm.update({p["product_id"]: p for p in fetch(
+                    "products", "product_id,pn,item_name,archived_at",
+                    "product_id=in.({})".format(",".join(
+                        f'"{x}"' for x in _pids_s[_i0:_i0 + 80])),
+                    limit=300)})
+        except Exception:
+            pass
+        _pn_rows = []
+        for pn, ops in _by_pn.items():
+            _act = [o for o in ops if o.get("active", True)]
+            _cf = [o for o in _act if o.get("std_status") == "CONFIRMED"]
+            _pid = next((o["product_id"] for o in ops if o.get("product_id")),
+                        None)
+            _pm = _pid_nm.get(_pid) or {}
+            _pn_rows.append({
+                "품번": pn,
+                "제품": (_pm.get("pn") or "미연결") + (
+                    " (휴면)" if _pm.get("archived_at") else ""),
+                "품명": (_pm.get("item_name") or "-")[:28],
+                "공정": len(_act),
+                "확정": len(_cf),
+                "표준 UPH": " / ".join(
+                    f"{float(o.get('uph_std') or 0):g}" for o in sorted(
+                        _act, key=lambda o: (o.get("step") or 0))),
+                "미납": "미납" if _pid in _need_pids else "-",
+                "상태": ("미연결" if not _pid else
+                       "확정" if _act and len(_cf) == len(_act) else
+                       "일부" if _cf else "자동"),
+            })
+        with st.form("std_filter_form"):
+            sf1, sf2, sf3, sf4 = st.columns([2, 1, 1, 1])
+            _sq = sf1.text_input("품번 · 품명 검색", key="std_q")
+            _sst = sf2.selectbox("상태", ["전체", "자동", "일부", "확정",
+                                        "미연결"], key="std_st")
+            _spend = sf3.selectbox("범위", ["전체", "미납만"], key="std_pend")
+            sf4.form_submit_button("검색", use_container_width=True)
+        _sv = [r for r in _pn_rows
+               if (not _sq.strip() or _sq.strip().lower() in
+                   (r["품번"] + " " + r["제품"] + " " + r["품명"]).lower())
+               and (_sst == "전체" or r["상태"] == _sst)
+               and (_spend == "전체" or r["미납"] == "미납")]
+        _sv.sort(key=lambda r: (r["미납"] != "미납", r["품번"]))
+
+        # ── 새 품번 표준 등록 ──
+        with st.expander("새 품번의 작업 표준 등록"):
+            with st.form("std_new_form"):
+                nf1, nf2, nf3, nf4 = st.columns([2, 1, 1, 1])
+                _n_pn = nf1.text_input("품번 (시트 표기, 예: 8HFDV-05)",
+                                       key="std_new_pn")
+                _n_steps = nf2.text_input("스텝 (콤마)", "10,20",
+                                          key="std_new_steps")
+                _n_grp = nf3.selectbox("장비군", ["CNC", "MCT", "ETC"],
+                                       key="std_new_grp")
+                _n_uph = nf4.number_input("표준 UPH", 0.0, 100000.0, 20.0,
+                                          1.0, key="std_new_uph")
+                if st.form_submit_button("등록", type="primary"):
+                    _pn_n = _n_pn.strip().upper()
+                    if not _pn_n:
+                        st.error("품번을 입력하세요.")
+                    else:
+                        from utils.prod_sheet import (
+                            build_pn_index as _bpi, pn_key as _pk)
                         try:
-                            _ok = _db.update(
-                                "product_op_std", f"op_id=eq.{_sp['op_id']}",
-                                {"uph_std": _e_uph, "setup_min": _e_setup,
-                                 "group_code": _e_grp,
-                                 "note": _e_note.strip() or None,
-                                 "std_status": "CONFIRMED",
-                                 "confirmed_by": current_user_name(),
-                                 "confirmed_at": _std_now.now().isoformat(),
-                                 "updated_at": _std_now.now().isoformat()})
-                            if _ok:
-                                st.success("표준 확정 — 재산출해도 유지됩니다")
+                            _pidx = _bpi(_std_fetch_all(
+                                "products", "product_id,pn,alias_list,"
+                                "archived_at", "product_id"))
+                            _pid_n = _pidx.get(_pk(_pn_n))
+                            _rows_n = []
+                            for _stp in [x.strip() for x in
+                                         _n_steps.split(",") if x.strip()]:
+                                _proc = f"{_pn_n}#{_stp}"
+                                if (_pn_n, _proc) in {(s["pn"], s["process"])
+                                                      for s in _stds}:
+                                    continue
+                                _rows_n.append({
+                                    "pn": _pn_n, "process": _proc,
+                                    "step": (int(_stp) if _stp.isdigit()
+                                             else None),
+                                    "product_id": _pid_n,
+                                    "group_code": _n_grp,
+                                    "uph_std": _n_uph, "setup_min": 0,
+                                    "std_status": "CONFIRMED",
+                                    "std_source": "MANUAL", "active": True,
+                                    "confirmed_by": current_user_name(),
+                                    "confirmed_at":
+                                    _std_now.now().isoformat()})
+                            if _rows_n:
+                                _db.insert("product_op_std", _rows_n)
+                                st.success("{} 작업 {}건 등록{}".format(
+                                    _pn_n, len(_rows_n),
+                                    "" if _pid_n else " — 제품 미연결 "
+                                    "(아래 상세에서 연결)"))
                                 st.rerun()
                             else:
-                                st.error("저장 실패 (DB 응답 없음)")
+                                st.info("이미 있는 작업입니다.")
                         except Exception as e:
-                            st.error(f"저장 실패: {e}")
-                if _sp.get("std_status") == "CONFIRMED" \
-                        and st.button("자동값으로 되돌리기", key="std_reset"):
+                            st.error(f"등록 실패: {e}")
+
+        if not _sv:
+            st.info("조건에 맞는 품번이 없습니다.")
+        else:
+            _si = toss_grid(_sv, key="std_grid",
+                            badge_cols=("상태", "미납"), strong_cols=("품번",),
+                            num_cols=("공정", "확정"),
+                            height=520 if len(_sv) > 12 else None)
+            _sp_pn = _sv[_si if _si is not None else 0]["품번"]
+            _ops = sorted(_by_pn.get(_sp_pn, []),
+                          key=lambda o: (not o.get("active", True),
+                                         o.get("step") is None,
+                                         o.get("step") or 0, o["process"]))
+            _sp_pid = next((o["product_id"] for o in _ops
+                            if o.get("product_id")), None)
+            _sp_pm = _pid_nm.get(_sp_pid) or {}
+            st.markdown("##### {} — {} {}".format(
+                _sp_pn, _sp_pm.get("pn") or "제품 미연결",
+                f"· {_sp_pm.get('item_name')}" if _sp_pm.get("item_name")
+                else ""))
+
+            # 제품 미연결 → 검색해 연결 (그 품번의 모든 작업에 적용)
+            if not _sp_pid:
+                lk1, lk2 = st.columns([3, 1])
+                _lk_q = lk1.text_input("연결할 제품 품번 검색",
+                                       value=_sp_pn.split("#")[0],
+                                       key=f"std_link_q_{_sp_pn}")
+                _lk_c = []
+                if _lk_q.strip():
                     try:
-                        _db.update("product_op_std",
-                                   f"op_id=eq.{_sp['op_id']}",
-                                   {"std_status": "AUTO",
-                                    "uph_std": _sp.get("uph_auto"),
-                                    "confirmed_by": None,
-                                    "confirmed_at": None})
-                        st.rerun()
+                        _lk_c = fetch("products",
+                                      "product_id,pn,item_name,archived_at",
+                                      f"pn=ilike.*{_lk_q.strip()}*"
+                                      "&order=archived_at.nullsfirst,pn",
+                                      limit=20)
+                    except Exception:
+                        _lk_c = []
+                if _lk_c:
+                    _lk_pick = lk1.selectbox(
+                        "후보", _lk_c, key=f"std_link_pick_{_sp_pn}",
+                        format_func=lambda p: "{}{} · {}".format(
+                            p["pn"], " (휴면)" if p.get("archived_at") else "",
+                            p.get("item_name") or "-"))
+                    if lk2.button("연결", key=f"std_link_go_{_sp_pn}",
+                                  use_container_width=True):
+                        try:
+                            _db.update("product_op_std",
+                                       f"pn=eq.{_sp_pn}",
+                                       {"product_id": _lk_pick["product_id"]})
+                            st.success(f"{_sp_pn} → {_lk_pick['pn']} 연결")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"연결 실패: {e}")
+                else:
+                    lk1.caption("일치하는 제품이 없습니다 — 마스터 관리에서 "
+                                "제품을 먼저 등록하세요.")
+
+            # 작업(공정) 편집 표 — st.form + 편집 취소(nonce)
+            _grps = sorted({m["group_code"] for m in fetch(
+                "machines", "group_code", limit=500)} | {"ETC"})
+            _std_df = pd.DataFrame([{
+                "사용": bool(o.get("active", True)),
+                "공정": o["process"],
+                "스텝": int(o["step"]) if o.get("step") is not None else None,
+                "장비군": o.get("group_code") or "ETC",
+                "표준 UPH": float(o.get("uph_std") or 0),
+                "준비(분)": float(o.get("setup_min") or 0),
+                "메모": o.get("note") or "",
+                "상태": ("확정" if o.get("std_status") == "CONFIRMED"
+                       else "자동"),
+                "시트 UPH": float(o.get("uph_sheet") or 0) or None,
+                "실적 UPH": float(o.get("uph_auto") or 0) or None,
+                "표본": int(o.get("sample_n") or 0),
+                "설비": o.get("machines_used") or "",
+            } for o in _ops])
+            _std_nonce = st.session_state.setdefault("std_nonce", 0)
+            with st.form("std_edit_form"):
+                _std_ed = st.data_editor(
+                    _std_df, hide_index=True, use_container_width=True,
+                    key=f"std_ed_{_sp_pn}_{_std_nonce}",
+                    column_config={
+                        "사용": st.column_config.CheckboxColumn(
+                            help="끄면 작업 큐·스케줄에서 제외 (변형 공정 정리)"),
+                        "공정": st.column_config.TextColumn(
+                            help="작업 이름 = 품번#스텝 (시트 표기와 같아야 "
+                                 "실적이 붙습니다)"),
+                        "스텝": st.column_config.NumberColumn(
+                            min_value=0, max_value=999, step=10),
+                        "장비군": st.column_config.SelectboxColumn(
+                            options=_grps),
+                        "표준 UPH": st.column_config.NumberColumn(
+                            min_value=0.0, step=0.5, format="%.1f"),
+                        "준비(분)": st.column_config.NumberColumn(
+                            min_value=0.0, step=5.0),
+                        **{c: st.column_config.Column(disabled=True)
+                           for c in ("상태", "시트 UPH", "실적 UPH", "표본",
+                                     "설비")},
+                    })
+                _std_reason = st.text_input(
+                    "변경 사유 (선택 — 공정 개선·설계 변경 등)",
+                    key=f"std_reason_{_sp_pn}")
+                sb1, sb2 = st.columns(2)
+                _std_save = sb1.form_submit_button("표준 저장 (확정)",
+                                                   type="primary",
+                                                   use_container_width=True)
+                _std_cancel = sb2.form_submit_button("편집 취소",
+                                                     use_container_width=True)
+            st.caption("시트 UPH = 생산일정 시트 목표 · 실적 UPH = 동기화 실적 "
+                       "구간 중앙값 (참고). 저장하면 바뀐 행이 확정으로 잠깁니다.")
+            if _std_cancel:
+                st.session_state["std_nonce"] = _std_nonce + 1
+                st.rerun()
+            if _std_save:
+                _n_chg, _logs9 = 0, []
+                _now9 = _std_now.now().isoformat()
+                _who = current_user_name()
+                for _bi, _brow in _std_ed.iterrows():
+                    if int(_bi) >= len(_ops):
+                        continue
+                    o = _ops[int(_bi)]
+                    _new = {
+                        "active": bool(_brow.get("사용")),
+                        "process": str(_brow.get("공정") or "").strip()
+                        or o["process"],
+                        "step": (int(_brow["스텝"]) if pd.notna(
+                            _brow.get("스텝")) and _brow.get("스텝")
+                                 not in ("", None) else None),
+                        "group_code": str(_brow.get("장비군") or "ETC"),
+                        "uph_std": float(_brow.get("표준 UPH") or 0),
+                        "setup_min": float(_brow.get("준비(분)") or 0),
+                        "note": str(_brow.get("메모") or "").strip() or None,
+                    }
+                    _old = {
+                        "active": bool(o.get("active", True)),
+                        "process": o["process"],
+                        "step": (int(o["step"]) if o.get("step") is not None
+                                 else None),
+                        "group_code": o.get("group_code") or "ETC",
+                        "uph_std": float(o.get("uph_std") or 0),
+                        "setup_min": float(o.get("setup_min") or 0),
+                        "note": o.get("note") or None,
+                    }
+                    _diff = {k: v for k, v in _new.items() if v != _old[k]}
+                    if not _diff:
+                        continue
+                    _diff.update({"std_status": "CONFIRMED",
+                                  "confirmed_by": _who, "confirmed_at": _now9,
+                                  "updated_at": _now9})
+                    try:
+                        if _db.update("product_op_std",
+                                      f"op_id=eq.{o['op_id']}", _diff):
+                            _n_chg += 1
+                            for k, v in _diff.items():
+                                if k in _old:
+                                    _logs9.append({
+                                        "op_id": o["op_id"], "pn": o["pn"],
+                                        "process": o["process"], "field": k,
+                                        "old_value": str(_old[k]),
+                                        "new_value": str(v),
+                                        "reason": _std_reason.strip() or None,
+                                        "changed_by": _who})
                     except Exception as e:
-                        st.error(f"되돌리기 실패: {e}")
-                try:
-                    _pm = fetch("product_op_machine",
-                                "machine_id,runs,hours,qty,uph_actual,"
-                                "last_date",
-                                f"pn=eq.{_sp['pn']}&process=eq.{_sp['process']}"
-                                "&order=runs.desc", limit=100)
-                except Exception:
-                    _pm = []
-                if _pm:
-                    st.markdown("**설비별 실적 (능력 매트릭스)**")
-                    toss_table([{
-                        "설비": m["machine_id"],
-                        "실적 UPH": float(m.get("uph_actual") or 0),
-                        "구간": int(m.get("runs") or 0),
-                        "시간": float(m.get("hours") or 0),
-                        "수량": float(m.get("qty") or 0),
-                        "최근": m.get("last_date") or "-",
-                    } for m in _pm], num_cols=("실적 UPH", "구간", "시간",
-                                               "수량"),
-                        strong_cols=("설비",))
+                        st.error(f"{o['process']} 저장 실패: {e}")
+                if _logs9:
+                    try:
+                        _db.insert("product_op_std_log", _logs9)
+                    except Exception:
+                        pass
+                st.success(f"표준 저장 — {_n_chg}개 작업 확정")
+                st.session_state["std_nonce"] = _std_nonce + 1
+                st.rerun()
+
+            # 설비별 실적 (능력 매트릭스) + 변경 이력
+            try:
+                _pm9 = fetch("product_op_machine",
+                             "process,machine_id,runs,hours,qty,uph_actual,"
+                             "last_date", f"pn=eq.{_sp_pn}&order=process,runs.desc",
+                             limit=200)
+            except Exception:
+                _pm9 = []
+            try:
+                _lg9 = fetch("product_op_std_log",
+                             "process,field,old_value,new_value,reason,"
+                             "changed_by,changed_at",
+                             f"pn=eq.{_sp_pn}&order=log_id.desc", limit=100)
+            except Exception:
+                _lg9 = []
+            xm1, xm2 = st.columns(2)
+            with xm1:
+                if _pm9:
+                    with st.expander(f"설비별 실적 {len(_pm9)}건 (능력 매트릭스)"):
+                        toss_table([{
+                            "공정": m["process"], "설비": m["machine_id"],
+                            "실적 UPH": float(m.get("uph_actual") or 0),
+                            "구간": int(m.get("runs") or 0),
+                            "시간": float(m.get("hours") or 0),
+                            "최근": m.get("last_date") or "-",
+                        } for m in _pm9], num_cols=("실적 UPH", "구간", "시간"),
+                            strong_cols=("설비",))
+            with xm2:
+                if _lg9:
+                    _fk9 = {"uph_std": "표준 UPH", "setup_min": "준비(분)",
+                            "group_code": "장비군", "active": "사용",
+                            "process": "공정", "step": "스텝", "note": "메모"}
+                    with st.expander(f"변경 이력 {len(_lg9)}건"):
+                        toss_table([{
+                            "공정": l["process"],
+                            "항목": _fk9.get(l["field"], l["field"]),
+                            "이전": l.get("old_value") or "-",
+                            "이후": l.get("new_value") or "-",
+                            "사유": l.get("reason") or "-",
+                            "담당": l.get("changed_by") or "-",
+                            "일시": str(l.get("changed_at") or "")[:16],
+                        } for l in _lg9], strong_cols=("공정",))
 
     # ─── 탭: 설비 스케줄 보드 (1단계 — 작업 큐 · 보드 · 셀 편집) ───
     # 목업 승인 2026-09-07. 셀 = 설비 × 날짜 × 교대, 작업 = 품번#스텝.
@@ -9259,8 +9597,8 @@ elif page == "생산 계획":
                 _sb_stds += fetch("product_op_std",
                                   "product_id,pn,process,step,uph_std,"
                                   "setup_min,group_code",
-                                  f"product_id=in.({_pstr})&order=pn,step",
-                                  limit=1000)
+                                  f"product_id=in.({_pstr})&active=eq.true"
+                                  "&order=pn,step", limit=1000)
             _sb_pns = sorted({s["pn"] for s in _sb_stds})
             for _i0 in range(0, len(_sb_pns), 60):
                 for m in fetch("product_op_machine",
