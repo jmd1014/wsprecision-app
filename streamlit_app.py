@@ -13126,6 +13126,16 @@ elif page == "공정 관리":
                     _sb = _bat_open[_bt_i if _bt_i is not None else 0]
                     _sb_qty = float(_sb.get("qty") or 0)
                     _sb_act = _b_action(_sb)
+
+                    def _bq_ok(q):
+                        """배치 수량 초과·0 이면 버튼 잠금 (2026-09-09
+                        사용자 요청 — 입력칸 max 클램프는 초과 입력을
+                        안내만 하고 이전 값으로 버튼이 눌리던 문제)."""
+                        if q > _sb_qty + 1e-9:
+                            st.error(f"배치 수량 {_sb_qty:,.0f}를 초과합니다 "
+                                     f"(입력 {q:,.0f}) — 수량을 줄이세요.")
+                            return False
+                        return q > 0
                     # 선택/수량/상태가 바뀌면 입력 기본값 리셋
                     # (이전 선택의 입력 잔존 방지, 2026-08-27)
                     fresh_keys(f"bt_{_t['wo_id']}",
@@ -13233,10 +13243,10 @@ elif page == "공정 관리":
                         _ci0, _ci1, _ci2 = st.columns(
                             [1.4, 1, 1], vertical_alignment="bottom")
                         _bq = _ci0.number_input("시작 수량", 0.0,
-                            _sb_qty, _sb_qty, 1.0,
+                            None, _sb_qty, 1.0,
                             key=f"bt_sq_{_sb['batch_id']}")
                         if _ci1.button(f"공정 시작 ({_bq:,.0f})",
-                                type="primary", disabled=_bq <= 0,
+                                type="primary", disabled=not _bq_ok(_bq),
                                 use_container_width=True,
                                 key=f"bt_s_btn_{_sb['batch_id']}"):
                             _no, _nid = _bat_take(
@@ -13256,7 +13266,7 @@ elif page == "공정 관리":
                                 ("OUT", "PROD", "INSPECT")
                                 and _ci2.button(
                                     f"시작+완료 한번에 ({_bq:,.0f})",
-                                    disabled=_bq <= 0,
+                                    disabled=not _bq_ok(_bq),
                                     use_container_width=True,
                                     help="공정 시작과 완료를 한 번에 "
                                          "기록 — 다음 공정 대기로 "
@@ -13294,10 +13304,10 @@ elif page == "공정 관리":
                         _cd0, _cd1 = st.columns(
                             [1.4, 1], vertical_alignment="bottom")
                         _bq = _cd0.number_input("완료 수량", 0.0,
-                            _sb_qty, _sb_qty, 1.0,
+                            None, _sb_qty, 1.0,
                             key=f"bt_dq_{_sb['batch_id']}")
                         if _cd1.button(f"공정 완료 ({_bq:,.0f})",
-                                type="primary", disabled=_bq <= 0,
+                                type="primary", disabled=not _bq_ok(_bq),
                                 use_container_width=True,
                                 key=f"bt_d_btn_{_sb['batch_id']}"):
                             _nx = _bnext(_sb)
@@ -13331,10 +13341,10 @@ elif page == "공정 관리":
                         _cr0, _cr1 = st.columns(
                             [1.4, 1], vertical_alignment="bottom")
                         _bq = _cr0.number_input("완료 수량", 0.0,
-                            _sb_qty, _sb_qty, 1.0,
+                            None, _sb_qty, 1.0,
                             key=f"bt_rq_{_sb['batch_id']}")
                         if _cr1.button(f"완료 등록 ({_bq:,.0f})",
-                                     type="primary", disabled=_bq <= 0,
+                                     type="primary", disabled=not _bq_ok(_bq),
                                      use_container_width=True,
                                      key=f"bt_rq_btn_{_sb['batch_id']}"):
                             _nx = _bnext(_sb)
@@ -13387,14 +13397,14 @@ elif page == "공정 관리":
                                 st.caption("마스터 관리 → BOM 편집에서 "
                                            "승인 업체를 고정할 수 있습니다.")
                         with bc2:
-                            _bq = st.number_input("출고 수량", 0.0, _sb_qty,
+                            _bq = st.number_input("출고 수량", 0.0, None,
                                 _sb_qty, 1.0,
                                 key=f"bt_oq_{_sb['batch_id']}")
                             _bd = st.date_input("납기 요청일",
                                 key=f"bt_od_{_sb['batch_id']}")
                         if st.button(
                                 f"외주 출고 ({_bq:,.0f})",
-                                type="primary", disabled=_bq <= 0,
+                                type="primary", disabled=not _bq_ok(_bq),
                                 help="외주 의뢰서(문서)가 자동 "
                                      "발행됩니다",
                                 key=f"bt_o_btn_{_sb['batch_id']}"):
@@ -13443,10 +13453,10 @@ elif page == "공정 관리":
                         _cq0, _cq1 = st.columns(
                             [1.4, 1], vertical_alignment="bottom")
                         _bq = _cq0.number_input("입고 수량", 0.0,
-                            _sb_qty, _sb_qty, 1.0,
+                            None, _sb_qty, 1.0,
                             key=f"bt_iq_{_sb['batch_id']}")
                         if _cq1.button(f"외주 입고 ({_bq:,.0f})",
-                                     type="primary", disabled=_bq <= 0,
+                                     type="primary", disabled=not _bq_ok(_bq),
                                      use_container_width=True,
                                      key=f"bt_i_btn_{_sb['batch_id']}"):
                             _nx = _bnext(_sb)
@@ -13476,15 +13486,15 @@ elif page == "공정 관리":
                                    "번호 = 배치번호**로 발행됩니다.")
                         qc1, qc2, qc3, qc4, qc5 = st.columns(5)
                         _i_pass = qc1.number_input("완성 (합격)", 0.0,
-                            _sb_qty, _sb_qty, 1.0,
+                            None, _sb_qty, 1.0,
                             key=f"bt_ip_{_sb['batch_id']}")
-                        _i_rework = qc2.number_input("재작업", 0.0, _sb_qty,
+                        _i_rework = qc2.number_input("재작업", 0.0, None,
                             0.0, 1.0, key=f"bt_ir_{_sb['batch_id']}")
-                        _i_scrap = qc3.number_input("폐기", 0.0, _sb_qty,
+                        _i_scrap = qc3.number_input("폐기", 0.0, None,
                             0.0, 1.0, key=f"bt_is_{_sb['batch_id']}")
-                        _i_tok = qc4.number_input("특채", 0.0, _sb_qty,
+                        _i_tok = qc4.number_input("특채", 0.0, None,
                             0.0, 1.0, key=f"bt_it_{_sb['batch_id']}")
-                        _i_ret = qc5.number_input("반품", 0.0, _sb_qty,
+                        _i_ret = qc5.number_input("반품", 0.0, None,
                             0.0, 1.0, key=f"bt_ib_{_sb['batch_id']}")
                         _i_done = _i_pass + _i_tok
                         _i_sum = (_i_pass + _i_rework + _i_scrap
@@ -13654,10 +13664,10 @@ elif page == "공정 관리":
                         _cw0, _cw1 = st.columns(
                             [1.4, 1], vertical_alignment="bottom")
                         _bq = _cw0.number_input("복귀 수량", 0.0,
-                            _sb_qty, _sb_qty, 1.0,
+                            None, _sb_qty, 1.0,
                             key=f"bt_rw_{_sb['batch_id']}")
                         if _cw1.button(f"재작업 복귀 ({_bq:,.0f})",
-                                     type="primary", disabled=_bq <= 0,
+                                     type="primary", disabled=not _bq_ok(_bq),
                                      use_container_width=True,
                                      key=f"bt_rw_btn_{_sb['batch_id']}"):
                             _no, _nid = _bat_take(_sb, _bq,
