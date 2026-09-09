@@ -9668,13 +9668,11 @@ elif page == "생산 계획":
                 "#f04452" if _sb_late else "#01a76b", len(_sb_late),
                 _sb_plan_sum, _sb_act_sum), unsafe_allow_html=True)
 
-        # ── 모드: 보드 보기 / 계획 입력 ──
-        _has_plan = any(c["plan"] for c in _sb_cells.values())
-        _sb_mode = st.radio(
-            "보드 모드", ["계획 입력", "보드 보기"],
-            index=0 if (not _has_plan and _sb_d1 >= _sb_today.isoformat())
-            else 1, horizontal=True, key=f"sb_mode_{_sb_d0}",
-            label_visibility="collapsed")
+        # ── 보드 컴포넌트 (components/schedule_board, 2026-09-09 현장 요청:
+        # 캘린더에서 직접 넣고 빼고 한 번에) — 클릭 배치·드래그 이동/복사·
+        # 채우기 핸들·×·되돌리기, [저장] 시 변경 목록만 앱으로 전달.
+        # 프로토콜은 index.html 이 직접 구현(streamlit:componentReady /
+        # render / setComponentValue). 컴포넌트가 없으면 아래 격자로 폴백.
         _sb_grp = st.radio("장비군", ["전체"] + sorted(
             {m.get("group_code") or "ETC" for m in _sb_act}),
             horizontal=True, key="sb_grp", label_visibility="collapsed")
@@ -9686,80 +9684,99 @@ elif page == "생산 계획":
         _sb_colname = {(d, sh): "{}/{} {} {}".format(
             d.month, d.day, _wd[d.weekday()], "주" if sh == "주간" else "야")
             for d, sh in _sb_cols}
+        _sb_use_comp = False
+        try:
+            import os as _sb_os
+            import streamlit.components.v1 as _sb_cv1
+            _sb_comp_dir = _sb_os.path.join(
+                _sb_os.path.dirname(_sb_os.path.abspath(__file__)),
+                "components", "schedule_board")
+            if _sb_os.path.exists(_sb_os.path.join(_sb_comp_dir,
+                                                   "index.html")):
+                if "ws_schedule_board" not in globals():
+                    globals()["ws_schedule_board"] = _sb_cv1.declare_component(
+                        "ws_schedule_board", path=_sb_comp_dir)
+                _sb_comp = globals()["ws_schedule_board"]
+                _sb_use_comp = True
+        except Exception:
+            _sb_use_comp = False
 
-        if _sb_mode == "계획 입력":
-            st.caption(
-                "셀을 클릭해 작업을 고르세요 (품번 일부를 치면 좁혀집니다, "
-                "빈 값 = 셀 비움). 수량은 **표준 UPH × 교대 시간(준비시간 차감)** "
-                "으로 자동 계산되며, 다른 수량·작업지시는 아래 '수량·메모 조정' "
-                "에서. 야간 미운영 설비의 야간 칸은 저장 때 건너뜁니다.")
-            _grid = {}
-            for m in _sb_rows_m:
-                row = {"설비": m["machine_id"]}
-                for d, sh in _sb_cols:
-                    c = _sb_cells.get((m["machine_id"], d.isoformat(), sh))
-                    row[_sb_colname[(d, sh)]] = (
-                        _sb_k2lbl.get((c["plan"]["pn"], c["plan"]["process"]),
-                                      c["plan"]["process"])
-                        if c and c["plan"] else "")
-                _grid[m["machine_id"]] = row
-            _gdf = pd.DataFrame(list(_grid.values()))
-            _sb_nonce = st.session_state.setdefault("sb_nonce", 0)
-            _opts = [""] + list(_sb_labels)
-            with st.form("sb_grid_form"):
-                _ged = st.data_editor(
-                    _gdf, hide_index=True, use_container_width=True,
-                    height=min(620, 46 + 36 * len(_gdf)),
-                    key=f"sb_grid_{_sb_d0}_{_sb_grp}_{_sb_nonce}",
-                    column_config={
-                        "설비": st.column_config.Column(disabled=True,
-                                                      width="small"),
-                        **{_sb_colname[c]: st.column_config.SelectboxColumn(
-                            _sb_colname[c], options=_opts, width="medium")
-                           for c in _sb_cols}})
-                gb1, gb2 = st.columns(2)
-                _g_save = gb1.form_submit_button("보드 저장", type="primary",
-                                                 use_container_width=True)
-                _g_cancel = gb2.form_submit_button("편집 취소",
-                                                   use_container_width=True)
-            if _g_cancel:
-                st.session_state["sb_nonce"] = _sb_nonce + 1
-                st.rerun()
-            if _g_save:
-                _n_ins, _n_upd, _n_del, _n_skip, _bad = 0, 0, 0, 0, []
-                _ins_rows = []
-                _now_s = _sb_now.now().isoformat()
-                _cur = {(s["machine_id"], str(s["plan_date"])[:10],
-                         s["shift"]): s for s in _sb_sched}
-                for _bi, _brow in _ged.iterrows():
-                    mid = _brow["설비"]
-                    m = next((x for x in _sb_act if x["machine_id"] == mid),
-                             None)
-                    if not m:
-                        continue
-                    for d, sh in _sb_cols:
-                        _v = _brow.get(_sb_colname[(d, sh)])
-                        _v = "" if _v is None or (isinstance(_v, float)
-                                                  and _v != _v) else str(_v)
-                        k = (mid, d.isoformat(), sh)
-                        _old = _cur.get(k)
-                        _old_lbl = (_sb_k2lbl.get(
-                            (_old["pn"], _old["process"]), _old["process"])
-                            if _old else "")
-                        if _v == _old_lbl:
+        if _sb_use_comp:
+            if st.session_state.get("sb_flash"):
+                st.success(st.session_state.pop("sb_flash"))
+            _sb_gen = st.session_state.get("sb_comp_gen", 0)
+            _sb_nonce_c = "{}:{}:{}:{}".format(
+                _sb_d0, len(_sb_sched),
+                sum(int(s["sched_id"]) for s in _sb_sched), _sb_gen)
+            _c_machines = [{
+                "id": m["machine_id"], "name": m.get("name") or "",
+                "group": m.get("group_code") or "ETC",
+                "night": bool(m.get("night_active", True)),
+                "hours": float(m.get("hours_per_shift") or 9)}
+                for m in _sb_rows_m]
+            _c_cells = {}
+            for (mid, d, sh), c in _sb_cells.items():
+                key = f"{mid}|{d}|{sh}"
+                if c["plan"]:
+                    _c_cells[key] = {
+                        "plan": True, "pn": c["plan"]["pn"],
+                        "process": c["plan"]["process"],
+                        "qty": float(c["plan"].get("plan_qty") or 0),
+                        "hours": float(c["plan"].get("plan_hours") or 9),
+                        "status": c["status"], "actual": c["actual"]}
+                elif c["status"] == "STOP":
+                    _c_cells[key] = {"plan": False, "status": "STOP",
+                                     "stop": c.get("stop")}
+                else:
+                    _c_cells[key] = {"plan": False, "status": "ACTUAL",
+                                     "process": c.get("process"),
+                                     "actual": c["actual"]}
+            _c_ops = []
+            for k2 in sorted(_sb_ops, key=lambda k: (
+                    _sb_ops[k]["due"] or "9999", k)):
+                q = _sb_ops[k2]
+                _std9 = _sb_std_by.get(k2, {})
+                _c_ops.append({
+                    "key": f"{k2[0]}||{k2[1]}", "pn": k2[0],
+                    "process": k2[1],
+                    "uph": float(_std9.get("uph_std") or 0) or None,
+                    "setup": float(_std9.get("setup_min") or 0),
+                    "due": q.get("due"),
+                    "left": (max(q["net"] - q["alloc"], 0) if q.get("net")
+                             else None),
+                    "machines": list(q.get("machines") or [])})
+            _ret = _sb_comp(machines=_c_machines,
+                            days=[d.isoformat() for d in _sb_days],
+                            cells=_c_cells, ops=_c_ops, nonce=_sb_nonce_c,
+                            key=f"sb_board_{_sb_d0}", default=None)
+            if isinstance(_ret, dict) and _ret.get("changes"):
+                _tag = (_ret.get("nonce"), _ret.get("seq"))
+                if st.session_state.get("sb_comp_applied") != _tag                         and _ret.get("nonce") == _sb_nonce_c:
+                    st.session_state["sb_comp_applied"] = _tag
+                    _cur = {(s["machine_id"], str(s["plan_date"])[:10],
+                             s["shift"]): s for s in _sb_sched}
+                    _n_ins, _n_upd, _n_del, _bad = 0, 0, 0, []
+                    _ins_rows = []
+                    _now_s = _sb_now.now().isoformat()
+                    for ch in _ret["changes"]:
+                        mid, d, sh = (ch.get("machine_id"), ch.get("date"),
+                                      ch.get("shift"))
+                        m = next((x for x in _sb_act
+                                  if x["machine_id"] == mid), None)
+                        if not m or sh not in _sch.SHIFTS or not d:
                             continue
-                        if not _v:
+                        _old = _cur.get((mid, d, sh))
+                        if not ch.get("process"):
                             if _old:
                                 _db.delete("production_schedule",
                                            f"sched_id=eq.{_old['sched_id']}")
                                 _n_del += 1
                             continue
-                        _k2 = _sb_labels.get(_v)
-                        if not _k2:
-                            _bad.append(f"{mid} {_sb_colname[(d, sh)]}: {_v}")
+                        _k2 = (ch.get("pn"), ch.get("process"))
+                        if _k2 not in _sb_ops:
+                            _bad.append(f"{mid} {d} {sh}: {ch.get('process')}")
                             continue
                         if sh == "야간" and not m.get("night_active", True):
-                            _n_skip += 1
                             continue
                         _std9 = _sb_std_by.get(_k2, {})
                         _hps = float(m.get("hours_per_shift") or 9)
@@ -9768,126 +9785,241 @@ elif page == "생산 계획":
                             _std9.get("setup_min") or 0)
                         rec = {"pn": _k2[0], "process": _k2[1],
                                "product_id": _sb_ops[_k2].get("product_id"),
-                               "plan_qty": float(_qty9),
-                               "plan_hours": _hps, "updated_at": _now_s}
+                               "plan_qty": float(_qty9), "plan_hours": _hps,
+                               "updated_at": _now_s}
                         if _old:
                             _db.update("production_schedule",
                                        f"sched_id=eq.{_old['sched_id']}", rec)
                             _n_upd += 1
                         else:
-                            rec.update({"machine_id": mid,
-                                        "plan_date": d.isoformat(),
+                            rec.update({"machine_id": mid, "plan_date": d,
                                         "shift": sh, "status": "PLAN",
                                         "wo_number": None, "note": None,
                                         "created_by": current_user_name()})
                             _ins_rows.append(rec)
-                try:
-                    if _ins_rows:
-                        _db.insert("production_schedule", _ins_rows)
-                        _n_ins = len(_ins_rows)
-                    _msg = "보드 저장 — 신규 {} · 변경 {} · 비움 {}".format(
-                        _n_ins, _n_upd, _n_del)
-                    if _n_skip:
-                        _msg += f" · 야간 미운영 건너뜀 {_n_skip}"
-                    if _bad:
-                        st.warning("인식 못한 값 (목록에서 골라 주세요): "
-                                   + "; ".join(_bad[:8]))
-                    st.success(_msg)
+                    try:
+                        if _ins_rows:
+                            _db.insert("production_schedule", _ins_rows)
+                            _n_ins = len(_ins_rows)
+                        st.session_state["sb_flash"] = (
+                            "보드 저장 — 신규 {} · 변경 {} · 비움 {}".format(
+                                _n_ins, _n_upd, _n_del)
+                            + (" · 인식 못한 작업: " + "; ".join(_bad[:8])
+                               if _bad else ""))
+                        st.session_state["sb_comp_gen"] = _sb_gen + 1
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"저장 실패: {e}")
+
+        if not _sb_use_comp:
+            # ── 모드: 보드 보기 / 계획 입력 ──
+            _has_plan = any(c["plan"] for c in _sb_cells.values())
+            _sb_mode = st.radio(
+                "보드 모드", ["계획 입력", "보드 보기"],
+                index=0 if (not _has_plan and _sb_d1 >= _sb_today.isoformat())
+                else 1, horizontal=True, key=f"sb_mode_{_sb_d0}",
+                label_visibility="collapsed")
+            if _sb_mode == "계획 입력":
+                st.caption(
+                    "셀을 클릭해 작업을 고르세요 (품번 일부를 치면 좁혀집니다, "
+                    "빈 값 = 셀 비움). 수량은 **표준 UPH × 교대 시간(준비시간 차감)** "
+                    "으로 자동 계산되며, 다른 수량·작업지시는 아래 '수량·메모 조정' "
+                    "에서. 야간 미운영 설비의 야간 칸은 저장 때 건너뜁니다.")
+                _grid = {}
+                for m in _sb_rows_m:
+                    row = {"설비": m["machine_id"]}
+                    for d, sh in _sb_cols:
+                        c = _sb_cells.get((m["machine_id"], d.isoformat(), sh))
+                        row[_sb_colname[(d, sh)]] = (
+                            _sb_k2lbl.get((c["plan"]["pn"], c["plan"]["process"]),
+                                          c["plan"]["process"])
+                            if c and c["plan"] else "")
+                    _grid[m["machine_id"]] = row
+                _gdf = pd.DataFrame(list(_grid.values()))
+                _sb_nonce = st.session_state.setdefault("sb_nonce", 0)
+                _opts = [""] + list(_sb_labels)
+                with st.form("sb_grid_form"):
+                    _ged = st.data_editor(
+                        _gdf, hide_index=True, use_container_width=True,
+                        height=min(620, 46 + 36 * len(_gdf)),
+                        key=f"sb_grid_{_sb_d0}_{_sb_grp}_{_sb_nonce}",
+                        column_config={
+                            "설비": st.column_config.Column(disabled=True,
+                                                          width="small"),
+                            **{_sb_colname[c]: st.column_config.SelectboxColumn(
+                                _sb_colname[c], options=_opts, width="medium")
+                               for c in _sb_cols}})
+                    gb1, gb2 = st.columns(2)
+                    _g_save = gb1.form_submit_button("보드 저장", type="primary",
+                                                     use_container_width=True)
+                    _g_cancel = gb2.form_submit_button("편집 취소",
+                                                       use_container_width=True)
+                if _g_cancel:
                     st.session_state["sb_nonce"] = _sb_nonce + 1
                     st.rerun()
-                except Exception as e:
-                    st.error(f"저장 실패: {e}")
-        else:
-            def _sb_html(cap):
-                h1 = "".join('<th colspan="2">{}/{} {}</th>'.format(
-                    d.month, d.day, _wd[d.weekday()]) for d in _sb_days)
-                h2 = "".join('<th class="d">주</th><th class="n">야</th>'
-                             for _ in _sb_days)
-                rows = []
-                _groups = sorted({m.get("group_code") or "ETC"
-                                  for m in _sb_rows_m})
-                for g in _groups:
-                    p, a = _sb_gl.get(g, (0, 0))
-                    rows.append('<tr class="g"><th colspan="{}">{} <b>주간 '
-                                '부하 {:.0f}%</b></th></tr>'.format(
-                                    2 + len(_sb_days) * 2, g,
-                                    (p / a * 100) if a else 0))
-                    for m in _sb_rows_m:
-                        if (m.get("group_code") or "ETC") != g:
+                if _g_save:
+                    _n_ins, _n_upd, _n_del, _n_skip, _bad = 0, 0, 0, 0, []
+                    _ins_rows = []
+                    _now_s = _sb_now.now().isoformat()
+                    _cur = {(s["machine_id"], str(s["plan_date"])[:10],
+                             s["shift"]): s for s in _sb_sched}
+                    for _bi, _brow in _ged.iterrows():
+                        mid = _brow["설비"]
+                        m = next((x for x in _sb_act if x["machine_id"] == mid),
+                                 None)
+                        if not m:
                             continue
-                        mid = m["machine_id"]
-                        tds = []
-                        for d in _sb_days:
-                            for sh in _sch.SHIFTS:
-                                k = (mid, d.isoformat(), sh)
-                                c = _sb_cells.get(k)
-                                cls = "c" + (" n" if sh == "야간" else "")
-                                if sh == "야간" and not m.get("night_active",
-                                                             True):
-                                    cls += " off"
-                                if mid in cap and not c:
-                                    cls += " cap"
-                                inner = ""
-                                if c and c["status"] == "STOP":
-                                    inner = ('<div class="job stop"><b>{}</b>'
-                                             '</div>').format(_sb_h.escape(
-                                                 c["stop"] or "비가동"))
-                                elif c and c["status"] == "ACTUAL":
-                                    inner = ('<div class="job actual"><b>{}'
-                                             '</b><span><span>계획 없음</span>'
-                                             '<span>실 {:,.0f}</span></span>'
-                                             '</div>').format(
-                                        _sb_h.escape(c.get("process") or "-"),
-                                        c["actual"])
-                                elif c:
-                                    pl = c["plan"]
-                                    jc = {"RUN": "run", "DONE": "done",
-                                          "SHORT": "short"}.get(c["status"], "")
-                                    inner = ('<div class="job {}" title="{}">'
-                                             '<b>{}</b><span><span>{:,.0f}'
-                                             '</span><span>{}</span></span>'
-                                             '</div>').format(
-                                        jc, _sb_h.escape(pl.get("note") or ""),
-                                        _sb_h.escape(pl.get("process") or ""),
-                                        float(pl.get("plan_qty") or 0),
-                                        (f"실 {c['actual']:,.0f}" if c["actual"]
-                                         else "{:g}h".format(
-                                             float(pl.get("plan_hours") or 0))))
-                                tds.append(f'<td class="{cls}">{inner}</td>')
-                        p, a = _sb_load.get(mid, (0, 0))
-                        pct = (p / a * 100) if a else 0
-                        ucls = "hi" if pct > 100 else "mid" if pct > 85 else ""
-                        rows.append('<tr><th class="m">{}<small>{}</small></th>'
-                                    '{}<td class="u {}">{:.0f}%</td></tr>'.format(
-                                        mid, _sb_h.escape(
-                                            m.get("name") if m.get("name")
-                                            and m.get("name") != mid else ""),
-                                        "".join(tds), ucls, pct))
-                return ('<div class="sb-wrap"><table class="sb"><thead><tr>'
-                        '<th class="m" rowspan="2">설비</th>{}<th rowspan="2">'
-                        '부하</th></tr><tr>{}</tr></thead><tbody>{}</tbody>'
-                        '</table></div>').format(h1, h2, "".join(rows))
-
-            if not _sb_rows_m:
-                st.info("가동 설비가 없습니다 — 설비 탭에서 확인하세요.")
+                        for d, sh in _sb_cols:
+                            _v = _brow.get(_sb_colname[(d, sh)])
+                            _v = "" if _v is None or (isinstance(_v, float)
+                                                      and _v != _v) else str(_v)
+                            k = (mid, d.isoformat(), sh)
+                            _old = _cur.get(k)
+                            _old_lbl = (_sb_k2lbl.get(
+                                (_old["pn"], _old["process"]), _old["process"])
+                                if _old else "")
+                            if _v == _old_lbl:
+                                continue
+                            if not _v:
+                                if _old:
+                                    _db.delete("production_schedule",
+                                               f"sched_id=eq.{_old['sched_id']}")
+                                    _n_del += 1
+                                continue
+                            _k2 = _sb_labels.get(_v)
+                            if not _k2:
+                                _bad.append(f"{mid} {_sb_colname[(d, sh)]}: {_v}")
+                                continue
+                            if sh == "야간" and not m.get("night_active", True):
+                                _n_skip += 1
+                                continue
+                            _std9 = _sb_std_by.get(_k2, {})
+                            _hps = float(m.get("hours_per_shift") or 9)
+                            _qty9 = _sch.suggest_qty(
+                                _hps, _std9.get("uph_std"),
+                                _std9.get("setup_min") or 0)
+                            rec = {"pn": _k2[0], "process": _k2[1],
+                                   "product_id": _sb_ops[_k2].get("product_id"),
+                                   "plan_qty": float(_qty9),
+                                   "plan_hours": _hps, "updated_at": _now_s}
+                            if _old:
+                                _db.update("production_schedule",
+                                           f"sched_id=eq.{_old['sched_id']}", rec)
+                                _n_upd += 1
+                            else:
+                                rec.update({"machine_id": mid,
+                                            "plan_date": d.isoformat(),
+                                            "shift": sh, "status": "PLAN",
+                                            "wo_number": None, "note": None,
+                                            "created_by": current_user_name()})
+                                _ins_rows.append(rec)
+                    try:
+                        if _ins_rows:
+                            _db.insert("production_schedule", _ins_rows)
+                            _n_ins = len(_ins_rows)
+                        _msg = "보드 저장 — 신규 {} · 변경 {} · 비움 {}".format(
+                            _n_ins, _n_upd, _n_del)
+                        if _n_skip:
+                            _msg += f" · 야간 미운영 건너뜀 {_n_skip}"
+                        if _bad:
+                            st.warning("인식 못한 값 (목록에서 골라 주세요): "
+                                       + "; ".join(_bad[:8]))
+                        st.success(_msg)
+                        st.session_state["sb_nonce"] = _sb_nonce + 1
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"저장 실패: {e}")
             else:
-                st.markdown(_sb_html(set()), unsafe_allow_html=True)
-                st.markdown(
-                    '<div class="sb-legend">'
-                    '<span><i style="background:#eef1f4;border-color:#4e5968">'
-                    '</i>계획</span>'
-                    '<span><i style="background:#e8f1fe;border-color:#3182f6">'
-                    '</i>진행 (실적 있음)</span>'
-                    '<span><i style="background:#e5f6ef;border-color:#01a76b">'
-                    '</i>달성</span>'
-                    '<span><i style="background:#fdf0e2;border-color:#dd6b02">'
-                    '</i>미달</span>'
-                    '<span><i style="background:#fdeaec;border-color:#f04452">'
-                    '</i>비가동</span>'
-                    '<span><i style="background:#fff;border:1px dashed #d6dbe2;'
-                    'border-left:3px solid #8b95a1"></i>계획 없이 실적</span>'
-                    '<span>회색 빗금 = 야간 미운영</span></div>',
-                    unsafe_allow_html=True)
+                def _sb_html(cap):
+                    h1 = "".join('<th colspan="2">{}/{} {}</th>'.format(
+                        d.month, d.day, _wd[d.weekday()]) for d in _sb_days)
+                    h2 = "".join('<th class="d">주</th><th class="n">야</th>'
+                                 for _ in _sb_days)
+                    rows = []
+                    _groups = sorted({m.get("group_code") or "ETC"
+                                      for m in _sb_rows_m})
+                    for g in _groups:
+                        p, a = _sb_gl.get(g, (0, 0))
+                        rows.append('<tr class="g"><th colspan="{}">{} <b>주간 '
+                                    '부하 {:.0f}%</b></th></tr>'.format(
+                                        2 + len(_sb_days) * 2, g,
+                                        (p / a * 100) if a else 0))
+                        for m in _sb_rows_m:
+                            if (m.get("group_code") or "ETC") != g:
+                                continue
+                            mid = m["machine_id"]
+                            tds = []
+                            for d in _sb_days:
+                                for sh in _sch.SHIFTS:
+                                    k = (mid, d.isoformat(), sh)
+                                    c = _sb_cells.get(k)
+                                    cls = "c" + (" n" if sh == "야간" else "")
+                                    if sh == "야간" and not m.get("night_active",
+                                                                 True):
+                                        cls += " off"
+                                    if mid in cap and not c:
+                                        cls += " cap"
+                                    inner = ""
+                                    if c and c["status"] == "STOP":
+                                        inner = ('<div class="job stop"><b>{}</b>'
+                                                 '</div>').format(_sb_h.escape(
+                                                     c["stop"] or "비가동"))
+                                    elif c and c["status"] == "ACTUAL":
+                                        inner = ('<div class="job actual"><b>{}'
+                                                 '</b><span><span>계획 없음</span>'
+                                                 '<span>실 {:,.0f}</span></span>'
+                                                 '</div>').format(
+                                            _sb_h.escape(c.get("process") or "-"),
+                                            c["actual"])
+                                    elif c:
+                                        pl = c["plan"]
+                                        jc = {"RUN": "run", "DONE": "done",
+                                              "SHORT": "short"}.get(c["status"], "")
+                                        inner = ('<div class="job {}" title="{}">'
+                                                 '<b>{}</b><span><span>{:,.0f}'
+                                                 '</span><span>{}</span></span>'
+                                                 '</div>').format(
+                                            jc, _sb_h.escape(pl.get("note") or ""),
+                                            _sb_h.escape(pl.get("process") or ""),
+                                            float(pl.get("plan_qty") or 0),
+                                            (f"실 {c['actual']:,.0f}" if c["actual"]
+                                             else "{:g}h".format(
+                                                 float(pl.get("plan_hours") or 0))))
+                                    tds.append(f'<td class="{cls}">{inner}</td>')
+                            p, a = _sb_load.get(mid, (0, 0))
+                            pct = (p / a * 100) if a else 0
+                            ucls = "hi" if pct > 100 else "mid" if pct > 85 else ""
+                            rows.append('<tr><th class="m">{}<small>{}</small></th>'
+                                        '{}<td class="u {}">{:.0f}%</td></tr>'.format(
+                                            mid, _sb_h.escape(
+                                                m.get("name") if m.get("name")
+                                                and m.get("name") != mid else ""),
+                                            "".join(tds), ucls, pct))
+                    return ('<div class="sb-wrap"><table class="sb"><thead><tr>'
+                            '<th class="m" rowspan="2">설비</th>{}<th rowspan="2">'
+                            '부하</th></tr><tr>{}</tr></thead><tbody>{}</tbody>'
+                            '</table></div>').format(h1, h2, "".join(rows))
+
+                if not _sb_rows_m:
+                    st.info("가동 설비가 없습니다 — 설비 탭에서 확인하세요.")
+                else:
+                    st.markdown(_sb_html(set()), unsafe_allow_html=True)
+                    st.markdown(
+                        '<div class="sb-legend">'
+                        '<span><i style="background:#eef1f4;border-color:#4e5968">'
+                        '</i>계획</span>'
+                        '<span><i style="background:#e8f1fe;border-color:#3182f6">'
+                        '</i>진행 (실적 있음)</span>'
+                        '<span><i style="background:#e5f6ef;border-color:#01a76b">'
+                        '</i>달성</span>'
+                        '<span><i style="background:#fdf0e2;border-color:#dd6b02">'
+                        '</i>미달</span>'
+                        '<span><i style="background:#fdeaec;border-color:#f04452">'
+                        '</i>비가동</span>'
+                        '<span><i style="background:#fff;border:1px dashed #d6dbe2;'
+                        'border-left:3px solid #8b95a1"></i>계획 없이 실적</span>'
+                        '<span>회색 빗금 = 야간 미운영</span></div>',
+                        unsafe_allow_html=True)
 
         # ── 접힌 영역: 작업 큐 · 기간 일괄 입력 · 수량·메모 조정 ──
         with st.expander("작업 큐 — 미배정 {}건 · 납기 위험 {}건".format(

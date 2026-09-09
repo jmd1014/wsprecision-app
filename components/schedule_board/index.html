@@ -1,0 +1,348 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>설비 스케줄 보드</title>
+<style>
+:root{--bg:#fff;--line:#eef1f4;--line2:#d6dbe2;--ink:#191f28;--ink2:#4e5968;--ink3:#8b95a1;
+  --accent:#3182f6;--accent-soft:#e8f1fe;--good:#01a76b;--good-soft:#e5f6ef;--warn:#dd6b02;
+  --warn-soft:#fdf0e2;--bad:#f04452;--bad-soft:#fdeaec;--plan:#eef1f4;--night:#f7f8fc}
+*{box-sizing:border-box}
+body{margin:0;background:transparent;color:var(--ink);font-family:"Pretendard","Noto Sans KR",system-ui,sans-serif;font-size:12px;font-variant-numeric:tabular-nums;-webkit-user-select:none;user-select:none}
+.bar{display:flex;align-items:center;gap:8px;padding:4px 2px 8px;flex-wrap:wrap}
+.bar .sp{flex:1}
+.btn{border:0;border-radius:10px;padding:7px 13px;font-weight:600;font-size:13px;cursor:pointer;background:#f2f4f6;color:var(--ink2);font-family:inherit}
+.btn:disabled{opacity:.45;cursor:default}
+.btn.pri{background:var(--accent);color:#fff}
+.badge{display:inline-block;border-radius:99px;padding:2px 9px;font-size:11.5px;font-weight:600;background:var(--accent-soft);color:#1b64da}
+.badge.zero{background:#f2f4f6;color:var(--ink3)}
+.hint{color:var(--ink3);font-size:11.5px}
+.wrap{overflow:auto;background:var(--bg);border-radius:14px;box-shadow:0 2px 12px rgba(25,31,40,.06);padding:4px}
+table{border-collapse:separate;border-spacing:0;min-width:1000px;width:100%}
+th,td{border-bottom:1px solid var(--line);border-right:1px solid var(--line);padding:0;vertical-align:top}
+thead th{background:#f2f4f6;font-weight:600;color:var(--ink2);text-align:center;padding:5px 3px;font-size:12px;position:sticky;top:0;z-index:2}
+thead th.n{background:#eceef7;color:#3e4a8a;font-weight:500;font-size:11px}
+thead th.d{font-weight:500;color:var(--ink3);font-size:11px}
+th.m{width:104px;text-align:left;padding:6px 8px;background:#fff;font-weight:600;font-size:12.5px;position:sticky;left:0;z-index:1}
+th.m small{display:block;font-weight:500;color:var(--ink3);font-size:10.5px}
+tr.g th{background:#f2f4f6;color:var(--ink2);font-size:11.5px;letter-spacing:.04em;padding:4px 8px;text-align:left}
+tr.g th b{float:right;font-weight:600}
+td.c{height:44px;width:82px;padding:3px;cursor:pointer;position:relative}
+td.c.n{background:var(--night)}
+td.c.off{background:repeating-linear-gradient(135deg,#eef1f4 0 4px,transparent 4px 8px);cursor:not-allowed}
+td.c.cap{background:repeating-linear-gradient(135deg,var(--accent-soft) 0 6px,transparent 6px 12px)}
+td.c.over{outline:2px solid var(--accent);outline-offset:-2px;background:var(--accent-soft)}
+td.c.fillsel{background:#dbe9ff}
+td.c:hover:not(.off){background:#f0f5ff}
+td.u{width:50px;text-align:right;padding:7px 8px;font-weight:600;color:var(--ink2)}
+td.u.hi{color:var(--bad)} td.u.mid{color:var(--warn)}
+.job{border-radius:8px;padding:3px 16px 3px 6px;height:100%;display:flex;flex-direction:column;justify-content:space-between;line-height:1.25;border-left:3px solid var(--ink2);background:var(--plan);color:var(--ink);position:relative;cursor:grab}
+.job:active{cursor:grabbing}
+.job b{font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:11.5px}
+.job span{display:flex;justify-content:space-between;color:var(--ink2);font-size:10.5px}
+.job.run{border-left-color:var(--accent);background:var(--accent-soft)}
+.job.done{border-left-color:var(--good);background:var(--good-soft)}
+.job.short{border-left-color:var(--warn);background:var(--warn-soft)}
+.job.stop{border-left-color:var(--bad);background:var(--bad-soft);color:var(--bad);justify-content:center;cursor:default;padding-right:6px}
+.job.actual{border:1px dashed var(--line2);border-left:3px solid var(--ink3);background:#fff;cursor:default;padding-right:6px}
+.job.new{box-shadow:inset 0 0 0 1.5px var(--accent)}
+.job.dragging{opacity:.4}
+.job .x{position:absolute;top:1px;right:3px;font-size:13px;color:var(--ink3);cursor:pointer;line-height:1;padding:1px 3px;border-radius:4px}
+.job .x:hover{background:var(--bad-soft);color:var(--bad)}
+.job .fh{position:absolute;right:2px;bottom:2px;width:9px;height:9px;border:2px solid var(--accent);background:#fff;border-radius:2px;cursor:crosshair}
+.pop{position:absolute;z-index:20;background:#fff;border-radius:12px;box-shadow:0 8px 28px rgba(25,31,40,.18);width:320px;padding:8px;display:none}
+.pop.on{display:block}
+.pop input{width:100%;border:1px solid var(--line2);border-radius:8px;padding:8px 10px;font-size:13px;font-family:inherit;outline:none}
+.pop input:focus{border-color:var(--accent)}
+.pop .lst{max-height:260px;overflow:auto;margin-top:6px}
+.pop .it{padding:6px 8px;border-radius:8px;cursor:pointer;display:flex;justify-content:space-between;gap:8px;align-items:baseline}
+.pop .it:hover,.pop .it.sel{background:var(--accent-soft)}
+.pop .it b{font-size:12.5px}
+.pop .it small{color:var(--ink3);font-size:11px;white-space:nowrap}
+.pop .it .cap{color:var(--ink3);font-size:10.5px;display:block}
+.pop .ft{display:flex;justify-content:space-between;align-items:center;margin-top:6px;color:var(--ink3);font-size:11px}
+.legend{display:flex;gap:12px;flex-wrap:wrap;font-size:11.5px;color:var(--ink2);margin:8px 4px 0}
+.legend i{display:inline-block;width:11px;height:11px;border-radius:3px;vertical-align:-2px;margin-right:4px;border-left:3px solid}
+.toast{position:fixed;left:50%;bottom:14px;transform:translateX(-50%);background:#191f28;color:#fff;padding:8px 14px;border-radius:10px;font-size:12.5px;opacity:0;transition:opacity .2s;pointer-events:none;z-index:30}
+.toast.on{opacity:.95}
+</style>
+</head>
+<body>
+<div class="bar">
+  <span class="badge zero" id="chg">변경 0</span>
+  <span class="hint">빈 칸 클릭 = 작업 넣기 · 칩 드래그 = 이동 (Ctrl = 복사) · 칩 모서리 핸들 끌기 = 옆 칸 채우기 · × = 빼기 · Ctrl+Z 되돌리기</span>
+  <span class="sp"></span>
+  <button class="btn" id="undo" disabled>되돌리기</button>
+  <button class="btn" id="discard" disabled>변경 취소</button>
+  <button class="btn pri" id="save" disabled>저장</button>
+</div>
+<div class="wrap"><table id="t"></table></div>
+<div class="legend">
+  <span><i style="background:#eef1f4;border-color:#4e5968"></i>계획</span>
+  <span><i style="background:#e8f1fe;border-color:#3182f6"></i>진행 (실적 있음)</span>
+  <span><i style="background:#e5f6ef;border-color:#01a76b"></i>달성</span>
+  <span><i style="background:#fdf0e2;border-color:#dd6b02"></i>미달</span>
+  <span><i style="background:#fdeaec;border-color:#f04452"></i>비가동</span>
+  <span><i style="background:#fff;border:1px dashed #d6dbe2;border-left:3px solid #8b95a1"></i>계획 없이 실적</span>
+  <span><i style="background:repeating-linear-gradient(135deg,#e8f1fe 0 3px,transparent 3px 6px);border-color:transparent"></i>선택 작업의 가능 설비</span>
+  <span>회색 빗금 = 야간 미운영 (놓을 수 없음)</span>
+</div>
+<div class="pop" id="pop">
+  <input id="q" placeholder="품번 일부 입력 — 예: 4PDVN" autocomplete="off">
+  <div class="lst" id="lst"></div>
+  <div class="ft"><span id="popcell"></span><span>Enter 선택 · Esc 닫기</span></div>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+(function(){
+  // ── Streamlit 컴포넌트 프로토콜 (라이브러리 없이 직접) ──
+  function send(type, data){ window.parent.postMessage(Object.assign({isStreamlitMessage:true, type:type}, data||{}), "*"); }
+  function setValue(v){ send("streamlit:setComponentValue", {value:v, dataType:"json"}); }
+  function setHeight(){ send("streamlit:setFrameHeight", {height: document.body.scrollHeight + 8}); }
+
+  var A = null;           // args
+  var init = {};          // 초기 계획 {key: {pn, process}}
+  var cur = {};           // 현재 계획 {key: {pn, process, qty, hours, isNew}}
+  var meta = {};          // 실적·정지 {key: {status, actual, stop, process}}
+  var opsBy = {};         // key "pn||process" → op
+  var undo = [];
+  var seq = 0;
+  var selOpKey = null;    // 팝오버에서 선택 중인 작업 (가능 설비 빗금)
+  var drag = null;        // {key, copy}
+  var fill = null;        // {row, fromIdx, src, cells:[]}
+
+  function k(m,d,s){ return m+"|"+d+"|"+s; }
+  function parse(key){ var p=key.split("|"); return {m:p[0], d:p[1], s:p[2]}; }
+  function esc(s){ return String(s==null?"":s).replace(/[&<>"']/g, function(c){ return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]; }); }
+  function fmt(n){ return (Math.round(n||0)).toLocaleString("ko-KR"); }
+  function toast(msg){ var t=document.getElementById("toast"); t.textContent=msg; t.classList.add("on"); clearTimeout(t._h); t._h=setTimeout(function(){t.classList.remove("on");},1600); }
+
+  function machine(mid){ for (var i=0;i<A.machines.length;i++) if (A.machines[i].id===mid) return A.machines[i]; return null; }
+  function qtyFor(opKey, mid){
+    var op = opsBy[opKey], m = machine(mid);
+    if (!op || !op.uph) return 0;
+    var h = (m && m.hours) ? m.hours : 9;
+    return Math.max(0, Math.round((h - (op.setup||0)/60) * op.uph));
+  }
+  function isOff(mid, shift){ var m=machine(mid); return shift==="야간" && m && m.night===false; }
+
+  // ── 변경 관리 ──
+  function snapshot(){ return JSON.parse(JSON.stringify(cur)); }
+  function pushUndo(){ undo.push(snapshot()); if (undo.length>50) undo.shift(); updateBar(); }
+  function changes(){
+    var out=[], keys={};
+    Object.keys(init).forEach(function(x){keys[x]=1;}); Object.keys(cur).forEach(function(x){keys[x]=1;});
+    Object.keys(keys).forEach(function(key){
+      var a=init[key], b=cur[key];
+      var ap = a ? a.pn+"||"+a.process : null, bp = b ? b.pn+"||"+b.process : null;
+      if (ap===bp) return;
+      var p=parse(key);
+      out.push({machine_id:p.m, date:p.d, shift:p.s, pn: b?b.pn:null, process: b?b.process:null, qty: b?b.qty:null});
+    });
+    return out;
+  }
+  function updateBar(){
+    var n = changes().length;
+    var b=document.getElementById("chg"); b.textContent="변경 "+n; b.className="badge"+(n?"":" zero");
+    document.getElementById("save").disabled = !n;
+    document.getElementById("discard").disabled = !n;
+    document.getElementById("undo").disabled = !undo.length;
+  }
+  function place(key, opKey, isNew){
+    var op=opsBy[opKey]; if(!op) return;
+    var p=parse(key);
+    if (isOff(p.m, p.s)) { toast(p.m+" 은 야간 미운영 설비입니다"); return false; }
+    cur[key] = {pn:op.pn, process:op.process, qty:qtyFor(opKey, p.m), hours:(machine(p.m)||{}).hours||9, isNew: !init[key] || init[key].process!==op.process};
+    return true;
+  }
+
+  // ── 렌더 ──
+  function render(){
+    var t=document.getElementById("t");
+    var wd="월화수목금토일";
+    var h1='<tr><th class="m" rowspan="2">설비</th>';
+    var h2='<tr>';
+    A.days.forEach(function(d){ var dt=new Date(d+"T00:00:00"); h1+='<th colspan="2">'+(dt.getMonth()+1)+'/'+dt.getDate()+' '+wd[(dt.getDay()+6)%7]+'</th>'; h2+='<th class="d">주</th><th class="n">야</th>'; });
+    h1+='<th rowspan="2">부하</th></tr>'; h2+='</tr>';
+    var body='';
+    var groups=[]; A.machines.forEach(function(m){ if(groups.indexOf(m.group)<0) groups.push(m.group); });
+    var capSet = selOpKey && opsBy[selOpKey] ? opsBy[selOpKey].machines : [];
+    groups.forEach(function(g){
+      var gp=0, ga=0;
+      A.machines.forEach(function(m){ if(m.group!==g) return; var L=loadOf(m); gp+=L[0]; ga+=L[1]; });
+      body+='<tr class="g"><th colspan="'+(2+A.days.length*2)+'">'+esc(g)+' <b>주간 부하 '+(ga?Math.round(gp/ga*100):0)+'%</b></th></tr>';
+      A.machines.forEach(function(m){
+        if(m.group!==g) return;
+        var row='<tr><th class="m">'+esc(m.id)+(m.name&&m.name!==m.id?'<small>'+esc(m.name)+'</small>':'')+'</th>';
+        A.days.forEach(function(d){
+          ["주간","야간"].forEach(function(s){
+            var key=k(m.id,d,s), c=cur[key], mt=meta[key]||{};
+            var cls="c"+(s==="야간"?" n":"")+(isOff(m.id,s)?" off":"")+(capSet.indexOf(m.id)>=0&&!c?" cap":"");
+            var inner="";
+            if (c){
+              var st = mt.status||"PLAN";
+              var jc = {RUN:"run",DONE:"done",SHORT:"short"}[st]||"";
+              if (c.isNew) jc += " new";
+              var right = mt.actual ? "실 "+fmt(mt.actual) : (c.hours||9)+"h";
+              inner='<div class="job '+jc+'" draggable="true" data-key="'+esc(key)+'"><b title="'+esc(c.process)+'">'+esc(c.process)+'</b><span><span>'+fmt(c.qty)+'</span><span>'+esc(right)+'</span></span><i class="x" title="빼기">×</i><i class="fh" title="옆 칸 채우기"></i></div>';
+            } else if (mt.status==="STOP"){
+              inner='<div class="job stop"><b>'+esc(mt.stop||"비가동")+'</b></div>';
+            } else if (mt.status==="ACTUAL"){
+              inner='<div class="job actual"><b>'+esc(mt.process||"-")+'</b><span><span>계획 없음</span><span>실 '+fmt(mt.actual)+'</span></span></div>';
+            }
+            row+='<td class="'+cls+'" data-key="'+esc(key)+'">'+inner+'</td>';
+          });
+        });
+        var L=loadOf(m), pct=L[1]?Math.round(L[0]/L[1]*100):0;
+        row+='<td class="u'+(pct>100?" hi":pct>85?" mid":"")+'">'+pct+'%</td></tr>';
+        body+=row;
+      });
+    });
+    t.innerHTML='<thead>'+h1+h2+'</thead><tbody>'+body+'</tbody>';
+    bind();
+    updateBar();
+    setHeight();
+  }
+  function loadOf(m){
+    var planned=0; Object.keys(cur).forEach(function(key){ if(parse(key).m===m.id) planned+= (cur[key].hours||9); });
+    var avail=A.days.length*(m.hours||9)*(m.night===false?1:2);
+    return [planned, avail];
+  }
+
+  // ── 이벤트 ──
+  var pop=document.getElementById("pop"), q=document.getElementById("q"), lst=document.getElementById("lst");
+  var popKey=null, popSel=0, popItems=[];
+  function openPop(td){
+    popKey=td.getAttribute("data-key");
+    var p=parse(popKey);
+    if (isOff(p.m,p.s)){ toast(p.m+" 은 야간 미운영 설비입니다"); return; }
+    var r=td.getBoundingClientRect();
+    var top = r.bottom + window.scrollY + 4, left = r.left + window.scrollX;
+    if (left + 330 > document.body.clientWidth) left = Math.max(4, document.body.clientWidth - 330);
+    pop.style.top=top+"px"; pop.style.left=left+"px"; pop.classList.add("on");
+    document.getElementById("popcell").textContent = p.m+" · "+p.d.slice(5)+" "+p.s;
+    q.value=""; popSel=0; fillList(); q.focus();
+    setHeight();
+  }
+  function closePop(){ pop.classList.remove("on"); popKey=null; if(selOpKey){ selOpKey=null; render(); } }
+  function fillList(){
+    var s=q.value.trim().toUpperCase();
+    popItems = A.ops.filter(function(o){ return !s || (o.process+" "+o.pn).toUpperCase().indexOf(s)>=0; }).slice(0,40);
+    lst.innerHTML = popItems.length ? popItems.map(function(o,i){
+      return '<div class="it'+(i===popSel?" sel":"")+'" data-i="'+i+'"><div><b>'+esc(o.process)+'</b><span class="cap">'+(o.machines&&o.machines.length?'가능 설비 '+esc(o.machines.slice(0,5).join(", ")):'실적 설비 없음')+(o.uph?' · UPH '+o.uph:' · 표준 없음')+'</span></div><small>'+(o.due?esc(o.due.slice(5)):'납기없음')+(o.left!=null?' · 남은 '+fmt(o.left):'')+'</small></div>';
+    }).join("") : '<div class="it"><small>일치하는 작업이 없습니다</small></div>';
+    var cur0 = popItems[popSel]; var nk = cur0 ? cur0.key : null;
+    if (nk!==selOpKey){ selOpKey=nk; render(); }
+  }
+  q.addEventListener("input", function(){ popSel=0; fillList(); });
+  q.addEventListener("keydown", function(e){
+    if (e.key==="ArrowDown"){ popSel=Math.min(popSel+1, popItems.length-1); fillList(); e.preventDefault(); }
+    else if (e.key==="ArrowUp"){ popSel=Math.max(popSel-1,0); fillList(); e.preventDefault(); }
+    else if (e.key==="Enter"){ pick(popSel); e.preventDefault(); }
+    else if (e.key==="Escape"){ closePop(); }
+  });
+  lst.addEventListener("click", function(e){ var it=e.target.closest(".it"); if(it&&it.getAttribute("data-i")!=null) pick(+it.getAttribute("data-i")); });
+  function pick(i){
+    var o=popItems[i]; if(!o||!popKey) return;
+    pushUndo(); var key=popKey;
+    if (place(key, o.key, true)) toast(o.process+" → "+parse(key).m+" "+parse(key).d.slice(5)+" "+parse(key).s+" (수량 "+fmt(cur[key].qty)+")");
+    pop.classList.remove("on"); popKey=null; selOpKey=null; render();
+  }
+  document.addEventListener("mousedown", function(e){ if(pop.classList.contains("on") && !pop.contains(e.target) && !e.target.closest("td.c")) closePop(); });
+
+  function bind(){
+    var tds=document.querySelectorAll("td.c");
+    tds.forEach(function(td){
+      td.addEventListener("click", function(e){
+        if (e.target.classList.contains("x")){ var key=td.getAttribute("data-key"); pushUndo(); delete cur[key]; render(); return; }
+        if (e.target.classList.contains("fh")) return;
+        if (td.querySelector(".job") && !td.querySelector(".job.actual") && !td.querySelector(".job.stop")) { return; }  // 칩 있는 칸은 드래그/×로
+        if (td.classList.contains("off")) { toast("야간 미운영 설비입니다"); return; }
+        openPop(td);
+      });
+      td.addEventListener("dragover", function(e){ if(drag){ e.preventDefault(); td.classList.add("over"); e.dataTransfer.dropEffect = drag.copy?"copy":"move"; } });
+      td.addEventListener("dragleave", function(){ td.classList.remove("over"); });
+      td.addEventListener("drop", function(e){
+        e.preventDefault(); td.classList.remove("over"); if(!drag) return;
+        var to=td.getAttribute("data-key"), from=drag.key, copy=drag.copy || e.ctrlKey;
+        if (to===from) return;
+        var src=cur[from]; if(!src) return;
+        var p=parse(to);
+        if (isOff(p.m,p.s)){ toast(p.m+" 은 야간 미운영 설비입니다"); return; }
+        pushUndo();
+        var opKey=src.pn+"||"+src.process;
+        if (!place(to, opKey, true)) return;
+        if (!copy) delete cur[from];
+        drag=null; render();
+      });
+    });
+    document.querySelectorAll(".job[draggable]").forEach(function(j){
+      j.addEventListener("dragstart", function(e){
+        if (e.target.classList.contains("fh")) { e.preventDefault(); return; }
+        drag={key:j.getAttribute("data-key"), copy:e.ctrlKey}; j.classList.add("dragging");
+        e.dataTransfer.effectAllowed="copyMove"; e.dataTransfer.setData("text/plain", drag.key);
+      });
+      j.addEventListener("dragend", function(){ j.classList.remove("dragging"); drag=null; document.querySelectorAll("td.over").forEach(function(x){x.classList.remove("over");}); });
+    });
+    // 채우기 핸들: 같은 행에서 좌우로 끌어 연속 칸 채움
+    document.querySelectorAll(".fh").forEach(function(h){
+      h.addEventListener("mousedown", function(e){
+        e.preventDefault(); e.stopPropagation();
+        var td=h.closest("td"), tr=td.parentNode, cells=Array.prototype.filter.call(tr.children, function(x){return x.classList.contains("c");});
+        fill={src:td.getAttribute("data-key"), cells:cells, from:cells.indexOf(td), to:cells.indexOf(td)};
+      });
+    });
+  }
+  document.addEventListener("mousemove", function(e){
+    if(!fill) return;
+    var td=e.target.closest && e.target.closest("td.c"); if(!td) return;
+    var idx=fill.cells.indexOf(td); if(idx<0) return;
+    fill.to=idx;
+    fill.cells.forEach(function(c,i){ c.classList.toggle("fillsel", (i>Math.min(fill.from,fill.to)-1 && i<=Math.max(fill.from,fill.to)) && i!==fill.from); });
+  });
+  document.addEventListener("mouseup", function(){
+    if(!fill) return;
+    var src=cur[fill.src]; var a=Math.min(fill.from,fill.to), b=Math.max(fill.from,fill.to);
+    if (src && b>a){
+      pushUndo(); var opKey=src.pn+"||"+src.process, n=0;
+      for (var i=a;i<=b;i++){ if(i===fill.from) continue; var key=fill.cells[i].getAttribute("data-key"); var p=parse(key); if(isOff(p.m,p.s)) continue; place(key, opKey, true); n++; }
+      toast(src.process+" "+n+"칸 채움");
+    }
+    fill=null; render();
+  });
+  document.addEventListener("keydown", function(e){
+    if ((e.ctrlKey||e.metaKey) && e.key.toLowerCase()==="z" && !pop.classList.contains("on")){ e.preventDefault(); doUndo(); }
+  });
+  function doUndo(){ if(!undo.length) return; cur=undo.pop(); render(); }
+  document.getElementById("undo").addEventListener("click", doUndo);
+  document.getElementById("discard").addEventListener("click", function(){ pushUndo(); cur=JSON.parse(JSON.stringify(init)); Object.keys(cur).forEach(function(x){cur[x].isNew=false;}); render(); });
+  document.getElementById("save").addEventListener("click", function(){
+    var ch=changes(); if(!ch.length) return;
+    seq+=1; setValue({seq: seq, nonce: A.nonce, changes: ch});
+    document.getElementById("save").disabled=true; toast("저장 중… "+ch.length+"건");
+  });
+
+  // ── Streamlit → 보드 ──
+  window.addEventListener("message", function(e){
+    var d=e.data; if(!d || d.type!=="streamlit:render") return;
+    var args=d.args||{};
+    var same = A && A.nonce===args.nonce;
+    A=args;
+    opsBy={}; (A.ops||[]).forEach(function(o){ opsBy[o.key]=o; });
+    if (!same){
+      init={}; cur={}; meta={}; undo=[];
+      Object.keys(A.cells||{}).forEach(function(key){
+        var c=A.cells[key];
+        if (c.process && c.plan){ init[key]={pn:c.pn, process:c.process}; cur[key]={pn:c.pn, process:c.process, qty:c.qty||0, hours:c.hours||9, isNew:false}; }
+        meta[key]={status:c.status, actual:c.actual||0, stop:c.stop, process:c.process};
+      });
+    }
+    render();
+  });
+  send("streamlit:componentReady", {apiVersion:1});
+  window.addEventListener("resize", setHeight);
+})();
+</script>
+</body>
+</html>
