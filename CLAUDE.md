@@ -110,6 +110,16 @@
 - **발주 잔량 종결은 라인(제품) 단위** — `purchase_order_items.closed_at`(Migration 043).
   뷰 `po_item_receipt_v`가 라인 종결·발주 CLOSED 모두 pending 0 처리. 전 라인 완료 시
   발주 헤더 자동 승격(RECEIVED/CLOSED), 해제는 발주 이력 > 종결 해제
+- **발주서 작성 = 폼 3개 + PDF** (2026-09-09 사용자 피드백: 저장·로딩이 잦고 불편,
+  완성은 PDF): ① 거래처(그룹 라디오 + selectbox, 신규 등록은 st.form) ② 품목 담기 —
+  검색 폼([검색] 버튼, 검색어 없이 누르면 이 거래처 이력 전체) → 결과 표에서 체크해
+  [체크한 품목 담기] 한 번(거래처 최근 단가·수량 프리필), 최근 발주 복사·품번 일괄·
+  즉석 추가는 expander 안 폼 ③ 발주서 = st.form 하나(품목 data_editor 편집 + 삭제
+  체크 + 발주 정보 + [발주서 만들기 (PDF)] / [표만 저장] / [표 비우기]) — 폼 안에서는
+  rerun 없음. 생성 결과는 `po_result` 세션에 두고 rerun 뒤 PDF(기본)·xlsx 다운로드 +
+  [새 발주서 시작]. PDF 는 utils/po_pdf.py(fpdf2 + 저장소 fonts/NanumGothic OFL 임베드,
+  A4 1장, 품목 8행 미만은 빈 줄 채움, 바닥글은 auto_page_break 끄고 고정). 발주 이력
+  상세는 PDF·xlsx 재발급 download_button 을 바로 노출(클릭 후 생성 아님)
 - **발주 상태는 자동으로만 변한다** (2026-08-20 사용자 확정) — 입고=PARTIAL/RECEIVED,
   라인 종결=CLOSED 승격, 취소=[발주 취소] 버튼(입고 기록 있으면 차단). 상태 수기 변경 UI 금지
 - **되돌리기 어려운 액션은 `confirm_gate()` 2단계 확인** (2026-08-20 사용자 확정) —
