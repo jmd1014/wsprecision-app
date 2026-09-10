@@ -5254,12 +5254,9 @@ elif page == "수주 관리":
         with st.expander(
                 f"단가 변동 감지 {len(_rp_groups)}개 품번 — 같은 품번의 미납 수주와 "
                 "단가가 다른 새 수주", expanded=True):
-            st.caption(
-                "도구는 판단하지 않습니다 — 단가 변경으로 다시 받은 발주면 "
-                "**[대체]**, 별도 단가로 나란히 진행할 거면 **[별건 유지]**. 대체는 "
-                "체크한 옛 라인의 남은 미납을 모두 닫고(출고 이력은 그대로) 남은 "
-                "회차를 새 라인으로 이관하며, 체크 시 마스터 판매 단가를 갱신합니다. "
-                "결정은 이력에 남고 되돌릴 수 있습니다.")
+            st.caption("**[대체]** = 옛 미납 종료 · 회차 이관 · 마스터 단가 갱신 / "
+                       "**[별건]** = 모두 진행, 새 수주만 특수 단가 표시. "
+                       "이력에서 되돌릴 수 있습니다.")
             for _gi, _g in enumerate(_rp_groups):
                 _n = _g["new"]
                 _np = float(_n.get("unit_price") or 0)
@@ -5298,37 +5295,28 @@ elif page == "수주 관리":
                                  if bool(r.get("포함"))]
                     _sel_sum = sum(float(o.get("pending_qty") or 0)
                                    for o in _sel_olds)
-                    c1, c2 = st.columns([3, 2])
-                    c1.markdown("옛 미납 합계 **{:,.0f}** (선택 {}건) vs 새 수량 "
-                                "**{:,.0f}** → 추천: **{}** — {}".format(
+                    st.markdown("옛 미납 합계 **{:,.0f}** ({}건) vs 새 수량 "
+                                "**{:,.0f}** → 추천 **{}** ({})".format(
                                     _sel_sum, len(_sel_olds),
                                     float(_n.get("qty") or 0),
-                                    "대체" if _is_rep else "별건 유지",
+                                    "대체" if _is_rep else "별건",
                                     _g["why"]))
-                    m1, m2 = c1.columns(2)
-                    _upd = m1.checkbox("마스터 단가 갱신 (대체 시)", value=_is_rep,
-                                       key=_k + "_m")
-                    _mv = m2.checkbox("남은 회차 이관 (대체 시)", value=True,
-                                      key=_k + "_r")
-                    _side_def = 1 if (_msp and abs(_np - _msp) < 0.5) else 0
-                    s1, s2 = c2.columns(2)
-                    _side = s1.selectbox("별건 시 특수 단가인 쪽",
-                                         ["새 수주", "옛 수주"], index=_side_def,
-                                         key=_k + "_s")
-                    _kind = s2.selectbox("특수 단가 종류", ["프로젝트", "사급 소재"],
-                                         key=_k + "_t")
-                    b1, b2 = st.columns(2)
-                    if b1.button("대체 (체크한 옛 라인 미납 닫기)", key=_k + "_go",
+                    b1, b2, b3 = st.columns([1.2, 1.2, 1])
+                    if b1.button("대체", key=_k + "_go",
                                  type="primary" if _is_rep else "secondary",
                                  use_container_width=True,
                                  disabled=not _sel_olds) and click_guard(_k):
-                        _rp_apply(_sel_olds, _n, "REPLACE", _upd, _mv)
-                    if b2.button("별건 유지 (모든 수주 계속 진행)", key=_k + "_keep",
+                        _rp_apply(_sel_olds, _n, "REPLACE", True, True)
+                    _kind = b3.selectbox("별건 종류", ["프로젝트", "사급 소재"],
+                                         key=_k + "_t",
+                                         label_visibility="collapsed")
+                    if b2.button("별건 (새 수주 = {})".format(_kind),
+                                 key=_k + "_keep",
                                  type="secondary" if _is_rep else "primary",
                                  use_container_width=True,
                                  disabled=not _sel_olds) and click_guard(_k):
                         _rp_apply(_sel_olds, _n, "KEEP", False, False,
-                                  tag_side="new" if _side == "새 수주" else "old",
+                                  tag_side="new",
                                   tag_kind=("CUSTOMER_MAT" if _kind == "사급 소재"
                                             else "PROJECT"))
     if _rp_hist:
