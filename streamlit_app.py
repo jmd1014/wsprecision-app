@@ -5319,52 +5319,6 @@ elif page == "수주 관리":
                                   tag_side="new",
                                   tag_kind=("CUSTOMER_MAT" if _kind == "사급 소재"
                                             else "PROJECT"))
-    if _rp_hist:
-        with st.expander(f"대체·별건 결정 이력 {len(_rp_hist)}건"):
-            _rp_soi = {}
-            _rp_son = {}
-            try:
-                _ids = sorted({r["old_soi_id"] for r in _rp_hist}
-                              | {r["new_soi_id"] for r in _rp_hist})
-                for _i0 in range(0, len(_ids), 80):
-                    for x in fetch("sales_order_items",
-                                   "soi_id,so_id,canonical_pn",
-                                   "soi_id=in.({})".format(",".join(
-                                       str(i) for i in _ids[_i0:_i0 + 80])),
-                                   limit=200):
-                        _rp_soi[x["soi_id"]] = x
-                _so_ids = sorted({x["so_id"] for x in _rp_soi.values()})
-                for _i0 in range(0, len(_so_ids), 80):
-                    _rp_son.update({s["so_id"]: s["so_number"] for s in fetch(
-                        "sales_orders", "so_id,so_number",
-                        "so_id=in.({})".format(",".join(
-                            str(i) for i in _so_ids[_i0:_i0 + 80])), limit=200)})
-            except Exception:
-                pass
-            for r in _rp_hist[:40]:
-                _os = _rp_soi.get(r["old_soi_id"]) or {}
-                _ns = _rp_soi.get(r["new_soi_id"]) or {}
-                h1, h2 = st.columns([4, 1])
-                h1.markdown(
-                    "{} · **{}** · {} {} → {} · 단가 {:,.0f} → {:,.0f}{}{} · {} {}"
-                    .format(
-                        "대체" if r["action"] == "REPLACE" else "별건 유지",
-                        _ns.get("canonical_pn") or _os.get("canonical_pn") or "-",
-                        _rp_son.get(_os.get("so_id"), "-"),
-                        f"(미납 {float(r.get('closed_pending_qty') or 0):,.0f} 종료)"
-                        if r["action"] == "REPLACE" else "",
-                        _rp_son.get(_ns.get("so_id"), "-"),
-                        float(r.get("old_price") or 0),
-                        float(r.get("new_price") or 0),
-                        " · 마스터 갱신" if r.get("master_updated") else "",
-                        " · **되돌림**" if r.get("reverted_at") else "",
-                        r.get("created_by") or "-",
-                        str(r.get("created_at") or "")[:10]))
-                if not r.get("reverted_at") and h2.button(
-                        "되돌리기", key=f"rp_rv_{r['repl_id']}",
-                        use_container_width=True):
-                    _rp_revert(r)
-
     tab_input, tab_list, tab_sched = st.tabs(
         ["새 수주 입력", "수주 목록", "납품 스케줄"])
 
@@ -5892,6 +5846,53 @@ elif page == "수주 관리":
 
     # ════════ TAB 2: 수주 목록 (다중 뷰) ════════
     with tab_list:
+        # 대체·별건 결정 이력 — 수주 목록에서만 (2026-09-10 사용자 요청)
+        if _rp_hist:
+            with st.expander(f"대체·별건 결정 이력 {len(_rp_hist)}건"):
+                _rp_soi = {}
+                _rp_son = {}
+                try:
+                    _ids = sorted({r["old_soi_id"] for r in _rp_hist}
+                                  | {r["new_soi_id"] for r in _rp_hist})
+                    for _i0 in range(0, len(_ids), 80):
+                        for x in fetch("sales_order_items",
+                                       "soi_id,so_id,canonical_pn",
+                                       "soi_id=in.({})".format(",".join(
+                                           str(i) for i in _ids[_i0:_i0 + 80])),
+                                       limit=200):
+                            _rp_soi[x["soi_id"]] = x
+                    _so_ids = sorted({x["so_id"] for x in _rp_soi.values()})
+                    for _i0 in range(0, len(_so_ids), 80):
+                        _rp_son.update({s["so_id"]: s["so_number"] for s in fetch(
+                            "sales_orders", "so_id,so_number",
+                            "so_id=in.({})".format(",".join(
+                                str(i) for i in _so_ids[_i0:_i0 + 80])), limit=200)})
+                except Exception:
+                    pass
+                for r in _rp_hist[:40]:
+                    _os = _rp_soi.get(r["old_soi_id"]) or {}
+                    _ns = _rp_soi.get(r["new_soi_id"]) or {}
+                    h1, h2 = st.columns([4, 1])
+                    h1.markdown(
+                        "{} · **{}** · {} {} → {} · 단가 {:,.0f} → {:,.0f}{}{} · {} {}"
+                        .format(
+                            "대체" if r["action"] == "REPLACE" else "별건 유지",
+                            _ns.get("canonical_pn") or _os.get("canonical_pn") or "-",
+                            _rp_son.get(_os.get("so_id"), "-"),
+                            f"(미납 {float(r.get('closed_pending_qty') or 0):,.0f} 종료)"
+                            if r["action"] == "REPLACE" else "",
+                            _rp_son.get(_ns.get("so_id"), "-"),
+                            float(r.get("old_price") or 0),
+                            float(r.get("new_price") or 0),
+                            " · 마스터 갱신" if r.get("master_updated") else "",
+                            " · **되돌림**" if r.get("reverted_at") else "",
+                            r.get("created_by") or "-",
+                            str(r.get("created_at") or "")[:10]))
+                    if not r.get("reverted_at") and h2.button(
+                            "되돌리기", key=f"rp_rv_{r['repl_id']}",
+                            use_container_width=True):
+                        _rp_revert(r)
+
         view_mode = st.radio("뷰",
             ["수주별 (헤더)", "품목별", "거래처별", "납기 임박순", "매칭 안된 품목"],
             horizontal=True)
