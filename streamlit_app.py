@@ -590,6 +590,7 @@ STATUS_KO = {
     "DRAFT": "작성", "CONFIRMED": "확정", "IN_PROD": "생산중",
     "SENT": "발송", "RECEIVED": "입고완료",
     "CANCELED": "취소", "CANCELLED": "취소", "CLOSED": "종결",
+    "REPLACED": "대체됨",
     "OUTSOURCE": "외주중", "INSPECT": "검사 대기",
     "REWORK": "재작업중", "READY": "완성 대기",
 }
@@ -4818,10 +4819,11 @@ elif page == "수주 관리":
     try:
         _ck_lines = fetch("sales_order_items",
             "soi_id,so_id,line_no,customer_part_no,customer_item_name,"
-            "product_id,canonical_pn,pending_qty,unit_price,due_date",
+            "product_id,canonical_pn,qty,received_qty,pending_qty,unit_price,"
+            "due_date,status,remark,price_kind",
             "pending_qty=gt.0&order=soi_id", limit=2000)
         _ck_so = {s["so_id"]: s for s in fetch("sales_orders",
-            "so_id,so_number,customer,status",
+            "so_id,so_number,customer,status,so_date",
             'status=not.in.("CANCELLED","CANCELED")', limit=1000)}
         _ck_prod = {p["product_id"]: p for p in fetch("products",
             "product_id,pn,archived_at,archive_reason,sale_price,"
@@ -5039,6 +5041,266 @@ elif page == "수주 관리":
                                 except Exception as _e:
                                     st.error(f"등록 실패: {_e}")
                 st.divider()
+
+    # ════════ 단가 변동 감지 — 같은 거래처·품번의 미납 수주 단가가 다른 새 수주 ════════
+    # (2026-09-10 사용자 확정) 도구는 판단하지 않는다: 근거·추천만 보이고
+    # [대체] / [별건 유지] 는 사람이 고른다. 결정은 so_line_replacements 에
+    # 남아 다시 묻지 않으며, 이력에서 되돌릴 수 있다.
+    from utils.so_replace import (detect_pairs as _rp_detect,
+                                  plan_round_move as _rp_rounds)
+    from datetime import date as _rp_date
+    _rp_pairs, _rp_hist = [], []
+    try:
+        _rp_lines = []
+        for _l in _ck_lines:
+            _s = _ck_so.get(_l["so_id"])
+            if not _s:
+                continue
+            _rp_lines.append(dict(
+                _l, so_number=_s.get("so_number"), customer=_s.get("customer"),
+                so_date=_s.get("so_date"),
+                pn=(_ck_prod.get(_l.get("product_id") or "") or {}).get("pn")
+                or _l.get("canonical_pn")))
+        _rp_hist = fetch("so_line_replacements",
+                         "repl_id,old_soi_id,new_soi_id,action,old_price,"
+                         "new_price,closed_pending_qty,closed_rounds,"
+                         "moved_rounds,master_updated,master_old_price,"
+                         "old_so_status,old_line_status,created_by,created_at,"
+                         "reverted_at", "order=repl_id.desc", limit=200)
+        _rp_decided = {(r["old_soi_id"], r["new_soi_id"]) for r in _rp_hist
+                       if not r.get("reverted_at")}
+        _rp_pairs = _rp_detect(_rp_lines, _rp_decided)
+    except Exception as e:
+        st.warning(f"단가 변동 감지 실패: {e}")
+
+    def _rp_apply(o, n, action, upd_master, move_rounds):
+        _who = current_user_name()
+        _today = _rp_date.today().isoformat()
+        rec = {"old_soi_id": o["soi_id"], "new_soi_id": n["soi_id"],
+               "action": action, "old_price": o.get("unit_price"),
+               "new_price": n.get("unit_price"), "created_by": _who,
+               "old_so_status": (_ck_so.get(o["so_id"]) or {}).get("status"),
+               "old_line_status": o.get("status"),
+               "closed_pending_qty": 0, "closed_rounds": [], "moved_rounds": [],
+               "master_updated": False, "master_old_price": None,
+               "reason": None}
+        try:
+            if action == "KEEP":
+                _db.update("sales_order_items", f"soi_id=eq.{n['soi_id']}",
+                           {"price_kind": "PROJECT"})
+                _db.insert("so_line_replacements", [rec])
+                st.session_state["rp_flash"] = (
+                    f"{n.get('pn')} — 별건 유지: 새 수주 {n['so_number']} 는 "
+                    "프로젝트 단가로 표시, 옛 수주 그대로 진행")
+                st.rerun()
+                return
+            pend = float(o.get("pending_qty") or 0)
+            rounds = fetch("so_delivery_schedule",
+                           "sched_id,due_date,qty,delivered_qty,note",
+                           f"soi_id=eq.{o['soi_id']}&order=due_date,seq",
+                           limit=100)
+            new_has = bool(fetch("so_delivery_schedule", "sched_id",
+                                 f"soi_id=eq.{n['soi_id']}", limit=1))
+            close, create = _rp_rounds(rounds, new_has or not move_rounds)
+            for sid, qb, dl in close:
+                _db.update("so_delivery_schedule", f"sched_id=eq.{sid}",
+                           {"qty": dl})
+            rec["closed_rounds"] = [{"sched_id": s, "qty_before": q,
+                                     "delivered": d} for s, q, d in close]
+            if create:
+                _tag = f"구 수주 {o['so_number']} 회차 이관"
+                _db.insert("so_delivery_schedule", [{
+                    "so_id": n["so_id"], "soi_id": n["soi_id"], "seq": i + 1,
+                    "due_date": c["due_date"], "qty": c["qty"],
+                    "delivered_qty": 0, "note": _tag, "created_by": _who}
+                    for i, c in enumerate(create)])
+                rec["moved_rounds"] = [x["sched_id"] for x in fetch(
+                    "so_delivery_schedule", "sched_id",
+                    f"soi_id=eq.{n['soi_id']}&note=eq.{_tag}", limit=100)]
+            _db.update("sales_order_items", f"soi_id=eq.{o['soi_id']}", {
+                "pending_qty": 0, "status": "REPLACED",
+                "replaced_by_soi": n["soi_id"],
+                "remark": ((o.get("remark") or "") + " · " if o.get("remark")
+                           else "") + f"{n['so_number']} 로 대체(단가 변경) {_today}"})
+            _db.update("sales_order_items", f"soi_id=eq.{n['soi_id']}", {
+                "price_kind": "REPLACE",
+                "remark": ((n.get("remark") or "") + " · " if n.get("remark")
+                           else "") + f"구 수주 {o['so_number']} 대체"})
+            rec["closed_pending_qty"] = pend
+            _others = fetch("sales_order_items", "soi_id,pending_qty",
+                            f"so_id=eq.{o['so_id']}", limit=200)
+            if all(float(x.get("pending_qty") or 0) <= 0 for x in _others):
+                _so_row = _ck_so.get(o["so_id"]) or {}
+                _db.update("sales_orders", f"so_id=eq.{o['so_id']}", {
+                    "status": "CANCELLED",
+                    "remark": ((_so_row.get("remark") or "") + " · "
+                               if _so_row.get("remark") else "")
+                    + f"단가 변경 재발주로 대체 → {n['so_number']} ({_today})"})
+            if upd_master and n.get("product_id"):
+                _p = _ck_prod.get(n["product_id"]) or {}
+                _old_sp = _p.get("sale_price")
+                _new_sp = float(n.get("unit_price") or 0)
+                if _new_sp > 0 and _db.update("products",
+                                              f"product_id=eq.{n['product_id']}",
+                                              {"sale_price": _new_sp}):
+                    _so_log("products", n["product_id"], "sale_price", _old_sp,
+                            _new_sp, "수주 {} 단가 변경 (구 {} {:,.0f} → {:,.0f})"
+                            .format(n["so_number"], o["so_number"],
+                                    float(o.get("unit_price") or 0), _new_sp))
+                    rec["master_updated"] = True
+                    rec["master_old_price"] = _old_sp
+            _db.insert("so_line_replacements", [rec])
+            st.session_state["rp_flash"] = (
+                "{} — 대체 처리: 옛 수주 {} 미납 {:,.0f} 종료 · 회차 {}건 닫음"
+                " · 새 회차 {}건{}".format(
+                    n.get("pn"), o["so_number"], pend, len(close), len(create),
+                    " · 마스터 단가 갱신" if rec["master_updated"] else ""))
+            st.rerun()
+        except Exception as e:
+            st.error(f"처리 실패: {e}")
+
+    def _rp_revert(r):
+        _who = current_user_name()
+        try:
+            if r["action"] == "REPLACE":
+                _o = _db.fetch_one("sales_order_items",
+                                   f"soi_id=eq.{r['old_soi_id']}",
+                                   "soi_id,so_id,qty,received_qty,status")
+                if _o:
+                    _pend = max(float(_o.get("qty") or 0)
+                                - float(_o.get("received_qty") or 0), 0)
+                    _db.update("sales_order_items",
+                               f"soi_id=eq.{r['old_soi_id']}",
+                               {"pending_qty": _pend,
+                                "status": r.get("old_line_status") or (
+                                    "PARTIAL" if float(_o.get("received_qty")
+                                                       or 0) > 0 else "PENDING"),
+                                "replaced_by_soi": None})
+                    if r.get("old_so_status"):
+                        _db.update("sales_orders", f"so_id=eq.{_o['so_id']}",
+                                   {"status": r["old_so_status"]})
+                for c in (r.get("closed_rounds") or []):
+                    _db.update("so_delivery_schedule",
+                               f"sched_id=eq.{c['sched_id']}",
+                               {"qty": c["qty_before"]})
+                for sid in (r.get("moved_rounds") or []):
+                    _db.delete("so_delivery_schedule",
+                               f"sched_id=eq.{sid}&delivered_qty=eq.0")
+                if r.get("master_updated"):
+                    _n = _db.fetch_one("sales_order_items",
+                                       f"soi_id=eq.{r['new_soi_id']}",
+                                       "product_id")
+                    if _n and _n.get("product_id"):
+                        _db.update("products",
+                                   f"product_id=eq.{_n['product_id']}",
+                                   {"sale_price": r.get("master_old_price")})
+                        _so_log("products", _n["product_id"], "sale_price",
+                                r.get("new_price"), r.get("master_old_price"),
+                                "수주 대체 되돌리기")
+            _db.update("sales_order_items", f"soi_id=eq.{r['new_soi_id']}",
+                       {"price_kind": None})
+            _db.update("so_line_replacements", f"repl_id=eq.{r['repl_id']}",
+                       {"reverted_at": _rp_date.today().isoformat(),
+                        "reverted_by": _who})
+            st.session_state["rp_flash"] = "결정을 되돌렸습니다."
+            st.rerun()
+        except Exception as e:
+            st.error(f"되돌리기 실패: {e}")
+
+    if st.session_state.get("rp_flash"):
+        st.success(st.session_state.pop("rp_flash"))
+    if _rp_pairs:
+        with st.expander(
+                f"단가 변동 감지 {len(_rp_pairs)}건 — 같은 품번의 미납 수주와 "
+                "단가가 다른 새 수주", expanded=True):
+            st.caption(
+                "도구는 판단하지 않습니다 — 단가 변경으로 다시 받은 발주면 "
+                "**[대체]**, 프로젝트성 별도 단가면 **[별건 유지]**. 대체는 옛 "
+                "라인의 남은 미납을 닫고(출고 이력은 그대로) 남은 회차를 새 "
+                "라인으로 이관하며, 체크 시 마스터 판매 단가를 갱신합니다. "
+                "결정은 이력에 남고 되돌릴 수 있습니다.")
+            for _pi, _pr in enumerate(_rp_pairs):
+                _o, _n = _pr["old"], _pr["new"]
+                _op = float(_o.get("unit_price") or 0)
+                _np = float(_n.get("unit_price") or 0)
+                _k = f"rp_{_o['soi_id']}_{_n['soi_id']}"
+                _is_rep = _pr["recommend"] == "REPLACE"
+                with st.container(border=True):
+                    c1, c2 = st.columns([3, 2])
+                    c1.markdown(
+                        "**{}** · {}  \n옛 수주 **{}** ({}) · 미납 {:,.0f} · 단가 "
+                        "{:,.0f}원  \n새 수주 **{}** ({}) · 수량 {:,.0f} · 단가 "
+                        "{:,.0f}원 ({:+.1f}%)".format(
+                            _n.get("pn") or _o.get("pn") or "-", _n.get("customer"),
+                            _o["so_number"], _o.get("so_date") or "-",
+                            float(_o.get("pending_qty") or 0), _op,
+                            _n["so_number"], _n.get("so_date") or "-",
+                            float(_n.get("qty") or 0), _np,
+                            _pr["diff_pct"] if _pr["diff_pct"] is not None
+                            else 0))
+                    c2.markdown("추천: **{}** — {}".format(
+                        "대체" if _is_rep else "별건 유지", _pr["why"]))
+                    m1, m2 = c2.columns(2)
+                    _upd = m1.checkbox("마스터 단가 갱신", value=_is_rep,
+                                       key=_k + "_m")
+                    _mv = m2.checkbox("남은 회차 이관", value=True,
+                                      key=_k + "_r")
+                    b1, b2 = st.columns(2)
+                    if b1.button("대체 (옛 미납 닫기)", key=_k + "_go",
+                                 type="primary" if _is_rep else "secondary",
+                                 use_container_width=True) \
+                            and click_guard(_k):
+                        _rp_apply(_o, _n, "REPLACE", _upd, _mv)
+                    if b2.button("별건 유지 (프로젝트 단가)", key=_k + "_keep",
+                                 type="secondary" if _is_rep else "primary",
+                                 use_container_width=True) \
+                            and click_guard(_k):
+                        _rp_apply(_o, _n, "KEEP", False, False)
+    if _rp_hist:
+        with st.expander(f"대체·별건 결정 이력 {len(_rp_hist)}건"):
+            _rp_soi = {}
+            try:
+                _ids = sorted({r["old_soi_id"] for r in _rp_hist}
+                              | {r["new_soi_id"] for r in _rp_hist})
+                for _i0 in range(0, len(_ids), 80):
+                    for x in fetch("sales_order_items",
+                                   "soi_id,so_id,canonical_pn",
+                                   "soi_id=in.({})".format(",".join(
+                                       str(i) for i in _ids[_i0:_i0 + 80])),
+                                   limit=200):
+                        _rp_soi[x["soi_id"]] = x
+                _so_ids = sorted({x["so_id"] for x in _rp_soi.values()})
+                _rp_son = {}
+                for _i0 in range(0, len(_so_ids), 80):
+                    _rp_son.update({s["so_id"]: s["so_number"] for s in fetch(
+                        "sales_orders", "so_id,so_number",
+                        "so_id=in.({})".format(",".join(
+                            str(i) for i in _so_ids[_i0:_i0 + 80])), limit=200)})
+            except Exception:
+                _rp_son = {}
+            for r in _rp_hist[:30]:
+                _os = _rp_soi.get(r["old_soi_id"]) or {}
+                _ns = _rp_soi.get(r["new_soi_id"]) or {}
+                h1, h2 = st.columns([4, 1])
+                h1.markdown(
+                    "{} · **{}** · {} {} → {} · 단가 {:,.0f} → {:,.0f}{}{} · {} {}"
+                    .format(
+                        "대체" if r["action"] == "REPLACE" else "별건 유지",
+                        _ns.get("canonical_pn") or _os.get("canonical_pn") or "-",
+                        _rp_son.get(_os.get("so_id"), "-"),
+                        f"(미납 {float(r.get('closed_pending_qty') or 0):,.0f} 종료)"
+                        if r["action"] == "REPLACE" else "",
+                        _rp_son.get(_ns.get("so_id"), "-"),
+                        float(r.get("old_price") or 0),
+                        float(r.get("new_price") or 0),
+                        " · 마스터 갱신" if r.get("master_updated") else "",
+                        " · **되돌림**" if r.get("reverted_at") else "",
+                        r.get("created_by") or "-",
+                        str(r.get("created_at") or "")[:10]))
+                if not r.get("reverted_at") and h2.button(
+                        "되돌리기", key=f"rp_rv_{r['repl_id']}",
+                        use_container_width=True):
+                    _rp_revert(r)
 
     tab_input, tab_list, tab_sched = st.tabs(
         ["새 수주 입력", "수주 목록", "납품 스케줄"])
