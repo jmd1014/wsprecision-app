@@ -5066,14 +5066,16 @@ elif page == "수주 관리":
                          "new_price,closed_pending_qty,closed_rounds,"
                          "moved_rounds,master_updated,master_old_price,"
                          "old_so_status,old_line_status,created_by,created_at,"
-                         "reverted_at", "order=repl_id.desc", limit=200)
+                         "reverted_at,tagged_soi_id,tagged_kind",
+                         "order=repl_id.desc", limit=200)
         _rp_decided = {(r["old_soi_id"], r["new_soi_id"]) for r in _rp_hist
                        if not r.get("reverted_at")}
         _rp_pairs = _rp_detect(_rp_lines, _rp_decided)
     except Exception as e:
         st.warning(f"단가 변동 감지 실패: {e}")
 
-    def _rp_apply(o, n, action, upd_master, move_rounds):
+    def _rp_apply(o, n, action, upd_master, move_rounds, tag_side="new",
+                  tag_kind="PROJECT"):
         _who = current_user_name()
         _today = _rp_date.today().isoformat()
         rec = {"old_soi_id": o["soi_id"], "new_soi_id": n["soi_id"],
@@ -5086,12 +5088,20 @@ elif page == "수주 관리":
                "reason": None}
         try:
             if action == "KEEP":
-                _db.update("sales_order_items", f"soi_id=eq.{n['soi_id']}",
-                           {"price_kind": "PROJECT"})
+                # 특수 단가 표시는 마스터와 다른 쪽에 (사용자 지정) — 옛 수주가
+                # 사급 소재 단가였던 케이스처럼 새 수주가 표준일 수 있다
+                _tag = n if tag_side == "new" else o
+                _db.update("sales_order_items", f"soi_id=eq.{_tag['soi_id']}",
+                           {"price_kind": tag_kind})
+                rec["tagged_soi_id"] = _tag["soi_id"]
+                rec["tagged_kind"] = tag_kind
                 _db.insert("so_line_replacements", [rec])
                 st.session_state["rp_flash"] = (
-                    f"{n.get('pn')} — 별건 유지: 새 수주 {n['so_number']} 는 "
-                    "프로젝트 단가로 표시, 옛 수주 그대로 진행")
+                    "{} — 별건 유지: {} 수주 {} 를 {} 단가로 표시, 두 수주 모두 "
+                    "진행 (마스터 단가 변경 없음)".format(
+                        n.get("pn"), "새" if tag_side == "new" else "옛",
+                        _tag["so_number"],
+                        "사급 소재" if tag_kind == "CUSTOMER_MAT" else "프로젝트"))
                 st.rerun()
                 return
             pend = float(o.get("pending_qty") or 0)
@@ -5197,7 +5207,8 @@ elif page == "수주 관리":
                         _so_log("products", _n["product_id"], "sale_price",
                                 r.get("new_price"), r.get("master_old_price"),
                                 "수주 대체 되돌리기")
-            _db.update("sales_order_items", f"soi_id=eq.{r['new_soi_id']}",
+            _db.update("sales_order_items",
+                       f"soi_id=eq.{r.get('tagged_soi_id') or r['new_soi_id']}",
                        {"price_kind": None})
             _db.update("so_line_replacements", f"repl_id=eq.{r['repl_id']}",
                        {"reverted_at": _rp_date.today().isoformat(),
@@ -5238,24 +5249,40 @@ elif page == "수주 관리":
                             float(_n.get("qty") or 0), _np,
                             _pr["diff_pct"] if _pr["diff_pct"] is not None
                             else 0))
-                    c2.markdown("추천: **{}** — {}".format(
-                        "대체" if _is_rep else "별건 유지", _pr["why"]))
+                    _msp = (_ck_prod.get(_n.get("product_id") or "")
+                            or {}).get("sale_price")
+                    _msp = float(_msp) if _msp else None
+                    c2.markdown("추천: **{}** — {}  \n마스터 판매 단가: {}".format(
+                        "대체" if _is_rep else "별건 유지", _pr["why"],
+                        f"{_msp:,.0f}원" if _msp else "미설정"))
                     m1, m2 = c2.columns(2)
-                    _upd = m1.checkbox("마스터 단가 갱신", value=_is_rep,
+                    _upd = m1.checkbox("마스터 단가 갱신 (대체 시)", value=_is_rep,
                                        key=_k + "_m")
-                    _mv = m2.checkbox("남은 회차 이관", value=True,
+                    _mv = m2.checkbox("남은 회차 이관 (대체 시)", value=True,
                                       key=_k + "_r")
+                    # 별건 유지 때 특수 단가를 어느 쪽에 표시할지 — 마스터와
+                    # 다른 쪽이 기본 (옛 수주가 사급 소재 단가인 케이스 대응)
+                    _side_def = 1 if (_msp and abs(_np - _msp) < 0.5
+                                      and abs(_op - _msp) >= 0.5) else 0
+                    s1, s2 = c2.columns(2)
+                    _side = s1.selectbox("특수 단가인 쪽", ["새 수주", "옛 수주"],
+                                         index=_side_def, key=_k + "_s")
+                    _kind = s2.selectbox("특수 단가 종류", ["프로젝트", "사급 소재"],
+                                         key=_k + "_t")
                     b1, b2 = st.columns(2)
                     if b1.button("대체 (옛 미납 닫기)", key=_k + "_go",
                                  type="primary" if _is_rep else "secondary",
                                  use_container_width=True) \
                             and click_guard(_k):
                         _rp_apply(_o, _n, "REPLACE", _upd, _mv)
-                    if b2.button("별건 유지 (프로젝트 단가)", key=_k + "_keep",
+                    if b2.button("별건 유지 (두 수주 모두 진행)", key=_k + "_keep",
                                  type="secondary" if _is_rep else "primary",
                                  use_container_width=True) \
                             and click_guard(_k):
-                        _rp_apply(_o, _n, "KEEP", False, False)
+                        _rp_apply(_o, _n, "KEEP", False, False,
+                                  tag_side="new" if _side == "새 수주" else "old",
+                                  tag_kind=("CUSTOMER_MAT" if _kind == "사급 소재"
+                                            else "PROJECT"))
     if _rp_hist:
         with st.expander(f"대체·별건 결정 이력 {len(_rp_hist)}건"):
             _rp_soi = {}
