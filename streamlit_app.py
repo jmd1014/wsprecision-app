@@ -5406,6 +5406,61 @@ elif page == "수주 관리":
                             + "\n".join(f"- `{s}`" for s in dup_so_nums[:10])
                             + (f"\n... 외 {len(dup_so_nums)-10}건" if len(dup_so_nums) > 10 else "")
                         )
+                        # ── 개정 발주 (2026-09-10): 같은 번호로 다시 온 발주가
+                        # 기존 라인과 단가·수량이 다르면 '-R2' 를 붙여 새 수주로
+                        # 등록 → 단가 변동 감지 패널에서 대체/별건 처리 ──
+                        _rev_diff = []
+                        try:
+                            _ex_so = fetch("sales_orders", "so_id,so_number",
+                                           f"customer=eq.{customer_name}&so_number=in.("
+                                           + ",".join(dup_so_nums) + ")", limit=100)
+                            _ex_map = {s["so_number"]: s["so_id"] for s in _ex_so}
+                            _ex_lines = {}
+                            if _ex_map:
+                                for x in fetch("sales_order_items",
+                                               "so_id,customer_part_no,qty,unit_price",
+                                               "so_id=in.({})".format(",".join(
+                                                   str(v) for v in _ex_map.values())),
+                                               limit=500):
+                                    _ex_lines.setdefault(x["so_id"], []).append(x)
+                            for it in dup_items:
+                                _els = _ex_lines.get(_ex_map.get(it.get("so_number")), [])
+                                _same = any(
+                                    str(e.get("customer_part_no") or "").strip()
+                                    == str(it.get("customer_part_no") or "").strip()
+                                    and abs(float(e.get("qty") or 0)
+                                            - float(it.get("qty") or 0)) < 0.5
+                                    and abs(float(e.get("unit_price") or 0)
+                                            - float(it.get("unit_price") or 0)) < 0.5
+                                    for e in _els)
+                                if not _same:
+                                    _rev_diff.append(it)
+                            _rev_nums = sorted({it["so_number"] for it in _rev_diff})
+                            _rev_existing = {s["so_number"] for s in fetch(
+                                "sales_orders", "so_number",
+                                f"customer=eq.{customer_name}&or=("
+                                + ",".join(f"so_number.like.{n}-R*" for n in _rev_nums)
+                                + ")", limit=200)} if _rev_nums else set()
+                        except Exception:
+                            _rev_diff, _rev_nums, _rev_existing = [], [], set()
+                        if _rev_diff:
+                            st.info("같은 번호의 기존 수주와 **단가·수량이 다른 라인 "
+                                    f"{len(_rev_diff)}개** — 고객이 단가 변경 등으로 "
+                                    "같은 번호로 재발주한 경우입니다.")
+                            if st.checkbox(
+                                    "개정 발주로 등록 — 번호에 '-R2' 를 붙여 새 수주로 "
+                                    "등록하고, 기존 수주는 저장 후 상단 '단가 변동 감지' "
+                                    "패널에서 [대체] 또는 [별건 유지]로 처리",
+                                    key="so_rev_ok"):
+                                for it in _rev_diff:
+                                    _base = it["so_number"]
+                                    _n = 2
+                                    while f"{_base}-R{_n}" in _rev_existing:
+                                        _n += 1
+                                    it["so_number"] = f"{_base}-R{_n}"
+                                    it["remark"] = ((it.get("remark") or "")
+                                                    + f" 개정(원 번호 {_base})").strip()
+                                new_items = new_items + _rev_diff
                     if not new_items:
                         st.error("모든 수주가 이미 등록되어 있습니다. 업로드 불필요.")
                         st.stop()
