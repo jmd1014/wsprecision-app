@@ -2194,14 +2194,19 @@ elif page == "마스터 관리":
                 _ft["stock"],
                 sum(float(l.get("remain_qty") or 0) for l in _ft["lots"])))
 
-            def _ft_adj(qty, lot, memo, kind):
+            def _ft_adj(qty, lot, memo, kind, wlot=None, on=None):
+                """실사 조정 원장. wlot = 소재 LOT(W번호, 히트 추적) →
+                work_order 에 기록되어 LOT 잔량 뷰의 '소재 LOT' 로 표시."""
                 _db.insert("inventory_transactions", [{
                     "material_id": None, "product_id": _pid,
                     "txn_type": "ADJUSTMENT", "qty": float(qty),
                     "unit": _unit, "lot_number": lot,
+                    "work_order": (wlot or "").strip() or None,
                     "ref_table": None, "ref_id": None,
-                    "txn_date": _ft_today.isoformat(),
-                    "remark": f"{kind} · {memo}",
+                    "txn_date": (on or _ft_today).isoformat(),
+                    "remark": f"{kind} · {memo}"
+                    + (f" · 소재 {wlot.strip()}" if wlot and wlot.strip()
+                       else ""),
                     "created_by": current_user_name()}])
 
             if _ft_mode == "LOT별 실사":
@@ -2257,22 +2262,31 @@ elif page == "마스터 관리":
                            "완성일로 잡혀 새 완성 LOT 보다 먼저 출고됩니다. "
                            "LOT 을 아는 실물인데 장부에 LOT 이 없으면 그 "
                            "LOT 번호를 직접 적어도 됩니다.")
-                ob1, ob2 = st.columns([1, 1])
+                ob0, ob1, ob2, ob3 = st.columns([1, 1.2, 1, 1.2])
+                _ob_on = ob0.date_input("실사 기준일", _ft_today,
+                                        key=f"ft_ob_on_{_pid}",
+                                        help="이 날짜가 완성일이 되어 출고 "
+                                             "선입선출 순서를 정합니다")
                 _ob_lot = ob1.text_input(
                     "LOT 번호", "OB-{:%Y%m%d}".format(_ft_today),
                     key=f"ft_ob_lot_{_pid}")
                 _ob_qty = ob2.number_input("실물 수량", 0.0, 1_000_000.0,
                                            0.0, 1.0, key=f"ft_ob_qty_{_pid}")
+                _ob_w = ob3.text_input("소재 LOT · 히트 (W번호, 선택)",
+                                       key=f"ft_ob_w_{_pid}",
+                                       placeholder="예: W1028",
+                                       help="히트 추적용 — LOT 잔량·추적 "
+                                            "화면의 '소재 LOT' 에 표시")
                 _omemo = st.text_input(
                     "조정 사유", key="ft_omemo",
-                    placeholder="예: 9/7 실사 — 8월 이전 재고 (LOT 미상)")
+                    placeholder="예: 9/11 기점 실사 — 이전 재고")
                 if st.button("기초 재고 LOT 등록", type="primary",
                              key="ft_ob_go",
                              disabled=not (_ob_qty > 0 and _omemo.strip()
                                            and _ob_lot.strip())):
                     try:
                         _ft_adj(_ob_qty, _ob_lot.strip(), _omemo.strip(),
-                                "기초 재고 (OB)")
+                                "기초 재고 (OB)", wlot=_ob_w, on=_ob_on)
                         st.success("{} +{:,.0f} 등록".format(
                             _ob_lot.strip(), _ob_qty))
                         st.rerun()
