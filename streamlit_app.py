@@ -11625,43 +11625,58 @@ elif page == "발주/입고":
                 for it in _items:
                     it.setdefault("_uid", str(_po_uuid.uuid4())[:8])
                 _tbl_nonce = st.session_state.get("po_tbl_nonce", 0)
-                # 담은 품목 칩 — ✕ 로 즉시 제거 (표 편집 전에 정리)
-                _chip_cols = st.columns(min(len(_items), 6))
-                for _ci, it in enumerate(_items):
-                    if _chip_cols[_ci % len(_chip_cols)].button(
-                            f"✕ {it['item_name']}", key=f"po_rm_{it['_uid']}",
-                            help="이 품목을 표에서 뺍니다 (표에서 고치던 값은 "
-                                 "먼저 [편집 반영] 하세요)",
-                            use_container_width=True):
+                # 행 단위 입력 + 줄마다 [삭제] (2026-09-11 사용자 확정: 셀을
+                # 고칠 때마다 바로 반영되는 방식이 낫고, 편집 반영 버튼은 불필요)
+                _hc = st.columns([2.6, 1, 1.6, 1.1, 1.2, 1.2, 1.8, 0.7])
+                for _c, _t in zip(_hc, ("품명", "재질", "규격", "수량", "단가",
+                                        "금액", "메모", "")):
+                    _c.markdown(f"<div class='sb-legend' style='margin:0'>"
+                                f"<b>{_t}</b></div>", unsafe_allow_html=True)
+                _total_now = 0
+                for it in _items:
+                    uid = it["_uid"]
+                    rc = st.columns([2.6, 1, 1.6, 1.1, 1.2, 1.2, 1.8, 0.7])
+                    it["item_name"] = rc[0].text_input(
+                        "품명", value=it["item_name"], key=f"po_nm_{uid}",
+                        label_visibility="collapsed")
+                    it["material"] = rc[1].text_input(
+                        "재질", value=it.get("material") or "",
+                        key=f"po_mt_{uid}", label_visibility="collapsed")
+                    it["spec"] = rc[2].text_input(
+                        "규격", value=it.get("spec") or "", key=f"po_sp_{uid}",
+                        label_visibility="collapsed")
+                    it["qty"] = int(rc[3].number_input(
+                        "수량", 0, 10_000_000, int(it.get("qty") or 0), 10,
+                        key=f"po_q_{uid}", label_visibility="collapsed"))
+                    it["unit_price"] = int(rc[4].number_input(
+                        "단가", 0, 100_000_000, int(it.get("unit_price") or 0),
+                        100, key=f"po_p_{uid}", label_visibility="collapsed"))
+                    _amt = it["qty"] * it["unit_price"]
+                    _total_now += _amt
+                    rc[5].markdown(
+                        f"<div style='text-align:right;padding-top:9px;"
+                        f"font-variant-numeric:tabular-nums'>₩{_amt:,}</div>",
+                        unsafe_allow_html=True)
+                    it["memo"] = rc[6].text_input(
+                        "메모", value=it.get("memo") or "", key=f"po_mm_{uid}",
+                        label_visibility="collapsed",
+                        placeholder="예: 9/20 납기")
+                    if rc[7].button("삭제", key=f"po_rm_{uid}",
+                                    use_container_width=True):
                         st.session_state.po_items = [
-                            x for x in _items if x["_uid"] != it["_uid"]]
-                        st.session_state["po_tbl_nonce"] = _tbl_nonce + 1
+                            x for x in _items if x["_uid"] != uid]
+                        for k in (f"po_nm_{uid}", f"po_mt_{uid}", f"po_sp_{uid}",
+                                  f"po_q_{uid}", f"po_p_{uid}", f"po_mm_{uid}"):
+                            st.session_state.pop(k, None)
                         st.rerun()
-                _tbl_df = pd.DataFrame([{
-                    "품명": it["item_name"], "재질": it.get("material") or "",
-                    "규격": it.get("spec") or "",
-                    "수량": int(it.get("qty") or 0),
-                    "단가": int(it.get("unit_price") or 0),
-                    "금액": int(it.get("qty") or 0) * int(it.get("unit_price") or 0),
-                    "메모": it.get("memo") or "",
-                } for it in _items])
+                tc1, tc2 = st.columns([3, 1])
+                tc1.caption("재질 = 제품 마스터, 규격 = BOM 자재명. 고친 값은 바로 "
+                            "반영됩니다. 합계 ₩{:,} (VAT 별도)".format(_total_now))
+                if tc2.button("표 비우기", key="po_clear_all",
+                              use_container_width=True):
+                    st.session_state.po_items = []
+                    st.rerun()
                 with st.form("po_form"):
-                    _tbl_ed = st.data_editor(
-                        _tbl_df, hide_index=True, use_container_width=True,
-                        height=min(420, 46 + 36 * len(_tbl_df)),
-                        key=f"po_tbl_{_tbl_nonce}",
-                        column_config={
-                            "품명": st.column_config.TextColumn(width="large"),
-                            "수량": st.column_config.NumberColumn(min_value=0,
-                                                                step=10),
-                            "단가": st.column_config.NumberColumn(min_value=0,
-                                                                step=100),
-                            "금액": st.column_config.NumberColumn(
-                                disabled=True, format="localized",
-                                help="만들 때 수량 × 단가로 다시 계산")})
-                    st.caption("재질 = 제품 마스터, 규격 = BOM 자재명. 합계 ₩{:,} "
-                               "(VAT 별도, 현재 표 기준)".format(
-                                   int(_tbl_df["금액"].sum())))
                     fc1, fc2, fc3 = st.columns(3)
                     po_date = fc1.date_input("발주일", value=_date.today(),
                                              key="po_date")
@@ -11681,44 +11696,16 @@ elif page == "발주/입고":
                     po_remark = st.text_input("비고 (발주서에 인쇄)", key="po_rmk",
                                               placeholder="예: 검수 후 입고, "
                                                           "밀시트 첨부")
-                    pb1, pb2, pb3 = st.columns([2, 1, 1])
-                    _po_make = pb1.form_submit_button(
+                    _po_make = st.form_submit_button(
                         "발주서 만들기 (PDF)", type="primary",
                         use_container_width=True)
-                    _po_keep = pb2.form_submit_button(
-                        "편집 반영 (임시)", use_container_width=True,
-                        help="표의 수정을 반영만 합니다 — 화면을 떠나면 사라지는 "
-                             "임시 상태이며 DB 에는 저장되지 않습니다")
-                    _po_clear = pb3.form_submit_button(
-                        "표 비우기", use_container_width=True,
-                        help="담은 품목을 전부 비웁니다")
 
                 def _apply_table():
-                    """표 편집 내용을 po_items 에 반영."""
-                    out = []
-                    for _bi, _brow in _tbl_ed.iterrows():
-                        if int(_bi) >= len(_items):
-                            continue
-                        it = dict(_items[int(_bi)])
-                        it["item_name"] = str(_brow.get("품명") or it["item_name"]).strip()
-                        it["material"] = str(_brow.get("재질") or "").strip()
-                        it["spec"] = str(_brow.get("규격") or "").strip()
-                        it["qty"] = int(pd.to_numeric(_brow.get("수량"),
-                                                      errors="coerce") or 0)
-                        it["unit_price"] = int(pd.to_numeric(
-                            _brow.get("단가"), errors="coerce") or 0)
-                        it["memo"] = str(_brow.get("메모") or "").strip()
-                        out.append(it)
-                    return out
+                    """행 입력은 즉시 po_items 에 반영되므로 그대로 사용."""
+                    return [dict(it, item_name=str(it["item_name"]).strip(),
+                                 memo=str(it.get("memo") or "").strip())
+                            for it in st.session_state.po_items]
 
-                if _po_clear:
-                    st.session_state.po_items = []
-                    st.session_state["po_tbl_nonce"] = _tbl_nonce + 1
-                    st.rerun()
-                if _po_keep:
-                    st.session_state.po_items = _apply_table()
-                    st.session_state["po_tbl_nonce"] = _tbl_nonce + 1
-                    st.rerun()
                 if _po_make:
                     _final = _apply_table()
                     _zero = [it["item_name"] for it in _final if not it["qty"]]
