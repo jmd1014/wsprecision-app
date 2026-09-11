@@ -161,6 +161,7 @@ div[data-testid="stDataFrame"]{
 /* ── 홈 KPI 카드 (상태는 숫자 색으로 — 스트라이프 없음) ── */
 .ag-theme-alpine .tt-edit{background:#fbfcfe;box-shadow:inset 0 -1px 0 #d6dbe2}
 .ag-theme-alpine .tt-edit.ag-cell-focus{box-shadow:inset 0 0 0 2px #3182f6}
+.ag-theme-alpine .tt-chk{text-align:center;background:#fff}
 /* 설비 스케줄 보드 (생산 계획, 2026-09-07) — 설비 × 날짜 × 교대 셀 */
 .sb-wrap{overflow-x:auto;background:var(--card);border-radius:16px;
   box-shadow:var(--shadow);padding:6px 6px 2px;margin:4px 0 10px}
@@ -791,12 +792,15 @@ _TOSS_GRID_CSS = {
 
 
 def toss_grid_edit(rows, *, key, editable_cols=(), num_cols=(), strong_cols=(),
-                   columns=None, height=None):
+                   columns=None, height=None, select=True, check_col=None):
     """토스 스타일 편집 그리드 — (편집 반영된 rows, 선택 행 인덱스) 반환.
 
     toss_grid 와 같은 시각 언어(2026-09-11 사용자 요청: 발주서 품목 표도
     다른 리스트와 같은 양식). editable_cols 은 셀 클릭/타이핑으로 고치고
-    값이 바뀔 때마다 rerun 되어 즉시 반영된다. 행 클릭 = 선택(삭제 등 액션용).
+    값이 바뀔 때마다 rerun 되어 즉시 반영된다. select=True 면 행 클릭 = 선택
+    (rerun 발생), False 면 선택 없이 편집만. check_col 을 주면 그 이름의 체크
+    컬럼(기본 False)을 맨 끝에 붙여 클릭 즉시 True 로 돌아온다 — 줄 삭제 같은
+    행 액션용 (2026-09-11: 줄 선택마다 로딩되는 것을 피하려는 사용자 요청).
     AgGrid 미탑재 시 st.data_editor 폴백(선택은 첫 행).
     """
     import pandas as pd
@@ -806,8 +810,12 @@ def toss_grid_edit(rows, *, key, editable_cols=(), num_cols=(), strong_cols=(),
         return [], None
     _cols = ([c for c in columns if c in rows[0]] if columns
              else [c for c in rows[0].keys() if not str(c).startswith("_")])
-    _df = pd.DataFrame([{**{c: r.get(c) for c in _cols}, "_i": i}
+    if check_col and check_col not in _cols:
+        _cols = _cols + [check_col]
+    _df = pd.DataFrame([{**{c: (bool(r.get(c)) if c == check_col else r.get(c))
+                            for c in _cols}, "_i": i}
                         for i, r in enumerate(rows)])
+    editable_cols = tuple(editable_cols) + ((check_col,) if check_col else ())
     try:
         from st_aggrid import AgGrid, GridOptionsBuilder, JsCode
         _num_js = JsCode("""
@@ -837,10 +845,16 @@ def toss_grid_edit(rows, *, key, editable_cols=(), num_cols=(), strong_cols=(),
                 _cls.append("tt-strong")
             if c in editable_cols:
                 _cls.append("tt-edit")
-            if _cls:
+            if c == check_col:
+                _kw.update({"cellRenderer": "agCheckboxCellRenderer",
+                            "cellEditor": "agCheckboxCellEditor",
+                            "maxWidth": 72, "minWidth": 64, "flex": 0,
+                            "headerClass": "tt-num-h", "cellClass": ["tt-chk"]})
+            elif _cls:
                 _kw["cellClass"] = _cls
             gb.configure_column(c, **_kw)
-        gb.configure_selection("single")
+        if select:
+            gb.configure_selection("single")
         _auto = height is None and len(rows) <= 12
         gb.configure_grid_options(
             headerHeight=42, rowHeight=42, suppressCellFocus=False,
@@ -855,7 +869,8 @@ def toss_grid_edit(rows, *, key, editable_cols=(), num_cols=(), strong_cols=(),
         # 편집 → rerun 뒤 파생 값(금액 등)이 그리드에도 보이도록 (기본값은
         # 컴포넌트가 첫 데이터를 유지해 금액이 0 으로 남던 문제, 2026-09-11)
         _g = AgGrid(_df, gridOptions=gb.build(),
-                    update_on=["cellValueChanged", "selectionChanged"],
+                    update_on=(["cellValueChanged", "selectionChanged"]
+                               if select else ["cellValueChanged"]),
                     allow_unsafe_jscode=True, reload_data=True,
                     custom_css=_TOSS_GRID_CSS, theme="alpine",
                     key=key, **_kw2)
@@ -874,7 +889,7 @@ def toss_grid_edit(rows, *, key, editable_cols=(), num_cols=(), strong_cols=(),
                         if c in rec:
                             _out[_ix][c] = rec[c]
         _sel_ix = None
-        _sel = _g.selected_rows
+        _sel = _g.selected_rows if select else None
         if _sel is not None:
             _srecs = (_sel.to_dict("records") if hasattr(_sel, "to_dict")
                       else list(_sel))
@@ -885,8 +900,11 @@ def toss_grid_edit(rows, *, key, editable_cols=(), num_cols=(), strong_cols=(),
     except Exception:
         _ed = st.data_editor(_df.drop(columns=["_i"]), hide_index=True,
                              use_container_width=True, key=f"{key}_fb",
-                             column_config={c: st.column_config.Column(
-                                 disabled=(c not in editable_cols))
+                             column_config={c: (
+                                 st.column_config.CheckboxColumn()
+                                 if c == check_col else
+                                 st.column_config.Column(
+                                     disabled=(c not in editable_cols)))
                                  for c in _cols})
         _out = [dict(r) for r in rows]
         for _bi, _brow in _ed.iterrows():
@@ -11747,7 +11765,16 @@ elif page == "발주/입고":
                     _ed_rows, _sel_ix = toss_grid_edit(
                         _grid_rows, key=f"po_grid_{_tbl_nonce}",
                         editable_cols=("품명", "재질", "규격", "수량", "단가", "메모"),
-                        num_cols=("수량", "단가", "금액"), strong_cols=("품명",))
+                        num_cols=("수량", "단가", "금액"), strong_cols=("품명",),
+                        select=False, check_col="삭제")
+                    # '삭제' 체크 = 즉시 제거 (줄 선택 rerun 없음)
+                    _del_uids = [it["_uid"] for it, r in zip(_items, _ed_rows)
+                                 if bool(r.get("삭제"))]
+                    if _del_uids:
+                        st.session_state.po_items = [
+                            x for x in _items if x["_uid"] not in _del_uids]
+                        st.session_state["po_tbl_nonce"] = _tbl_nonce + 1
+                        st.rerun()
                     _changed = False
                     for it, r in zip(_items, _ed_rows):
                         _new = {
@@ -11764,18 +11791,10 @@ elif page == "발주/입고":
                         st.rerun()          # 금액·합계 갱신
                     _total_now = sum(int(it.get("qty") or 0) * int(it.get("unit_price") or 0)
                                      for it in _items)
-                    tc1, tc2, tc3 = st.columns([3, 1, 1])
-                    tc1.caption("셀을 클릭해 고치면 바로 반영됩니다. 재질 = 제품 마스터, "
-                                "규격 = BOM 자재명. 합계 ₩{:,} (VAT 별도)".format(_total_now))
-                    if tc2.button("선택 줄 삭제", key="po_rm_sel",
-                                  use_container_width=True,
-                                  disabled=_sel_ix is None,
-                                  help="표에서 줄을 클릭해 선택한 뒤 누르세요"):
-                        _uid = _items[_sel_ix]["_uid"]
-                        st.session_state.po_items = [
-                            x for x in _items if x["_uid"] != _uid]
-                        st.session_state["po_tbl_nonce"] = _tbl_nonce + 1
-                        st.rerun()
+                    tc1, tc3 = st.columns([4, 1])
+                    tc1.caption("셀을 클릭해 고치면 바로 반영되고, 삭제 칸을 체크하면 "
+                                "그 줄이 바로 빠집니다. 재질 = 제품 마스터, 규격 = "
+                                "BOM 자재명. 합계 ₩{:,} (VAT 별도)".format(_total_now))
                     if tc3.button("표 비우기", key="po_clear_all",
                                   use_container_width=True):
                         st.session_state.po_items = []
@@ -11793,8 +11812,8 @@ elif page == "발주/입고":
                             key=f"po_pay_{vendor['vendor_id']}")
                         fc4, fc5 = st.columns(2)
                         contact_person = fc4.text_input(
-                            "담당자", value="김민수 과장 / 010-3881-1165",
-                            key="po_contact")
+                            "담당자", value=current_user_name(),
+                            key=f"po_contact_{current_user_name()}")
                         delivery_address = fc5.text_input(
                             "배송지", value="부산광역시 기장군 산단4로 71",
                             key="po_addr")
