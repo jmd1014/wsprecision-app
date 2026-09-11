@@ -11327,23 +11327,29 @@ elif page == "발주/입고":
             # ─── 거래처별 최근 단가·수량 (반복 발주 프리필) ───
             @st.cache_data(ttl=60)
             def _get_vendor_recent_line(vid, item_name):
+                """이 거래처의 같은 품번 최근 발주 (단가, 수량, 발주번호, 발주일).
+                품명이 '품번 (사이즈)' 형식이어도 품번으로 찾는다."""
                 try:
-                    pos = fetch("purchase_orders", "po_id",
+                    pos = fetch("purchase_orders", "po_id,po_number,po_date",
                                 f"vendor_id=eq.{vid}&order=po_date.desc",
-                                limit=20)
+                                limit=30)
                     if not pos:
-                        return None, None
+                        return None, None, None, None
+                    _pmap = {p["po_id"]: p for p in pos}
                     po_ids = ",".join(str(p["po_id"]) for p in pos)
                     items = fetch("purchase_order_items",
                                   "unit_price,qty,po_id",
-                                  f"po_id=in.({po_ids})&item_name=eq.{item_name}"
+                                  f"po_id=in.({po_ids})&or=(item_name.eq.{item_name},"
+                                  f"item_name.like.{item_name} (*)"
                                   "&order=po_id.desc", limit=1)
                     if not items:
-                        return None, None
+                        return None, None, None, None
+                    _p = _pmap.get(items[0]["po_id"]) or {}
                     return (int(items[0]["unit_price"] or 0) or None,
-                            int(float(items[0].get("qty") or 0)) or None)
+                            int(float(items[0].get("qty") or 0)) or None,
+                            _p.get("po_number"), _p.get("po_date"))
                 except Exception:
-                    return None, None
+                    return None, None, None, None
 
             def _po_add(p, vendor_price=None, vendor_qty=None):
                 upd = vendor_price or int(p.get("material_unit_price") or 0)
@@ -11433,17 +11439,22 @@ elif page == "발주/입고":
                             for it in st.session_state.po_items}
                 _rows = []
                 for p in _res:
-                    vp, vq = _get_vendor_recent_line(vendor["vendor_id"], p["pn"])
+                    vp, vq, vpo, vdt = _get_vendor_recent_line(
+                        vendor["vendor_id"], p["pn"])
                     _rows.append({
                         "담기": False, "품번": p["pn"],
                         "재질": p.get("material") or "-",
-                        "규격": (p.get("raw_material_name")
-                                 or p.get("bom_material_name") or "-"),
+                        "소재 (BOM 자재명)": (p.get("raw_material_name")
+                                            or p.get("bom_material_name") or "-"),
                         "제품 사이즈": p.get("product_size") or "-",
                         "최근 단가": vp or int(p.get("material_unit_price") or 0),
                         "최근 수량": vq or 0,
+                        "최근 발주": (f"{vpo} · {str(vdt)[:10]}" if vpo else "-"),
                         "담김": "담김" if p["product_id"] in _in_cart else "",
                         "_p": p, "_vp": vp, "_vq": vq})
+                st.caption("재질 = 제품 마스터의 재질, 소재 = BOM 자재명(발주서의 "
+                           "'규격' 칸), 품명 = 품번 (제품 사이즈). 최근 단가·수량은 "
+                           "이 거래처의 마지막 발주에서 가져옵니다.")
                 with st.form("po_pick_form"):
                     _pick_ed = st.data_editor(
                         pd.DataFrame([{k: v for k, v in r.items()
@@ -11455,8 +11466,9 @@ elif page == "발주/입고":
                         column_config={
                             "담기": st.column_config.CheckboxColumn(),
                             **{c: st.column_config.Column(disabled=True)
-                               for c in ("품번", "재질", "규격", "제품 사이즈",
-                                         "최근 단가", "최근 수량", "담김")}})
+                               for c in ("품번", "재질", "소재 (BOM 자재명)",
+                                         "제품 사이즈", "최근 단가", "최근 수량",
+                                         "최근 발주", "담김")}})
                     _pick_go = st.form_submit_button("체크한 품목 담기",
                                                      type="primary")
                 if _pick_go:
@@ -11473,81 +11485,13 @@ elif page == "발주/입고":
                     else:
                         st.warning("담을 품목을 체크하세요.")
 
-            xc1, xc2, xc3 = st.columns(3)
-            with xc1.expander("최근 발주에서 복사"):
-                try:
-                    recent_pos = fetch("purchase_orders",
-                                       "po_id,po_number,po_date,total_amount",
-                                       f"vendor_id=eq.{vendor['vendor_id']}"
-                                       "&order=po_date.desc", limit=10)
-                except Exception:
-                    recent_pos = []
-                if not recent_pos:
-                    st.caption("이 거래처에 과거 발주가 없습니다.")
-                else:
-                    with st.form("po_copy_form"):
-                        _cp = st.selectbox(
-                            "발주서", recent_pos,
-                            format_func=lambda po: "{} · {} · ₩{:,}".format(
-                                po["po_number"], po.get("po_date", ""),
-                                int(po.get("total_amount") or 0)),
-                            key="po_copy_pick")
-                        if st.form_submit_button("품목 복사"):
-                            try:
-                                copied = fetch("purchase_order_items",
-                                               "item_name,spec,material,qty,"
-                                               "unit_price,remark,product_id",
-                                               f"po_id=eq.{_cp['po_id']}"
-                                               "&order=line_no", limit=50)
-                                for it in copied:
-                                    st.session_state.po_items.append({
-                                        "_uid": str(_po_uuid.uuid4())[:8],
-                                        "product_id": it.get("product_id"),
-                                        "item_name": it.get("item_name") or "",
-                                        "material": it.get("material") or "",
-                                        "spec": it.get("spec") or "",
-                                        "qty": int(float(it.get("qty") or 0)),
-                                        "unit_price": int(float(
-                                            it.get("unit_price") or 0)),
-                                        "memo": it.get("remark") or ""})
-                                st.session_state["po_tbl_nonce"] = \
-                                    st.session_state.get("po_tbl_nonce", 0) + 1
-                                st.rerun()
-                            except Exception as e:
-                                st.error(f"복사 실패: {e}")
-            with xc2.expander("품번 일괄 추가 (콤마/줄바꿈)"):
-                with st.form("po_bulk_form"):
-                    bulk_txt = st.text_area(
-                        "품번 목록", key="bulk_pn",
-                        placeholder="8HFDV-VM-05\n4PDVN-02\nMRG6-07")
-                    _bulk_go = st.form_submit_button("일괄 추가")
-                if _bulk_go and bulk_txt:
-                    import re as _re_bulk
-                    pns = [x.strip() for x in _re_bulk.split(r'[,\n]+', bulk_txt)
-                           if x.strip()]
-                    added, notfound = 0, []
-                    for pn in pns:
-                        try:
-                            r = fetch("products",
-                                      "product_id,pn,raw_material_name,"
-                                      "product_size,material,material_unit_price",
-                                      f"archived_at=is.null&or=(pn.eq.{pn},"
-                                      f"alias_list.ilike.*{pn}*)&limit=1")
-                        except Exception:
-                            r = []
-                        if not r:
-                            notfound.append(pn); continue
-                        vp, vq = _get_vendor_recent_line(vendor["vendor_id"],
-                                                         r[0]["pn"])
-                        _po_add(r[0], vp, vq)
-                        added += 1
-                    if notfound:
-                        st.warning("미발견: " + ", ".join(notfound[:10]))
-                    if added:
-                        st.session_state["po_tbl_nonce"] = \
-                            st.session_state.get("po_tbl_nonce", 0) + 1
-                        st.rerun()
-            with xc3.expander("마스터에 없는 품목 즉석 추가"):
+            # 최근 발주 복사·품번 일괄 추가는 제거 (2026-09-11 사용자 피드백:
+            # 발주서 단위라 품목을 알 수 없고, 일괄 추가는 오매칭). 거래처
+            # 이력 품번은 검색어 없이 [검색] 으로 본다.
+            with st.expander("마스터에 없는 자재 직접 입력 (발주서에만 기재)"):
+                st.caption("제품·자재 마스터에 없는 것을 발주할 때 — 발주서 "
+                           "라인에만 기재되고 마스터에는 등록되지 않습니다. "
+                           "반복 발주할 자재면 마스터 관리에서 등록하세요.")
                 with st.form("po_adhoc_form"):
                     nx = st.text_input("품번/품명", key="nx_name")
                     a1, a2, a3 = st.columns(3)
@@ -11555,14 +11499,13 @@ elif page == "발주/입고":
                     ns = a2.text_input("규격", key="nx_spec")
                     np_ = a3.number_input("단가", min_value=0, step=100,
                                           key="nx_price")
-                    if st.form_submit_button("추가 (즉석)") and nx:
+                    if st.form_submit_button("담기") and nx:
                         st.session_state.po_items.append({
                             "_uid": str(_po_uuid.uuid4())[:8],
                             "product_id": None, "item_name": nx,
                             "material": nm, "spec": ns, "qty": 0,
                             "unit_price": int(np_), "memo": ""})
-                        st.session_state["po_tbl_nonce"] = \
-                            st.session_state.get("po_tbl_nonce", 0) + 1
+                        st.session_state["po_tbl_nonce"] =                             st.session_state.get("po_tbl_nonce", 0) + 1
                         st.rerun()
 
             # ─── ③ 발주서 한 장 — 표 편집 + 발주 정보 + 만들기 (폼 하나) ───
@@ -11580,7 +11523,7 @@ elif page == "발주/입고":
                     "수량": int(it.get("qty") or 0),
                     "단가": int(it.get("unit_price") or 0),
                     "금액": int(it.get("qty") or 0) * int(it.get("unit_price") or 0),
-                    "메모": it.get("memo") or "", "삭제": False,
+                    "메모": it.get("memo") or "", "제외": False,
                 } for it in _items])
                 with st.form("po_form"):
                     _tbl_ed = st.data_editor(
@@ -11596,10 +11539,13 @@ elif page == "발주/입고":
                             "금액": st.column_config.NumberColumn(
                                 disabled=True, format="localized",
                                 help="저장·생성 시 수량 × 단가로 다시 계산"),
-                            "삭제": st.column_config.CheckboxColumn()})
-                    st.caption("수량·단가·메모를 표에서 바로 고치세요. 금액은 "
-                               "만들 때 다시 계산됩니다. 합계 ₩{:,} (VAT 별도, "
-                               "현재 표 기준)".format(int(_tbl_df["금액"].sum())))
+                            "제외": st.column_config.CheckboxColumn(
+                                help="체크한 줄은 편집 반영·발주서 생성 때 표에서 "
+                                     "빠집니다")})
+                    st.caption("수량·단가·메모를 표에서 바로 고치세요. 재질 = 제품 "
+                               "마스터, 규격 = BOM 자재명. '제외' 체크 줄은 빠지고, "
+                               "금액은 만들 때 다시 계산됩니다. 합계 ₩{:,} (VAT "
+                               "별도, 현재 표 기준)".format(int(_tbl_df["금액"].sum())))
                     fc1, fc2, fc3 = st.columns(3)
                     po_date = fc1.date_input("발주일", value=_date.today(),
                                              key="po_date")
@@ -11623,10 +11569,14 @@ elif page == "발주/입고":
                     _po_make = pb1.form_submit_button(
                         "발주서 만들기 (PDF)", type="primary",
                         use_container_width=True)
-                    _po_keep = pb2.form_submit_button("표만 저장",
-                                                      use_container_width=True)
-                    _po_clear = pb3.form_submit_button("표 비우기",
-                                                       use_container_width=True)
+                    _po_keep = pb2.form_submit_button(
+                        "편집 반영 (임시)", use_container_width=True,
+                        help="표의 수정·제외를 반영만 합니다 — 이 화면을 떠나면 "
+                             "사라지는 임시 상태이며 발주서·DB 에는 저장되지 "
+                             "않습니다")
+                    _po_clear = pb3.form_submit_button(
+                        "표 비우기", use_container_width=True,
+                        help="담은 품목을 전부 비웁니다")
 
                 def _apply_table():
                     """표 편집 내용을 po_items 에 반영 (삭제 체크 제외)."""
@@ -11635,7 +11585,7 @@ elif page == "발주/입고":
                         if int(_bi) >= len(_items):
                             continue
                         it = dict(_items[int(_bi)])
-                        if bool(_brow.get("삭제")):
+                        if bool(_brow.get("제외")):
                             continue
                         it["item_name"] = str(_brow.get("품명") or it["item_name"]).strip()
                         it["material"] = str(_brow.get("재질") or "").strip()
