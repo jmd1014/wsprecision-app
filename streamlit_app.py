@@ -159,6 +159,8 @@ div[data-testid="stDataFrame"]{
 .ws-chip.err b{color:var(--warn2)}
 
 /* ── 홈 KPI 카드 (상태는 숫자 색으로 — 스트라이프 없음) ── */
+.ag-theme-alpine .tt-edit{background:#fbfcfe;box-shadow:inset 0 -1px 0 #d6dbe2}
+.ag-theme-alpine .tt-edit.ag-cell-focus{box-shadow:inset 0 0 0 2px #3182f6}
 /* 설비 스케줄 보드 (생산 계획, 2026-09-07) — 설비 × 날짜 × 교대 셀 */
 .sb-wrap{overflow-x:auto;background:var(--card);border-radius:16px;
   box-shadow:var(--shadow);padding:6px 6px 2px;margin:4px 0 10px}
@@ -786,6 +788,112 @@ _TOSS_GRID_CSS = {
     ".ag-body-vertical-scroll, .ag-body-horizontal-scroll":
         {"background": "#eef1f4"},
 }
+
+
+def toss_grid_edit(rows, *, key, editable_cols=(), num_cols=(), strong_cols=(),
+                   columns=None, height=None):
+    """토스 스타일 편집 그리드 — (편집 반영된 rows, 선택 행 인덱스) 반환.
+
+    toss_grid 와 같은 시각 언어(2026-09-11 사용자 요청: 발주서 품목 표도
+    다른 리스트와 같은 양식). editable_cols 은 셀 클릭/타이핑으로 고치고
+    값이 바뀔 때마다 rerun 되어 즉시 반영된다. 행 클릭 = 선택(삭제 등 액션용).
+    AgGrid 미탑재 시 st.data_editor 폴백(선택은 첫 행).
+    """
+    import pandas as pd
+    if hasattr(rows, "to_dict"):
+        rows = rows.to_dict("records")
+    if not rows:
+        return [], None
+    _cols = ([c for c in columns if c in rows[0]] if columns
+             else [c for c in rows[0].keys() if not str(c).startswith("_")])
+    _df = pd.DataFrame([{**{c: r.get(c) for c in _cols}, "_i": i}
+                        for i, r in enumerate(rows)])
+    try:
+        from st_aggrid import AgGrid, GridOptionsBuilder, JsCode
+        _num_js = JsCode("""
+            function(p){
+              if (p.value == null || p.value === '') return '';
+              const n = Number(p.value);
+              return isNaN(n) ? String(p.value) : n.toLocaleString();
+            }""")
+        _num_parse = JsCode("""
+            function(p){ const n = Number(p.newValue);
+              return isNaN(n) ? p.oldValue : n; }""")
+        gb = GridOptionsBuilder.from_dataframe(_df)
+        gb.configure_default_column(resizable=True, sortable=False,
+                                    filter=False, suppressMovable=True,
+                                    flex=1, minWidth=88, editable=False)
+        gb.configure_column("_i", hide=True)
+        for c in _cols:
+            _kw = {"editable": c in editable_cols}
+            _cls = []
+            if c in num_cols:
+                _cls.append("tt-num")
+                _kw["valueFormatter"] = _num_js
+                _kw["headerClass"] = "tt-num-h"
+                if c in editable_cols:
+                    _kw["valueParser"] = _num_parse
+            if c in strong_cols:
+                _cls.append("tt-strong")
+            if c in editable_cols:
+                _cls.append("tt-edit")
+            if _cls:
+                _kw["cellClass"] = _cls
+            gb.configure_column(c, **_kw)
+        gb.configure_selection("single")
+        _auto = height is None and len(rows) <= 12
+        gb.configure_grid_options(
+            headerHeight=42, rowHeight=42, suppressCellFocus=False,
+            singleClickEdit=True, stopEditingWhenCellsLoseFocus=True,
+            suppressColumnVirtualisation=True, suppressRowVirtualisation=True,
+            scrollbarWidth=10,
+            **({"domLayout": "autoHeight"} if _auto
+               else {"alwaysShowVerticalScroll": True}))
+        _kw2 = ({"height": 46 + 42 * (len(rows) + 1)} if _auto
+                else {"height": height or 520})
+        # reload_data=True: rerun 마다 새 DataFrame 을 그리드에 다시 넣는다 —
+        # 편집 → rerun 뒤 파생 값(금액 등)이 그리드에도 보이도록 (기본값은
+        # 컴포넌트가 첫 데이터를 유지해 금액이 0 으로 남던 문제, 2026-09-11)
+        _g = AgGrid(_df, gridOptions=gb.build(),
+                    update_on=["cellValueChanged", "selectionChanged"],
+                    allow_unsafe_jscode=True, reload_data=True,
+                    custom_css=_TOSS_GRID_CSS, theme="alpine",
+                    key=key, **_kw2)
+        _data = _g.data
+        _out = [dict(r) for r in rows]
+        if _data is not None:
+            _recs = (_data.to_dict("records") if hasattr(_data, "to_dict")
+                     else list(_data))
+            for rec in _recs:
+                try:
+                    _ix = int(rec.get("_i"))
+                except (TypeError, ValueError):
+                    continue
+                if 0 <= _ix < len(_out):
+                    for c in editable_cols:
+                        if c in rec:
+                            _out[_ix][c] = rec[c]
+        _sel_ix = None
+        _sel = _g.selected_rows
+        if _sel is not None:
+            _srecs = (_sel.to_dict("records") if hasattr(_sel, "to_dict")
+                      else list(_sel))
+            if _srecs and _srecs[0].get("_i") is not None:
+                _ix = int(_srecs[0]["_i"])
+                _sel_ix = _ix if 0 <= _ix < len(rows) else None
+        return _out, _sel_ix
+    except Exception:
+        _ed = st.data_editor(_df.drop(columns=["_i"]), hide_index=True,
+                             use_container_width=True, key=f"{key}_fb",
+                             column_config={c: st.column_config.Column(
+                                 disabled=(c not in editable_cols))
+                                 for c in _cols})
+        _out = [dict(r) for r in rows]
+        for _bi, _brow in _ed.iterrows():
+            if int(_bi) < len(_out):
+                for c in editable_cols:
+                    _out[int(_bi)][c] = _brow.get(c)
+        return _out, (0 if rows else None)
 
 
 def toss_grid(rows, *, key, badge_cols=(), num_cols=(), strong_cols=(),
@@ -11576,245 +11684,242 @@ elif page == "발주/입고":
                         st.rerun()
 
             # ─── ③ 발주서 한 장 — 표 편집 + 발주 정보 + 만들기 (폼 하나) ───
-            st.markdown("##### ③ 발주서")
-            _items = st.session_state.po_items
-            if _por:
-                # 방금 만든 발주서는 그 자리(③)에 완료 카드로 — 위로 튀지 않게
-                # (2026-09-11 사용자 피드백)
-                with st.container(border=True):
-                    st.markdown("**{}** · {} · {} · {}개 품목 · 합계 ₩{:,} "
-                                "(VAT 별도)".format(
-                                    _por["po_no"], _por["vendor"],
-                                    _por.get("date") or "", _por["n"],
-                                    _por["total"]))
-                    if _por.get("items"):
-                        toss_table([{
-                            "품명": it["item_name"],
-                            "재질": it.get("material") or "-",
-                            "규격": it.get("spec") or "-",
-                            "수량": it["qty"], "단가": it["unit_price"],
-                            "금액": it["qty"] * it["unit_price"],
-                            "메모": it.get("memo") or "-",
-                        } for it in _por["items"]],
-                            num_cols=("수량", "단가", "금액"),
-                            strong_cols=("품명",))
-                    rb1, rb2, rb3 = st.columns([1.2, 1, 1])
-                    rb1.download_button(
-                        "발주서 PDF 내려받기", data=_por["pdf"],
-                        file_name=f"{_por['po_no']}_{_por['vendor']}.pdf",
-                        mime="application/pdf", type="primary",
-                        use_container_width=True, key="po_dl_pdf")
-                    if _por.get("xlsx"):
-                        rb2.download_button(
-                            "엑셀(xlsx)", data=_por["xlsx"],
-                            file_name=f"{_por['po_no']}_{_por['vendor']}.xlsx",
-                            mime="application/vnd.openxmlformats-officedocument."
-                                 "spreadsheetml.sheet",
-                            use_container_width=True, key="po_dl_xlsx")
-                    if rb3.button("새 발주서 시작", use_container_width=True,
-                                  key="po_new"):
-                        st.session_state.po_items = []
-                        st.session_state.pop("po_result", None)
-                        st.session_state["po_tbl_nonce"] = \
-                            st.session_state.get("po_tbl_nonce", 0) + 1
-                        st.rerun()
-                    st.caption("발주 이력 탭에서 언제든 다시 내려받을 수 있습니다.")
-            elif not _items:
-                st.info("②에서 품목을 담으면 여기에 발주서 표가 나타납니다.")
-            else:
-                for it in _items:
-                    it.setdefault("_uid", str(_po_uuid.uuid4())[:8])
-                _tbl_nonce = st.session_state.get("po_tbl_nonce", 0)
-                # 행 단위 입력 + 줄마다 [삭제] (2026-09-11 사용자 확정: 셀을
-                # 고칠 때마다 바로 반영되는 방식이 낫고, 편집 반영 버튼은 불필요)
-                _hc = st.columns([2.6, 1, 1.6, 1.1, 1.2, 1.2, 1.8, 0.7])
-                for _c, _t in zip(_hc, ("품명", "재질", "규격", "수량", "단가",
-                                        "금액", "메모", "")):
-                    _c.markdown(f"<div class='sb-legend' style='margin:0'>"
-                                f"<b>{_t}</b></div>", unsafe_allow_html=True)
-                _total_now = 0
-                for it in _items:
-                    uid = it["_uid"]
-                    rc = st.columns([2.6, 1, 1.6, 1.1, 1.2, 1.2, 1.8, 0.7])
-                    it["item_name"] = rc[0].text_input(
-                        "품명", value=it["item_name"], key=f"po_nm_{uid}",
-                        label_visibility="collapsed")
-                    it["material"] = rc[1].text_input(
-                        "재질", value=it.get("material") or "",
-                        key=f"po_mt_{uid}", label_visibility="collapsed")
-                    it["spec"] = rc[2].text_input(
-                        "규격", value=it.get("spec") or "", key=f"po_sp_{uid}",
-                        label_visibility="collapsed")
-                    it["qty"] = int(rc[3].number_input(
-                        "수량", 0, 10_000_000, int(it.get("qty") or 0), 10,
-                        key=f"po_q_{uid}", label_visibility="collapsed"))
-                    it["unit_price"] = int(rc[4].number_input(
-                        "단가", 0, 100_000_000, int(it.get("unit_price") or 0),
-                        100, key=f"po_p_{uid}", label_visibility="collapsed"))
-                    _amt = it["qty"] * it["unit_price"]
-                    _total_now += _amt
-                    rc[5].markdown(
-                        f"<div style='text-align:right;padding-top:9px;"
-                        f"font-variant-numeric:tabular-nums'>₩{_amt:,}</div>",
-                        unsafe_allow_html=True)
-                    it["memo"] = rc[6].text_input(
-                        "메모", value=it.get("memo") or "", key=f"po_mm_{uid}",
-                        label_visibility="collapsed",
-                        placeholder="예: 9/20 납기")
-                    if rc[7].button("삭제", key=f"po_rm_{uid}",
-                                    use_container_width=True):
-                        st.session_state.po_items = [
-                            x for x in _items if x["_uid"] != uid]
-                        for k in (f"po_nm_{uid}", f"po_mt_{uid}", f"po_sp_{uid}",
-                                  f"po_q_{uid}", f"po_p_{uid}", f"po_mm_{uid}"):
-                            st.session_state.pop(k, None)
-                        st.rerun()
-                tc1, tc2 = st.columns([3, 1])
-                tc1.caption("재질 = 제품 마스터, 규격 = BOM 자재명. 고친 값은 바로 "
-                            "반영됩니다. 합계 ₩{:,} (VAT 별도)".format(_total_now))
-                if tc2.button("표 비우기", key="po_clear_all",
-                              use_container_width=True):
-                    st.session_state.po_items = []
-                    st.rerun()
-                with st.form("po_form"):
-                    fc1, fc2, fc3 = st.columns(3)
-                    po_date = fc1.date_input("발주일", value=_date.today(),
-                                             key="po_date")
-                    delivery_date = fc2.text_input("납기", key="po_due",
-                                                   placeholder="예: 14일 이내")
-                    payment_terms = fc3.text_input(
-                        "지불조건", value=vendor.get("payment_terms")
-                        or "말일 마감 60일 현금",
-                        key=f"po_pay_{vendor['vendor_id']}")
-                    fc4, fc5 = st.columns(2)
-                    contact_person = fc4.text_input(
-                        "담당자", value="김민수 과장 / 010-3881-1165",
-                        key="po_contact")
-                    delivery_address = fc5.text_input(
-                        "배송지", value="부산광역시 기장군 산단4로 71",
-                        key="po_addr")
-                    po_remark = st.text_input("비고 (발주서에 인쇄)", key="po_rmk",
-                                              placeholder="예: 검수 후 입고, "
-                                                          "밀시트 첨부")
-                    _po_make = st.form_submit_button(
-                        "발주서 만들기 (PDF)", type="primary",
-                        use_container_width=True)
-
-                def _apply_table():
-                    """행 입력은 즉시 po_items 에 반영되므로 그대로 사용."""
-                    return [dict(it, item_name=str(it["item_name"]).strip(),
-                                 memo=str(it.get("memo") or "").strip())
-                            for it in st.session_state.po_items]
-
-                if _po_make:
-                    _final = _apply_table()
-                    _zero = [it["item_name"] for it in _final if not it["qty"]]
-                    if not _final:
-                        st.error("품목이 없습니다.")
-                    elif _zero:
-                        st.session_state.po_items = _final
-                        st.error("수량이 0인 품목: " + ", ".join(_zero[:5])
-                                 + " — 수량을 넣고 다시 만드세요.")
-                    else:
-                        total = sum(it["qty"] * it["unit_price"] for it in _final)
-                        try:
-                            po_no = generate_po_number(_db)
-                        except Exception:
-                            po_no = f"PO-{_date.today().strftime('%Y%m')}-001"
-                        po_data = {"po_number": po_no, "po_date": po_date,
-                                   "vendor_name": vendor["name"],
-                                   "delivery_date": delivery_date,
-                                   "payment_terms": payment_terms,
-                                   "delivery_address": delivery_address,
-                                   "contact_person": contact_person,
-                                   "remark": po_remark.strip() or None}
-                        vendor_info = {"biz_no": vendor.get("business_no"),
-                                       "ceo": vendor.get("ceo_name"),
-                                       "address": vendor.get("address"),
-                                       "phone": vendor.get("phone")}
-                        try:
-                            pdf_bytes = _po_pdf(po_data, _final, vendor_info)
-                        except Exception as e:
-                            st.error(f"PDF 생성 실패: {e}")
-                            pdf_bytes = None
-                        try:
-                            xlsx_bytes = fill_po_template(po_data, _final,
-                                                          vendor_info)
-                        except Exception:
-                            xlsx_bytes = None
-                        if pdf_bytes:
-                            try:
-                                _src_so = st.session_state.get(
-                                    "po_prefill_source_so") or None
-                                _po_record = {
-                                    "po_number": po_no,
-                                    "vendor_id": vendor["vendor_id"],
-                                    "po_date": po_date.isoformat(),
-                                    "delivery_date": delivery_date or None,
-                                    "total_amount": total,
-                                    "vat": int(total * 0.1),
-                                    "payment_terms": payment_terms,
-                                    "delivery_address": delivery_address,
-                                    "contact_person": contact_person,
-                                    "status": "DRAFT",
-                                    "created_by": current_user_name(),
-                                    "remark": (po_remark.strip() or None)
-                                    if not _src_so else
-                                    f"출처 수주: {_src_so}"
-                                    + (f" · {po_remark.strip()}"
-                                       if po_remark.strip() else "")}
-                                _db.insert("purchase_orders", [_po_record])
-                                po_row = _db.fetch_one(
-                                    "purchase_orders", f"po_number=eq.{po_no}",
-                                    "po_id")
-                                if po_row:
-                                    _bom_map = {}
-                                    _pids9 = {it.get("product_id") for it in _final
-                                              if it.get("product_id")}
-                                    if _pids9:
-                                        try:
-                                            _pstr9 = ",".join(
-                                                f'"{p}"' for p in _pids9)
-                                            for _b9 in fetch(
-                                                    "bom", "product_id,material_id",
-                                                    f"product_id=in.({_pstr9})"
-                                                    "&material_id=not.is.null",
-                                                    limit=300):
-                                                _bom_map.setdefault(
-                                                    _b9["product_id"],
-                                                    _b9["material_id"])
-                                        except Exception:
-                                            pass
-                                    _db.insert("purchase_order_items", [{
-                                        "po_id": po_row["po_id"],
-                                        "line_no": i + 1,
-                                        "item_name": it["item_name"],
-                                        "spec": it.get("spec") or None,
-                                        "product_id": it.get("product_id"),
-                                        "material_id": _bom_map.get(
-                                            it.get("product_id")),
-                                        "material": (it.get("material")
-                                                     or "").strip() or None,
-                                        "qty": it["qty"], "unit": "EA",
-                                        "unit_price": it["unit_price"],
-                                        "amount": it["qty"] * it["unit_price"],
-                                        "remark": (it.get("memo") or "").strip()
-                                        or None,
-                                    } for i, it in enumerate(_final)])
-                            except Exception as e:
-                                st.warning(f"DB 저장 실패 (문서는 정상): {e}")
-                            st.session_state["po_result"] = {
-                                "po_no": po_no, "vendor": vendor["name"],
-                                "date": po_date.isoformat(),
-                                "n": len(_final), "total": total,
-                                "items": _final,
-                                "pdf": pdf_bytes, "xlsx": xlsx_bytes}
+            with st.container(border=True):
+                st.markdown("##### ③ 발주서")
+                _items = st.session_state.po_items
+                if _por:
+                    # 방금 만든 발주서는 그 자리(③)에 완료 카드로 — 위로 튀지 않게
+                    # (2026-09-11 사용자 피드백)
+                    with st.container(border=True):
+                        st.markdown("**{}** · {} · {} · {}개 품목 · 합계 ₩{:,} "
+                                    "(VAT 별도)".format(
+                                        _por["po_no"], _por["vendor"],
+                                        _por.get("date") or "", _por["n"],
+                                        _por["total"]))
+                        if _por.get("items"):
+                            toss_table([{
+                                "품명": it["item_name"],
+                                "재질": it.get("material") or "-",
+                                "규격": it.get("spec") or "-",
+                                "수량": it["qty"], "단가": it["unit_price"],
+                                "금액": it["qty"] * it["unit_price"],
+                                "메모": it.get("memo") or "-",
+                            } for it in _por["items"]],
+                                num_cols=("수량", "단가", "금액"),
+                                strong_cols=("품명",))
+                        rb1, rb2, rb3 = st.columns([1.2, 1, 1])
+                        rb1.download_button(
+                            "발주서 PDF 내려받기", data=_por["pdf"],
+                            file_name=f"{_por['po_no']}_{_por['vendor']}.pdf",
+                            mime="application/pdf", type="primary",
+                            use_container_width=True, key="po_dl_pdf")
+                        if _por.get("xlsx"):
+                            rb2.download_button(
+                                "엑셀(xlsx)", data=_por["xlsx"],
+                                file_name=f"{_por['po_no']}_{_por['vendor']}.xlsx",
+                                mime="application/vnd.openxmlformats-officedocument."
+                                     "spreadsheetml.sheet",
+                                use_container_width=True, key="po_dl_xlsx")
+                        if rb3.button("새 발주서 시작", use_container_width=True,
+                                      key="po_new"):
                             st.session_state.po_items = []
-                            st.session_state.po_prefill_vendor_name = None
-                            st.session_state.po_prefill_items = None
-                            st.session_state.po_prefill_source_so = None
-                            st.session_state["po_tbl_nonce"] = _tbl_nonce + 1
+                            st.session_state.pop("po_result", None)
+                            st.session_state["po_tbl_nonce"] = \
+                                st.session_state.get("po_tbl_nonce", 0) + 1
                             st.rerun()
+                        st.caption("발주 이력 탭에서 언제든 다시 내려받을 수 있습니다.")
+                elif not _items:
+                    st.info("②에서 품목을 담으면 여기에 발주서 표가 나타납니다.")
+                else:
+                    for it in _items:
+                        it.setdefault("_uid", str(_po_uuid.uuid4())[:8])
+                    _tbl_nonce = st.session_state.get("po_tbl_nonce", 0)
+                    # 편집 그리드 — 다른 리스트와 같은 양식 (2026-09-11 사용자
+                    # 요청). 셀을 고치면 바로 반영, 행 클릭 후 [선택 줄 삭제]
+                    _grid_rows = [{
+                        "품명": it["item_name"], "재질": it.get("material") or "",
+                        "규격": it.get("spec") or "",
+                        "수량": int(it.get("qty") or 0),
+                        "단가": int(it.get("unit_price") or 0),
+                        "금액": int(it.get("qty") or 0) * int(it.get("unit_price") or 0),
+                        "메모": it.get("memo") or "",
+                    } for it in _items]
+                    _ed_rows, _sel_ix = toss_grid_edit(
+                        _grid_rows, key=f"po_grid_{_tbl_nonce}",
+                        editable_cols=("품명", "재질", "규격", "수량", "단가", "메모"),
+                        num_cols=("수량", "단가", "금액"), strong_cols=("품명",))
+                    _changed = False
+                    for it, r in zip(_items, _ed_rows):
+                        _new = {
+                            "item_name": str(r.get("품명") or it["item_name"]).strip(),
+                            "material": str(r.get("재질") or "").strip(),
+                            "spec": str(r.get("규격") or "").strip(),
+                            "qty": int(float(r.get("수량") or 0)),
+                            "unit_price": int(float(r.get("단가") or 0)),
+                            "memo": str(r.get("메모") or "").strip()}
+                        if any(it.get(k) != v for k, v in _new.items()):
+                            it.update(_new)
+                            _changed = True
+                    if _changed:
+                        st.rerun()          # 금액·합계 갱신
+                    _total_now = sum(int(it.get("qty") or 0) * int(it.get("unit_price") or 0)
+                                     for it in _items)
+                    tc1, tc2, tc3 = st.columns([3, 1, 1])
+                    tc1.caption("셀을 클릭해 고치면 바로 반영됩니다. 재질 = 제품 마스터, "
+                                "규격 = BOM 자재명. 합계 ₩{:,} (VAT 별도)".format(_total_now))
+                    if tc2.button("선택 줄 삭제", key="po_rm_sel",
+                                  use_container_width=True,
+                                  disabled=_sel_ix is None,
+                                  help="표에서 줄을 클릭해 선택한 뒤 누르세요"):
+                        _uid = _items[_sel_ix]["_uid"]
+                        st.session_state.po_items = [
+                            x for x in _items if x["_uid"] != _uid]
+                        st.session_state["po_tbl_nonce"] = _tbl_nonce + 1
+                        st.rerun()
+                    if tc3.button("표 비우기", key="po_clear_all",
+                                  use_container_width=True):
+                        st.session_state.po_items = []
+                        st.session_state["po_tbl_nonce"] = _tbl_nonce + 1
+                        st.rerun()
+                    with st.form("po_form"):
+                        fc1, fc2, fc3 = st.columns(3)
+                        po_date = fc1.date_input("발주일", value=_date.today(),
+                                                 key="po_date")
+                        delivery_date = fc2.text_input("납기", key="po_due",
+                                                       placeholder="예: 14일 이내")
+                        payment_terms = fc3.text_input(
+                            "지불조건", value=vendor.get("payment_terms")
+                            or "말일 마감 60일 현금",
+                            key=f"po_pay_{vendor['vendor_id']}")
+                        fc4, fc5 = st.columns(2)
+                        contact_person = fc4.text_input(
+                            "담당자", value="김민수 과장 / 010-3881-1165",
+                            key="po_contact")
+                        delivery_address = fc5.text_input(
+                            "배송지", value="부산광역시 기장군 산단4로 71",
+                            key="po_addr")
+                        po_remark = st.text_input("비고 (발주서에 인쇄)", key="po_rmk",
+                                                  placeholder="예: 검수 후 입고, "
+                                                              "밀시트 첨부")
+                        _po_make = st.form_submit_button(
+                            "발주서 만들기 (PDF)", type="primary",
+                            use_container_width=True)
+
+                    def _apply_table():
+                        """행 입력은 즉시 po_items 에 반영되므로 그대로 사용."""
+                        return [dict(it, item_name=str(it["item_name"]).strip(),
+                                     memo=str(it.get("memo") or "").strip())
+                                for it in st.session_state.po_items]
+
+                    if _po_make:
+                        _final = _apply_table()
+                        _zero = [it["item_name"] for it in _final if not it["qty"]]
+                        if not _final:
+                            st.error("품목이 없습니다.")
+                        elif _zero:
+                            st.session_state.po_items = _final
+                            st.error("수량이 0인 품목: " + ", ".join(_zero[:5])
+                                     + " — 수량을 넣고 다시 만드세요.")
+                        else:
+                            total = sum(it["qty"] * it["unit_price"] for it in _final)
+                            try:
+                                po_no = generate_po_number(_db)
+                            except Exception:
+                                po_no = f"PO-{_date.today().strftime('%Y%m')}-001"
+                            po_data = {"po_number": po_no, "po_date": po_date,
+                                       "vendor_name": vendor["name"],
+                                       "delivery_date": delivery_date,
+                                       "payment_terms": payment_terms,
+                                       "delivery_address": delivery_address,
+                                       "contact_person": contact_person,
+                                       "remark": po_remark.strip() or None}
+                            vendor_info = {"biz_no": vendor.get("business_no"),
+                                           "ceo": vendor.get("ceo_name"),
+                                           "address": vendor.get("address"),
+                                           "phone": vendor.get("phone")}
+                            try:
+                                pdf_bytes = _po_pdf(po_data, _final, vendor_info)
+                            except Exception as e:
+                                st.error(f"PDF 생성 실패: {e}")
+                                pdf_bytes = None
+                            try:
+                                xlsx_bytes = fill_po_template(po_data, _final,
+                                                              vendor_info)
+                            except Exception:
+                                xlsx_bytes = None
+                            if pdf_bytes:
+                                try:
+                                    _src_so = st.session_state.get(
+                                        "po_prefill_source_so") or None
+                                    _po_record = {
+                                        "po_number": po_no,
+                                        "vendor_id": vendor["vendor_id"],
+                                        "po_date": po_date.isoformat(),
+                                        "delivery_date": delivery_date or None,
+                                        "total_amount": total,
+                                        "vat": int(total * 0.1),
+                                        "payment_terms": payment_terms,
+                                        "delivery_address": delivery_address,
+                                        "contact_person": contact_person,
+                                        "status": "DRAFT",
+                                        "created_by": current_user_name(),
+                                        "remark": (po_remark.strip() or None)
+                                        if not _src_so else
+                                        f"출처 수주: {_src_so}"
+                                        + (f" · {po_remark.strip()}"
+                                           if po_remark.strip() else "")}
+                                    _db.insert("purchase_orders", [_po_record])
+                                    po_row = _db.fetch_one(
+                                        "purchase_orders", f"po_number=eq.{po_no}",
+                                        "po_id")
+                                    if po_row:
+                                        _bom_map = {}
+                                        _pids9 = {it.get("product_id") for it in _final
+                                                  if it.get("product_id")}
+                                        if _pids9:
+                                            try:
+                                                _pstr9 = ",".join(
+                                                    f'"{p}"' for p in _pids9)
+                                                for _b9 in fetch(
+                                                        "bom", "product_id,material_id",
+                                                        f"product_id=in.({_pstr9})"
+                                                        "&material_id=not.is.null",
+                                                        limit=300):
+                                                    _bom_map.setdefault(
+                                                        _b9["product_id"],
+                                                        _b9["material_id"])
+                                            except Exception:
+                                                pass
+                                        _db.insert("purchase_order_items", [{
+                                            "po_id": po_row["po_id"],
+                                            "line_no": i + 1,
+                                            "item_name": it["item_name"],
+                                            "spec": it.get("spec") or None,
+                                            "product_id": it.get("product_id"),
+                                            "material_id": _bom_map.get(
+                                                it.get("product_id")),
+                                            "material": (it.get("material")
+                                                         or "").strip() or None,
+                                            "qty": it["qty"], "unit": "EA",
+                                            "unit_price": it["unit_price"],
+                                            "amount": it["qty"] * it["unit_price"],
+                                            "remark": (it.get("memo") or "").strip()
+                                            or None,
+                                        } for i, it in enumerate(_final)])
+                                except Exception as e:
+                                    st.warning(f"DB 저장 실패 (문서는 정상): {e}")
+                                st.session_state["po_result"] = {
+                                    "po_no": po_no, "vendor": vendor["name"],
+                                    "date": po_date.isoformat(),
+                                    "n": len(_final), "total": total,
+                                    "items": _final,
+                                    "pdf": pdf_bytes, "xlsx": xlsx_bytes}
+                                st.session_state.po_items = []
+                                st.session_state.po_prefill_vendor_name = None
+                                st.session_state.po_prefill_items = None
+                                st.session_state.po_prefill_source_so = None
+                                st.session_state["po_tbl_nonce"] = _tbl_nonce + 1
+                                st.rerun()
 
     # ════════════ TAB 2: 발주 이력 ════════════
     with tab_hist:
