@@ -161,7 +161,6 @@ div[data-testid="stDataFrame"]{
 /* ── 홈 KPI 카드 (상태는 숫자 색으로 — 스트라이프 없음) ── */
 .ag-theme-alpine .tt-edit{background:#fbfcfe;box-shadow:inset 0 -1px 0 #d6dbe2}
 .ag-theme-alpine .tt-edit.ag-cell-focus{box-shadow:inset 0 0 0 2px #3182f6}
-.ag-theme-alpine .tt-chk{text-align:center;background:#fff}
 /* 설비 스케줄 보드 (생산 계획, 2026-09-07) — 설비 × 날짜 × 교대 셀 */
 .sb-wrap{overflow-x:auto;background:var(--card);border-radius:16px;
   box-shadow:var(--shadow);padding:6px 6px 2px;margin:4px 0 10px}
@@ -739,6 +738,14 @@ def toss_df(data, *, column_config=None, hide_index=True,
 # 리스트는 이 그리드로 통일: 토스 CSS를 입힌 AgGrid(DOM), 행 클릭 =
 # 선택. 반환값은 선택된 행의 인덱스 (미선택·미탑재 시 0 = 첫 행).
 _TOSS_GRID_CSS = {
+    ".tt-act-btn": {"border": "0", "border-radius": "8px",
+                    "padding": "5px 11px", "font-weight": "600",
+                    "font-size": "12px", "cursor": "pointer",
+                    "font-family": "inherit", "line-height": "1.2"},
+    ".tt-act-danger": {"background": "#fdeaec", "color": "#f04452"},
+    ".tt-act-danger:hover": {"background": "#f04452", "color": "#fff"},
+    ".tt-chk": {"display": "flex", "align-items": "center",
+                "justify-content": "center", "padding": "0 !important"},
     ".ag-root-wrapper": {
         "border": "none", "border-radius": "16px",
         "box-shadow": "0 1px 3px rgba(2,32,71,.05), "
@@ -846,9 +853,25 @@ def toss_grid_edit(rows, *, key, editable_cols=(), num_cols=(), strong_cols=(),
             if c in editable_cols:
                 _cls.append("tt-edit")
             if c == check_col:
-                _kw.update({"cellRenderer": "agCheckboxCellRenderer",
-                            "cellEditor": "agCheckboxCellEditor",
-                            "maxWidth": 72, "minWidth": 64, "flex": 0,
+                # 행 액션 버튼 (2026-09-11 사용자 요청: 체크 대신 다른 액션
+                # 버튼처럼, 삭제 계통 색) — 클릭하면 값을 True 로 바꿔
+                # cellValueChanged 로 돌아온다
+                _btn_js = JsCode("""
+                    class ActionBtnRenderer {
+                      init(params) {
+                        this.eGui = document.createElement('button');
+                        this.eGui.className = 'tt-act-btn tt-act-danger';
+                        this.eGui.innerText = params.colDef.headerName || '삭제';
+                        this.eGui.addEventListener('click', () => {
+                          params.node.setDataValue(params.column.getColId(), true);
+                        });
+                      }
+                      getGui() { return this.eGui; }
+                      refresh() { return false; }
+                    }""")
+                _kw.update({"cellRenderer": _btn_js, "editable": False,
+                            "maxWidth": 84, "minWidth": 76, "flex": 0,
+                            "headerName": check_col,
                             "headerClass": "tt-num-h", "cellClass": ["tt-chk"]})
             elif _cls:
                 _kw["cellClass"] = _cls
@@ -11792,7 +11815,7 @@ elif page == "발주/입고":
                     _total_now = sum(int(it.get("qty") or 0) * int(it.get("unit_price") or 0)
                                      for it in _items)
                     tc1, tc3 = st.columns([4, 1])
-                    tc1.caption("셀을 클릭해 고치면 바로 반영되고, 삭제 칸을 체크하면 "
+                    tc1.caption("셀을 클릭해 고치면 바로 반영되고, [삭제] 를 누르면 "
                                 "그 줄이 바로 빠집니다. 재질 = 제품 마스터, 규격 = "
                                 "BOM 자재명. 합계 ₩{:,} (VAT 별도)".format(_total_now))
                     if tc3.button("표 비우기", key="po_clear_all",
