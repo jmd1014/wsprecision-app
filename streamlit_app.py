@@ -11037,8 +11037,25 @@ elif page == "발주/입고":
                       if str(r.get("txn_date") or "") >= _wk_from)
         _lots_w = [l for l in _lots
                    if str(l.get("lot_number") or "").startswith("W")]
-        _lot_bal = {l["lot_number"]: float(l.get("lot_balance") or 0)
-                    for l in _lots_w}
+        # LOT 잔량은 원장에서 직접 합산 — material_stock_by_lot 뷰는 HAVING
+        # sum(qty) > 0 이라 전량 투입된 LOT 이 빠져 '투입 대기' 로 보이던 문제
+        # (2026-09-14 사용자 보고 "입고 현황 상태가 전부 투입 대기")
+        _lot_bal = {}
+        try:
+            _wl_all = sorted({str(r.get("lot_number")) for r in _rcpts
+                              if str(r.get("lot_number") or ""
+                                     ).startswith("W")})
+            for _i0 in range(0, len(_wl_all), 60):
+                for t in fetch("inventory_transactions", "lot_number,qty",
+                               "lot_number=in.({})".format(",".join(
+                                   f'"{x}"' for x in _wl_all[_i0:_i0 + 60])),
+                               limit=3000):
+                    _lot_bal[t["lot_number"]] = (
+                        _lot_bal.get(t["lot_number"], 0.0)
+                        + float(t.get("qty") or 0))
+        except Exception:
+            _lot_bal = {l["lot_number"]: float(l.get("lot_balance") or 0)
+                        for l in _lots_w}
         _lots_open = [l for l in _lots_w
                       if float(l.get("lot_balance") or 0) > 0]
         _m_name = {m["material_id"]: m.get("raw_name") for m in _ms}
