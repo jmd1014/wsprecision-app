@@ -5628,12 +5628,26 @@ elif page == "수주 관리":
                 if items:
                     st.success(f"{len(items)}개 품목 파싱 완료")
 
+                    # 거래처 약칭 → 마스터 정식 명칭 (Migration 063 short_name).
+                    # HDX 파일은 거래처를 "HDX"로 파싱하지만 마스터 정식명은
+                    # 사업자등록 명칭(현대제뉴인(주)) — 수주·전표의 거래처
+                    # 문자열을 정식명으로 통일해야 중복 검증·명세서 조회가 맞는다
+                    try:
+                        _vsn = fetch("vendors", "vendor_id,name",
+                                     f"short_name=eq.{items[0]['customer']}",
+                                     limit=1)
+                        if _vsn:
+                            for it in items:
+                                it["customer"] = _vsn[0]["name"]
+                    except Exception:
+                        pass
+
                     # ── 중복 수주번호 검증 (DB 기존 데이터 vs 파싱 결과) ──
                     customer_name = items[0]["customer"]
                     parsed_so_set = sorted({it["so_number"] for it in items if it.get("so_number")})
                     if parsed_so_set:
                         existing_filter = (
-                            f"customer=eq.{customer_name}&"
+                            f"customer=eq.\"{customer_name}\"&"
                             f"so_number=in.({','.join(parsed_so_set)})"
                         )
                         try:
@@ -5660,7 +5674,7 @@ elif page == "수주 관리":
                         _rev_diff = []
                         try:
                             _ex_so = fetch("sales_orders", "so_id,so_number",
-                                           f"customer=eq.{customer_name}&so_number=in.("
+                                           f"customer=eq.\"{customer_name}\"&so_number=in.("
                                            + ",".join(dup_so_nums) + ")", limit=100)
                             _ex_map = {s["so_number"]: s["so_id"] for s in _ex_so}
                             _ex_lines = {}
@@ -5686,7 +5700,7 @@ elif page == "수주 관리":
                             _rev_nums = sorted({it["so_number"] for it in _rev_diff})
                             _rev_existing = {s["so_number"] for s in fetch(
                                 "sales_orders", "so_number",
-                                f"customer=eq.{customer_name}&or=("
+                                f"customer=eq.\"{customer_name}\"&or=("
                                 + ",".join(f"so_number.like.{n}-R*" for n in _rev_nums)
                                 + ")", limit=200)} if _rev_nums else set()
                         except Exception:
@@ -5874,8 +5888,18 @@ elif page == "수주 관리":
 
                         # 거래처 vendor_id 조회
                         cust_name = items[0]["customer"]
+                        # 정식명 정확 일치 → 약칭 → 법인 표기 뗀 부분 일치.
+                        # "(주)" 같은 PostgREST 예약 문자는 따옴표로 감싼다
                         v = fetch("vendors", "vendor_id",
-                                  f"name=ilike.*{cust_name}*&limit=1", limit=1)
+                                  f'name=eq."{cust_name}"', limit=1)
+                        if not v:
+                            v = fetch("vendors", "vendor_id",
+                                      f"short_name=eq.{cust_name}", limit=1)
+                        if not v:
+                            _ct = (cust_name.replace("㈜", "")
+                                   .replace("(주)", "").strip())
+                            v = fetch("vendors", "vendor_id",
+                                      f"name=ilike.*{_ct}*", limit=1)
                         vendor_id = v[0]["vendor_id"] if v else None
 
                         saved_so = 0; saved_items = 0
