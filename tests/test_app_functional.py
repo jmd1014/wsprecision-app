@@ -23,8 +23,8 @@ APP_FILE = os.path.join(os.path.dirname(os.path.dirname(__file__)),
 PAGES_FLOW = [
     "홈",
     "수주 관리",
-    "생산 계획",
     "발주/입고",
+    "생산 계획",
     "공정 관리",
     "출고 관리",
 ]
