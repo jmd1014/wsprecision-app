@@ -2534,7 +2534,10 @@ elif page == "마스터 관리":
 
             r3c1, r3c2 = st.columns([3, 1])
             with r3c2:
-                f_limit = st.number_input("표시 행수", 20, 500, 100, 20)
+                # 기본 300 — 활성 거래처(약 200)가 한 화면에 다 보이게.
+                # 100 이면 그룹 정렬 시 간접(INDIRECT_*) 146건에 밀려
+                # 매출 거래처가 통째로 안 보였음 (2026-09-15 엠제이티 사례)
+                f_limit = st.number_input("표시 행수", 20, 500, 300, 20)
 
         # 정렬 매핑
         sort_map = {
@@ -2563,6 +2566,12 @@ elif page == "마스터 관리":
         except Exception as e:
             st.error(f"조회 실패: {e}"); rows = []
 
+        if f_sort == "그룹 → 이름":
+            # 그룹은 업무 순서(매출 → 소재 → 외주 → 간접)로 — 알파벳순이면
+            # HEAT_TREAT·INDIRECT 가 앞에 와서 매출 거래처가 뒤로 밀린다
+            _gord = {g: i for i, g in enumerate(VENDOR_GROUPS)}
+            rows.sort(key=lambda r: (_gord.get(r.get("vendor_group"), 99),
+                                     r.get("name") or ""))
         st.caption(f"검색 결과: **{len(rows)}건** (필터 적용)")
 
         # ── 신규 거래처 등록 ──
