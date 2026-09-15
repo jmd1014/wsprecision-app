@@ -12854,7 +12854,7 @@ elif page == "공정 관리":
         for l in _tl:
             _kids.setdefault(l["parent_batch_id"], []).append(l)
             _pars.setdefault(l["child_batch_id"], []).append(l)
-        _LBL = {"OPEN": "진행", "DONE": "완성", "SCRAP": "폐기",
+        _LBL = {"OPEN": "진행", "DONE": "완성", "SCRAP": "기타",
                 "RETURN": "반품", "MERGED": "합류 종결",
                 "CANCELLED": "취소"}
         _rows, _seen = [], set()
@@ -12965,7 +12965,7 @@ elif page == "공정 관리":
                 if float(_red.get("scrap") or 0):
                     _items.append({**_base, "verdict": "불합격",
                                    "qty": float(_red["scrap"]),
-                                   "note": "폐기"})
+                                   "note": "기타"})
                 if float(_red.get("return") or 0):
                     _items.append({**_base, "verdict": "반품",
                                    "qty": float(_red["return"]),
@@ -13551,7 +13551,7 @@ elif page == "공정 관리":
         st.caption(
             "작업지시를 선택해 **공정 시작 → 완료 등록 → 외주 → 검사 → 완성 확정**을 "
             "처리합니다. 수량은 부분 처리 가능 — 상태는 자동 전환. "
-            "검사 불합격은 재작업/폐기/특채로 구분.")
+            "검사 불합격은 재작업/특채/반품/기타로 구분.")
 
         # 검사 판정 문서 즉시 다운로드 박스는 제거 (2026-08-28 사용자
         # 확정) — 라벨 출력은 처리 이력 > 라벨·의뢰서 재발행에서
@@ -14388,12 +14388,12 @@ elif page == "공정 관리":
                             key=f"bt_ip_{_sb['batch_id']}")
                         _i_rework = qc2.number_input("재작업", 0.0, None,
                             0.0, 1.0, key=f"bt_ir_{_sb['batch_id']}")
-                        _i_scrap = qc3.number_input("폐기", 0.0, None,
-                            0.0, 1.0, key=f"bt_is_{_sb['batch_id']}")
-                        _i_tok = qc4.number_input("특채", 0.0, None,
+                        _i_tok = qc3.number_input("특채", 0.0, None,
                             0.0, 1.0, key=f"bt_it_{_sb['batch_id']}")
-                        _i_ret = qc5.number_input("반품", 0.0, None,
+                        _i_ret = qc4.number_input("반품", 0.0, None,
                             0.0, 1.0, key=f"bt_ib_{_sb['batch_id']}")
+                        _i_scrap = qc5.number_input("기타", 0.0, None,
+                            0.0, 1.0, key=f"bt_is_{_sb['batch_id']}")
                         _i_done = _i_pass + _i_tok
                         _i_sum = (_i_pass + _i_rework + _i_scrap
                                   + _i_tok + _i_ret)
@@ -14464,7 +14464,7 @@ elif page == "공정 관리":
                                 _ng_items.append({**_base,
                                                   "verdict": "불합격",
                                                   "qty": _i_scrap,
-                                                  "note": "폐기"})
+                                                  "note": "기타"})
                             if _i_ret:
                                 _ng_items.append({**_base, "verdict": "반품",
                                                   "qty": _i_ret,
@@ -14531,7 +14531,7 @@ elif page == "공정 관리":
                                 } if _i_done > 0 else None),
                                 msg=f"검사 등록 — 완성 {_i_done:,.0f} "
                                     f"(LOT {_fin_no or '-'}) · 재작업 "
-                                    f"{_i_rework:,.0f} · 폐기 "
+                                    f"{_i_rework:,.0f} · 기타 "
                                     f"{_i_scrap:,.0f} · 라벨은 처리 "
                                     "이력 > 재발행에서 출력")
 
@@ -14888,11 +14888,11 @@ elif page == "공정 관리":
                             msg=f"외주 입고 {_oi_qty:,.0f} EA → "
                                 "검사 대기")
 
-                # ── 4. 검사 (합격/재작업/폐기/특채 + 라벨) ──
+                # ── 4. 검사 (합격/재작업/특채/반품/기타 + 라벨) ──
                 elif _act == "검사":
                     st.caption("검사 대기 수량을 판정합니다 — **완성(합격)"
                                "은 즉시 완성 재고로 확정** + 완성 라벨. "
-                               "불합격은 재작업/폐기/특채/반품 구분 — "
+                               "불합격은 재작업/특채/반품/기타 구분 — "
                                "재작업분만 작업지시에 남아 복귀 후 "
                                "재검사합니다.")
                     qc1, qc2, qc3, qc4, qc5 = st.columns(5)
@@ -14901,12 +14901,14 @@ elif page == "공정 관리":
                         key="pe_i_pass")
                     _i_rework = qc2.number_input("재작업", 0.0,
                         _q["검사대기"], 0.0, 1.0, key="pe_i_rework")
-                    _i_scrap = qc3.number_input("폐기", 0.0,
-                        _q["검사대기"], 0.0, 1.0, key="pe_i_scrap")
-                    _i_tok = qc4.number_input("특채", 0.0,
+                    _i_tok = qc3.number_input("특채", 0.0,
                         _q["검사대기"], 0.0, 1.0, key="pe_i_tok")
-                    _i_ret = qc5.number_input("반품", 0.0,
+                    _i_ret = qc4.number_input("반품", 0.0,
                         _q["검사대기"], 0.0, 1.0, key="pe_i_ret")
+                    # '기타' = 옛 '폐기' (2026-09-15 사용자 요청: 맨 오른쪽,
+                    # 이름 변경). 저장 컬럼은 scrap_qty 그대로.
+                    _i_scrap = qc5.number_input("기타", 0.0,
+                        _q["검사대기"], 0.0, 1.0, key="pe_i_scrap")
                     _i_done = _i_pass + _i_tok
                     _i_sum = (_i_pass + _i_rework + _i_scrap
                               + _i_tok + _i_ret)
@@ -14955,7 +14957,7 @@ elif page == "공정 관리":
                             _ng_items.append({**_base,
                                               "verdict": "불합격",
                                               "qty": _i_scrap,
-                                              "note": "폐기"})
+                                              "note": "기타"})
                         if _i_ret:
                             _ng_items.append({**_base, "verdict": "반품",
                                               "qty": _i_ret,
@@ -15015,7 +15017,7 @@ elif page == "공정 관리":
                                 "created_by": current_user_name(),
                             } if _i_done > 0 else None),
                             msg=f"검사 등록 — 완성 {_i_done:,.0f} · "
-                                f"재작업 {_i_rework:,.0f} · 폐기 "
+                                f"재작업 {_i_rework:,.0f} · 기타 "
                                 f"{_i_scrap:,.0f} · 반품 {_i_ret:,.0f} "
                                 "· 라벨은 처리 이력 > 재발행에서 출력")
                 # ── 5. 재작업 복귀 ──
@@ -15120,7 +15122,7 @@ elif page == "공정 관리":
                     if e["event_type"] == "INSPECT":
                         _s = (f"완성 {float(d.get('pass') or 0):,.0f} · "
                               f"재작업 {float(d.get('rework') or 0):,.0f}"
-                              f" · 폐기 {float(d.get('scrap') or 0):,.0f}"
+                              f" · 기타 {float(d.get('scrap') or 0):,.0f}"
                               f" · 특채 "
                               f"{float(d.get('tokusai') or 0):,.0f}")
                         if d.get("return"):
@@ -15362,8 +15364,8 @@ elif page == "공정 관리":
                 "재작업중": _bdf["재작업중"],
                 "검사대기": _bdf["검사대기"].clip(lower=0),
                 "특채": _bdf["tokusai_qty"],
-                "폐기": _bdf["scrap_qty"],
                 "반품": _bdf["return_qty"],
+                "기타": _bdf["scrap_qty"],
                 "완성": _bdf["output_qty"],
                 "상태": _bdf["상태"],
             })
@@ -15374,7 +15376,7 @@ elif page == "공정 관리":
                     format="localized", width="small")
                     for c in ["투입", "생산중", "MES 최종공정", "외주중",
                               "재작업중", "검사대기", "특채",
-                              "폐기", "반품", "완성"]})
+                              "반품", "기타", "완성"]})
             st.caption(
                 "MES 최종공정 = 업로드된 MES 실적 중 해당 작업지시의 최대 "
                 "공정번호 누적 수량 (사내 공정 진행 참고). "
