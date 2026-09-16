@@ -1153,8 +1153,12 @@ def wo_stage_qty(t):
                      - pre_out),
         "외주중": max(0.0, f("outsource_qty") - f("outsource_in_qty")),
         "재작업중": max(0.0, rew),
+        # pass_qty = 합격만, 특채는 tokusai_qty 로 따로 — 둘 다 검사를
+        # 끝낸 수량이라 검사대기에서 뺀다 (배치 경로가 특채를 pass 에
+        # 더하지 않아 특채분이 검사 대기에 남던 문제, 2026-09-16 리뷰 A5)
         "검사대기": max(0.0, f("received_qty") + f("outsource_in_qty")
                      - f("outsource_qty") - f("pass_qty")
+                     - f("tokusai_qty")
                      - f("scrap_qty") - f("return_qty") - rew),
         "완성": f("output_qty"),
         "반품": f("return_qty"),
@@ -1297,7 +1301,7 @@ with st.sidebar:
     def _nav_pick_admin():
         st.session_state["nav_flow"] = None
 
-    _is_admin = current_user().get("role", "admin") == "admin"
+    _is_admin = current_user().get("role") == "admin"
 
     st.header("업무 진행")
     nav_flow = st.radio("업무", MENU_FLOW, key="nav_flow",
@@ -1388,7 +1392,7 @@ with st.sidebar:
 if page == "홈":
     # ── 업무 진행 대시보드 (2026-07-24 개편) — 수주→출고 전 단계 요약 ──
     if not DB_AVAILABLE:
-        st.warning("⚠️ Streamlit Cloud Secrets 등록이 완료되지 않았습니다.")
+        st.warning("Streamlit Cloud Secrets 등록이 완료되지 않았습니다.")
         st.info("**share.streamlit.io → Settings → Secrets**에 Supabase 키를 "
                 "등록하면 활성화됩니다.")
         st.stop()
@@ -1835,11 +1839,11 @@ if page == "홈":
                 format="localized", width="small")})
         if len(_h_ps) > 10:
             st.caption(f"재고 상위 10품목 표시 — 외 {len(_h_ps) - 10:,}품목은 "
-                       "출고 관리 → 납품 등록에서 검색")
+                       "출고 관리 → 출고 등록에서 검색")
 
 
 elif page == "마스터 관리":
-    st.subheader("⚙️ 마스터 데이터 관리")
+    st.subheader("마스터 데이터 관리")
 
     if not DB_AVAILABLE:
         st.error("DB 연결이 활성화되지 않았습니다."); st.stop()
@@ -2601,7 +2605,6 @@ elif page == "마스터 관리":
             if "m_last_registered" in st.session_state:
                 lr = st.session_state.m_last_registered
                 st.success(f"**{lr['name']}** 등록 완료 (ID: {lr['id']}, 그룹: {lr['group']})")
-                st.caption("💡 위 표 새로고침하려면 필터를 한 번 변경하거나 페이지를 다시 여세요.")
 
             if st.button("신규 등록", type="primary", key="m_new_btn"):
                 if not new_name or new_group == "선택":
@@ -2618,7 +2621,7 @@ elif page == "마스터 관리":
                         dup = fetch("vendors", "vendor_id,name", f"normalized_name=eq.{norm}", limit=1)
                     except: dup = []
                     if dup:
-                        st.error(f"⚠️ 이미 등록됨: {dup[0]['name']} (ID={dup[0]['vendor_id']})")
+                        st.error(f"이미 등록됨: {dup[0]['name']} (ID={dup[0]['vendor_id']})")
                     else:
                         try:
                             _db.insert("vendors", [{
@@ -2646,8 +2649,7 @@ elif page == "마스터 관리":
                             st.session_state.m_last_registered = {
                                 "name": cleaned, "id": new_id, "group": new_group
                             }
-                            st.toast(f"'{cleaned}' 등록 완료!", icon="🎉")
-                            st.balloons()
+                            st.toast(f"'{cleaned}' 등록 완료")
                             st.rerun()
                         except Exception as e:
                             st.error(f"등록 실패: {e}")
@@ -3310,7 +3312,7 @@ elif page == "마스터 관리":
                                          _np_newmat.get("spec"))
                        if _np_newmat else [])
             if existing:
-                st.error(f"⚠️ 품번 '{_pn_new}' 이 이미 존재합니다. "
+                st.error(f"품번 '{_pn_new}' 이 이미 존재합니다. "
                          f"(product_id={existing['product_id']})")
             elif _np_mode == "신규 자재 등록" and not _np_newmat:
                 st.error("신규 자재명을 입력하세요.")
@@ -5614,12 +5616,12 @@ elif page == "수주 관리":
                         st.error(f"파싱 실패: {e}"); fmt = "ERR"; items = []
 
                 fmt_labels = {
-                    "HDX": "🟢 HDX (ERP 엑셀)",
-                    "MIJIN": "🟢 미진정밀 (외주발주품목조회)",
-                    "MJT_PDF": "🟢 (주)엠제이티 (PDF 발주서)",
-                    "UNKNOWN_PDF": "⚠️ 알 수 없는 PDF — 수동 파서 선택 필요",
-                    "UNKNOWN_EXCEL": "⚠️ 알 수 없는 엑셀 양식 — 수동 파서 선택 필요",
-                    "UNKNOWN": "❌ 인식 실패",
+                    "HDX": "HDX (ERP 엑셀)",
+                    "MIJIN": "미진정밀 (외주발주품목조회)",
+                    "MJT_PDF": "(주)엠제이티 (PDF 발주서)",
+                    "UNKNOWN_PDF": "알 수 없는 PDF — 수동 파서 선택 필요",
+                    "UNKNOWN_EXCEL": "알 수 없는 엑셀 양식 — 수동 파서 선택 필요",
+                    "UNKNOWN": "인식 실패",
                 }
                 st.info(f"**양식 인식**: {fmt_labels.get(fmt, fmt)}")
 
@@ -5676,7 +5678,7 @@ elif page == "수주 관리":
 
                     if dup_so_nums:
                         st.warning(
-                            f"⚠️ 이미 등록된 수주 **{len(dup_so_nums)}건** 자동 제외:\n\n"
+                            f"이미 등록된 수주 **{len(dup_so_nums)}건** 자동 제외:\n\n"
                             + "\n".join(f"- `{s}`" for s in dup_so_nums[:10])
                             + (f"\n... 외 {len(dup_so_nums)-10}건" if len(dup_so_nums) > 10 else "")
                         )
@@ -5737,8 +5739,7 @@ elif page == "수주 관리":
                                 new_items = new_items + _rev_diff
                     if not new_items:
                         st.error("모든 수주가 이미 등록되어 있습니다. 업로드 불필요.")
-                        st.stop()
-                    items = new_items  # 이후 매칭/저장은 신규만
+                    items = new_items  # 이후 매칭/저장은 신규만 (비면 빈 목록)
 
                     # ── 파일 내 중복 라인 감지 ──
                     # 실사례: G264220260 에 동일 라인 4종이 이중 등록됨 (import 중복).
@@ -5755,7 +5756,7 @@ elif page == "수주 관리":
                     if _dup_keys:
                         n_extra = sum(_key_counts[k] - 1 for k in _dup_keys)
                         st.warning(
-                            f"⚠️ **파일 내 동일 라인 중복 {len(_dup_keys)}종 "
+                            f"**파일 내 동일 라인 중복 {len(_dup_keys)}종 "
                             f"(초과 {n_extra}행)** — 수주번호·품번·수량·단가·납기가 "
                             "완전히 같은 행입니다. 기본으로 1행만 저장합니다.")
                         _dup_prev = [{"수주번호": k[0], "품번": k[1], "수량": k[2],
@@ -5869,8 +5870,8 @@ elif page == "수주 관리":
                             it["matched_pn"] = None
                             it["matched_pid"] = None
 
-                    st.info(f"🎯 우성정밀 품번 매칭: **{matched_count}/{len(items)}** "
-                            f"({100*matched_count/len(items):.1f}%)")
+                    st.info(f"우성정밀 품번 매칭: **{matched_count}/{len(items)}** "
+                            f"({100*matched_count/max(len(items), 1):.1f}%)")
 
                     # 미리보기
                     df = pd.DataFrame([{
@@ -5892,7 +5893,7 @@ elif page == "수주 관리":
                         })
 
                     if matched_count < len(items):
-                        st.warning(f"⚠️ 매칭 안 된 {len(items) - matched_count}개 품목은 customer_part_no만 저장됩니다. 추후 마스터 관리에서 매핑 가능.")
+                        st.warning(f"매칭 안 된 {len(items) - matched_count}개 품목은 customer_part_no만 저장됩니다. 추후 마스터 관리에서 매핑 가능.")
 
                     # DB 저장
                     if st.button("수주 DB 저장", type="primary", use_container_width=True):
@@ -5966,10 +5967,9 @@ elif page == "수주 관리":
                                     saved_items += 1
                                 saved_so += 1
                             except Exception as e:
-                                st.warning(f"⚠️ 수주 {header['so_number']} 저장 실패: {e}")
+                                st.warning(f"수주 {header['so_number']} 저장 실패: {e}")
 
                         st.success(f"수주 {saved_so}건 / 품목 {saved_items}개 저장 완료")
-                        st.balloons()
 
         else:  # 수기 입력
             st.markdown("##### 수기 입력 — 단일 수주 1건")
@@ -6104,39 +6104,38 @@ elif page == "수주 관리":
                                 f"so_number=eq.{m_so_no}&customer=eq.{m_cust}", limit=1)
                 except Exception: dup = []
                 if dup:
-                    st.error(f"⚠️ 이미 등록됨: 수주 {m_so_no} / 거래처 {m_cust} (so_id={dup[0]['so_id']})")
-                    st.stop()
-                try:
-                    v = fetch("vendors", "vendor_id", f"name=ilike.*{m_cust}*&limit=1", limit=1)
-                    vendor_id = v[0]["vendor_id"] if v else None
-                    _db.insert("sales_orders", [{
-                        "so_number": m_so_no, "customer": m_cust, "vendor_id": vendor_id,
-                        "so_date": m_so_date.isoformat(), "due_date": m_due.isoformat(),
-                        "total_amount": total, "vat": int(total * 0.1),
-                        "source": "MANUAL", "delivery_address": m_addr,
-                        "status": "DRAFT", "created_by": current_user_name(),
-                    }])
-                    so_row = _db.fetch_one("sales_orders",
-                        f"so_number=eq.{m_so_no}&customer=eq.{m_cust}", "so_id")
-                    if so_row:
-                        for it in st.session_state.m_so_items:
-                            _db.insert("sales_order_items", [{
-                                "so_id": so_row["so_id"], "line_no": it["line_no"],
-                                "customer_part_no": it["customer_part_no"],
-                                "product_id": it.get("product_id"),
-                                "canonical_pn": it.get("canonical_pn"),
-                                "qty": it["qty"], "unit": "EA",
-                                "received_qty": 0,
-                                "pending_qty": it["qty"],
-                                "unit_price": it["unit_price"], "amount": it["amount"],
-                                "due_date": it["due_date"].isoformat() if it.get("due_date") else None,
-                                "status": "PENDING",
-                            }])
-                    st.success(f"수주 '{m_so_no}' 저장 완료")
-                    st.session_state.m_so_items = []
-                    st.balloons()
-                except Exception as e:
-                    st.error(f"저장 실패: {e}")
+                    st.error(f"이미 등록됨: 수주 {m_so_no} / 거래처 {m_cust} (so_id={dup[0]['so_id']})")
+                else:
+                    try:
+                        v = fetch("vendors", "vendor_id", f"name=ilike.*{m_cust}*&limit=1", limit=1)
+                        vendor_id = v[0]["vendor_id"] if v else None
+                        _db.insert("sales_orders", [{
+                            "so_number": m_so_no, "customer": m_cust, "vendor_id": vendor_id,
+                            "so_date": m_so_date.isoformat(), "due_date": m_due.isoformat(),
+                            "total_amount": total, "vat": int(total * 0.1),
+                            "source": "MANUAL", "delivery_address": m_addr,
+                            "status": "DRAFT", "created_by": current_user_name(),
+                        }])
+                        so_row = _db.fetch_one("sales_orders",
+                            f"so_number=eq.{m_so_no}&customer=eq.{m_cust}", "so_id")
+                        if so_row:
+                            for it in st.session_state.m_so_items:
+                                _db.insert("sales_order_items", [{
+                                    "so_id": so_row["so_id"], "line_no": it["line_no"],
+                                    "customer_part_no": it["customer_part_no"],
+                                    "product_id": it.get("product_id"),
+                                    "canonical_pn": it.get("canonical_pn"),
+                                    "qty": it["qty"], "unit": "EA",
+                                    "received_qty": 0,
+                                    "pending_qty": it["qty"],
+                                    "unit_price": it["unit_price"], "amount": it["amount"],
+                                    "due_date": it["due_date"].isoformat() if it.get("due_date") else None,
+                                    "status": "PENDING",
+                                }])
+                        st.success(f"수주 '{m_so_no}' 저장 완료")
+                        st.session_state.m_so_items = []
+                    except Exception as e:
+                        st.error(f"저장 실패: {e}")
 
     # ════════ TAB 2: 수주 목록 (다중 뷰) ════════
     with tab_list:
@@ -6313,7 +6312,7 @@ elif page == "수주 관리":
                         "수주일": so_map.get(i["so_id"], {}).get("so_date"),
                         "라인": i["line_no"],
                         "거래처 자재": i.get("customer_part_no"),
-                        "우성 품번": i.get("canonical_pn") or "❌",
+                        "우성 품번": i.get("canonical_pn") or "-",
                         "수량": int(i.get("qty") or 0),
                         "미납": int(i.get("pending_qty") or 0),
                         "단가": int(i.get("unit_price") or 0),
@@ -6468,7 +6467,7 @@ elif page == "수주 관리":
                 except Exception as e: st.error(e); sitems = []
 
                 if sitems:
-                    st.warning(f"⚠️ 우성정밀 품번 매칭 안된 품목 **{len(sitems)}건**")
+                    st.warning(f"우성정밀 품번 매칭 안된 품목 **{len(sitems)}건**")
                     df = pd.DataFrame([{
                         "수주번호": so_map.get(i["so_id"], {}).get("so_number"),
                         "거래처": so_map.get(i["so_id"], {}).get("customer"),
@@ -6481,7 +6480,6 @@ elif page == "수주 관리":
                     } for i in sitems])
                     toss_df(status_style(df, cols=("수주 상태",)),
                                  use_container_width=True, hide_index=True)
-                    st.caption("💡 거래처 자재코드 → 우성정밀 품번 매핑은 마스터 관리에서 추가 가능 (다음 push)")
                 else:
                     st.success("모든 품목이 매칭되었습니다")
             else:
@@ -7245,10 +7243,17 @@ elif page == "수주 관리":
                                     help="기존 회차 비율을 유지하며 수량을 "
                                          "다시 나눕니다 (납품 완료분 이상은 "
                                          "유지)")
+                                _bta_k = f"sch_bta_{_li['soi_id']}"
                                 if st.button("총량 적용", type="primary",
                                              use_container_width=True,
                                              disabled=_new_tot <= 0,
-                                             key=f"sch_bta_{_li['soi_id']}"):
+                                             key=_bta_k):
+                                    st.session_state[f"cfm_{_bta_k}"] = True
+                                if st.session_state.get(f"cfm_{_bta_k}") and \
+                                        confirm_gate(_bta_k,
+                                            f"미납 회차를 총 {_new_tot:,.0f} 로 "
+                                            "다시 나눕니다 — 되돌리기 없음. "
+                                            "실행할까요?"):
                                     try:
                                         _open = [r for r in _rows
                                                  if float(r.get("qty") or 0)
@@ -7292,10 +7297,16 @@ elif page == "수주 관리":
                                 _shift_open = st.checkbox(
                                     "미납 회차만 이동", value=True,
                                     key=f"sch_bso_{_li['soi_id']}")
+                                _bsa_k = f"sch_bsa_{_li['soi_id']}"
                                 if st.button("날짜 적용",
                                              use_container_width=True,
                                              disabled=_shift == 0,
-                                             key=f"sch_bsa_{_li['soi_id']}"):
+                                             key=_bsa_k):
+                                    st.session_state[f"cfm_{_bsa_k}"] = True
+                                if st.session_state.get(f"cfm_{_bsa_k}") and \
+                                        confirm_gate(_bsa_k,
+                                            f"회차 납기를 {_shift:+d}일 옮깁니다 "
+                                            "— 되돌리기 없음. 실행할까요?"):
                                     try:
                                         _n = 0
                                         for _r in _rows:
@@ -7368,7 +7379,14 @@ elif page == "수주 관리":
                     # key 에 데이터 시그니처를 포함 — 같은 key 면 Streamlit 이
                     # 이전 위젯 상태(편집 전 표)를 재사용해 행 추가 직후
                     # 표가 갱신되지 않는다 (2026-07-28 사용자 보고)
-                    _ed_sig = f"{len(_tbl_rows)}_{hash(tuple(sorted((r['due_date'], r['qty']) for r in _tbl_rows))) % 99999}"
+                    _ed_sig = (f"{len(_tbl_rows)}_{hash(tuple(sorted((r['due_date'], r['qty']) for r in _tbl_rows))) % 99999}"
+                               f"_{st.session_state.get('sch_ed_nonce', 0)}")
+                    if st.button("편집 취소", key=f"sch_ed_cancel_{_li['soi_id']}",
+                                 help="표에서 고친 미저장 값을 버리고 저장된 회차로 되돌립니다"):
+                        st.session_state["sch_ed_nonce"] = \
+                            st.session_state.get("sch_ed_nonce", 0) + 1
+                        st.session_state[_pend_key] = []
+                        st.rerun()
                     _ed = st.data_editor(
                         _ed_src, num_rows="dynamic", use_container_width=True,
                         hide_index=True,
@@ -7509,10 +7527,38 @@ elif page == "수주 관리":
                                 # PostgREST 배열 insert 는 키가 모두 같아야
                                 # 한다 (PGRST102 All object keys must match)
                                 _r3.setdefault("note", None)
-                            _db.delete("so_delivery_schedule",
-                                       f"soi_id=eq.{_li['soi_id']}")
+                            # 같은 납기 회차는 sched_id 를 유지(update) —
+                            # 전부 지우고 다시 넣으면 확정 전표의 회차 연결
+                            # (shipment_allocations.sched_id)이 끊긴다
+                            # (2026-09-16 리뷰 A9)
+                            _old_by_d = {}
+                            for _o9 in _rows:
+                                _old_by_d.setdefault(
+                                    str(_o9.get("due_date"))[:10], []).append(_o9)
+                            _kept_ids, _ins9 = set(), []
+                            for _r9 in _keep:
+                                _cands = _old_by_d.get(_r9["due_date"]) or []
+                                if _cands:
+                                    _o9 = _cands.pop(0)
+                                    _db.update("so_delivery_schedule",
+                                               f"sched_id=eq.{_o9['sched_id']}",
+                                               {"qty": _r9["qty"],
+                                                "note": _r9.get("note"),
+                                                "seq": _r9["seq"],
+                                                "delivered_qty":
+                                                _r9["delivered_qty"]})
+                                    _kept_ids.add(_o9["sched_id"])
+                                else:
+                                    _ins9.append(_r9)
+                            _gone9 = [r["sched_id"] for r in _rows
+                                      if r.get("sched_id") not in _kept_ids]
+                            if _gone9:
+                                _db.delete("so_delivery_schedule",
+                                           "sched_id=in.(" + ",".join(
+                                               str(x) for x in _gone9) + ")")
+                            if _ins9:
+                                _db.insert("so_delivery_schedule", _ins9)
                             if _keep:
-                                _db.insert("so_delivery_schedule", _keep)
                                 # 라인 납기 = 첫 회차 (화면 납기 표시 기준)
                                 try:
                                     _db.update("sales_order_items",
@@ -8550,6 +8596,9 @@ elif page == "출고 관리":
                     mime="text/html", key="cf_dl_draft",
                     use_container_width=True)
                 if ac2.button("정정 저장", key="cf_save",
+                              help="수량을 고치고 저장합니다. 선택을 푼 줄은 "
+                                   "전표에서 지워집니다(다시 넣으려면 출고 "
+                                   "등록에서 다시 담기)",
                               use_container_width=True):
                     _n_upd, _n_del = 0, 0
                     for _bi, _brow in _cf_ed.iterrows():
@@ -8584,6 +8633,29 @@ elif page == "출고 관리":
                             for _x in _cf_items
                             if float(_x.get("qty") or 0) > 0]
                 _cf_total = sum(q for _, q in _cf_rows)
+                # 수주 미납 초과 라인 — 확정이 미납까지만 반영하면서 전표
+                # 수량과 어긋나던 문제 (2026-09-16 리뷰 A7): 확정 전 차단
+                _cf_overp = {}
+                try:
+                    _cf_bys = {}
+                    for _x, _q in _cf_rows:
+                        if _x.get("soi_id"):
+                            _cf_bys[_x["soi_id"]] = (
+                                _cf_bys.get(_x["soi_id"], 0.0) + _q)
+                    if _cf_bys:
+                        _cf_pend = {l["soi_id"]: float(l.get("pending_qty") or 0)
+                                    for l in fetch(
+                                        "sales_order_items", "soi_id,pending_qty",
+                                        "soi_id=in.(" + ",".join(
+                                            str(k) for k in _cf_bys) + ")",
+                                        limit=200)}
+                        for _s7, _q7 in _cf_bys.items():
+                            if _s7 in _cf_pend and _q7 > _cf_pend[_s7] + 1e-9:
+                                _pn7 = next((x.get("pn") for x, _ in _cf_rows
+                                             if x.get("soi_id") == _s7), _s7)
+                                _cf_overp[_pn7] = (_q7, _cf_pend[_s7])
+                except Exception:
+                    _cf_overp = {}
                 _cf_pids = {x.get("product_id") for x, _ in _cf_rows
                             if x.get("product_id")}
                 _cf_stock, _cf_lots = {}, {}
@@ -8625,6 +8697,12 @@ elif page == "출고 관리":
                         for p, (q, s) in _cf_short.items())
                         + ". 수량을 정정하거나 '재고 없이 출고 허용'을 "
                           "체크하세요.")
+                if _cf_overp:
+                    st.error("수주 미납보다 많이 담긴 라인 — " + ", ".join(
+                        f"{p}: 출고 {q:,.0f} > 미납 {m:,.0f}"
+                        for p, (q, m) in _cf_overp.items())
+                        + ". 정정 저장에서 수량을 미납 이하로 고친 뒤 "
+                          "확정하세요.")
                 if _cf_locked:
                     st.error(f"{_cf_ym} 월 마감 — 마감된 월의 출고일로는 "
                              "확정할 수 없습니다 (영업 보고 > 월 마감에서 "
@@ -8636,7 +8714,7 @@ elif page == "출고 관리":
                              "거래명세서 발행까지 자동",
                         type="primary", key="cf_go",
                         disabled=(_cf_total <= 0 or bool(_cf_short)
-                                  or _cf_locked)
+                                  or bool(_cf_overp) or _cf_locked)
                         ) and click_guard("cf_go"):
                     _cf_date = str(_cf_pick.get("ship_date"))
                     # 라인 단위 합산
@@ -8858,6 +8936,11 @@ elif page == "출고 관리":
                 # 수주·재고는 아직 손대지 않은 상태). 확정 전표의 취소는
                 # 위 CONFIRMED 분기의 전체 역반영 취소로만
                 if st.button("전표 취소", key="cf_cancel"):
+                    st.session_state["cfm_cf_cancel"] = True
+                if st.session_state.get("cfm_cf_cancel") and confirm_gate(
+                        "cf_cancel",
+                        f"{_cf_pick['ship_no']} 작성중 전표를 취소합니다 — "
+                        "담긴 라인은 출고 등록에서 다시 담을 수 있습니다."):
                     try:
                         from datetime import datetime as _cx_now
                         _db.update("shipments",
@@ -9299,6 +9382,13 @@ elif page == "생산 계획":
                         _ins.append(rec)
                 for i in range(0, len(_ins), 200):
                     _db.insert("product_op_std", _ins[i:i + 200])
+                # 전량 삭제 → 재삽입 — 중간 실패 시 옛 행 복원
+                # (2026-09-16 리뷰 A12)
+                _old_pom = [{k: v for k, v in r.items() if k != "pom_id"}
+                            for r in _std_fetch_all(
+                                "product_op_machine",
+                                "pom_id,pn,process,machine_id,runs,hours,qty,"
+                                "uph_actual,last_date,calc_at", "pom_id")]
                 _db.delete("product_op_machine", "pom_id=gt.0")
                 _mrows = [{
                     "pn": m["pn"], "process": m["process"],
@@ -9307,8 +9397,19 @@ elif page == "생산 계획":
                     "uph_actual": m["uph_actual"],
                     "last_date": m["last_date"], "calc_at": _now}
                     for m in _agg["machines"].values()]
-                for i in range(0, len(_mrows), 200):
-                    _db.insert("product_op_machine", _mrows[i:i + 200])
+                try:
+                    for i in range(0, len(_mrows), 200):
+                        _db.insert("product_op_machine", _mrows[i:i + 200])
+                except Exception as _e_pom:
+                    try:
+                        _db.delete("product_op_machine", "pom_id=gt.0")
+                        for i in range(0, len(_old_pom), 200):
+                            _db.insert("product_op_machine",
+                                       _old_pom[i:i + 200])
+                    except Exception:
+                        pass
+                    raise RuntimeError(
+                        f"능력 매트릭스 재생성 실패 — 이전 상태로 복원: {_e_pom}")
                 _known = {m["machine_id"] for m in fetch(
                     "machines", "machine_id", limit=500)}
                 _newm = sorted({m["machine"] for m in _agg["machines"].values()
@@ -9943,7 +10044,16 @@ elif page == "생산 계획":
                             key=f"sb_board_{_sb_d0}", default=None)
             if isinstance(_ret, dict) and _ret.get("changes"):
                 _tag = (_ret.get("nonce"), _ret.get("seq"))
-                if st.session_state.get("sb_comp_applied") != _tag                         and _ret.get("nonce") == _sb_nonce_c:
+                if (_ret.get("nonce") != _sb_nonce_c
+                        and st.session_state.get("sb_comp_nack") != _tag):
+                    # 다른 곳에서 같은 주가 바뀐 뒤의 저장 — 조용히 버리지
+                    # 않고 알린다 (2026-09-16 리뷰 A11)
+                    st.session_state["sb_comp_nack"] = _tag
+                    st.error("보드 저장이 적용되지 않았습니다 — 이 주의 계획이 "
+                             "다른 곳에서 바뀌었습니다. 페이지를 새로고침한 뒤 "
+                             "다시 입력하세요.")
+                if (st.session_state.get("sb_comp_applied") != _tag
+                        and _ret.get("nonce") == _sb_nonce_c):
                     st.session_state["sb_comp_applied"] = _tag
                     _cur = {(s["machine_id"], str(s["plan_date"])[:10],
                              s["shift"]): s for s in _sb_sched}
@@ -10723,10 +10833,10 @@ elif page == "발주/입고":
                        help="자재 실재고(material_stock)로 충당되는 필요량 — "
                             "발주 필요량 = 총필요량 − 소재 재고")
             sc5.metric("필요 자재 종류", len(mat_req))
-            sc6.metric("🔴 자재 부족", shortage_count, delta_color="inverse")
+            sc6.metric("자재 부족", shortage_count, delta_color="inverse")
 
             if items_no_bom:
-                with st.expander(f"⚠️ BOM 미등록 품목 {len(items_no_bom)}건 — 마스터에서 BOM 등록 필요"):
+                with st.expander(f"BOM 미등록 품목 {len(items_no_bom)}건 — 마스터에서 BOM 등록 필요"):
                     df_no = pd.DataFrame(items_no_bom)
                     toss_df(df_no, use_container_width=True, hide_index=True)
 
@@ -10784,7 +10894,7 @@ elif page == "발주/입고":
                 e["short"] = _short_sum
                 _first = e["mats"][0] if e["mats"] else None
                 _prod_rows.append({
-                    "품번": e["pn"],
+                    "품번": e["pn"], "_pid": e["pid"],
                     "거래처": ", ".join(sorted(e["custs"]))[:24] or "-",
                     "납기": e["due"] or "-",
                     "미납": e["pending"],
@@ -10824,7 +10934,8 @@ elif page == "발주/입고":
                                     num_cols=("미납", "완성재고 충당", "순생산필요",
                                               "소재 필요량", "소재 부족"))
                     _pr = _pv[_pi if _pi is not None else 0]
-                    _pe = next(e for e in _pp.values() if e["pn"] == _pr["품번"])
+                    _pe = _pp.get(_pr.get("_pid")) or next(
+                        e for e in _pp.values() if e["pn"] == _pr["품번"])
                     st.markdown(f"##### {_pe['pn']} — 순생산필요 "
                                 f"{_pe['net']:,.0f} · 납기 {_pe['due'] or '-'}")
                     pc1, pc2 = st.columns([1.3, 1])
@@ -11463,6 +11574,10 @@ elif page == "발주/입고":
             if pi and not st.session_state.get("po_items"):
                 st.session_state.po_items = [
                     {**x, "_uid": str(_po_uuid.uuid4())[:8]} for x in pi]
+            elif pi:
+                st.warning("품목표에 이미 줄이 있어 제안 품목을 넣지 않았습니다 "
+                           "— [표 비우기] 또는 [모두 초기화] 뒤 자동 제안에서 "
+                           "다시 누르세요.")
 
         _por = st.session_state.get("po_result")   # 방금 만든 발주서 → ③ 자리에 표시
 
@@ -11607,10 +11722,15 @@ elif page == "발주/입고":
                         return None, None, None, None
                     _pmap = {p["po_id"]: p for p in pos}
                     po_ids = ",".join(str(p["po_id"]) for p in pos)
+                    # or=() 안의 값은 큰따옴표로 감싸야 공백·괄호가 살아남는다
+                    # (닫는 괄호 누락으로 항상 예외 → 최근 단가가 비던 문제,
+                    # 2026-09-16 리뷰 A2)
+                    _inm = str(item_name).replace('"', "")
                     items = fetch("purchase_order_items",
                                   "unit_price,qty,po_id",
-                                  f"po_id=in.({po_ids})&or=(item_name.eq.{item_name},"
-                                  f"item_name.like.{item_name} (*)"
+                                  f"po_id=in.({po_ids})"
+                                  f'&or=(item_name.eq."{_inm}",'
+                                  f'item_name.like."{_inm} (*")'
                                   "&order=po_id.desc", limit=1)
                     if not items:
                         return None, None, None, None
@@ -11815,6 +11935,23 @@ elif page == "발주/입고":
                                 mime="application/vnd.openxmlformats-officedocument."
                                      "spreadsheetml.sheet",
                                 use_container_width=True, key="po_dl_xlsx")
+                        if st.session_state.get("po_result_sent") != _por["po_no"]:
+                            if st.button("발송 완료 처리 — 거래처에 보냈습니다",
+                                         key="po_result_sent_btn",
+                                         use_container_width=True,
+                                         help="발주중으로 바뀌고 자재 필요량의 "
+                                              "미입고 발주에 반영됩니다. 나중에 "
+                                              "발주 이력에서도 할 수 있습니다"):
+                                from datetime import datetime as _po_now2
+                                if _db.update("purchase_orders",
+                                        f"po_number=eq.{_por['po_no']}",
+                                        {"status": "SENT",
+                                         "sent_at": _po_now2.now().isoformat()}):
+                                    st.session_state["po_result_sent"] = _por["po_no"]
+                                    st.session_state.pop("mr_cache", None)
+                                    st.rerun()
+                        else:
+                            st.success(f"{_por['po_no']} 발송 완료로 기록됨")
                         if rb3.button("새 발주서 시작", use_container_width=True,
                                       key="po_new"):
                             st.session_state.po_items = []
@@ -12092,7 +12229,8 @@ elif page == "발주/입고":
                 "납기": r.get("delivery_date") or "-",
                 "총액 (원)": int(r.get("total_amount") or 0),
                 "VAT (원)": int(r.get("vat") or 0),
-                "상태": status_ko(r["status"]),
+                "상태": ("발송 대기" if r.get("status") == "DRAFT"
+                       else status_ko(r["status"])),
             } for r in history],
                 key="po_grid",
                 badge_cols=("상태",),
@@ -12185,7 +12323,7 @@ elif page == "발주/입고":
                 # 상태를 결정하므로 수기 변경 UI 제거 (2026-08-20)
                 with rc2:
                     st.caption(
-                        f"상태: **{status_ko(po['status'])}** — 입고·"
+                        f"상태: **{'발송 대기' if po['status'] == 'DRAFT' else status_ko(po['status'])}** — 입고·"
                         "잔량 종결에 따라 자동 갱신됩니다.")
                     try:
                         _po_rcv9 = fetch("po_item_receipt_v",
@@ -12206,6 +12344,25 @@ elif page == "발주/입고":
                                            "복구되었습니다.")
                                 st.rerun()
                     else:
+                        if po["status"] == "DRAFT":
+                            # 발송 완료 처리 (2026-09-16): 메일 발송은 앱 밖에서
+                            # 하므로 발송 사실만 기록 — 이때부터 자재 필요량의
+                            # 미입고 발주(전송된 발주만)에 잡힌다
+                            if st.button("발송 완료 처리", type="primary",
+                                         use_container_width=True,
+                                         help="발주서를 거래처에 보냈으면 누르세요 "
+                                              "— 발주중으로 바뀌고 자재 필요량의 "
+                                              "미입고 발주에 반영됩니다",
+                                         key=f"po_sent_{po['po_id']}"):
+                                from datetime import datetime as _po_now
+                                if _db.update("purchase_orders",
+                                        f"po_id=eq.{po['po_id']}",
+                                        {"status": "SENT",
+                                         "sent_at": _po_now.now().isoformat()}):
+                                    st.session_state.pop("mr_cache", None)
+                                    st.rerun()
+                                else:
+                                    st.error("발송 처리 실패 — 다시 시도하세요.")
                         _cx_k = f"po_cancel_{po['po_id']}"
                         if st.button("발주 취소",
                                 disabled=_has_rcv9,
@@ -12529,7 +12686,7 @@ elif page == "발주/입고":
                     from datetime import date as _rcv_date
                     _wls = w_lot_next(1)
                     if _wls is None:
-                        st.warning("⚠️ 식별 번호 카운터 미설정 — 이번 "
+                        st.warning("식별 번호 카운터 미설정 — 이번 "
                                    "입고는 식별 번호 없이 기록됩니다.")
                     _w = _wls[0] if _wls else None
                     _rmk = "발주 입고: {}".format(
@@ -13533,7 +13690,9 @@ elif page == "공정 관리":
                                 "qty": _in_prod_qty,
                                 "batch_id": _new_batch_id,
                                 "detail": {"material_qty": _in_qty,
-                                           "batch_no": f"{_wo}-A"},
+                                           "batch_no": ((_nb or {}).get("batch_no")
+                                                        if _new_batch_id
+                                                        else None)},
                                 "event_date":
                                     _pe_date.today().isoformat(),
                                 "created_by": current_user_name()}])
@@ -13628,7 +13787,7 @@ elif page == "공정 관리":
                 if q1["검사대기"] > 0:
                     return "검사 / 외주"
                 if q1["완성"] > 0:
-                    return "완성 확정"
+                    return "완성 (출고 대기)"
                 return "-"
 
             # 배치 위치 요약 — 지시 단위 상태(생산중 등) 대신 배치가
@@ -13908,7 +14067,7 @@ elif page == "공정 관리":
                             "event_date": _pe_date.today().isoformat(),
                             "created_by": current_user_name(), **event}])
                     except Exception as e:
-                        st.warning(f"⚠️ 이력 기록 실패 (처리는 정상): {e}")
+                        st.warning(f"이력 기록 실패 (처리는 정상): {e}")
                 if event and event.get("event_type") in (
                         "RECEIVE", "OUT_SEND", "OUT_RETURN"):
                     _dt9 = event.get("detail") or {}
@@ -14581,7 +14740,7 @@ elif page == "공정 관리":
                                      "재고 확정 + LOT 라벨 (혼합 판정은 "
                                      "오른쪽 상세 판정으로)",
                                 disabled=not _f_pid,
-                                key=f"bt_i_all_{_sb['batch_id']}"):
+                                key=f"bt_i_all_{_sb['batch_id']}") and click_guard("bt_pass_all"):
                             _do_inspect9(_sb_qty, 0.0, 0.0, 0.0, 0.0)
                         if qb2.button(f"검사 등록 ({_i_sum:,.0f})",
                                 type="primary",
@@ -14648,7 +14807,7 @@ elif page == "공정 관리":
                                     f"합치기 ({len(_mg_sel)}개 → "
                                     f"{_mg_qty:,.0f} EA)",
                                     disabled=len(_mg_sel) < 2,
-                                    key=f"bt_mg_btn_{_sb['batch_id']}"):
+                                    key=f"bt_mg_btn_{_sb['batch_id']}") and click_guard("bt_merge"):
                                 try:
                                     _mg_no = (f"{_t['wo_number']}-"
                                               f"{_b_suffix()}")
@@ -15024,7 +15183,7 @@ elif page == "공정 관리":
                                                    mode="a4"))]
                         _wo_apply(
                             {"pass_qty": float(_t.get("pass_qty") or 0)
-                                         + _i_done,
+                                         + _i_pass,
                              "tokusai_qty":
                              float(_t.get("tokusai_qty") or 0) + _i_tok,
                              "rework_qty":
@@ -15085,12 +15244,15 @@ elif page == "공정 관리":
                         "삭제되고 소재 LOT 잔량이 복원**됩니다. 후속 "
                         "처리(인수·외주·검사)가 시작된 지시는 취소할 수 "
                         "없습니다. 취소 이력은 남습니다.")
-                    _cx_ok = st.checkbox(
-                        f"{_t['wo_number']} · {_t.get('pn') or '-'} · "
-                        f"소재 {_t.get('w_lot') or '-'} 투입을 "
-                        "취소합니다", key="pe_cx_ok")
+                    _cx_k9 = f"pe_cx_{_t['wo_id']}"
                     if st.button("투입 취소 실행", type="primary",
-                                 disabled=not _cx_ok, key="pe_cx_btn"):
+                                 key="pe_cx_btn"):
+                        st.session_state[f"cfm_{_cx_k9}"] = True
+                    if st.session_state.get(f"cfm_{_cx_k9}") and confirm_gate(
+                            _cx_k9,
+                            f"{_t['wo_number']} · {_t.get('pn') or '-'} · "
+                            f"소재 {_t.get('w_lot') or '-'} 투입을 취소합니다 "
+                            "— 작업지시가 삭제되고 소재 잔량이 복원됩니다."):
                         try:
                             # 원래 투입한 소재 수량 — 원장에서 역산
                             _otx = fetch("inventory_transactions", "qty",
@@ -15122,10 +15284,12 @@ elif page == "공정 관리":
                                 "event_date":
                                     _pe_date.today().isoformat(),
                                 "created_by": current_user_name()}])
-                            try:   # 배치도 함께 정리 (Phase A 병행 기록)
+                            try:   # 이 투입(wo_id)의 배치만 정리 — 같은
+                                # 지시번호의 다른 투입 배치는 남긴다
+                                # (2026-09-16 리뷰 A6)
                                 _db.delete(
                                     "wo_batches",
-                                    f"wo_number=eq.{_t['wo_number']}")
+                                    f"wo_id=eq.{_t['wo_id']}")
                             except Exception:
                                 pass
                             _db.delete("wo_tracking",
@@ -15316,6 +15480,7 @@ elif page == "공정 관리":
             _bdf["재작업중"] = _bdf["rework_qty"] - _bdf["rework_in_qty"]
             _bdf["검사대기"] = (_bdf["received_qty"] + _bdf["outsource_in_qty"]
                               - _bdf["outsource_qty"] - _bdf["pass_qty"]
+                              - _bdf["tokusai_qty"]
                               - _bdf["scrap_qty"] - _bdf["return_qty"]
                               - _bdf["재작업중"])
             # 상태 = 배치 위치 요약 우선 (2026-08-27 — 지시 단위
@@ -15441,8 +15606,11 @@ elif page == "생산 보고":
     from datetime import date as _pb_date
 
     tab_dash, tab_report, tab_mes, tab_history, tab_trace = st.tabs(
-        ["대시보드", "생산 보고 입력", "MES 업로드",
+        ["대시보드", "생산 보고 입력 (관리자)", "MES 업로드",
          "생산 이력", "역추적 (LOT/제품)"])
+    # 생산 보고 입력은 소재 차감·완성 재고를 직접 만들어 투입 등록·검사
+    # 판정과 이중 계상된다 — 관리자 전용 (2026-09-16 리뷰 A13)
+    _pb_admin = current_user().get("role") == "admin"
 
     # ════════ TAB 0: 생산 대시보드 (시트 웹앱 대시보드 이관 1차) ════════
     with tab_dash:
@@ -15458,8 +15626,8 @@ elif page == "생산 보고":
             d_shift = st.selectbox("교대", ["전체", "주간", "야간"],
                 key="dash_shift")
         with fc3:
-            d_src = st.selectbox("소스", ["전체", "📊 생산일정 시트",
-                                         "📥 MES", "📝 수기"],
+            d_src = st.selectbox("소스", ["전체", "생산일정 시트",
+                                         "MES", "수기"],
                 key="dash_src")
 
         _today = _pb_date.today()
@@ -15481,11 +15649,11 @@ elif page == "생산 보고":
              f"log_date=lte.{d_to.isoformat()}"]
         if d_shift != "전체":
             q.append(f"shift=eq.{d_shift}")
-        if d_src == "📥 MES":
+        if d_src == "MES":
             q.append("source=eq.MES_UPLOAD")
-        elif d_src == "📊 생산일정 시트":
+        elif d_src == "생산일정 시트":
             q.append("source=eq.SHEET_DB")
-        elif d_src == "📝 수기":
+        elif d_src == "수기":
             q.append("source=eq.MANUAL")
         try:
             d_rows = fetch("production_log",
@@ -15530,10 +15698,6 @@ elif page == "생산 보고":
             k5.metric("작업지시",
                 f"{ddf.loc[ddf['wo'] != '', 'wo'].nunique()}건")
 
-            st.caption(
-                "ℹ️ 가동률은 현재 작업시간 기반 근사 — 품번·공정 C.T./UPH 마스터 "
-                "도입 후 시트와 같은 UPH 기준으로 전환 예정 (이관 2차). "
-                "정지사유도 이관 2차에서 통합.")
             st.divider()
 
             # ── 일자별 생산량 + 가동률 (시트 주간요약 2개 차트 이관) ──
@@ -15601,7 +15765,7 @@ elif page == "생산 보고":
             _num_col = st.column_config.NumberColumn
             ch1, ch2 = st.columns([2, 1])
             with ch1:
-                st.markdown("##### 📈 일자별 생산량 (교대별)")
+                st.markdown("##### 일자별 생산량 (교대별)")
                 daily = ddf.groupby(["log_date", "shift"],
                     as_index=False)["total_qty"].sum()
                 ch_daily = alt.Chart(daily).mark_bar().encode(
@@ -15618,7 +15782,7 @@ elif page == "생산 보고":
                 ).properties(height=300)
                 st.altair_chart(ch_daily, use_container_width=True)
             with ch2:
-                st.markdown("##### ⏱️ 가동률 추이 (근사)")
+                st.markdown("##### 가동률 추이 (근사)")
                 util = _calc_daily_util(ddf)
                 if util.empty:
                     st.info("작업시간 구간 데이터가 없어 가동률을 계산할 수 "
@@ -15671,7 +15835,7 @@ elif page == "생산 보고":
             # ── 품번·공정별 / 작업자별 요약 ──
             tc1, tc2 = st.columns(2)
             with tc1:
-                st.markdown("##### 🔩 품번·공정별 생산량")
+                st.markdown("##### 품번·공정별 생산량")
                 st.caption("품번 순 정렬 · 품번↔공정 연결 방침 확정 전 — 공정별 분리 집계.")
                 by_p = (ddf.groupby(["pn", "process"], as_index=False)
                         .agg(생산=("total_qty", "sum"),
@@ -15689,7 +15853,7 @@ elif page == "생산 보고":
                                  "불량률": _num_col("불량률", format="percent", width="small"),
                              })
             with tc2:
-                st.markdown("##### 👷 작업자별 요약")
+                st.markdown("##### 작업자별 요약")
                 st.caption("생산량 순 · 제품 특성이 달라 절대 비교보다 담당 현황 참고용.")
                 by_w = (ddf[ddf["worker"] != "-"]
                         .groupby("worker", as_index=False)
@@ -15738,9 +15902,9 @@ elif page == "생산 보고":
 
             # ── 불량 발생 상세 ──
             def_rows = ddf[ddf["defect_qty"] > 0]
-            st.markdown(f"##### 🚨 불량 발생 상세 ({len(def_rows)}건)")
+            st.markdown(f"##### 불량 발생 상세 ({len(def_rows)}건)")
             if def_rows.empty:
-                st.caption("기간 내 불량 없음 🎉")
+                st.caption("기간 내 불량 없음")
             else:
                 toss_df(
                     def_rows[["log_date", "shift", "machine", "pn",
@@ -15754,207 +15918,216 @@ elif page == "생산 보고":
                     height=min(300, 60 + len(def_rows) * 35))
 
     # ════════ TAB 1: 생산 보고 입력 ════════
-    with tab_report:
-        # ── 1) 제품 선택 ──
-        pc1, pc2 = st.columns([3, 1])
-        with pc1:
-            prod_q = st.text_input(
-                "제품 검색 (품번/품명/고객사)",
-                placeholder="예: 8HFDV-VM-05, MRG6, 미진",
-                key="pb_prod_q")
-        with pc2:
-            st.write("")
+    if _pb_admin:
+        with tab_report:
+            st.warning("이 탭은 투입 등록·검사 판정과 별개로 소재를 차감하고 "
+                       "완성 재고를 만듭니다 — 일상 운영에서는 쓰지 않습니다.")
+            # ── 1) 제품 선택 ──
+            pc1, pc2 = st.columns([3, 1])
+            with pc1:
+                prod_q = st.text_input(
+                    "제품 검색 (품번/품명/고객사)",
+                    placeholder="예: 8HFDV-VM-05, MRG6, 미진",
+                    key="pb_prod_q")
+            with pc2:
+                st.write("")
 
-        sel_prod = None
-        if prod_q:
-            qq = prod_q.strip()
-            try:
-                p_cands = fetch("products",
-                    "product_id,pn,customer",
-                    f"or=(pn.ilike.*{qq}*,item_name.ilike.*{qq}*,"
-                    f"customer.ilike.*{qq}*)"
-                    f"&archived_at=is.null&order=pn.asc", limit=20)
-            except Exception as e:
-                st.error(f"제품 검색 실패: {e}"); p_cands = []
-            if p_cands:
-                p_labels = [f"{p['pn']} | {p.get('customer') or '-'}"
-                            for p in p_cands]
-                p_pick = st.selectbox(
-                    f"제품 선택 ({len(p_cands)}건)",
-                    p_labels, key="pb_prod_pick")
-                if p_pick:
-                    sel_prod = p_cands[p_labels.index(p_pick)]
-            else:
-                st.info("일치하는 활성 제품 없음.")
-
-        if sel_prod:
-            st.divider()
-            st.markdown(f"##### 🔧 {sel_prod['pn']} · {sel_prod.get('customer') or '-'}")
-
-            # ── 2) 생산 정보 입력 ──
-            ic1, ic2, ic3, ic4 = st.columns(4)
-            with ic1:
-                pb_qty = st.number_input("생산 수량 (양품)", min_value=0.0,
-                    value=0.0, step=1.0, key="pb_qty")
-            with ic2:
-                pb_defect = st.number_input("불량 수량", min_value=0.0,
-                    value=0.0, step=1.0, key="pb_defect")
-            with ic3:
-                pb_date = st.date_input("생산일", value=_pb_date.today(),
-                    key="pb_date")
-            with ic4:
-                pb_shift = st.selectbox("교대", ["주간", "야간"], key="pb_shift")
-            lc1, lc2 = st.columns(2)
-            with lc1:
-                # LOT 번호 — 역추적 키 (기본 자동 제안)
-                # 제품/생산일이 바뀌면 기본값 갱신 (session_state 가 이전
-                # 제품의 LOT 을 유지해 다른 제품에 저장되는 것 방지)
-                _lot_default = f"LOT-{pb_date.strftime('%y%m%d')}-{sel_prod['pn'][:10]}"
-                if st.session_state.get("pb_lot_seed") != _lot_default:
-                    st.session_state["pb_lot_seed"] = _lot_default
-                    st.session_state["pb_lot"] = _lot_default
-                pb_lot = st.text_input("생산 LOT 번호",
-                    value=_lot_default, key="pb_lot",
-                    help="자재 투입~완성~납품까지 역추적하는 키. 자동 제안값 수정 가능.")
-            with lc2:
-                pb_remark = st.text_input("비고 (선택)",
-                    placeholder="예: 설비 M03",
-                    key="pb_remark")
-
-            total_produced = pb_qty + pb_defect
-
-            # ── 3) BOM 자재 차감 미리보기 ──
-            try:
-                pb_bom = fetch("bom",
-                    "bom_id,material_id,raw_material_name,qty_per_pc,shared_factor",
-                    f"product_id=eq.{sel_prod['product_id']}"
-                    f"&process_type=eq.MATERIAL", limit=20)
-            except Exception:
-                pb_bom = []
-            pb_mat_rows = [b for b in pb_bom if b.get("material_id")]
-
-            consumption = []   # (material_id, 자재명, 소요량, 현재고)
-            if pb_mat_rows and total_produced > 0:
-                mids = [b["material_id"] for b in pb_mat_rows]
-                mids_str = ",".join(f'"{m}"' for m in mids)
+            sel_prod = None
+            if prod_q:
+                qq = prod_q.strip()
                 try:
-                    stock_rows = fetch("material_stock",
-                        "material_id,raw_name,current_stock",
-                        f"material_id=in.({mids_str})", limit=50)
-                    stock_map = {s["material_id"]: s for s in stock_rows}
-                except Exception:
-                    stock_map = {}
-                for b in pb_mat_rows:
-                    qpp = float(b.get("qty_per_pc") or 1)
-                    sf = float(b.get("shared_factor") or 1) or 1
-                    need = total_produced * qpp / sf
-                    stk = stock_map.get(b["material_id"], {})
-                    consumption.append({
-                        "material_id": b["material_id"],
-                        "name": stk.get("raw_name") or b.get("raw_material_name") or "-",
-                        "need": need,
-                        "stock": float(stk.get("current_stock") or 0),
-                    })
-
-            st.markdown("##### 자재 차감 미리보기")
-            if not pb_mat_rows:
-                st.warning(
-                    "⚠️ 이 제품의 BOM 자재행이 없거나 material_id 미매핑 — "
-                    "**자재 차감 없이** 생산 기록만 저장됩니다. "
-                    "(마스터 관리 → BOM 편집에서 보완 가능)")
-            elif total_produced <= 0:
-                st.caption("생산/불량 수량 입력 시 차감량이 계산됩니다.")
-            else:
-                cdf = pd.DataFrame([{
-                    "자재ID": c["material_id"],
-                    "자재명": c["name"],
-                    "차감량": round(c["need"], 2),
-                    "현재고": round(c["stock"], 2),
-                    "차감 후": round(c["stock"] - c["need"], 2),
-                } for c in consumption])
-                toss_df(cdf, use_container_width=True, hide_index=True)
-                short = [c for c in consumption if c["stock"] < c["need"]]
-                if short:
-                    st.warning(
-                        f"⚠️ 재고 부족 자재 {len(short)}건 — 차감 시 음수 재고 발생. "
-                        "그래도 기록은 가능 (실사 후 ADJUSTMENT 로 보정).")
-
-            # ── 4) 저장 ──
-            st.divider()
-            sc1, sc2 = st.columns([1, 3])
-            with sc1:
-                do_report = st.button(
-                    f"생산 보고 저장 ({total_produced:,.0f})",
-                    type="primary",
-                    disabled=total_produced <= 0,
-                    key="pb_submit")
-            with sc2:
-                st.caption(
-                    "production_log 기록 + 자재 PROD_INPUT 차감 + "
-                    "제품 PROD_OUTPUT 재고 (모두 원장)")
-
-            if do_report and total_produced > 0:
-                try:
-                    _lot = (pb_lot or "").strip() or None
-                    # 1) 생산 이력
-                    _db.insert("production_log", [{
-                        "log_date": pb_date.isoformat(),
-                        "shift": pb_shift,
-                        "pn": sel_prod["pn"],
-                        "product_id": sel_prod["product_id"],
-                        "total_qty": total_produced,
-                        "defect_qty": pb_defect,
-                        "lot_number": _lot,
-                        "remark": pb_remark or None,
-                    }])
-                    # 2) 자재 차감 (BOM 기준) — LOT 연결
-                    txns = []
-                    for c in consumption:
-                        txns.append({
-                            "material_id": c["material_id"],
-                            "txn_type": "PROD_INPUT",
-                            "qty": -c["need"],
-                            "unit": "EA",
-                            "ref_table": "production_log",
-                            "product_id": sel_prod["product_id"],
-                            "lot_number": _lot,
-                            "txn_date": pb_date.isoformat(),
-                            "remark": f"생산 투입: {sel_prod['pn']} {total_produced:,.0f}EA",
-                            "created_by": current_user_name(),
-                        })
-                    # 3) 제품 완성 재고 (양품만) — LOT 연결
-                    if pb_qty > 0:
-                        txns.append({
-                            "material_id": None,
-                            "txn_type": "PROD_OUTPUT",
-                            "qty": pb_qty,
-                            "unit": "EA",
-                            "ref_table": "production_log",
-                            "product_id": sel_prod["product_id"],
-                            "lot_number": _lot,
-                            "txn_date": pb_date.isoformat(),
-                            "remark": f"생산 완성: {sel_prod['pn']}",
-                            "created_by": current_user_name(),
-                        })
-                    if txns:
-                        _db.insert("inventory_transactions", txns)
-                    st.success(
-                        f"생산 보고 저장: {sel_prod['pn']} "
-                        f"양품 {pb_qty:,.0f} / 불량 {pb_defect:,.0f}"
-                        + (f" · 자재 {len(consumption)}종 차감" if consumption else
-                           " · 자재 차감 없음 (BOM 미매핑)")
-                    )
+                    p_cands = fetch("products",
+                        "product_id,pn,customer",
+                        f"or=(pn.ilike.*{qq}*,item_name.ilike.*{qq}*,"
+                        f"customer.ilike.*{qq}*)"
+                        f"&archived_at=is.null&order=pn.asc", limit=20)
                 except Exception as e:
-                    st.error(f"저장 실패: {e}")
+                    st.error(f"제품 검색 실패: {e}"); p_cands = []
+                if p_cands:
+                    p_labels = [f"{p['pn']} | {p.get('customer') or '-'}"
+                                for p in p_cands]
+                    p_pick = st.selectbox(
+                        f"제품 선택 ({len(p_cands)}건)",
+                        p_labels, key="pb_prod_pick")
+                    if p_pick:
+                        sel_prod = p_cands[p_labels.index(p_pick)]
+                else:
+                    st.info("일치하는 활성 제품 없음.")
+
+            if sel_prod:
+                st.divider()
+                st.markdown(f"##### {sel_prod['pn']} · {sel_prod.get('customer') or '-'}")
+
+                # ── 2) 생산 정보 입력 ──
+                ic1, ic2, ic3, ic4 = st.columns(4)
+                with ic1:
+                    pb_qty = st.number_input("생산 수량 (양품)", min_value=0.0,
+                        value=0.0, step=1.0, key="pb_qty")
+                with ic2:
+                    pb_defect = st.number_input("불량 수량", min_value=0.0,
+                        value=0.0, step=1.0, key="pb_defect")
+                with ic3:
+                    pb_date = st.date_input("생산일", value=_pb_date.today(),
+                        key="pb_date")
+                with ic4:
+                    pb_shift = st.selectbox("교대", ["주간", "야간"], key="pb_shift")
+                lc1, lc2 = st.columns(2)
+                with lc1:
+                    # LOT 번호 — 역추적 키 (기본 자동 제안)
+                    # 제품/생산일이 바뀌면 기본값 갱신 (session_state 가 이전
+                    # 제품의 LOT 을 유지해 다른 제품에 저장되는 것 방지)
+                    _lot_default = f"LOT-{pb_date.strftime('%y%m%d')}-{sel_prod['pn'][:10]}"
+                    if st.session_state.get("pb_lot_seed") != _lot_default:
+                        st.session_state["pb_lot_seed"] = _lot_default
+                        st.session_state["pb_lot"] = _lot_default
+                    pb_lot = st.text_input("생산 LOT 번호",
+                        value=_lot_default, key="pb_lot",
+                        help="자재 투입~완성~납품까지 역추적하는 키. 자동 제안값 수정 가능.")
+                with lc2:
+                    pb_remark = st.text_input("비고 (선택)",
+                        placeholder="예: 설비 M03",
+                        key="pb_remark")
+
+                total_produced = pb_qty + pb_defect
+
+                # ── 3) BOM 자재 차감 미리보기 ──
+                try:
+                    pb_bom = fetch("bom",
+                        "bom_id,material_id,raw_material_name,qty_per_pc,shared_factor",
+                        f"product_id=eq.{sel_prod['product_id']}"
+                        f"&process_type=eq.MATERIAL", limit=20)
+                except Exception:
+                    pb_bom = []
+                pb_mat_rows = [b for b in pb_bom if b.get("material_id")]
+
+                consumption = []   # (material_id, 자재명, 소요량, 현재고)
+                if pb_mat_rows and total_produced > 0:
+                    mids = [b["material_id"] for b in pb_mat_rows]
+                    mids_str = ",".join(f'"{m}"' for m in mids)
+                    try:
+                        stock_rows = fetch("material_stock",
+                            "material_id,raw_name,current_stock",
+                            f"material_id=in.({mids_str})", limit=50)
+                        stock_map = {s["material_id"]: s for s in stock_rows}
+                    except Exception:
+                        stock_map = {}
+                    for b in pb_mat_rows:
+                        qpp = float(b.get("qty_per_pc") or 1)
+                        sf = float(b.get("shared_factor") or 1) or 1
+                        need = total_produced * qpp / sf
+                        stk = stock_map.get(b["material_id"], {})
+                        consumption.append({
+                            "material_id": b["material_id"],
+                            "name": stk.get("raw_name") or b.get("raw_material_name") or "-",
+                            "need": need,
+                            "stock": float(stk.get("current_stock") or 0),
+                        })
+
+                st.markdown("##### 자재 차감 미리보기")
+                if not pb_mat_rows:
+                    st.warning(
+                        "이 제품의 BOM 자재행이 없거나 material_id 미매핑 — "
+                        "**자재 차감 없이** 생산 기록만 저장됩니다. "
+                        "(마스터 관리 → BOM 편집에서 보완 가능)")
+                elif total_produced <= 0:
+                    st.caption("생산/불량 수량 입력 시 차감량이 계산됩니다.")
+                else:
+                    cdf = pd.DataFrame([{
+                        "자재ID": c["material_id"],
+                        "자재명": c["name"],
+                        "차감량": round(c["need"], 2),
+                        "현재고": round(c["stock"], 2),
+                        "차감 후": round(c["stock"] - c["need"], 2),
+                    } for c in consumption])
+                    toss_df(cdf, use_container_width=True, hide_index=True)
+                    short = [c for c in consumption if c["stock"] < c["need"]]
+                    if short:
+                        st.warning(
+                            f"재고 부족 자재 {len(short)}건 — 차감 시 음수 재고 발생. "
+                            "그래도 기록은 가능 (실사 후 ADJUSTMENT 로 보정).")
+
+                # ── 4) 저장 ──
+                st.divider()
+                sc1, sc2 = st.columns([1, 3])
+                with sc1:
+                    do_report = st.button(
+                        f"생산 보고 저장 ({total_produced:,.0f})",
+                        type="primary",
+                        disabled=total_produced <= 0,
+                        key="pb_submit")
+                with sc2:
+                    st.caption(
+                        "production_log 기록 + 자재 PROD_INPUT 차감 + "
+                        "제품 PROD_OUTPUT 재고 (모두 원장)")
+
+                if do_report and total_produced > 0:
+                    try:
+                        _lot = (pb_lot or "").strip() or None
+                        # 1) 생산 이력
+                        _db.insert("production_log", [{
+                            "log_date": pb_date.isoformat(),
+                            "source": "MANUAL",
+                            "shift": pb_shift,
+                            "pn": sel_prod["pn"],
+                            "product_id": sel_prod["product_id"],
+                            "total_qty": total_produced,
+                            "defect_qty": pb_defect,
+                            "lot_number": _lot,
+                            "remark": pb_remark or None,
+                        }])
+                        # 2) 자재 차감 (BOM 기준) — LOT 연결
+                        txns = []
+                        for c in consumption:
+                            txns.append({
+                                "material_id": c["material_id"],
+                                "txn_type": "PROD_INPUT",
+                                "qty": -c["need"],
+                                "unit": "EA",
+                                "ref_table": "production_log",
+                                "product_id": sel_prod["product_id"],
+                                "lot_number": _lot,
+                                "txn_date": pb_date.isoformat(),
+                                "remark": f"생산 투입: {sel_prod['pn']} {total_produced:,.0f}EA",
+                                "created_by": current_user_name(),
+                            })
+                        # 3) 제품 완성 재고 (양품만) — LOT 연결
+                        if pb_qty > 0:
+                            txns.append({
+                                "material_id": None,
+                                "txn_type": "PROD_OUTPUT",
+                                "qty": pb_qty,
+                                "unit": "EA",
+                                "ref_table": "production_log",
+                                "product_id": sel_prod["product_id"],
+                                "lot_number": _lot,
+                                "txn_date": pb_date.isoformat(),
+                                "remark": f"생산 완성: {sel_prod['pn']}",
+                                "created_by": current_user_name(),
+                            })
+                        if txns:
+                            _db.insert("inventory_transactions", txns)
+                        st.success(
+                            f"생산 보고 저장: {sel_prod['pn']} "
+                            f"양품 {pb_qty:,.0f} / 불량 {pb_defect:,.0f}"
+                            + (f" · 자재 {len(consumption)}종 차감" if consumption else
+                               " · 자재 차감 없음 (BOM 미매핑)")
+                        )
+                    except Exception as e:
+                        st.error(f"저장 실패: {e}")
+
+    else:
+        with tab_report:
+            st.info("관리자 전용 화면입니다. 소재 차감은 공정 관리 › 투입 "
+                    "등록, 완성 재고는 검사 판정에서 처리됩니다.")
 
     # ════════ TAB 2: MES 업로드 ════════
     with tab_mes:
         st.caption(
             "사내 MES 일간 생산보고서 엑셀을 업로드 → 검수 → **공정 실적**으로 저장 "
             "(`production_log`, source=MES_UPLOAD). "
-            "⚠️ **재고 연동 없음** — 공정별 실적 raw 기록 전용. "
+            "**재고 연동 없음** — 공정별 실적 raw 기록 전용. "
             "완성 재고 반영(PROD_OUTPUT)은 연결 방식 확정 전까지 "
-            "📝 생산 보고 입력으로 별도 진행.")
+            "생산 보고 입력으로 별도 진행.")
 
         from app.services.mes_parser import (
             parse_mes_daily_report, parse_date_from_filename,
@@ -16192,7 +16365,7 @@ elif page == "생산 보고":
                     review.append({
                         "포함": not is_dup,
                         "교대": guess_shift(r["work_start"]),
-                        "상태": "🔁 기존" if is_dup else "신규",
+                        "상태": "기존" if is_dup else "신규",
                         "설비": r["equipment"],
                         "MES 품명": r["item_name"],
                         "매칭 품번": mpn or "",
@@ -16204,7 +16377,7 @@ elif page == "생산 보고":
                         "불량": r["defect"],
                     })
                 n_matched = sum(1 for v in review if v["매칭 품번"])
-                n_dup = sum(1 for v in review if v["상태"] == "🔁 기존")
+                n_dup = sum(1 for v in review if v["상태"] == "기존")
                 n_day = sum(1 for v in review if v["교대"] == "주간")
 
                 mm1, mm2, mm3, mm4, mm5 = st.columns(5)
@@ -16219,11 +16392,11 @@ elif page == "생산 보고":
                     delta_color="inverse" if n_matched < len(review) else "off")
                 if n_matched < len(review):
                     st.warning(
-                        "⚠️ 미매칭 행은 품번 없이(raw 품명 그대로) 저장됩니다. "
+                        "미매칭 행은 품번 없이(raw 품명 그대로) 저장됩니다. "
                         "'매칭 품번' 칸에 직접 입력하거나, 제외하려면 '포함' 해제.")
                 if n_dup:
                     st.info(
-                        f"🔁 이미 저장된 것과 동일한 행 **{n_dup}건**은 "
+                        f"이미 저장된 것과 동일한 행 **{n_dup}건**은 "
                         "'포함'이 자동 해제되어 있습니다 (이중 등록 방지).")
 
                 # ── 4) 검수 그리드 ──
@@ -16255,7 +16428,7 @@ elif page == "생산 보고":
                           if p and p not in pn_set]
                 if bad_pn:
                     st.error(
-                        f"❌ 마스터에 없는 품번 {len(bad_pn)}건: "
+                        f"마스터에 없는 품번 {len(bad_pn)}건: "
                         f"{', '.join(sorted(set(bad_pn))[:5])} — 수정 후 저장하세요.")
 
                 # ── 5) 저장 방식 (기존 행이 있을 때만) ──
@@ -16264,7 +16437,7 @@ elif page == "생산 보고":
                     ex_day = sum(1 for e in exist if e.get("shift") == "주간")
                     ex_night = len(exist) - ex_day
                     st.warning(
-                        f"⚠️ {mes_date} MES 실적이 이미 있습니다 — "
+                        f"{mes_date} MES 실적이 이미 있습니다 — "
                         f"주간 {ex_day}행 / 야간 {ex_night}행.")
                     up_shifts = sorted(set(inc["교대"])) if len(inc) else []
                     del_cnt = sum(1 for e in exist
@@ -16284,7 +16457,7 @@ elif page == "생산 보고":
                 sv1, sv2 = st.columns([1, 3])
                 with sv1:
                     do_mes_save = st.button(
-                        f"📥 MES 실적 저장 ({len(inc)}행)",
+                        f"MES 실적 저장 ({len(inc)}행)",
                         type="primary",
                         disabled=len(inc) == 0 or bool(bad_pn),
                         key="mes_submit")
@@ -16293,7 +16466,8 @@ elif page == "생산 보고":
                         "production_log 에 source=MES_UPLOAD 로 저장 — "
                         "**재고 원장에는 반영되지 않습니다.**")
 
-                if do_mes_save and len(inc) > 0 and not bad_pn:
+                if do_mes_save and len(inc) > 0 and not bad_pn \
+                        and click_guard("mes_submit"):
                     try:
                         if exist and dup_mode.startswith("교체"):
                             for _sh in sorted(set(inc["교대"])):
@@ -16345,7 +16519,7 @@ elif page == "생산 보고":
                 key="pb_hist_q")
         with hc2:
             h_src = st.selectbox("입력 소스",
-                ["전체", "📝 수기 보고", "📥 MES 업로드"],
+                ["전체", "수기 보고", "MES 업로드", "생산일정 시트"],
                 key="pb_hist_src")
         with hc3:
             h_limit = st.number_input("표시", 10, 500, 50, 10, key="pb_hist_limit")
@@ -16353,10 +16527,12 @@ elif page == "생산 보고":
         h_filter = ["order=log_date.desc,log_id.desc"]
         if h_q:
             h_filter.append(f"pn=ilike.*{h_q.strip()}*")
-        if h_src == "📝 수기 보고":
+        if h_src == "수기 보고":
             h_filter.append("source=eq.MANUAL")
-        elif h_src == "📥 MES 업로드":
+        elif h_src == "MES 업로드":
             h_filter.append("source=eq.MES_UPLOAD")
+        elif h_src == "생산일정 시트":
+            h_filter.append("source=eq.SHEET_DB")
         try:
             logs = fetch("production_log",
                 "log_id,log_date,shift,pn,product_id,total_qty,defect_qty,"
@@ -16397,7 +16573,7 @@ elif page == "생산 보고":
                          height=400)
 
             # 일간 보고서 집계 (MES 소계 대체) — 조회 결과 기준
-            with st.expander("📊 집계 보기 (설비별 / 품번·공정별)", expanded=False):
+            with st.expander("집계 보기 (설비별 / 품번·공정별)", expanded=False):
                 ag1, ag2 = st.columns(2)
                 with ag1:
                     st.markdown("**설비별**")
@@ -16468,7 +16644,7 @@ elif page == "생산 보고":
                         st.error(f"추적 실패: {e}"); trace_rows = []
 
                     if trace_rows:
-                        st.markdown(f"##### 🔎 {sel_lot} — {len(trace_rows)}건")
+                        st.markdown(f"##### {sel_lot} — {len(trace_rows)}건")
                         tdf = pd.DataFrame([{
                             "일자": t.get("txn_date"),
                             "단계": t.get("step_label"),
@@ -16510,7 +16686,7 @@ elif page == "생산 보고":
                 if not trace_rows:
                     st.info("해당 제품의 원장 거래 없음.")
                 else:
-                    st.markdown(f"##### 🔎 제품 이력 — {len(trace_rows)}건")
+                    st.markdown(f"##### 제품 이력 — {len(trace_rows)}건")
                     tdf = pd.DataFrame([{
                         "일자": t.get("txn_date"),
                         "품번": t.get("pn"),
@@ -16550,7 +16726,8 @@ elif page == "영업 보고":
     def _sr_ships(cond):
         return fetch(
             "shipments",
-            "shipment_id,ship_no,ship_date,status,created_by,confirmed_at",
+            "shipment_id,ship_no,ship_date,status,created_by,confirmed_at,"
+            "rev_no,revised_at",
             cond + "&order=ship_date.asc,shipment_id.asc", limit=1000)
 
     def _sr_items(ships):
@@ -16731,7 +16908,7 @@ elif page == "영업 보고":
                                         "ym,closed_at,closed_by,note")
             except Exception:
                 _mc_row = None
-            _mc_admin = current_user().get("role", "admin") == "admin"
+            _mc_admin = current_user().get("role") == "admin"
             if _mc_row:
                 st.success("{} 마감됨 — {} · {}{}".format(
                     _m_pick, str(_mc_row.get("closed_at") or "")[:16],
@@ -16870,17 +17047,20 @@ elif page == "영업 보고":
                         pass
                 return out
 
+            # 정정본 표기 — 출고 관리 재발행과 같은 라벨 (2026-09-16 리뷰 A8)
+            from utils.shipment_adjust import rev_label as _sr_rl
+            _sr_rev_lbl = _sr_rl(_r_pick.get("rev_no"), _r_pick.get("revised_at"))
             _rb1, _rb2 = st.columns(2)
             _rb1.download_button(
                 "출고 리스트 재발행",
-                _sr_list(_sr_batch(_r_items, _r_pick)),
+                _sr_list(_sr_batch(_r_items, _r_pick), rev_label=_sr_rev_lbl),
                 file_name=f"출고리스트_{_r_pick['ship_no']}.html",
                 mime="text/html", key="sr_re_list",
                 use_container_width=True)
             _rb2.download_button(
                 "거래명세서 재발행",
                 _sr_stmt(_sr_batch(_r_items, _r_pick),
-                         _sr_vmap(_r_items)),
+                         _sr_vmap(_r_items), rev_label=_sr_rev_lbl),
                 file_name=f"거래명세서_{_r_pick['ship_no']}.html",
                 mime="text/html", key="sr_re_stmt", type="primary",
                 use_container_width=True)
@@ -16926,13 +17106,9 @@ elif page == "원가 확인":
         "total_sales_12m,sales_count_12m,activity_trend"
     )
 
-    if USE_V2:
-        st.success(
-            "`product_cost_full_v` 사용 중 — BOM 변경이 즉시 반영됩니다."
-        )
-    else:
+    if not USE_V2:
         st.warning(
-            "⚠️ legacy `product_full` 사용 중 — BOM 변경 자동 반영 안 됨. "
+            "legacy `product_full` 사용 중 — BOM 변경 자동 반영 안 됨. "
             "Migration 007/008/009 적용 후 자동 활성."
         )
 
@@ -17126,7 +17302,7 @@ elif page == "원가 확인":
     # ════════════════════════════════════════════════
     # 📊 매입 단가 조회 (페이지 공통 보조 위젯)
     # ════════════════════════════════════════════════
-    with st.expander("📊 매입 단가 조회 (자재명/품번으로 최근 거래가 확인)",
+    with st.expander("매입 단가 조회 (자재명/품번으로 최근 거래가 확인)",
                      expanded=False):
         st.caption("BOM 작성·단가 입력 전 참고. 매입 ledger 의 `item` (자재명), "
                    "`matched_pn` (제품 매칭), `remark` 를 모두 검색합니다.")
@@ -17157,7 +17333,7 @@ elif page == "원가 확인":
             st.error(f"카테고리 로드 오류: {cat_err}")
         if len(all_cats) == 0 and not cat_err:
             st.warning(
-                "ℹ️ purchase_ledger.category 가 모두 NULL. "
+                "purchase_ledger.category 가 모두 NULL. "
                 "카테고리 필터는 비활성. 키워드 검색만 작동합니다."
             )
 
@@ -17205,7 +17381,7 @@ elif page == "원가 확인":
                     raw_rows = []
                 if raw_rows and pl_cats:
                     st.warning(
-                        f"⚠️ 카테고리 필터 때문에 0건. "
+                        f"카테고리 필터 때문에 0건. "
                         f"필터 없이는 **{len(raw_rows)}건 이상** 매칭 — 카테고리 해제 후 재시도."
                     )
                 elif not raw_rows:
@@ -17278,7 +17454,7 @@ elif page == "원가 확인":
     # ⚠️ / 🧮 는 참고용 진단 탭
     tabs = st.tabs(["제품 원가", "마진 대시보드", "품목 분석",
                     "이상치 (참고)", "BOM 재산정 (참고)",
-                    "원가 편집", "통합 view"])
+                    "원가 편집 (legacy)", "통합 view (Beta)"])
 
     # ════════════════════════════════════════════════
     # Tab 0: 제품 원가 — 실매입 단가 기반 표준 원가 (2026-08-31 개편)
@@ -17505,100 +17681,101 @@ elif page == "원가 확인":
                 "product_id,estimated_cost_per_pc,avg_unit_price,margin_pct,total_sales_12m",
                 "archived_at=is.null", limit=5000)
         except Exception as e:
-            st.error(f"데이터 로드 실패: {e}"); st.stop()
+            st.error(f"데이터 로드 실패: {e}"); all_rows = []
 
         df_all = pd.DataFrame(all_rows) if all_rows else pd.DataFrame()
         if df_all.empty:
-            st.warning("활성 제품 데이터가 없습니다."); st.stop()
+            st.warning("활성 제품 데이터가 없습니다.")
 
-        # 숫자 강제 변환
-        for c in ["estimated_cost_per_pc", "avg_unit_price", "margin_pct", "total_sales_12m"]:
-            df_all[c] = pd.to_numeric(df_all[c], errors="coerce")
-
-        n_total = len(df_all)
-        n_has_cost = int((df_all["estimated_cost_per_pc"].fillna(0) > 0).sum())
-        n_has_sale = int((df_all["avg_unit_price"].fillna(0) > 0).sum())
-        n_both = int(((df_all["estimated_cost_per_pc"].fillna(0) > 0) &
-                      (df_all["avg_unit_price"].fillna(0) > 0)).sum())
-        # 마진 산출 가능한 것만으로 통계
-        df_m = df_all.dropna(subset=["margin_pct"])
-        avg_margin = df_m["margin_pct"].mean() if not df_m.empty else None
-        n_neg = int((df_m["margin_pct"] < 0).sum())
-        n_low = int(((df_m["margin_pct"] >= 0) & (df_m["margin_pct"] < 10)).sum())
-        n_missing = n_total - n_has_cost
-
-        k1, k2, k3, k4, k5 = st.columns(5)
-        k1.metric("활성 제품", f"{n_total:,}")
-        k2.metric("원가 데이터 보유", f"{n_has_cost:,}", f"{n_has_cost/n_total*100:.0f}%")
-        k3.metric("평균 마진율", _pct(avg_margin) if avg_margin is not None else "-")
-        k4.metric("역마진 (<0%)", f"{n_neg:,}", "주의" if n_neg > 0 else "양호")
-        k5.metric("저마진 (0~10%)", f"{n_low:,}")
-
-        k6, k7, k8 = st.columns(3)
-        k6.metric("원가 데이터 누락", f"{n_missing:,}", f"{n_missing/n_total*100:.0f}%")
-        k7.metric("판매 실적 있음", f"{n_has_sale:,}")
-        k8.metric("원가+판매 모두 보유", f"{n_both:,}", "마진 산출 가능")
-
-        st.divider()
-        st.markdown("### 마진율 분포")
-        if not df_m.empty:
-            # 구간화
-            bins = [-9999, -10, 0, 10, 20, 30, 50, 9999]
-            labels = ["역마진 (-10%↓)", "역마진 (-10~0%)", "저마진 (0~10%)",
-                      "보통 (10~20%)", "양호 (20~30%)", "우수 (30~50%)", "최우수 (50%+)"]
-            df_m["bucket"] = pd.cut(df_m["margin_pct"], bins=bins, labels=labels)
-            dist = df_m.groupby("bucket", observed=True).size().reset_index(name="품목수")
-            st.bar_chart(dist.set_index("bucket"), height=240)
         else:
-            st.caption("마진 산출 가능한 품목이 없습니다.")
+            # 숫자 강제 변환
+            for c in ["estimated_cost_per_pc", "avg_unit_price", "margin_pct", "total_sales_12m"]:
+                df_all[c] = pd.to_numeric(df_all[c], errors="coerce")
 
-        st.divider()
-        st.markdown("### ⛔ 저마진 BOTTOM 10 (마진율↑)")
-        try:
-            bottom = fetch(SRC_TABLE, COST_FIELDS,
-                "archived_at=is.null&margin_pct=not.is.null&total_sales_12m=gt.0"
-                "&order=margin_pct.asc", limit=10)
-            if bottom:
-                df_b = pd.DataFrame(bottom)
-                df_b["판매가"] = df_b["avg_unit_price"].apply(_money)
-                df_b["추정원가"] = df_b["estimated_cost_per_pc"].apply(_money)
-                df_b["마진율"] = df_b["margin_pct"].apply(_pct)
-                df_b["12M매출"] = df_b["total_sales_12m"].apply(_money)
-                toss_df(
-                    df_b[["pn", "customer", "판매가", "추정원가", "마진율",
-                          "12M매출", "abc_grade", "activity_trend"]]
-                    .rename(columns={"pn": "품번", "customer": "고객사",
-                                     "abc_grade": "ABC", "activity_trend": "추세"}),
-                    use_container_width=True, hide_index=True)
+            n_total = len(df_all)
+            n_has_cost = int((df_all["estimated_cost_per_pc"].fillna(0) > 0).sum())
+            n_has_sale = int((df_all["avg_unit_price"].fillna(0) > 0).sum())
+            n_both = int(((df_all["estimated_cost_per_pc"].fillna(0) > 0) &
+                          (df_all["avg_unit_price"].fillna(0) > 0)).sum())
+            # 마진 산출 가능한 것만으로 통계
+            df_m = df_all.dropna(subset=["margin_pct"])
+            avg_margin = df_m["margin_pct"].mean() if not df_m.empty else None
+            n_neg = int((df_m["margin_pct"] < 0).sum())
+            n_low = int(((df_m["margin_pct"] >= 0) & (df_m["margin_pct"] < 10)).sum())
+            n_missing = n_total - n_has_cost
+
+            k1, k2, k3, k4, k5 = st.columns(5)
+            k1.metric("활성 제품", f"{n_total:,}")
+            k2.metric("원가 데이터 보유", f"{n_has_cost:,}", f"{n_has_cost/n_total*100:.0f}%")
+            k3.metric("평균 마진율", _pct(avg_margin) if avg_margin is not None else "-")
+            k4.metric("역마진 (<0%)", f"{n_neg:,}", "주의" if n_neg > 0 else "양호")
+            k5.metric("저마진 (0~10%)", f"{n_low:,}")
+
+            k6, k7, k8 = st.columns(3)
+            k6.metric("원가 데이터 누락", f"{n_missing:,}", f"{n_missing/n_total*100:.0f}%")
+            k7.metric("판매 실적 있음", f"{n_has_sale:,}")
+            k8.metric("원가+판매 모두 보유", f"{n_both:,}", "마진 산출 가능")
+
+            st.divider()
+            st.markdown("### 마진율 분포")
+            if not df_m.empty:
+                # 구간화
+                bins = [-9999, -10, 0, 10, 20, 30, 50, 9999]
+                labels = ["역마진 (-10%↓)", "역마진 (-10~0%)", "저마진 (0~10%)",
+                          "보통 (10~20%)", "양호 (20~30%)", "우수 (30~50%)", "최우수 (50%+)"]
+                df_m["bucket"] = pd.cut(df_m["margin_pct"], bins=bins, labels=labels)
+                dist = df_m.groupby("bucket", observed=True).size().reset_index(name="품목수")
+                st.bar_chart(dist.set_index("bucket"), height=240)
             else:
-                st.caption("데이터 없음")
-        except Exception as e:
-            st.caption(f"조회 실패: {e}")
+                st.caption("마진 산출 가능한 품목이 없습니다.")
 
-        st.divider()
-        st.markdown("### 🏆 고마진 TOP 10 (마진율↓)")
-        try:
-            top = fetch(SRC_TABLE, COST_FIELDS,
-                "archived_at=is.null&margin_pct=not.is.null&total_sales_12m=gt.0"
-                "&order=margin_pct.desc", limit=10)
-            if top:
-                df_t = pd.DataFrame(top)
-                df_t["판매가"] = df_t["avg_unit_price"].apply(_money)
-                df_t["추정원가"] = df_t["estimated_cost_per_pc"].apply(_money)
-                df_t["마진율"] = df_t["margin_pct"].apply(_pct)
-                df_t["12M매출"] = df_t["total_sales_12m"].apply(_money)
-                toss_df(
-                    df_t[["pn", "customer", "판매가", "추정원가", "마진율",
-                          "12M매출", "abc_grade", "activity_trend"]]
-                    .rename(columns={"pn": "품번", "customer": "고객사",
-                                     "abc_grade": "ABC", "activity_trend": "추세"}),
-                    use_container_width=True, hide_index=True)
-        except Exception as e:
-            st.caption(f"조회 실패: {e}")
+            st.divider()
+            st.markdown("### 저마진 BOTTOM 10 (마진율↑)")
+            try:
+                bottom = fetch(SRC_TABLE, COST_FIELDS,
+                    "archived_at=is.null&margin_pct=not.is.null&total_sales_12m=gt.0"
+                    "&order=margin_pct.asc", limit=10)
+                if bottom:
+                    df_b = pd.DataFrame(bottom)
+                    df_b["판매가"] = df_b["avg_unit_price"].apply(_money)
+                    df_b["추정원가"] = df_b["estimated_cost_per_pc"].apply(_money)
+                    df_b["마진율"] = df_b["margin_pct"].apply(_pct)
+                    df_b["12M매출"] = df_b["total_sales_12m"].apply(_money)
+                    toss_df(
+                        df_b[["pn", "customer", "판매가", "추정원가", "마진율",
+                              "12M매출", "abc_grade", "activity_trend"]]
+                        .rename(columns={"pn": "품번", "customer": "고객사",
+                                         "abc_grade": "ABC", "activity_trend": "추세"}),
+                        use_container_width=True, hide_index=True)
+                else:
+                    st.caption("데이터 없음")
+            except Exception as e:
+                st.caption(f"조회 실패: {e}")
 
-    # ════════════════════════════════════════════════
-    # Tab 2: 품목 분석 (단일 품번 상세)
-    # ════════════════════════════════════════════════
+            st.divider()
+            st.markdown("### 고마진 TOP 10 (마진율↓)")
+            try:
+                top = fetch(SRC_TABLE, COST_FIELDS,
+                    "archived_at=is.null&margin_pct=not.is.null&total_sales_12m=gt.0"
+                    "&order=margin_pct.desc", limit=10)
+                if top:
+                    df_t = pd.DataFrame(top)
+                    df_t["판매가"] = df_t["avg_unit_price"].apply(_money)
+                    df_t["추정원가"] = df_t["estimated_cost_per_pc"].apply(_money)
+                    df_t["마진율"] = df_t["margin_pct"].apply(_pct)
+                    df_t["12M매출"] = df_t["total_sales_12m"].apply(_money)
+                    toss_df(
+                        df_t[["pn", "customer", "판매가", "추정원가", "마진율",
+                              "12M매출", "abc_grade", "activity_trend"]]
+                        .rename(columns={"pn": "품번", "customer": "고객사",
+                                         "abc_grade": "ABC", "activity_trend": "추세"}),
+                        use_container_width=True, hide_index=True)
+            except Exception as e:
+                st.caption(f"조회 실패: {e}")
+
+        # ════════════════════════════════════════════════
+        # Tab 2: 품목 분석 (단일 품번 상세)
+        # ════════════════════════════════════════════════
     with tabs[2]:
         st.markdown("### 품목 검색")
         c1, c2 = st.columns([3, 1])
@@ -17640,7 +17817,7 @@ elif page == "원가 확인":
 
                 if row:
                     st.divider()
-                    st.markdown(f"#### 🔧 {row['pn']}  ·  {row.get('customer') or '-'}")
+                    st.markdown(f"#### {row['pn']}  ·  {row.get('customer') or '-'}")
                     sale = float(row.get("avg_unit_price") or 0)
                     mat = float(row.get("material_unit_price") or 0)
                     out_ = float(row.get("outsourcing_per_pc") or 0)
@@ -17708,7 +17885,7 @@ elif page == "원가 확인":
                                      if (b.get('process_type') or 'MATERIAL') == 'MATERIAL']
                     if prod_mat_rows:
                         st.divider()
-                        st.markdown("##### 📊 BOM 자재 매입 단가 변동 추이")
+                        st.markdown("##### BOM 자재 매입 단가 변동 추이")
                         st.caption(
                             "각 자재의 매입 거래 (자재명/규격 기준 검색). "
                             "matched_material_id 가 없어도 item 키워드로 시계열 산출."
@@ -17757,7 +17934,7 @@ elif page == "원가 확인":
                                         ]
 
                             with st.expander(
-                                f"🔧 {mat_name} (BOM #{mat_row['bom_id']}, "
+                                f"{mat_name} (BOM #{mat_row['bom_id']}, "
                                 f"{mat_id or '-'}) — 매입 {len(mp_rows)}건",
                                 expanded=False):
                                 if not mp_rows:
@@ -17830,7 +18007,7 @@ elif page == "원가 확인":
 
                     # ── 📈 판매가 변동 이력 ──
                     st.divider()
-                    st.markdown("##### 📈 판매가 변동 이력")
+                    st.markdown("##### 판매가 변동 이력")
                     st.caption(
                         "12M 평균에 과거 오류 거래가 섞일 수 있어 **최근 단가 / 3M / 12M** "
                         "을 비교 표시. 새 거래가 누적될수록 평균 정확도 향상."
@@ -18139,7 +18316,7 @@ elif page == "원가 확인":
             })
 
             csv = show.to_csv(index=False).encode("utf-8-sig")
-            st.download_button("📥 CSV 다운로드", csv,
+            st.download_button("CSV 다운로드", csv,
                 file_name=f"cost_outliers_{outlier_kind[:6]}.csv",
                 mime="text/csv", use_container_width=False)
         else:
@@ -18149,7 +18326,7 @@ elif page == "원가 확인":
     # Tab 4: BOM 재산정 보조 (shared_factor 적용 시뮬레이션)
     # ════════════════════════════════════════════════
     with tabs[4]:
-        st.markdown("### 🧮 BOM 재산정 보조")
+        st.markdown("### BOM 재산정 보조")
         st.caption(
             "원리: **실제 소재비/EA = (qty_per_pc × 자재단가) / shared_factor**. "
             "현재 `products.material_unit_price`는 shared_factor 미반영 스냅샷이라 "
@@ -18159,14 +18336,14 @@ elif page == "원가 확인":
 
         # ── 모드 선택 ──
         mode = st.radio("분석 범위", [
-            "🎯 의심 품목 자동 추출 (소재비 > 판매가 × 50%)",
+            "의심 품목 자동 추출 (소재비 > 판매가 × 50%)",
             "품번 검색 (단일 제품 상세)",
         ], horizontal=True, key="bom_recalc_mode")
 
         # ════════════════════
         # 모드 A: 의심 품목 자동 추출
         # ════════════════════
-        if mode.startswith("🎯"):
+        if mode.startswith("-"):
             r_limit = st.number_input("최대 검토 행수", 10, 500, 50, 10,
                                        key="bom_recalc_limit")
 
@@ -18187,144 +18364,144 @@ elif page == "원가 확인":
             cand = cand[:int(r_limit)]
 
             if not cand:
-                st.info("의심 품목 없음. (또는 한도 내 매칭 없음)"); st.stop()
+                st.info("의심 품목 없음. (또는 한도 내 매칭 없음)")
+            else:
+                # 2) 해당 제품들의 BOM 조회 (product_id IN)
+                pids = [r["product_id"] for r in cand]
+                pids_q = ",".join(f'"{p}"' for p in pids[:300])
+                try:
+                    bom_rows = fetch("bom",
+                        "bom_id,product_id,material_id,raw_material_name,"
+                        "qty_per_pc,shared_factor",
+                        f"product_id=in.({pids_q})&order=product_id.asc",
+                        limit=5000)
+                except Exception as e:
+                    st.error(f"BOM 조회 실패: {e}"); bom_rows = []
 
-            # 2) 해당 제품들의 BOM 조회 (product_id IN)
-            pids = [r["product_id"] for r in cand]
-            pids_q = ",".join(f'"{p}"' for p in pids[:300])
-            try:
-                bom_rows = fetch("bom",
-                    "bom_id,product_id,material_id,raw_material_name,"
-                    "qty_per_pc,shared_factor",
-                    f"product_id=in.({pids_q})&order=product_id.asc",
-                    limit=5000)
-            except Exception as e:
-                st.error(f"BOM 조회 실패: {e}"); bom_rows = []
+                # product_id → BOM 행들
+                bom_by_pid = {}
+                for b in bom_rows:
+                    bom_by_pid.setdefault(b["product_id"], []).append(b)
 
-            # product_id → BOM 행들
-            bom_by_pid = {}
-            for b in bom_rows:
-                bom_by_pid.setdefault(b["product_id"], []).append(b)
+                # 3) 재계산 수행
+                rows = []
+                for c in cand:
+                    pid = c["product_id"]
+                    bs = bom_by_pid.get(pid, [])
+                    # 주 BOM 한 줄 기준: shared_factor의 평균 또는 최대값 사용
+                    # 실무: 1개 제품에 BOM 다수면 행별로 계산해야 하지만 화면 단순화 위해 합산.
+                    cur_mat = float(c.get("material_unit_price") or 0)
+                    # 단순화: shared_factor 가장 큰 것 적용 (가장 큰 분할가공)
+                    max_sf = max((float(b.get("shared_factor") or 1) for b in bs), default=1) if bs else 1
+                    # qty_per_pc 합 (자재 여러 개일 때)
+                    sum_qpc = sum(float(b.get("qty_per_pc") or 1) for b in bs) if bs else 1
+                    # 추정 재계산값: cur_mat / max_sf (가장 보수적)
+                    est_recalc = cur_mat / max_sf if max_sf > 0 else cur_mat
+                    # 더 정확한 BOM 기반: cur_mat × sum_qpc / max_sf
+                    est_bom = cur_mat * sum_qpc / max_sf if max_sf > 0 else cur_mat
 
-            # 3) 재계산 수행
-            rows = []
-            for c in cand:
-                pid = c["product_id"]
-                bs = bom_by_pid.get(pid, [])
-                # 주 BOM 한 줄 기준: shared_factor의 평균 또는 최대값 사용
-                # 실무: 1개 제품에 BOM 다수면 행별로 계산해야 하지만 화면 단순화 위해 합산.
-                cur_mat = float(c.get("material_unit_price") or 0)
-                # 단순화: shared_factor 가장 큰 것 적용 (가장 큰 분할가공)
-                max_sf = max((float(b.get("shared_factor") or 1) for b in bs), default=1) if bs else 1
-                # qty_per_pc 합 (자재 여러 개일 때)
-                sum_qpc = sum(float(b.get("qty_per_pc") or 1) for b in bs) if bs else 1
-                # 추정 재계산값: cur_mat / max_sf (가장 보수적)
-                est_recalc = cur_mat / max_sf if max_sf > 0 else cur_mat
-                # 더 정확한 BOM 기반: cur_mat × sum_qpc / max_sf
-                est_bom = cur_mat * sum_qpc / max_sf if max_sf > 0 else cur_mat
+                    rows.append({
+                        "product_id": pid,
+                        "pn": c.get("pn"),
+                        "customer": c.get("customer"),
+                        "판매가": float(c.get("avg_unit_price") or 0),
+                        "현재_소재비": cur_mat,
+                        "소재비/판매가": (cur_mat / float(c["avg_unit_price"]) * 100)
+                                           if float(c["avg_unit_price"]) > 0 else 0,
+                        "BOM_행수": len(bs),
+                        "qty_per_pc합": sum_qpc,
+                        "shared_factor(최대)": max_sf,
+                        "재산정_단순": round(est_recalc, 2),
+                        "재산정_BOM": round(est_bom, 2),
+                        "현재_추정원가": float(c.get("estimated_cost_per_pc") or 0),
+                        "12M매출": float(c.get("total_sales_12m") or 0),
+                        "마진율": c.get("margin_pct"),
+                    })
 
-                rows.append({
-                    "product_id": pid,
-                    "pn": c.get("pn"),
-                    "customer": c.get("customer"),
-                    "판매가": float(c.get("avg_unit_price") or 0),
-                    "현재_소재비": cur_mat,
-                    "소재비/판매가": (cur_mat / float(c["avg_unit_price"]) * 100)
-                                       if float(c["avg_unit_price"]) > 0 else 0,
-                    "BOM_행수": len(bs),
-                    "qty_per_pc합": sum_qpc,
-                    "shared_factor(최대)": max_sf,
-                    "재산정_단순": round(est_recalc, 2),
-                    "재산정_BOM": round(est_bom, 2),
-                    "현재_추정원가": float(c.get("estimated_cost_per_pc") or 0),
-                    "12M매출": float(c.get("total_sales_12m") or 0),
-                    "마진율": c.get("margin_pct"),
-                })
+                df_r = pd.DataFrame(rows)
+                st.caption(f"의심 후보: **{len(df_r):,}건**, 그 중 shared_factor > 1: "
+                           f"**{int((df_r['shared_factor(최대)'] > 1).sum()):,}건** (재계산 효과 있음)")
 
-            df_r = pd.DataFrame(rows)
-            st.caption(f"의심 후보: **{len(df_r):,}건**, 그 중 shared_factor > 1: "
-                       f"**{int((df_r['shared_factor(최대)'] > 1).sum()):,}건** (재계산 효과 있음)")
+                # 표시용 포맷
+                disp = df_r.copy()
+                for c in ["판매가", "현재_소재비", "재산정_단순", "재산정_BOM",
+                          "현재_추정원가", "12M매출"]:
+                    disp[c] = disp[c].apply(lambda v: _money(v))
+                disp["소재비/판매가"] = disp["소재비/판매가"].apply(lambda v: f"{v:.0f}%")
+                disp["마진율"] = disp["마진율"].apply(_pct)
 
-            # 표시용 포맷
-            disp = df_r.copy()
-            for c in ["판매가", "현재_소재비", "재산정_단순", "재산정_BOM",
-                      "현재_추정원가", "12M매출"]:
-                disp[c] = disp[c].apply(lambda v: _money(v))
-            disp["소재비/판매가"] = disp["소재비/판매가"].apply(lambda v: f"{v:.0f}%")
-            disp["마진율"] = disp["마진율"].apply(_pct)
+                show_cols = ["pn", "customer", "판매가", "현재_소재비",
+                             "소재비/판매가", "BOM_행수", "qty_per_pc합",
+                             "shared_factor(최대)", "재산정_단순", "재산정_BOM",
+                             "12M매출", "마진율"]
+                disp = disp.rename(columns={"pn": "품번", "customer": "고객사"})
+                toss_df(
+                    disp[[("품번" if c == "pn" else "고객사" if c == "customer" else c)
+                          for c in show_cols]],
+                    use_container_width=True, hide_index=True, height=480
+                )
 
-            show_cols = ["pn", "customer", "판매가", "현재_소재비",
-                         "소재비/판매가", "BOM_행수", "qty_per_pc합",
-                         "shared_factor(최대)", "재산정_단순", "재산정_BOM",
-                         "12M매출", "마진율"]
-            disp = disp.rename(columns={"pn": "품번", "customer": "고객사"})
-            toss_df(
-                disp[[("품번" if c == "pn" else "고객사" if c == "customer" else c)
-                      for c in show_cols]],
-                use_container_width=True, hide_index=True, height=480
-            )
+                st.divider()
+                st.markdown("##### 일괄 적용")
+                apply_col1, apply_col2, apply_col3 = st.columns([2, 2, 2])
+                with apply_col1:
+                    apply_kind = st.selectbox("적용할 값", [
+                        "재산정_단순 (현재값 ÷ shared_factor)",
+                        "재산정_BOM (현재값 × qty/PC ÷ shared_factor)",
+                    ], key="recalc_apply_kind")
+                with apply_col2:
+                    only_sf_gt1 = st.checkbox(
+                        "shared_factor > 1 인 행만 적용 (안전)",
+                        value=True, key="recalc_only_sf")
+                with apply_col3:
+                    update_est = st.checkbox(
+                        "estimated_cost_per_pc 도 동시 재계산 "
+                        "(= 신_소재비 + 외주 + 열처리 + 표면)",
+                        value=True, key="recalc_update_est")
 
-            st.divider()
-            st.markdown("##### 🚀 일괄 적용")
-            apply_col1, apply_col2, apply_col3 = st.columns([2, 2, 2])
-            with apply_col1:
-                apply_kind = st.selectbox("적용할 값", [
-                    "재산정_단순 (현재값 ÷ shared_factor)",
-                    "재산정_BOM (현재값 × qty/PC ÷ shared_factor)",
-                ], key="recalc_apply_kind")
-            with apply_col2:
-                only_sf_gt1 = st.checkbox(
-                    "shared_factor > 1 인 행만 적용 (안전)",
-                    value=True, key="recalc_only_sf")
-            with apply_col3:
-                update_est = st.checkbox(
-                    "estimated_cost_per_pc 도 동시 재계산 "
-                    "(= 신_소재비 + 외주 + 열처리 + 표면)",
-                    value=True, key="recalc_update_est")
-
-            if st.button("일괄 적용",
-                          help="위 추출 결과를 검토했다면 눌러 "
-                               "일괄 적용합니다",
-                          type="primary", key="recalc_apply_btn"):
-                target = df_r.copy()
-                if only_sf_gt1:
-                    target = target[target["shared_factor(최대)"] > 1]
-                if target.empty:
-                    st.warning("적용 대상이 없습니다.")
-                else:
-                    ok_n, fail_n = 0, 0
-                    for _, r in target.iterrows():
-                        new_mat = (r["재산정_단순"] if apply_kind.startswith("재산정_단순")
-                                   else r["재산정_BOM"])
-                        payload = {"material_unit_price": float(new_mat)}
-                        if update_est:
-                            # 외주/열처리/표면은 별도 컬럼에서 가져와 합산
+                if st.button("일괄 적용",
+                              help="위 추출 결과를 검토했다면 눌러 "
+                                   "일괄 적용합니다",
+                              type="primary", key="recalc_apply_btn"):
+                    target = df_r.copy()
+                    if only_sf_gt1:
+                        target = target[target["shared_factor(최대)"] > 1]
+                    if target.empty:
+                        st.warning("적용 대상이 없습니다.")
+                    else:
+                        ok_n, fail_n = 0, 0
+                        for _, r in target.iterrows():
+                            new_mat = (r["재산정_단순"] if apply_kind.startswith("재산정_단순")
+                                       else r["재산정_BOM"])
+                            payload = {"material_unit_price": float(new_mat)}
+                            if update_est:
+                                # 외주/열처리/표면은 별도 컬럼에서 가져와 합산
+                                try:
+                                    src = next(c for c in cand
+                                               if c["product_id"] == r["product_id"])
+                                    est = (float(new_mat)
+                                           + float(src.get("outsourcing_per_pc") or 0)
+                                           + float(src.get("heat_treat_per_pc") or 0)
+                                           + float(src.get("surface_per_pc") or 0))
+                                    payload["estimated_cost_per_pc"] = est
+                                except StopIteration:
+                                    pass
                             try:
-                                src = next(c for c in cand
-                                           if c["product_id"] == r["product_id"])
-                                est = (float(new_mat)
-                                       + float(src.get("outsourcing_per_pc") or 0)
-                                       + float(src.get("heat_treat_per_pc") or 0)
-                                       + float(src.get("surface_per_pc") or 0))
-                                payload["estimated_cost_per_pc"] = est
-                            except StopIteration:
-                                pass
-                        try:
-                            if _db.update("products",
-                                f"product_id=eq.{r['product_id']}", payload):
-                                ok_n += 1
-                            else:
+                                if _db.update("products",
+                                    f"product_id=eq.{r['product_id']}", payload):
+                                    ok_n += 1
+                                else:
+                                    fail_n += 1
+                            except Exception:
                                 fail_n += 1
-                        except Exception:
-                            fail_n += 1
-                    st.success(
-                        f"적용 완료: {ok_n}건"
-                        + (f" / 실패 {fail_n}건" if fail_n else ""))
-                    st.rerun()
+                        st.success(
+                            f"적용 완료: {ok_n}건"
+                            + (f" / 실패 {fail_n}건" if fail_n else ""))
+                        st.rerun()
 
-            csv = df_r.to_csv(index=False).encode("utf-8-sig")
-            st.download_button("📥 분석 결과 CSV", csv,
-                file_name="bom_recalc_review.csv", mime="text/csv")
+                csv = df_r.to_csv(index=False).encode("utf-8-sig")
+                st.download_button("분석 결과 CSV", csv,
+                    file_name="bom_recalc_review.csv", mime="text/csv")
 
         # ════════════════════
         # 모드 B: 품번 검색 (단일)
@@ -18429,15 +18606,15 @@ elif page == "원가 확인":
     # ════════════════════════════════════════════════
     with tabs[5]:
         st.markdown("### 원가 편집")
-        st.caption("⚠️ 저장 시 products 테이블이 즉시 갱신됩니다. "
+        st.caption("저장 시 products 테이블이 즉시 갱신됩니다. "
                    "estimated_cost_per_pc 는 자동 재계산되지 않으므로 직접 입력해 주세요.")
 
         edit_mode = st.radio("편집 방식",
-            ["🔧 단건 편집", "📑 다건 일괄 편집 (검색 결과)"],
+            ["단건 편집", "다건 일괄 편집 (검색 결과)"],
             horizontal=True, key="cost_edit_mode")
 
         # ── 단건 편집 ──
-        if edit_mode == "🔧 단건 편집":
+        if edit_mode == "단건 편집":
             eq = st.text_input("품번 / 품명 / 고객사", key="cost_edit_search")
             if eq:
                 try:
@@ -18571,7 +18748,7 @@ elif page == "원가 확인":
                     num_rows="fixed",
                     disabled=["product_id", "품번", "고객사"],
                     column_config={
-                        "product_id": st.column_config.NumberColumn("PID", width="small"),
+                        "product_id": st.column_config.TextColumn("PID", width="small"),
                         "품질": st.column_config.SelectboxColumn(
                             "품질", options=["", "high", "medium", "low"]),
                     },
@@ -18585,7 +18762,7 @@ elif page == "원가 확인":
                                              help="기본 OFF. 체크 시 estimated_cost_per_pc = "
                                                   "소재+외주+열처리+표면 자동 덮어쓰기.")
                 with cc2:
-                    confirm_save = st.checkbox("⚠️ 일괄 저장 확인",
+                    confirm_save = st.checkbox("일괄 저장 확인",
                                                 value=False, key="bulk_confirm",
                                                 help="2단계 확인. 체크해야 저장 버튼 활성화.")
                 with cc3:
@@ -18628,7 +18805,7 @@ elif page == "원가 확인":
                             )
                             diff["estimated_cost_per_pc"] = est_sum or None
                         if diff:
-                            changed.append((int(pid), diff))
+                            changed.append((pid, diff))
 
                     if not changed:
                         st.info("변경된 행이 없습니다.")
@@ -18679,7 +18856,7 @@ elif page == "원가 확인":
             cv_rows = []
             view_available = False
             st.warning(
-                f"⚠️ `product_cost_full_v` 가 아직 적용되지 않았습니다. "
+                f"`product_cost_full_v` 가 아직 적용되지 않았습니다. "
                 f"Migration 007/008 을 SQL Editor 에서 실행하세요. ({str(e)[:80]})"
             )
 
@@ -18695,10 +18872,10 @@ elif page == "원가 확인":
             n_none = (df_v["cost_source"] == "NO_DATA").sum()
 
             mk1, mk2, mk3, mk4 = st.columns(4)
-            mk1.metric("🟢 BOM_FULL", f"{n_full:,}")
-            mk2.metric("🟡 BOM_PARTIAL", f"{n_partial:,}")
+            mk1.metric("BOM_FULL", f"{n_full:,}")
+            mk2.metric("BOM_PARTIAL", f"{n_partial:,}")
             mk3.metric("🟠 LEGACY_ONLY", f"{n_legacy:,}")
-            mk4.metric("🔴 NO_DATA", f"{n_none:,}")
+            mk4.metric("NO_DATA", f"{n_none:,}")
 
             # 표시용 변환
             for c in ["legacy_estimated_cost", "bom_cost_per_pc",
@@ -18719,8 +18896,8 @@ elif page == "원가 확인":
             df_v["마진율(계산)"] = df_v["margin_pct_calc"].apply(_pct)
             df_v["12M매출"] = df_v["total_sales_12m"].apply(_money)
 
-            badge_map = {"BOM_FULL": "🟢", "BOM_PARTIAL": "🟡",
-                         "LEGACY_ONLY": "🟠", "NO_DATA": "🔴"}
+            badge_map = {"BOM_FULL": "-", "BOM_PARTIAL": "-",
+                         "LEGACY_ONLY": "🟠", "NO_DATA": "-"}
             df_v["신뢰도"] = df_v["cost_source"].apply(
                 lambda v: f"{badge_map.get(v,'?')} {v}")
 
@@ -18742,7 +18919,7 @@ elif page == "원가 확인":
             )
 
             csv = disp_v.to_csv(index=False).encode("utf-8-sig")
-            st.download_button("📥 CSV 다운로드", csv,
+            st.download_button("CSV 다운로드", csv,
                 file_name="product_cost_full.csv", mime="text/csv")
         elif view_available:
             st.info("표시할 행이 없습니다.")
