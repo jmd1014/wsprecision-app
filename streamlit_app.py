@@ -10739,7 +10739,8 @@ elif page == "발주/입고":
 
         # ── 4.2) 미입고 발주 잔량 (2026-09-11) — 이미 발주해 입고 대기 중인
         # 수량은 발주 필요량에서 뺀다 (같은 자재를 두 번 제안하지 않도록).
-        # 전송된 발주만(2026-09-11 사용자 확정) — DRAFT(미전송)·취소는 제외.
+        # 취소만 제외 — 발주서를 만든 것(DRAFT)도 발주다 (2026-09-16 사용자:
+        # 발송 완료를 수동으로 거치지 않으므로 SENT 여부로 거르지 않는다).
         on_order = {}
         if mids:
             try:
@@ -10749,7 +10750,7 @@ elif page == "발주/입고":
                                    "material_id,pending_qty,po_status",
                                    f"material_id=in.({_ms})&pending_qty=gt.0",
                                    limit=1000):
-                        if (r.get("po_status") or "") in ("DRAFT", "CANCELLED",
+                        if (r.get("po_status") or "") in ("CANCELLED",
                                                            "CANCELED"):
                             continue
                         on_order[r["material_id"]] = (
@@ -10827,7 +10828,7 @@ elif page == "발주/입고":
 
     # ── 발주서 메일 발송 (2026-09-16) — utils/po_mail.py, secrets [mail].
     # enabled=false 면 _po_mail_cfg() 가 None → 버튼 자체가 없다 (사용자 결정:
-    # 사용 안정화 후 적용, 그때까지 작성 → 수동 메일 → [발송 완료 처리]).
+    # 사용 안정화 후 적용, 그때까지 작성(발주) → 수동 메일, 별도 발송 처리 없음).
     def _po_mail_cfg():
         try:
             from utils.po_mail import mail_cfg
@@ -10864,7 +10865,7 @@ elif page == "발주/입고":
                            "sent_to": ", ".join(_sent_to),
                            "mail_message_id": _mid}):
             return False, ("메일은 나갔지만 발송 상태 기록에 실패했습니다 — "
-                           "발주 이력에서 [발송 완료 처리]를 눌러 주세요.")
+                           "관리자에게 알려 주세요.")
         return True, "발송 완료 — " + ", ".join(_sent_to)
 
     # ════════════ TAB: 자재 필요량 (제품별) — 2026-09-11 생산 계획에서 이동 ════════════
@@ -10877,7 +10878,7 @@ elif page == "발주/입고":
                            "%H:%M", _time.localtime(_mr_c[0]))
                        + " (5분 캐시). 미납 수주 × BOM(EA/PC ÷ 공용계수). "
                        "발주 필요량 = 총필요량 − 소재 실재고 − 미입고 발주"
-                       "(전송된 발주만). 완성 재고는 순생산필요에서 먼저 뺀다."):
+                       "(취소 제외). 완성 재고는 순생산필요에서 먼저 뺀다."):
             st.session_state["mr_refresh"] = True
             st.rerun()
         if _mr.get("msg"):
@@ -12040,23 +12041,8 @@ elif page == "발주/입고":
                                     st.rerun()
                                 else:
                                     st.error(_info)
-                        if st.session_state.get("po_result_sent") != _por["po_no"]:
-                            if st.button("발송 완료 처리 — 거래처에 보냈습니다",
-                                         key="po_result_sent_btn",
-                                         use_container_width=True,
-                                         help="발주중으로 바뀌고 자재 필요량의 "
-                                              "미입고 발주에 반영됩니다. 나중에 "
-                                              "발주 이력에서도 할 수 있습니다"):
-                                from datetime import datetime as _po_now2
-                                if _db.update("purchase_orders",
-                                        f"po_number=eq.{_por['po_no']}",
-                                        {"status": "SENT",
-                                         "sent_at": _po_now2.now().isoformat()}):
-                                    st.session_state["po_result_sent"] = _por["po_no"]
-                                    st.session_state.pop("mr_cache", None)
-                                    st.rerun()
-                        else:
-                            st.success(f"{_por['po_no']} 발송 완료로 기록됨")
+                        if st.session_state.get("po_result_sent") == _por["po_no"]:
+                            st.success(f"{_por['po_no']} 메일 발송 완료로 기록됨")
                         if rb3.button("새 발주서 시작", use_container_width=True,
                                       key="po_new"):
                             st.session_state.po_items = []
@@ -12336,7 +12322,7 @@ elif page == "발주/입고":
                 "납기": r.get("delivery_date") or "-",
                 "총액 (원)": int(r.get("total_amount") or 0),
                 "VAT (원)": int(r.get("vat") or 0),
-                "상태": ("발송 대기" if r.get("status") == "DRAFT"
+                "상태": ("발주" if r.get("status") == "DRAFT"
                        else status_ko(r["status"])),
             } for r in history],
                 key="po_grid",
@@ -12430,7 +12416,7 @@ elif page == "발주/입고":
                 # 상태를 결정하므로 수기 변경 UI 제거 (2026-08-20)
                 with rc2:
                     st.caption(
-                        f"상태: **{'발송 대기' if po['status'] == 'DRAFT' else status_ko(po['status'])}** — 입고·"
+                        f"상태: **{'발주' if po['status'] == 'DRAFT' else status_ko(po['status'])}** — 입고·"
                         "잔량 종결에 따라 자동 갱신됩니다.")
                     try:
                         _po_rcv9 = fetch("po_item_receipt_v",
@@ -12484,25 +12470,10 @@ elif page == "발주/입고":
                                         st.rerun()
                                     else:
                                         st.error(_info9)
-                        if po["status"] == "DRAFT":
-                            # 발송 완료 처리 (2026-09-16): 메일 발송은 앱 밖에서
-                            # 하므로 발송 사실만 기록 — 이때부터 자재 필요량의
-                            # 미입고 발주(전송된 발주만)에 잡힌다
-                            if st.button("발송 완료 처리", type="primary",
-                                         use_container_width=True,
-                                         help="발주서를 거래처에 보냈으면 누르세요 "
-                                              "— 발주중으로 바뀌고 자재 필요량의 "
-                                              "미입고 발주에 반영됩니다",
-                                         key=f"po_sent_{po['po_id']}"):
-                                from datetime import datetime as _po_now
-                                if _db.update("purchase_orders",
-                                        f"po_id=eq.{po['po_id']}",
-                                        {"status": "SENT",
-                                         "sent_at": _po_now.now().isoformat()}):
-                                    st.session_state.pop("mr_cache", None)
-                                    st.rerun()
-                                else:
-                                    st.error("발송 처리 실패 — 다시 시도하세요.")
+                        # 수동 [발송 완료 처리]는 두지 않는다 (2026-09-16 사용자:
+                        # 불필요한 부가 업무). DRAFT(발주) 상태는 입고가 시작되면
+                        # 자동으로 PARTIAL/RECEIVED 로 넘어가고, SENT 는 메일
+                        # 발송 기능을 켰을 때만 기록된다.
                         _cx_k = f"po_cancel_{po['po_id']}"
                         if st.button("발주 취소",
                                 disabled=_has_rcv9,
@@ -14188,13 +14159,16 @@ elif page == "공정 관리":
                     except Exception as e:
                         st.warning(f"이력 기록 실패 (처리는 정상): {e}")
                 if event and event.get("event_type") in (
-                        "RECEIVE", "OUT_SEND", "OUT_RETURN"):
+                        "RECEIVE", "OUT_SEND", "OUT_RETURN", "INSPECT"):
+                    # INSPECT 추가 (2026-09-16: 검사 완료 알림이 없다는 사용자
+                    # 보고 — 7종에 검사 판정이 빠져 있었다)
                     _dt9 = event.get("detail") or {}
                     _sk.notify(_sk.fmt_wo_event(
                         event.get("event_type"), _t.get("pn"),
                         event.get("qty"), current_user_name(),
                         vendor=_dt9.get("vendor"),
-                        step=event.get("step_name")))
+                        step=event.get("step_name"),
+                        detail=_dt9))
                 if docs:
                     st.session_state["pe_docs"] = docs
                 st.success(msg)

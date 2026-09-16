@@ -107,7 +107,20 @@ def fmt_input(pn, qty, w_lot, who):
     return f"[투입] {pn or '-'} {_n(qty)} EA · 소재 {w_lot or '-'} — {who}"
 
 
-def fmt_wo_event(event_type, pn, qty, who, vendor=None, step=None, defect=None):
+def fmt_wo_event(event_type, pn, qty, who, vendor=None, step=None, defect=None,
+                 detail=None):
+    if event_type == "INSPECT":
+        # 검사 판정 (2026-09-16 추가): 완성(합격+특채) · 불합격 내역 · LOT
+        d = detail or {}
+        done = float(d.get("output") or 0) or (
+            float(d.get("pass") or 0) + float(d.get("tokusai") or 0))
+        parts = [f"완성 {_n(done)}"]
+        for k, lbl in (("rework", "재작업"), ("tokusai", "특채"),
+                       ("return", "반품"), ("scrap", "기타")):
+            if float(d.get(k) or 0) > 0:
+                parts.append(f"{lbl} {_n(d.get(k))}")
+        lot = f" · LOT {d['lot']}" if d.get("lot") else ""
+        return f"[검사] {pn or '-'} {' · '.join(parts)} EA{lot} — {who}"
     if event_type == "RECEIVE":
         d = f" (불량 {_n(defect)})" if defect else ""
         return f"[완료] {pn or '-'} {_n(qty)} EA{d} — {who}"

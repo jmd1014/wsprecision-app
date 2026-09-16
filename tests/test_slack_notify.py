@@ -56,3 +56,14 @@ def test_formats():
     assert sn.fmt_wo_event("STEP_CANCEL", "X", 1, "a") is None
     assert sn.fmt_ship("SH-20260915-01", ["미진정밀", "미진정밀"], 4, 3200, "염정원") == \
         "[출고] SH-20260915-01 · 미진정밀 · 4품목 3,200개 — 염정원"
+
+
+def test_format_inspect():
+    # 검사 판정 (2026-09-16 추가) — 완성(합격+특채)·불합격 내역·LOT
+    d = {"lot": "20260828-002-A", "pass": 7000, "tokusai": 56, "rework": 10,
+         "scrap": 0, "return": 0, "output": 7056}
+    assert sn.fmt_wo_event("INSPECT", "20AHYBV-03-X1413", 7066, "홍지안",
+                           detail=d) == \
+        "[검사] 20AHYBV-03-X1413 완성 7,056 · 재작업 10 · 특채 56 EA · LOT 20260828-002-A — 홍지안"
+    assert sn.fmt_wo_event("INSPECT", "X", 10, "홍지안", detail={"pass": 10}) == \
+        "[검사] X 완성 10 EA — 홍지안"
