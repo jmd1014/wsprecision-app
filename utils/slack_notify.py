@@ -72,7 +72,8 @@ def notify(text, sync=False):
     return True
 
 
-# ─── 메시지 포맷 — "[태그] 사람 — 내용" 으로 통일 (2026-09-16 사용자) ───
+# ─── 메시지 포맷 — "[태그] 내용 — 사람 · 상세" (2026-09-16 사용자: 무슨 일인지
+# 먼저, 누가 했는지는 뒤에. 입고는 "— 이름 · 거래처") ───
 
 def _n(v):
     try:
@@ -84,8 +85,8 @@ def _n(v):
 def fmt_po(po_number, vendor, n_items, total_qty, who, sent=False):
     tag = "발주 발송" if sent else "발주 작성"
     tail = "" if sent else " · 발송 요청"
-    return (f"[{tag}] {who} — {po_number} {vendor} · {n_items}품목 · "
-            f"{_n(total_qty)}개{tail}")
+    return (f"[{tag}] {po_number} {vendor} · {n_items}품목 · "
+            f"{_n(total_qty)}개 — {who}{tail}")
 
 
 def fmt_receipt(lots, materials, vendor, who, qty=None):
@@ -100,11 +101,11 @@ def fmt_receipt(lots, materials, vendor, who, qty=None):
     mats = [m for m in materials if m]
     mat_s = (mats[0] + (f" 외 {len(mats) - 1}" if len(mats) > 1 else "")) if mats else "-"
     q_s = f" {_n(qty)} EA" if qty else ""
-    return f"[입고] {who} — {lot_s} · {mat_s}{q_s} · {vendor}"
+    return f"[입고] {lot_s} · {mat_s}{q_s} — {who} · {vendor}"
 
 
 def fmt_input(pn, qty, w_lot, who):
-    return f"[투입] {who} — {pn or '-'} {_n(qty)} EA · 소재 {w_lot or '-'}"
+    return f"[투입] {pn or '-'} {_n(qty)} EA · 소재 {w_lot or '-'} — {who}"
 
 
 def fmt_wo_event(event_type, pn, qty, who, vendor=None, step=None, defect=None,
@@ -120,18 +121,18 @@ def fmt_wo_event(event_type, pn, qty, who, vendor=None, step=None, defect=None,
             if float(d.get(k) or 0) > 0:
                 parts.append(f"{lbl} {_n(d.get(k))}")
         lot = f" · LOT {d['lot']}" if d.get("lot") else ""
-        return f"[검사] {who} — {pn or '-'} {' · '.join(parts)} EA{lot}"
+        return f"[검사] {pn or '-'} {' · '.join(parts)} EA{lot} — {who}"
     if event_type == "RECEIVE":
         d = f" (불량 {_n(defect)})" if defect else ""
-        return f"[완료] {who} — {pn or '-'} {_n(qty)} EA{d}"
+        return f"[완료] {pn or '-'} {_n(qty)} EA{d} — {who}"
     if event_type == "OUT_SEND":
         s = f" · {step}" if step else ""
-        return f"[외주 출고] {who} — {pn or '-'} {_n(qty)} EA{s} → {vendor or '-'}"
+        return f"[외주 출고] {pn or '-'} {_n(qty)} EA{s} → {vendor or '-'} — {who}"
     if event_type == "OUT_RETURN":
-        return f"[외주 입고] {who} — {pn or '-'} {_n(qty)} EA ← {vendor or '-'}"
+        return f"[외주 입고] {pn or '-'} {_n(qty)} EA ← {vendor or '-'} — {who}"
     return None
 
 
 def fmt_ship(ship_no, customers, n_items, total_qty, who):
     cust = ", ".join(sorted(c for c in set(customers) if c)) or "-"
-    return f"[출고] {who} — {ship_no} · {cust} · {n_items}품목 {_n(total_qty)}개"
+    return f"[출고] {ship_no} · {cust} · {n_items}품목 {_n(total_qty)}개 — {who}"

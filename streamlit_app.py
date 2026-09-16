@@ -13654,7 +13654,8 @@ elif page == "공정 관리":
                         pass
 
                 _bom_pns = []
-                if not _pn_hint:
+                _open_pend, _open_pids = {}, set()
+                if True:   # 힌트가 있어도 BOM 후보를 함께 제시 (2026-09-16)
                     try:
                         _bp = fetch("bom", "product_id",
                             f"material_id=eq.{_sel_mid}", limit=50)
@@ -13690,22 +13691,36 @@ elif page == "공정 관리":
                     except Exception:
                         _bom_pns = []
 
-                if _pn_hint:
-                    _in_pn = _pn_hint
-                    st.caption(f"품번 **{_in_pn}** ({_pn_src}에서 자동 "
-                               "매핑)")
-                elif _bom_pns:
-                    _pn_labels = [
-                        (f"{p['pn']} ← 미납 "
-                         f"{_open_pend.get(p['product_id'], 0):,.0f}"
-                         if p["product_id"] in _open_pids else p["pn"])
-                        for p in _bom_pns]
+                # 후보 = BOM 제품 ∪ 발주 라인 힌트. 힌트는 기본 선택일 뿐
+                # 강제하지 않는다 (2026-09-16: 같은 소재를 쓰는 T16ABV 를
+                # 발주 라인 힌트 20ABV 로 자동 확정해 오등록된 사고 —
+                # 작업지시서 품번과 대조해 고르도록 선택창을 항상 보인다)
+                _cands = list(_bom_pns)
+                if _pn_hint and all(p["pn"] != _pn_hint for p in _cands):
+                    _hp = _db.fetch_one("products", f"pn=eq.{_pn_hint}",
+                                        "product_id") or {}
+                    _cands.insert(0, {"pn": _pn_hint,
+                                      "product_id": _hp.get("product_id")})
+                if _cands:
+                    _pn_labels = []
+                    for p in _cands:
+                        _lb = p["pn"]
+                        if p.get("product_id") in _open_pids:
+                            _lb += (f" ← 미납 "
+                                    f"{_open_pend.get(p['product_id'], 0):,.0f}")
+                        if _pn_hint and p["pn"] == _pn_hint:
+                            _lb += f" ({_pn_src} 기준)"
+                        _pn_labels.append(_lb)
+                    _def = (next((i for i, p in enumerate(_cands)
+                                  if p["pn"] == _pn_hint), 0)
+                            if _pn_hint else 0)
                     _pn_sel = st.selectbox(
-                        f"품번 (이 소재의 BOM 제품 {len(_bom_pns)}건)",
-                        _pn_labels, key=f"pe_in_pnsel_{_sel_lot}",
-                        help="소재→BOM 역조회 자동 후보. 미납 수주가 "
-                             "있는 제품이 위에 표시됩니다.")
-                    _in_pn = _bom_pns[_pn_labels.index(_pn_sel)]["pn"]
+                        f"품번 (후보 {len(_cands)}건 — 작업지시서 품번과 같은지 확인)",
+                        _pn_labels, index=_def, key=f"pe_in_pnsel_{_sel_lot}",
+                        help="발주 라인·BOM 에서 찾은 후보입니다. 기본값이 "
+                             "작업지시서의 품번과 다르면 바꾸세요. 미납 수주가 "
+                             "있는 품번이 위에 표시됩니다.")
+                    _in_pn = _cands[_pn_labels.index(_pn_sel)]["pn"]
                 else:
                     _in_pn = st.text_input(
                         "품번 (BOM 연결 없음 — 직접 입력)",
@@ -13769,6 +13784,20 @@ elif page == "공정 관리":
                 elif (_in_pn or "").strip():
                     st.caption("BOM 환산 정보 없음 — 소재:제품 1:1 로 "
                                "제안. 다르면 예상 생산 수량을 수정하세요.")
+                # 수주량 대조 (2026-09-16): 고른 품번의 미납과 예상 생산
+                # 수량이 크게 다르거나 미납이 없으면 품번 오등록 가능성 —
+                # 등록 전에 작업지시서와 대조하도록 경고만 (차단 아님)
+                if (_in_pn or "").strip() and _prod0:
+                    _pend9 = float(_open_pend.get(_prod0.get("product_id"), 0) or 0)
+                    if _pend9 <= 0:
+                        st.warning(f"{_in_pn} 은 미납 수주가 없습니다 — 작업지시서 "
+                                   "품번이 맞는지 확인하세요. (같은 소재를 쓰는 "
+                                   "다른 품번이 후보에 있으면 바꿔 고릅니다)")
+                    elif _in_prod_qty > 0 and abs(_in_prod_qty - _pend9) > max(
+                            _pend9 * 0.25, 50):
+                        st.info(f"{_in_pn} 미납 {_pend9:,.0f} vs 예상 생산 "
+                                f"{_in_prod_qty:,.0f} — 수량 차이가 큽니다. "
+                                "품번·소재 수량을 확인하세요.")
 
                 _wo_ok = bool(_pe_re.fullmatch(r"\d{8}-\d{3}",
                                               (_wo_no or "").strip()))
@@ -15106,13 +15135,13 @@ elif page == "공정 관리":
             if not _bat_open and _q["재작업중"] > 0:
                 _acts.append("재작업 복귀")
             # 오입력 정리 — 후속 처리(완료 등록·외주·검사)가 없는 투입만 취소
-            # 가능. 관리자 전용.
+            # 가능. 소재를 아직 쓰지 않았으면 누구나 (2026-09-16 사용자: 품번
+            # 오등록 시 투입 등록으로 되돌아오는 길), confirm_gate 로 확인.
             _dnstream = sum(float(_t.get(k) or 0) for k in
                             ("received_qty", "outsource_qty", "pass_qty",
                              "tokusai_qty", "scrap_qty", "rework_qty",
                              "output_qty", "return_qty"))
-            if (float(_t.get("input_qty") or 0) > 0 and _dnstream == 0
-                    and current_user().get("role") == "admin"):
+            if float(_t.get("input_qty") or 0) > 0 and _dnstream == 0:
                 _acts.append("투입 취소")
 
             if not _acts and not _bat_open:
@@ -15750,9 +15779,9 @@ elif page == "공정 관리":
                                                b["batch_no"] for b in _plan["kids"]]},
                                 "event_date": _cd_d.today().isoformat(),
                                 "created_by": current_user_name()}])
-                            _sk.notify(f"[검사 취소] {current_user_name()} — "
-                                       f"{_cw.get('pn') or '-'} {_plan['out']:,.0f} EA"
-                                       f" · LOT {_plan['fin_lot']} ({_ic_reason.strip()})")
+                            _sk.notify(f"[검사 취소] {_cw.get('pn') or '-'} "
+                                       f"{_plan['out']:,.0f} EA · LOT {_plan['fin_lot']}"
+                                       f" — {current_user_name()} · {_ic_reason.strip()}")
                             st.success(f"검사 판정 취소 — {_cw['wo_number']} 검사 "
                                        "대기로 복귀. 공정 처리 탭에서 다시 판정하세요.")
                             st.rerun()
