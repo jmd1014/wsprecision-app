@@ -13628,6 +13628,16 @@ elif page == "공정 관리":
                 #     제품을 우선 제시.
                 _pn_hint, _pn_src = "", ""
                 _ref_poi = _lot_ref.get(_sel_lot)
+                # pandas 가 ref_id 를 float(96.0)로 바꾸면 poi_id=eq.96.0 조회가
+                # 실패해 힌트가 조용히 사라지고 BOM 후보 첫 항목이 기본값이
+                # 되던 문제 (2026-09-16, 20260916-003 오등록의 실제 원인 —
+                # 직접 입고 행의 ref_id NULL 이 섞이면 컬럼이 float 가 된다)
+                try:
+                    _ref_poi = (int(float(_ref_poi))
+                                if _ref_poi is not None and _ref_poi == _ref_poi
+                                else None)
+                except (TypeError, ValueError):
+                    _ref_poi = None
                 if _ref_poi:
                     try:
                         _poi_row = _db.fetch_one("purchase_order_items",
@@ -14294,7 +14304,8 @@ elif page == "공정 관리":
                     except Exception as e:
                         st.warning(f"이력 기록 실패 (처리는 정상): {e}")
                 if event and event.get("event_type") in (
-                        "RECEIVE", "OUT_SEND", "OUT_RETURN", "INSPECT"):
+                        "RECEIVE", "OUT_SEND", "OUT_RETURN", "INSPECT",
+                        "STEP_CANCEL"):
                     # INSPECT 추가 (2026-09-16: 검사 완료 알림이 없다는 사용자
                     # 보고 — 7종에 검사 판정이 빠져 있었다)
                     _dt9 = event.get("detail") or {}
@@ -15502,6 +15513,11 @@ elif page == "공정 관리":
                                 pass
                             _db.delete("wo_tracking",
                                        f"wo_id=eq.{_t['wo_id']}")
+                            _sk.notify(_sk.fmt_cancel(
+                                "투입 취소", _t.get("pn"),
+                                float(_t.get("input_qty") or 0),
+                                current_user_name(),
+                                extra=f"소재 {_t.get('w_lot') or '-'} 복원"))
                             st.success(
                                 f"투입 취소 완료 — {_t['wo_number']} 삭제, "
                                 f"소재 {_back:,.0f} 복원 "
@@ -15629,7 +15645,7 @@ elif page == "공정 관리":
                 _ce = fetch("wo_events",
                             "event_id,event_type,qty,detail,event_date,"
                             "created_by,created_at,batch_id",
-                            f"wo_id=eq.{_cw['wo_id']}&order=created_at.desc",
+                            f"wo_number=eq.{_cw['wo_number']}&order=created_at.desc",
                             limit=100)
             except Exception:
                 _ce = []

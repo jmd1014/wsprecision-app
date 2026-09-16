@@ -130,7 +130,20 @@ def fmt_wo_event(event_type, pn, qty, who, vendor=None, step=None, defect=None,
         return f"[외주 출고] {pn or '-'} {_n(qty)} EA{s} → {vendor or '-'} — {who}"
     if event_type == "OUT_RETURN":
         return f"[외주 입고] {pn or '-'} {_n(qty)} EA ← {vendor or '-'} — {who}"
+    if event_type == "STEP_CANCEL":
+        # 공정 취소 (2026-09-16 추가) — 되돌린 처리를 상세에
+        d = detail or {}
+        back = {"STEP_START": "시작 취소", "OUT_SEND": "외주 출고 취소"}.get(
+            d.get("cancelled"), "취소")
+        s = f" · {step}" if step else ""
+        return f"[공정 취소] {pn or '-'} {_n(qty)} EA{s} — {who} · {back}"
     return None
+
+
+def fmt_cancel(tag, pn, qty, who, extra=None):
+    """투입 취소 등 되돌리기 알림 — "[태그] 내용 — 사람 · 상세" """
+    tail = f" · {extra}" if extra else ""
+    return f"[{tag}] {pn or '-'} {_n(qty)} EA — {who}{tail}"
 
 
 def fmt_ship(ship_no, customers, n_items, total_qty, who):

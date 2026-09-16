@@ -46,7 +46,7 @@ def test_formats():
                            vendor="성보정밀", step="열처리") ==         "[외주 출고] MRG6-07 480 EA · 열처리 → 성보정밀 — 황민혁"
     assert sn.fmt_wo_event("OUT_RETURN", "MRG6-07", 480, "황민혁",
                            vendor="성보정밀") ==         "[외주 입고] MRG6-07 480 EA ← 성보정밀 — 황민혁"
-    assert sn.fmt_wo_event("STEP_CANCEL", "X", 1, "a") is None
+    assert sn.fmt_wo_event("STEP_START", "X", 1, "a") is None
     assert sn.fmt_ship("SH-20260915-01", ["미진정밀", "미진정밀"], 4, 3200, "염정원") ==         "[출고] SH-20260915-01 · 미진정밀 · 4품목 3,200개 — 염정원"
 
 
@@ -56,3 +56,10 @@ def test_format_inspect():
     assert sn.fmt_wo_event("INSPECT", "20AHYBV-03-X1413", 7066, "홍지안",
                            detail=d) ==         "[검사] 20AHYBV-03-X1413 완성 7,056 · 재작업 10 · 특채 56 EA · LOT 20260828-002-A — 홍지안"
     assert sn.fmt_wo_event("INSPECT", "X", 10, "홍지안", detail={"pass": 10}) ==         "[검사] X 완성 10 EA — 홍지안"
+
+
+def test_format_cancels():
+    assert sn.fmt_wo_event("STEP_CANCEL", "MRG6-07", 480, "김준오", step="CNC",
+                           detail={"cancelled": "STEP_START"}) ==         "[공정 취소] MRG6-07 480 EA · CNC — 김준오 · 시작 취소"
+    assert sn.fmt_cancel("투입 취소", "T16ABV", 1500, "김준오",
+                         extra="소재 W1108 복원") ==         "[투입 취소] T16ABV 1,500 EA — 김준오 · 소재 W1108 복원"
