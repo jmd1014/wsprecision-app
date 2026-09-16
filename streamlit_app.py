@@ -15164,10 +15164,16 @@ elif page == "공정 관리":
             # 오입력 정리 — 후속 처리(완료 등록·외주·검사)가 없는 투입만 취소
             # 가능. 소재를 아직 쓰지 않았으면 누구나 (2026-09-16 사용자: 품번
             # 오등록 시 투입 등록으로 되돌아오는 길), confirm_gate 로 확인.
-            _dnstream = sum(float(_t.get(k) or 0) for k in
-                            ("received_qty", "outsource_qty", "pass_qty",
-                             "tokusai_qty", "scrap_qty", "rework_qty",
-                             "output_qty", "return_qty"))
+            # 사내 생산 없음 라우팅은 투입 시 received_qty 를 채우므로 인수
+            # 수량은 후속 처리로 보지 않는다 (2026-09-16 흐름 테스트에서 발견)
+            _no_prod_cx = not any(
+                s.get("step_code") == "PROD"
+                for s in get_routing(_t.get("product_id")))
+            _dn_keys = ("outsource_qty", "pass_qty", "tokusai_qty",
+                        "scrap_qty", "rework_qty", "output_qty",
+                        "return_qty") + (() if _no_prod_cx
+                                         else ("received_qty",))
+            _dnstream = sum(float(_t.get(k) or 0) for k in _dn_keys)
             if float(_t.get("input_qty") or 0) > 0 and _dnstream == 0:
                 _acts.append("투입 취소")
 
