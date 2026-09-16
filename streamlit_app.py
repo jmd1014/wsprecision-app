@@ -529,6 +529,7 @@ if DB_AVAILABLE and not st.session_state.get("auth_user"):
             st.session_state["auth_user"] = {
                 "username": _uid,
                 "name": _users[_uid].get("name") or _uid,
+                "email": _users[_uid].get("email") or None,
                 "role": _users[_uid].get("role") or "worker"}
             # 새 세션마다 토큰 재발급 — 앱을 계속 쓰는 한 14일
             # 만료가 매번 뒤로 밀린다 (sliding, 2026-09-01)
@@ -564,6 +565,7 @@ if DB_AVAILABLE and not st.session_state.get("auth_user"):
                     st.session_state["auth_user"] = {
                         "username": (_li_id or "").strip(),
                         "name": _u.get("name") or _li_id,
+                        "email": _u.get("email") or None,
                         "role": _u.get("role") or "worker"}
                     st.session_state.pop("auth_skip_cookie", None)
                     if _li_keep and _secret:
@@ -4861,6 +4863,10 @@ elif page == "마스터 관리":
                     _an_name = st.text_input(
                         "이름 (기록에 남는 실명)",
                         help="입고·조정·출고 이력의 처리자로 표시됩니다")
+                    _an_email = st.text_input(
+                        "이메일 (선택)",
+                        help="발주서 메일 발송을 켰을 때 회신 주소·참조로 "
+                             "쓰입니다. 발신 계정은 회사 계정 하나입니다")
                     _an_role = st.radio("역할", ["작업자", "관리자"],
                                         horizontal=True)
                     _an_pw = st.text_input("초기 비밀번호", type="password")
@@ -4878,6 +4884,7 @@ elif page == "마스터 관리":
                     else:
                         _ac_users[_an_id] = {
                             "name": (_an_name or "").strip() or _an_id,
+                            "email": (_an_email or "").strip() or None,
                             "role": _ROLE_EN[_an_role],
                             "pw": _auth.hash_pw(_an_pw)}
                         if _auth.save_users(_db, _ac_users):
@@ -4907,6 +4914,10 @@ elif page == "마스터 관리":
                     _ae_role = st.radio(
                         "역할", ["작업자", "관리자"], horizontal=True,
                         index=1 if _ae.get("role") == "admin" else 0)
+                    _ae_email = st.text_input(
+                        "이메일 (선택)", value=_ae.get("email") or "",
+                        help="발주서 메일 발송을 켰을 때 회신 주소·참조로 "
+                             "쓰입니다")
                     _ae_pw = st.text_input(
                         "비밀번호 초기화 (바꿀 때만 입력)",
                         type="password")
@@ -4924,6 +4935,7 @@ elif page == "마스터 관리":
                             st.error(f"비밀번호: {_bad}")
                         else:
                             _ae["role"] = _new_role
+                            _ae["email"] = (_ae_email or "").strip() or None
                             if _ae_pw:
                                 _ae["pw"] = _auth.hash_pw(_ae_pw)
                             if _auth.save_users(_db, _ac_users):
@@ -10831,12 +10843,17 @@ elif page == "발주/입고":
             _company = st.secrets["app"].get("company_name") or "우성정밀"
         except Exception:
             _company = "우성정밀"
+        # 발신은 회사 계정 하나, 담당자 구분은 로그인 사용자 이메일을
+        # 회신 주소·참조로 (계정별 SMTP 비밀번호 불필요, 2026-09-16)
+        _me = (current_user().get("email") or "").strip() or None
+        _cc = list(cfg.get("cc") or []) + ([_me] if _me else [])
         try:
             _mid, _sent_to = send_po_mail(
-                cfg, to=[to],
+                cfg, to=[to], cc=_cc, reply_to=_me,
                 subject=po_subject(_company, po_no),
                 body=po_body(_company, po_no, vendor, po_date, delivery,
-                             n, total, current_user_name()),
+                             n, total,
+                             current_user_name() + (f" ({_me})" if _me else "")),
                 pdf_bytes=pdf_bytes, filename=f"{po_no}_{vendor}.pdf")
         except Exception as e:
             return False, f"메일 발송 실패 — 발주는 발송 대기로 남습니다: {e}"

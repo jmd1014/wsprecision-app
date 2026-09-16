@@ -55,6 +55,17 @@ def test_test_to_overrides_recipients():
     assert "vendor@v.com" in msg["X-PO-Original-To"]
 
 
+def test_reply_to_per_user_overrides_config():
+    cfg = mail_cfg({"mail": {**_BASE, "reply_to": "office@example.com"}})
+    msg = build_message(cfg, to="v@v.com", subject="s", body="b",
+                        pdf_bytes=b"x", filename="a.pdf",
+                        cc=["buyer@example.com", "kim@example.com"],
+                        reply_to="kim@example.com")
+    assert msg["Reply-To"] == "kim@example.com"
+    assert msg["From"].endswith("<order@example.com>")
+    assert recipients(msg) == ["v@v.com", "buyer@example.com", "kim@example.com"]
+
+
 def test_missing_recipient_raises():
     cfg = mail_cfg({"mail": {**_BASE, "cc": ""}})
     try:

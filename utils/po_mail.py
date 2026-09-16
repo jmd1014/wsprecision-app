@@ -92,9 +92,14 @@ def po_body(company: str, po_no: str, vendor: str, po_date, delivery,
 
 
 def build_message(cfg: dict, *, to, subject: str, body: str,
-                  pdf_bytes: bytes, filename: str, cc=None) -> EmailMessage:
+                  pdf_bytes: bytes, filename: str, cc=None,
+                  reply_to: str | None = None) -> EmailMessage:
     """받는 사람·참조·제목·본문·PDF 첨부로 메시지를 조립한다.
 
+    발신은 항상 회사 계정(cfg.user) 하나이고, 담당자 구분은 reply_to(로그인
+    사용자 이메일)로 한다 — 계정별로 SMTP 비밀번호를 받지 않아도 거래처
+    답장이 담당자에게 간다 (2026-09-16 사용자 질문). cc 는 설정값에 담당자
+    이메일을 더한 것.
     test_to 가 설정돼 있으면 받는 사람을 그 주소 하나로 바꾸고 참조는 뺀다
     (실제 발송 전 확인용). 원래 받는 사람은 X-PO-Original-To 헤더에 남긴다.
     """
@@ -110,8 +115,9 @@ def build_message(cfg: dict, *, to, subject: str, body: str,
     msg["To"] = ", ".join(to)
     if cc:
         msg["Cc"] = ", ".join(cc)
-    if cfg.get("reply_to"):
-        msg["Reply-To"] = cfg["reply_to"]
+    _rt = (reply_to or "").strip() or cfg.get("reply_to")
+    if _rt:
+        msg["Reply-To"] = _rt
     msg["Subject"] = subject
     msg["Message-ID"] = make_msgid()
     msg.set_content(body)
@@ -145,9 +151,11 @@ def send_message(cfg: dict, msg: EmailMessage, timeout: float = 20.0) -> str:
 
 
 def send_po_mail(cfg: dict, *, to, subject: str, body: str, pdf_bytes: bytes,
-                 filename: str, cc=None) -> tuple[str, list]:
+                 filename: str, cc=None, reply_to: str | None = None
+                 ) -> tuple[str, list]:
     """조립 + 발송. (message_id, 실제 받는 주소 목록)"""
     msg = build_message(cfg, to=to, subject=subject, body=body,
-                        pdf_bytes=pdf_bytes, filename=filename, cc=cc)
+                        pdf_bytes=pdf_bytes, filename=filename, cc=cc,
+                        reply_to=reply_to)
     mid = send_message(cfg, msg)
     return mid, recipients(msg)
