@@ -1401,8 +1401,6 @@ if page == "홈":
     from datetime import date as _hd
 
     st.subheader("업무 진행 현황")
-    st.caption("수주 → 소재 → 생산 → 외주 → 완성 → 출고 — 전 단계 실시간 요약. "
-               "각 단계의 상세·처리는 좌측 메뉴를 진행 순서대로 이용하세요.")
 
     try:
         _h_so = fetch("sales_order_stats",
@@ -1772,9 +1770,6 @@ if page == "홈":
                 column_config={c: st.column_config.NumberColumn(
                     format="localized", width="small")
                     for c in ["재공", "부족"]})
-            st.caption("재공 = 투입되어 공정에 있는 수량(열린 배치 합) "
-                       "· 부족 = 미납 − 완성재고 − 재공 — 부족 큰 "
-                       "품번부터 투입이 필요합니다.")
         elif _h_wview == "상태별":
             # 상태별 = 공정 축 병목 보기 (현황판 축약, 2026-08-29)
             _hs = {}
@@ -5129,10 +5124,6 @@ elif page == "수주 관리":
         with st.expander(
                 f"제품 확인 필요 {len(_ck_groups)}건 — 미등록·휴면 제품에 "
                 "걸린 미납 수주 (진행 전 조치)", expanded=True):
-            st.caption("수주가 들어왔다는 건 진행한다는 뜻 — 여기서 바로 "
-                       "활성화하거나 등록하면 투입·현황판·부족 계산에 "
-                       "포함됩니다. 휴면 제품은 단가·소재비 변동을 확인한 "
-                       "뒤 활성화하세요.")
             for _gi, (_gk, _g) in enumerate(sorted(
                     _ck_groups.items(), key=lambda x: (x[1]["due"] or "9999"))):
                 _p = _g["prod"]
@@ -5249,9 +5240,6 @@ elif page == "수주 관리":
                         else:
                             st.error("활성화 실패 — 다시 시도해 주세요.")
                 else:
-                        st.caption("수주에서 확인되는 정보만 등록합니다 — "
-                                   "BOM·소재·라우팅은 마스터 관리 → BOM 편집에서 "
-                                   "(정합 점검 BOM_NONE 으로 추적).")
                         with st.form(f"{_kid}_new"):
                             _n1, _n2, _n3 = st.columns(3)
                             _npn9 = _n1.text_input("품번 *", value=_sugg_new9)
@@ -5526,9 +5514,6 @@ elif page == "수주 관리":
         with st.expander(
                 f"단가 변동 감지 {len(_rp_groups)}개 품번 — 같은 품번의 미납 수주와 "
                 "단가가 다른 새 수주", expanded=True):
-            st.caption("**[대체]** = 옛 미납 종료 · 회차 이관 · 마스터 단가 갱신 / "
-                       "**[별건]** = 모두 진행, 새 수주만 특수 단가 표시. "
-                       "이력에서 되돌릴 수 있습니다.")
             for _gi, _g in enumerate(_rp_groups):
                 _n = _g["new"]
                 _np = float(_n.get("unit_price") or 0)
@@ -5576,6 +5561,9 @@ elif page == "수주 관리":
                     b1, b2, b3 = st.columns([1.2, 1.2, 1])
                     if b1.button("대체", key=_k + "_go",
                                  type="primary" if _is_rep else "secondary",
+                                 help="옛 미납을 종료하고 남은 회차를 새 수주로 "
+                                      "이관, 마스터 단가를 갱신합니다. 결정 이력에서 "
+                                      "되돌릴 수 있습니다",
                                  use_container_width=True,
                                  disabled=not _sel_olds) and click_guard(_k):
                         _rp_apply(_sel_olds, _n, "REPLACE", True, True)
@@ -5584,6 +5572,9 @@ elif page == "수주 관리":
                                          label_visibility="collapsed")
                     if b2.button("별건 (새 수주 = {})".format(_kind),
                                  key=_k + "_keep",
+                                 help="옛 수주와 새 수주를 모두 진행하고 새 수주에만 "
+                                      "종류(프로젝트·사급 소재)를 표시합니다. 마스터 "
+                                      "단가는 그대로",
                                  type="secondary" if _is_rep else "primary",
                                  use_container_width=True,
                                  disabled=not _sel_olds) and click_guard(_k):
@@ -6034,9 +6025,6 @@ elif page == "수주 관리":
                     st.rerun()
 
             with st.expander("신규 품목 등록 (마스터 미등록 품번)"):
-                st.caption("여기서 마스터에 등록하면 위 검색에서 바로 "
-                           "선택할 수 있습니다. BOM·원가 등 상세는 "
-                           "마스터 관리 → 제품 편집에서 보완하세요.")
                 nq1, nq2 = st.columns(2)
                 mq_pn = nq1.text_input("품번 *", key="mq_pn",
                     placeholder="예: 4PDVN-02")
@@ -6487,10 +6475,6 @@ elif page == "수주 관리":
 
     # ════════ TAB 3: 납품 스케줄 (7b 회차 간트, 2026-07-31) ════════
     with tab_sched:
-        st.caption(
-            "품목별 납품 회차를 주차 그리드에 배치해 전체 납품 일정을 "
-            "한 화면에서 봅니다. 회차는 자유롭게 추가·수정·삭제할 수 "
-            "있고, 화면의 납기는 **가장 빠른 미완료 회차**로 표시됩니다.")
 
         # ── 1) 데이터 적재 ──
         try:
@@ -6860,10 +6844,6 @@ elif page == "수주 관리":
 
         # ════ 뷰 C: 납기 입력 ════
         if _sv == "납기 입력":
-            st.caption(
-                "품번 또는 수주번호로 찾아 대상 라인을 고르고, **한 번에"
-                "(단발)** 또는 **나눠서(반복)** 로 납기를 만듭니다. "
-                "단발 납기도 1회차로 저장되어 회차 간트에 함께 표시됩니다.")
 
             # ── 통합 검색 (품번 / 수주번호 / 거래처) ──
             sc1, sc2 = st.columns([3, 1])
@@ -7334,10 +7314,6 @@ elif page == "수주 관리":
                     # ── 자유 편집 (data_editor) ──
                     # 회차 번호는 저장 시 납기순 자동 부여 → 표에서 제외
                     st.markdown("##### 회차 편집")
-                    st.caption("납기·수량을 직접 고치거나, 표 아래 ＋ 로 회차를 "
-                               "추가하고 휴지통으로 삭제합니다. 회차 번호는 "
-                               "저장할 때 납기순으로 자동 부여됩니다. "
-                               "납품 완료 수량은 출고 등록 시 자동 반영.")
                     # 표 = DB 회차 + 패턴으로 채운 미저장 행 (납기순)
                     # 빈 표에서도 컬럼 타입이 정해져야 data_editor 가
                     # column_config 와 충돌하지 않는다 (astype 필수)
@@ -7591,12 +7567,6 @@ elif page == "출고 관리":
         # 생성(DRAFT) → 출고 전표 탭에서 확인용 리스트 인쇄·현장 확인
         # → 정정 반영 → [출고 확정] = 수주 반영·재고 차감·명세서 발행
         from datetime import date as _sh_dt
-        st.caption(
-            "스케줄이 출고 예정 품목을 자동으로 담고, 스케줄에 없는 "
-            "품목은 품번 검색으로 추가합니다. **출고 등록**을 누르면 "
-            "전표(DRAFT)가 만들어지고, 인쇄·현장 확인·정정·확정은 "
-            "**출고 전표 탭**에서 이어집니다. 재고 차감과 거래명세서는 "
-            "확정 시점에 이루어집니다.")
 
         st.markdown("##### 출고 리스트 담기")
         # 회차 기준일(어떤 스케줄 잔량을 담을지)과 실제 납품일(전표·
@@ -7943,12 +7913,6 @@ elif page == "출고 관리":
             _cf_sg = _cf_il.reload(_cf_sg)
         _cf_list = _cf_sg.delivery_list_html
         _cf_stmt = _cf_sg.transaction_statements_html
-        st.caption(
-            "등록된 전표를 열어 **확인용 리스트 인쇄 → 현장 확인 → "
-            "정정 저장 → 출고 확정** 순서로 진행합니다. 확정된 전표는 "
-            "언제든 출고 리스트·거래명세서를 다시 발행할 수 있고, 입력 "
-            "오류는 **전표 정정**(같은 번호 유지, 차이만 역반영)으로 "
-            "고칩니다.")
 
         # 확정 시 감지된 미래 회차 충당 경고 (rerun 후에도 표시)
         if st.session_state.get("cf_alloc_warn"):
@@ -8458,12 +8422,6 @@ elif page == "출고 관리":
                 else:
                     # ── 전표 정정: 같은 전표번호 유지, 차이만 역반영 ──
                     with st.expander("전표 정정 (수량 변경 · 라인 제외)"):
-                        st.caption(
-                            "수량을 고치면 **차이만큼만** 수주 납품·회차 "
-                            "충당·완성 LOT 재고를 되돌리거나 추가 차감합니다. "
-                            "0 = 라인 제외. 전표번호는 유지되고 정정 이력이 "
-                            "남으며, 재발행 문서에 정정본 표기가 찍힙니다 — "
-                            "이미 나간 명세서는 회수·파기 후 재발행하세요.")
                         _rv_df = _cf_pd.DataFrame([{
                             "품번": x.get("pn"),
                             "품명": _cf_names.get(x.get("si_id")) or "-",
@@ -8511,6 +8469,12 @@ elif page == "출고 관리":
                                     n) for x, n in _rv_changed))
                         if st.button("정정 적용", key="cf_rv_go",
                                      type="primary",
+                                     help="고친 수량의 차이만큼만 수주 납품·회차·"
+                                          "완성 LOT 재고를 되돌리거나 더 차감합니다. "
+                                          "0 = 라인 제외. 전표번호는 유지되고 정정 "
+                                          "이력이 남으며 재발행 문서에 정정본 표기가 "
+                                          "찍힙니다 — 이미 나간 명세서는 회수 후 "
+                                          "재발행하세요",
                                      disabled=not (_rv_changed
                                                    and _rv_reason.strip())):
                             st.session_state["cfm_cf_rv"] = True
@@ -8957,10 +8921,6 @@ elif page == "출고 관리":
 
     # ════════ TAB 3: 출고 현황 (확정 전표 기준 품목별 조회) ════════
     with tab_dstat:
-        st.caption(
-            "**확정 전표 기준 출고 조회** — 품목별 집계·출고 이력·수주별 "
-            "대사(전표 외 기납품 구분)까지 확인합니다. 수주 진행 KPI 는 "
-            "홈·수주 관리에서.")
 
         from datetime import date as _dv_dt, timedelta as _dv_td
         from utils.ship_lots import issued_lots as _dv_lots_fn
@@ -9245,9 +9205,6 @@ elif page == "출고 관리":
         # ── 완성 LOT별 재고 (출고 순서) ──
         with st.expander("완성 LOT별 재고 (출고 순서 · FIFO)",
                          expanded=False):
-            st.caption("출고는 완성일이 빠른 LOT부터 자동 배분됩니다. "
-                       "LOT = 작업지시 번호이며, 소재 식별 번호까지 "
-                       "연결되어 클레임 시 역추적이 가능합니다.")
             try:
                 _ls = fetch("product_lot_stock_v",
                     "pn,lot_number,produced_qty,issued_qty,remain_qty,"
@@ -9318,11 +9275,6 @@ elif page == "생산 계획":
     with tab_std:
         import utils.op_std as _os
         from datetime import datetime as _std_now
-        st.caption(
-            "**계획 단위 = 작업(품번 × 공정 스텝)**. 품번을 고르면 그 품번의 "
-            "공정별 표준(UPH·준비시간·장비군)을 표에서 바로 고칩니다. 저장한 "
-            "행은 **확정**되어 실적 재산출에도 유지되고, 시트 UPH 목표와 실적 "
-            "중앙값은 참고로만 보입니다. 안 쓰는 변형 공정은 '사용' 을 끄세요.")
 
         def _std_fetch_all(table, cols, order):
             out, off = [], 0
@@ -9682,8 +9634,6 @@ elif page == "생산 계획":
                                                    use_container_width=True)
                 _std_cancel = sb2.form_submit_button("편집 취소",
                                                      use_container_width=True)
-            st.caption("시트 UPH = 생산일정 시트 목표 · 실적 UPH = 동기화 실적 "
-                       "구간 중앙값 (참고). 저장하면 바뀐 행이 확정으로 잠깁니다.")
             if _std_cancel:
                 st.session_state["std_nonce"] = _std_nonce + 1
                 st.rerun()
@@ -10506,10 +10456,6 @@ elif page == "생산 계획":
 
     # ─── 탭 5: 설비 마스터 ───
     with tab_mc:
-        st.caption("설비 마스터 — 장비군·교대(주야 2교대)·교대당 시간·가동 "
-                   "여부. 실적에 새 설비명이 나오면 [실적에서 표준 재산출] "
-                   "때 자동 추가됩니다. 장비군 일 가용시간 = 가동 설비 × "
-                   "교대 × 교대당 시간.")
         try:
             _mcs = fetch("machines",
                          "machine_id,name,group_code,shifts,hours_per_shift,"
@@ -11139,10 +11085,6 @@ elif page == "발주/입고":
 
     # ════════════ TAB 3: 입고 현황 (입고일 기준 보유 자재) ════════════
     with tab_rstat:
-        st.caption(
-            "**입고된 자재를 입고일 기준으로 확인합니다.** 리스트에서 "
-            "라벨 재발행·입고 취소까지 처리하고, 투입은 공정 관리 → "
-            "투입 등록에서 진행합니다.")
 
         # ── 데이터 로드 ──
         from datetime import date as _rs_dt, timedelta as _rs_td
@@ -11842,9 +11784,6 @@ elif page == "발주/입고":
                         "최근 발주": (f"{vpo} · {str(vdt)[:10]}" if vpo else "-"),
                         "담김": "담김" if p["product_id"] in _in_cart else "",
                         "_p": p, "_vp": vp, "_vq": vq})
-                st.caption("재질 = 제품 마스터의 재질, 소재 = BOM 자재명(발주서의 "
-                           "'규격' 칸), 품명 = 품번 (제품 사이즈). 최근 단가·수량은 "
-                           "이 거래처의 마지막 발주에서 가져옵니다.")
                 with st.form("po_pick_form"):
                     _pick_ed = st.data_editor(
                         pd.DataFrame([{k: v for k, v in r.items()
@@ -11879,9 +11818,6 @@ elif page == "발주/입고":
             # 발주서 단위라 품목을 알 수 없고, 일괄 추가는 오매칭). 거래처
             # 이력 품번은 검색어 없이 [검색] 으로 본다.
             with st.expander("마스터에 없는 자재 직접 입력 (발주서에만 기재)"):
-                st.caption("제품·자재 마스터에 없는 것을 발주할 때 — 발주서 "
-                           "라인에만 기재되고 마스터에는 등록되지 않습니다. "
-                           "반복 발주할 자재면 마스터 관리에서 등록하세요.")
                 with st.form("po_adhoc_form"):
                     nx = st.text_input("품번/품명", key="nx_name")
                     a1, a2, a3 = st.columns(3)
@@ -12427,11 +12363,6 @@ elif page == "발주/입고":
 
     # ════════════ TAB: 입고 처리 (발주 기반 + 직접 입고) ════════════
     with tab_rcv_proc:
-        st.caption(
-            "**입고 대기 리스트에서 바로 처리합니다** — 도착한 라인에 "
-            "수량을 적거나 '전량'을 체크하고 [입고 처리]를 누르세요. "
-            "식별 번호 채번 → 실재고 반영 → 입고 라벨까지 자동입니다. "
-            "발주 없이 들어온 소재는 아래 직접 입고.")
 
         try:
             _rw = fetch("po_item_receipt_v",
@@ -12978,10 +12909,6 @@ elif page == "발주/입고":
 # ════════════════════════════════════════════════════════════════
 elif page == "공정 관리":
     st.subheader("공정 관리")
-    st.caption(
-        "생산 앞뒤 실물 흐름 — **투입(작업지시) → 외주 → 검사 → 완성**. "
-        "상태는 행위의 부산물로 자동 전환 (직접 변경 없음). "
-        "공정별 생산 실적은 MES → 생산 보고에서 확인.")
 
     if not DB_AVAILABLE:
         st.error("DB 연결이 활성화되지 않았습니다."); st.stop()
@@ -13206,10 +13133,6 @@ elif page == "공정 관리":
 
     # ════════ TAB 4: LOT 추적 (Phase C — 계보 조회) ════════
     with pe_tab_trace:
-        st.caption(
-            "배치번호 · 완성 LOT · 소재 W-LOT · 지시번호로 계보 전체를 "
-            "추적합니다 — **소재 → 공정(외주 회차) → 완성 → 출고** 가 "
-            "한 화면에 이어집니다.")
         _tq = st.text_input("추적 검색", key="tr_q",
             placeholder="예: 20260812-003-B / W0996 / 20260812-003 / "
                         "MRG6-07 (품번)")
@@ -13356,10 +13279,6 @@ elif page == "공정 관리":
 
     # ════════ TAB 1: 투입 등록 ════════
     with pe_tab_in:
-        st.caption(
-            "MES 작업지시서 발행 직후, 지시서의 **작업지시 NO + 소재 식별 번호 + "
-            "투입 수량**을 등록합니다 → 소재 재고 차감 + '생산중' 진입. "
-            "(하루 발행분 기준 건당 30초)")
 
         # ── 잔여 있는 소재 식별 번호 목록 (RECEIPT − PROD_INPUT) ──
         try:
@@ -13738,10 +13657,6 @@ elif page == "공정 관리":
 
     # ════════ TAB 2: 공정 처리 (Phase E-2) ════════
     with pe_tab_proc:
-        st.caption(
-            "작업지시를 선택해 **공정 시작 → 완료 등록 → 외주 → 검사 → 완성 확정**을 "
-            "처리합니다. 수량은 부분 처리 가능 — 상태는 자동 전환. "
-            "검사 불합격은 재작업/특채/반품/기타로 구분.")
 
         # 검사 판정 문서 즉시 다운로드 박스는 제거 (2026-08-28 사용자
         # 확정) — 라벨 출력은 처리 이력 > 라벨·의뢰서 재발행에서
@@ -14577,9 +14492,6 @@ elif page == "공정 관리":
 
                     # ── 검사 (배치 판정 — 완성 LOT = 배치번호) ──
                     elif _sb_act == "검사":
-                        st.caption("이 배치를 판정합니다 — 완성(합격+특채)은 "
-                                   "즉시 완성 재고로 확정되고 **완성 LOT "
-                                   "번호 = 배치번호**로 발행됩니다.")
                         qc1, qc2, qc3, qc4, qc5 = st.columns(5)
                         _i_pass = qc1.number_input("완성 (합격)", 0.0,
                             None, _sb_qty, 1.0,
@@ -14792,10 +14704,6 @@ elif page == "공정 관리":
                                 f"배치 합치기 — {_sb.get('step_name')} · "
                                 f"{_sb.get('location') or '사내'} 위치 "
                                 f"{len(_mg_pool)}개"):
-                            st.caption("같은 공정·위치의 배치만 합칠 수 "
-                                       "있습니다. 계보(MERGE)가 남아 원천 "
-                                       "추적은 유지되지만, 리콜 시 합쳐진 "
-                                       "전체가 범위가 됩니다.")
                             _mg_pick = st.multiselect("합칠 배치",
                                 [b["batch_no"] for b in _mg_pool],
                                 default=[b["batch_no"] for b in _mg_pool],
@@ -14852,9 +14760,6 @@ elif page == "공정 관리":
                             toss_table(_tr_rows, num_cols=("수량",),
                                        badge_cols=("상태",),
                                        raw_cols=("배치",))
-                            st.caption("들여쓰기 = 분기(SPLIT), '← 합류' = "
-                                       "합쳐진 부모 가지. **완성 배치번호가 "
-                                       "완성 LOT 번호**로 출고까지 이어집니다.")
                         else:
                             st.caption("계보 없음")
 
@@ -15088,11 +14993,6 @@ elif page == "공정 관리":
 
                 # ── 4. 검사 (합격/재작업/특채/반품/기타 + 라벨) ──
                 elif _act == "검사":
-                    st.caption("검사 대기 수량을 판정합니다 — **완성(합격)"
-                               "은 즉시 완성 재고로 확정** + 완성 라벨. "
-                               "불합격은 재작업/특채/반품/기타 구분 — "
-                               "재작업분만 작업지시에 남아 복귀 후 "
-                               "재검사합니다.")
                     qc1, qc2, qc3, qc4, qc5 = st.columns(5)
                     _i_pass = qc1.number_input("완성 (합격)", 0.0,
                         _q["검사대기"], _q["검사대기"], 1.0,
@@ -15239,11 +15139,6 @@ elif page == "공정 관리":
 
                 # ── 6. 투입 취소 (오입력 정리 — 관리자 전용) ──
                 elif _act == "투입 취소":
-                    st.caption(
-                        "잘못 등록한 투입을 취소합니다 — **작업지시가 "
-                        "삭제되고 소재 LOT 잔량이 복원**됩니다. 후속 "
-                        "처리(인수·외주·검사)가 시작된 지시는 취소할 수 "
-                        "없습니다. 취소 이력은 남습니다.")
                     _cx_k9 = f"pe_cx_{_t['wo_id']}"
                     if st.button("투입 취소 실행", type="primary",
                                  key="pe_cx_btn"):
@@ -15581,10 +15476,6 @@ elif page == "공정 관리":
                     for c in ["투입", "생산중", "MES 최종공정", "외주중",
                               "재작업중", "검사대기", "특채",
                               "반품", "기타", "완성"]})
-            st.caption(
-                "MES 최종공정 = 업로드된 MES 실적 중 해당 작업지시의 최대 "
-                "공정번호 누적 수량 (사내 공정 진행 참고). "
-                "처리(인수/외주/검사/완성)는 공정 처리 탭에서.")
 
 
 

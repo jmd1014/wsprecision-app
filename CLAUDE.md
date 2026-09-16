@@ -351,6 +351,18 @@
   `SCRAP`·수량 정합(검사대기 = 인수 − 합격 − scrap − 반품 − 재작업중)은 그대로이고
   화면 라벨·검사 라벨 note·공정 현황 컬럼·배치 상태 표시만 '기타'.
 
+- **2026-09-16 적용 전 점검 반영** (리뷰 보고 https://claude.ai/artifact/19JsedHBkxnXDfJa6cHW4F):
+  발주는 생성 시 DRAFT(발송 대기) → 발주 이력·완료 카드의 **[발송 완료 처리]** 로
+  SENT(sent_at) — 메일 발송은 앱 밖, 자재 필요량의 미입고 발주는 SENT 이후만 집계.
+  검사대기 산식 = 인수 + 외주입고 − 외주출고 − pass_qty − **tokusai_qty** − scrap −
+  return − 재작업중 (pass_qty 는 합격만, 배치·레거시 경로 통일). 회차 [스케줄 저장]
+  은 같은 납기의 sched_id 를 유지(update)하고 빠진 날짜만 삭제(전표 회차 연결 보존).
+  출고 확정은 수주 미납 초과 라인을 차단. 투입 취소는 wo_id 기준 + confirm_gate.
+  탭 안 `st.stop()` 금지(수주 업로드·원가 확인 정리). 생산 보고 입력 탭은 관리자
+  전용(투입·검사와 이중 계상). 직원 화면의 절차 설명 caption 은 제거하고 필요한
+  것만 버튼 help 로 — 절차는 교육 자료(https://claude.ai/artifact/MQHeCt8FoeQbVNVjHqPVLL)
+  가 담당. st.balloons 등 이펙트 금지, 이모지 상태 표시 제거.
+
 ## DB 작업 규칙
 
 - 스키마 변경은 Supabase MCP `apply_migration`으로 (이력 유지). 2026-09-11 기준 마이그레이션 062까지
