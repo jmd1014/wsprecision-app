@@ -39,3 +39,18 @@
 
 - 채널 구성(단일 vs 분리)과 웹훅 URL은 사용자가 슬랙 셋업 후 제공 예정
 - 이벤트별 on/off 설정(app_settings)은 2차 — 처음엔 6종 고정으로 시작
+
+## 구현 현황 (2026-09-16)
+
+- 채널: **#경영-알림** (신설, 알림 전용) — Incoming Webhook 1개
+- 웹훅 URL 저장: `st.secrets["slack"]["webhook_url"]` 우선, 없으면 DB
+  `app_settings(key=slack_webhook_url)` — 현재는 DB 쪽에 저장됨 (Cloud Secrets 미사용).
+  둘 다 없으면 조용히 스킵. URL 은 절대 커밋하지 않는다
+- 모듈: `utils/slack_notify.py` — `notify(text)` 백그라운드 스레드·3초 타임아웃·
+  실패 무시, `hooks.slack.com` 도메인만 허용. 포맷 함수 `fmt_po/fmt_receipt/
+  fmt_input/fmt_wo_event/fmt_ship`
+- 알림 7종 (합의 6종 + 출고 확정): 발주 작성(= 서무에게 발송 요청) · 소재 입고
+  (발주 기반 라인별 + 직접 입고) · 작업 투입 · 완료 등록 · 외주 출고 · 외주 입고 ·
+  출고 확정. 발주 상태 SENT 전용 화면은 현재 없어 '발주 작성' 시점에 알린다
+- 모든 훅은 DB 반영 성공 후 st.rerun() 직전에 호출, click_guard 로 이중 알림 없음
+- 이벤트별 on/off(app_settings)는 2차

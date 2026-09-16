@@ -377,6 +377,9 @@ def current_user_name() -> str:
     return current_user().get("name") or "시스템"
 
 
+from utils import slack_notify as _sk  # 업무 분기점 슬랙 알림 (fire-and-forget)
+
+
 def click_guard(name, ttl=5.0):
     """이중 클릭 가드 — 같은 처리의 재진입을 ttl초 동안 막는다.
 
@@ -8842,6 +8845,10 @@ elif page == "출고 관리":
                             pass
                         st.session_state["ship_open_no"] = \
                             _cf_pick["ship_no"]
+                        _sk.notify(_sk.fmt_ship(
+                            _cf_pick["ship_no"],
+                            [x.get("customer") for x in _cf_items],
+                            _cf_ok, _cf_total, current_user_name()))
                         st.success(
                             f"출고 확정 — {_cf_ok}개 라인 · "
                             f"{_cf_total:,.0f}개. 아래에서 거래명세서를 "
@@ -11997,6 +12004,11 @@ elif page == "발주/입고":
                                         } for i, it in enumerate(_final)])
                                 except Exception as e:
                                     st.warning(f"DB 저장 실패 (문서는 정상): {e}")
+                                _sk.notify(_sk.fmt_po(
+                                    po_no, vendor["name"], len(_final),
+                                    sum(float(it.get("qty") or 0)
+                                        for it in _final),
+                                    current_user_name()))
                                 st.session_state["po_result"] = {
                                     "po_no": po_no, "vendor": vendor["name"],
                                     "date": po_date.isoformat(),
@@ -12581,6 +12593,9 @@ elif page == "발주/입고":
                             "vendor": _r_vendor,
                             "date": _rcv_date.today().isoformat(),
                         }]
+                        _sk.notify(_sk.fmt_receipt(
+                            [_w], [_r.get("material_name") or _mid8],
+                            _r_vendor, current_user_name(), qty=_q8))
                         st.success(f"입고 처리 — {_q8:,.0f}개 "
                                    f"(식별 번호 {_w or '-'}, 실재고 "
                                    "자동 반영)")
@@ -12765,6 +12780,10 @@ elif page == "발주/입고":
                     "vendor": _dr_src or "-",
                     "date": _dr_date.today().isoformat(),
                 }]
+                _sk.notify(_sk.fmt_receipt(
+                    [_dw], [_dr_pick.get("raw_name") or _dr_pick["material_id"]],
+                    (_dr_src or "직접 입고") + (" (사급)" if _dr_sagup else ""),
+                    current_user_name(), qty=_dr_qty))
                 st.success(f"직접 입고 완료: "
                            f"{_dr_pick['material_id']} {_dr_qty:,.0f} "
                            + (f"(소재 LOT {_dw})" if _dw else "(식별 번호 없음)"))
@@ -13520,6 +13539,9 @@ elif page == "공정 관리":
                                 "created_by": current_user_name()}])
                         except Exception:
                             pass
+                        _sk.notify(_sk.fmt_input(
+                            _pn_clean, _in_prod_qty, _sel_lot,
+                            current_user_name()))
                         st.success(
                             f"투입 등록: {_wo} · {_sel_lot} · 소재 "
                             f"{_in_qty:,.0f} → 제품 {_in_prod_qty:,.0f}"
@@ -13887,6 +13909,14 @@ elif page == "공정 관리":
                             "created_by": current_user_name(), **event}])
                     except Exception as e:
                         st.warning(f"⚠️ 이력 기록 실패 (처리는 정상): {e}")
+                if event and event.get("event_type") in (
+                        "RECEIVE", "OUT_SEND", "OUT_RETURN"):
+                    _dt9 = event.get("detail") or {}
+                    _sk.notify(_sk.fmt_wo_event(
+                        event.get("event_type"), _t.get("pn"),
+                        event.get("qty"), current_user_name(),
+                        vendor=_dt9.get("vendor"),
+                        step=event.get("step_name")))
                 if docs:
                     st.session_state["pe_docs"] = docs
                 st.success(msg)
