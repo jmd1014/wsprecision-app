@@ -956,8 +956,9 @@ def toss_grid(rows, *, key, badge_cols=(), num_cols=(), strong_cols=(),
         rows = rows.to_dict("records")
     if not rows:
         return None
+    # '_' 로 시작하는 키는 내부용(예: _pid) — 표에 보이지 않는다
     _cols = ([c for c in columns if c in rows[0]] if columns
-             else list(rows[0].keys()))
+             else [c for c in rows[0].keys() if not str(c).startswith("_")])
     _df = pd.DataFrame([{**{c: r.get(c) for c in _cols},
                          "_i": i} for i, r in enumerate(rows)])
     try:
@@ -1174,7 +1175,7 @@ EVENT_KO = {
     "OUTPUT": "완성 확정",
     "STEP_START": "공정 시작", "STEP_DONE": "공정 완료",
     "STEP_CANCEL": "공정 취소",
-    "INPUT_CANCEL": "투입 취소",
+    "INPUT_CANCEL": "투입 취소", "INSPECT_CANCEL": "검사 취소",
     "MAT_OUT_SEND": "소재 외주 출고", "MAT_OUT_RETURN": "소재 외주 회수",
 }
 
@@ -7629,7 +7630,8 @@ elif page == "출고 관리":
     import db as _db
     import pandas as pd
 
-    tab_deliver, tab_ship, tab_dstat = st.tabs(["출고 등록", "출고 전표", "출고 현황"])
+    tab_deliver, tab_ship, tab_dstat, tab_fstock = st.tabs(
+        ["출고 등록", "출고 전표", "출고 현황", "완성 재고"])
 
     # ════════ TAB 1: 납품 등록 ════════
     with tab_deliver:
@@ -9294,36 +9296,95 @@ elif page == "출고 관리":
                         "수량": st.column_config.NumberColumn(
                             format="localized")})
 
-        # ── 완성 LOT별 재고 (출고 순서) ──
-        with st.expander("완성 LOT별 재고 (출고 순서 · FIFO)",
-                         expanded=False):
+    # ════════ TAB 4: 완성 재고 (2026-09-16 사용자 결정 — 출고 담기 전에 보는
+    # 자리. 홈 요약과 출고 현황의 LOT 표를 여기로 모음) ════════
+    with tab_fstock:
+        def _fsf(v):
             try:
-                _ls = fetch("product_lot_stock_v",
-                    "pn,lot_number,produced_qty,issued_qty,remain_qty,"
-                    "first_output_date,tokusai_qty,material_lot",
-                    "remain_qty=gt.0&order=pn.asc,first_output_date.asc",
-                    limit=300)
-            except Exception:
-                _ls = []
-            if not _ls:
-                st.caption("출고 가능한 완성 LOT 없음.")
-            else:
-                toss_df(pd.DataFrame([{
-                    "품번": l["pn"],
+                return float(v or 0)
+            except (TypeError, ValueError):
+                return 0.0
+        try:
+            _fs = fetch("product_stock_v",
+                        "product_id,pn,customer,current_stock,last_txn_date",
+                        "current_stock=neq.0&order=pn.asc", limit=1000)
+        except Exception as e:
+            st.error(f"완성 재고 조회 실패: {e}")
+            _fs = []
+        _fs_pend = {}
+        try:
+            for _l in fetch("sales_order_items", "product_id,pending_qty",
+                            "pending_qty=gt.0&product_id=not.is.null",
+                            limit=1000):
+                _fs_pend[_l["product_id"]] = (
+                    _fs_pend.get(_l["product_id"], 0.0)
+                    + _fsf(_l.get("pending_qty")))
+        except Exception:
+            pass
+        _fs_lots = {}
+        try:
+            for _l in fetch("product_lot_stock_v",
+                            "product_id,pn,lot_number,produced_qty,issued_qty,"
+                            "remain_qty,first_output_date,tokusai_qty,"
+                            "material_lot",
+                            "remain_qty=gt.0&order=pn.asc,first_output_date.asc",
+                            limit=1000):
+                _fs_lots.setdefault(_l["product_id"], []).append(_l)
+        except Exception:
+            pass
+        _fs_q = st.text_input("품번 · 거래처 검색", key="fs_q",
+                              label_visibility="collapsed",
+                              placeholder="검색 — 품번 · 거래처")
+        _fs_rows = []
+        for r in _fs:
+            _stk = _fsf(r.get("current_stock"))
+            _pd9 = _fs_pend.get(r["product_id"], 0.0)
+            _fs_rows.append({
+                "품번": r.get("pn") or r["product_id"],
+                "거래처": r.get("customer") or "-",
+                "완성 재고": _stk, "미납": _pd9, "여유": _stk - _pd9,
+                "LOT": float(len(_fs_lots.get(r["product_id"], []))),
+                "최근 거래": str(r.get("last_txn_date") or "")[:10] or "-",
+                "상태": ("부족" if _stk - _pd9 < 0 else
+                       "미납 없음" if _pd9 <= 0 else "여유"),
+                "_pid": r["product_id"],
+            })
+        if (_fs_q or "").strip():
+            _q9 = _fs_q.strip().lower()
+            _fs_rows = [x for x in _fs_rows
+                        if _q9 in (x["품번"] + " " + x["거래처"]).lower()]
+        _fk1, _fk2, _fk3 = st.columns(3)
+        _fk1.metric("재고 보유 품목", f"{len(_fs_rows):,}")
+        _fk2.metric("완성 재고 합계",
+                    f"{sum(x['완성 재고'] for x in _fs_rows):,.0f}")
+        _fk3.metric("미납 대비 부족 품목",
+                    f"{sum(1 for x in _fs_rows if x['여유'] < 0):,}",
+                    help="완성 재고 − 미납 < 0 인 품목 — 생산이 더 필요")
+        if not _fs_rows:
+            st.info("완성 재고가 있는 품목이 없습니다.")
+        else:
+            _fs_i = toss_grid(_fs_rows, key="fs_grid",
+                              badge_cols=("상태",), strong_cols=("품번",),
+                              num_cols=("완성 재고", "미납", "여유", "LOT"))
+            _fr = _fs_rows[_fs_i if _fs_i is not None else 0]
+            _fl = _fs_lots.get(_fr["_pid"], [])
+            st.markdown(f"##### {_fr['품번']} — 완성 재고 {_fr['완성 재고']:,.0f} · "
+                        f"미납 {_fr['미납']:,.0f} · 여유 {_fr['여유']:,.0f}")
+            if _fl:
+                toss_table([{
                     "완성 LOT (작업지시)": l["lot_number"],
                     "소재 LOT": l.get("material_lot") or "-",
-                    "완성일": l.get("first_output_date") or "-",
-                    "완성": float(l.get("produced_qty") or 0),
-                    "출고": float(l.get("issued_qty") or 0),
-                    "잔여": float(l.get("remain_qty") or 0),
-                    "특채": float(l.get("tokusai_qty") or 0),
-                } for l in _ls]), use_container_width=True,
-                    hide_index=True,
-                    height=min(400, 60 + len(_ls) * 35),
-                    column_config={c: st.column_config.NumberColumn(
-                        format="localized", width="small")
-                        for c in ["완성", "출고", "잔여", "특채"]})
-
+                    "완성일": str(l.get("first_output_date") or "-")[:10],
+                    "완성": _fsf(l.get("produced_qty")),
+                    "출고": _fsf(l.get("issued_qty")),
+                    "잔여": _fsf(l.get("remain_qty")),
+                    "특채": _fsf(l.get("tokusai_qty")),
+                } for l in _fl], num_cols=("완성", "출고", "잔여", "특채"),
+                    strong_cols=("완성 LOT (작업지시)",))
+            else:
+                st.info("잔여 LOT 없음 — 기초 재고(OB LOT) 없이 합계만 있는 "
+                        "품목이면 마스터 관리 › 품번별 맞추기에서 LOT 을 "
+                        "등록하세요.")
 
 elif page == "생산 계획":
     st.subheader("생산 계획 — 설비 스케줄 · 공정 표준 · 설비")
@@ -11642,9 +11703,12 @@ elif page == "발주/입고":
             pi = st.session_state.get("po_prefill_items", [])
             src_so = st.session_state.get("po_prefill_source_so", "")
             st.info(
-                f"**발주 자동 제안에서 받은 발주 데이터**: 거래처 '{pv}', "
-                f"품목 {len(pi)}개" + (f" · 출처 수주: {src_so}" if src_so else ""))
-            if st.button("모두 초기화", help="자동 제안과 품목표를 모두 비웁니다"):
+                f"**미리 담긴 발주 데이터**: 거래처 '{pv}', 품목 {len(pi)}개"
+                + (f" · 출처 수주: {src_so}" if src_so else "")
+                + (f" · {st.session_state.get('po_prefill_note')}"
+                   if st.session_state.get("po_prefill_note") else ""))
+            if st.button("모두 초기화", help="미리 담긴 데이터와 품목표를 모두 비웁니다"):
+                st.session_state.pop("po_prefill_note", None)
                 st.session_state.po_prefill_vendor_name = None
                 st.session_state.po_prefill_items = None
                 st.session_state.po_prefill_source_so = None
@@ -12356,7 +12420,9 @@ elif page == "발주/입고":
                                  })
 
                 rc1, rc2 = st.columns(2)
-                # 재발급 — 클릭 없이 바로 내려받기 (PDF 기본, xlsx 보조)
+                # 왼쪽: 문서(PDF 재발급 · 복사해서 수정) / 오른쪽: 상태 액션
+                # (메일 발송·취소). 엑셀 재발급은 제거 — 수정은 앱에서 고쳐
+                # 발주서를 다시 만드는 것이 맞는 흐름 (2026-09-16 사용자)
                 with rc1:
                     try:
                         full_vendor = _db.fetch_one(
@@ -12400,24 +12466,39 @@ elif page == "발주/입고":
                             mime="application/pdf", type="primary",
                             use_container_width=True,
                             key=f"po_re_pdf_{po['po_id']}")
-                        st.download_button(
-                            "엑셀(xlsx) 재발급",
-                            data=fill_po_template(re_po_data, re_items,
-                                                  re_vendor_info),
-                            file_name=f"{po['po_number']}_{po['_vname']}.xlsx",
-                            mime="application/vnd.openxmlformats-"
-                                 "officedocument.spreadsheetml.sheet",
-                            use_container_width=True,
-                            key=f"po_re_xlsx_{po['po_id']}")
+                        if st.button("복사해서 수정 (새 발주서 작성)",
+                                     use_container_width=True,
+                                     key=f"po_copy_{po['po_id']}",
+                                     help="이 발주의 품목을 새 발주서 표에 담습니다. "
+                                          "수정 후 [발주서 만들기 (PDF)] 로 다시 "
+                                          "만들고, 원 발주는 [발주 취소]로 정리"):
+                            st.session_state["po_prefill_vendor_name"] = po["_vname"]
+                            st.session_state["po_prefill_items"] = [{
+                                "product_id": i.get("product_id"),
+                                "item_name": i.get("item_name"),
+                                "material": i.get("material") or "",
+                                "spec": i.get("spec") or "",
+                                "qty": int(i.get("qty") or 0),
+                                "unit_price": int(i.get("unit_price") or 0),
+                                "memo": (i.get("remark") or "")
+                                if i.get("material") else "",
+                            } for i in items]
+                            st.session_state["po_prefill_source_so"] = None
+                            st.session_state["po_prefill_note"] = (
+                                f"{po['po_number']} 복사 — 수정 후 다시 만들기")
+                            st.session_state.po_items = []
+                            st.session_state.pop("po_result", None)
+                            st.session_state["po_tbl_nonce"] = \
+                                st.session_state.get("po_tbl_nonce", 0) + 1
+                            st.success("새 발주서 작성 탭에 담았습니다 — 수정 후 "
+                                       "[발주서 만들기 (PDF)]. 원 발주는 "
+                                       "[발주 취소]로 정리하세요.")
                     except Exception as e:
                         st.error(f"재발급 실패: {e}")
 
                 # 상태는 자동 관리 — 입고(부분/완료)·잔량 종결·취소가
                 # 상태를 결정하므로 수기 변경 UI 제거 (2026-08-20)
                 with rc2:
-                    st.caption(
-                        f"상태: **{'발주' if po['status'] == 'DRAFT' else status_ko(po['status'])}** — 입고·"
-                        "잔량 종결에 따라 자동 갱신됩니다.")
                     try:
                         _po_rcv9 = fetch("po_item_receipt_v",
                             "received_qty",
@@ -13303,8 +13384,8 @@ elif page == "공정 관리":
                         use_container_width=True,
                         key=f"{_kp}_re_dl{_ri}")
 
-    pe_tab_in, pe_tab_proc, pe_tab_board, pe_tab_trace = st.tabs(
-        ["투입 등록", "공정 처리", "공정 현황판", "LOT 추적"])
+    pe_tab_in, pe_tab_proc, pe_tab_board, pe_tab_closed, pe_tab_trace = st.tabs(
+        ["투입 등록", "공정 처리", "공정 현황판", "종결 지시", "LOT 추적"])
 
     # ════════ TAB 4: LOT 추적 (Phase C — 계보 조회) ════════
     with pe_tab_trace:
@@ -15426,6 +15507,199 @@ elif page == "공정 관리":
 
                 render_wo_reissue(_t, _evs, "pe")
 
+    # ════════ TAB: 종결 지시 (2026-09-16) — 조회 + 제한된 검사 판정 취소 ════════
+    # 사용자 방침: 검사 판정 취소는 엄청난 예외 상황 전용. 배치 분기·합류나
+    # 출고가 이미 진행된 경우는 여기서 막고 마스터 관리 › 품번별 맞추기(모든
+    # 예외의 마스터)에서 정정한다. 취소 불가 사유는 화면에 그대로 보여 준다.
+    with pe_tab_closed:
+        _cf1, _cf2 = st.columns([1, 2])
+        _c_per = _cf1.selectbox(
+            "기간", ["최근 1개월", "최근 3개월", "올해", "전체"],
+            key="pe_closed_period", label_visibility="collapsed")
+        _c_q = _cf2.text_input(
+            "지시·품번 검색", key="pe_closed_q", label_visibility="collapsed",
+            placeholder="검색 — 지시번호 · 품번 · 소재 LOT")
+        from datetime import date as _cd_d, timedelta as _cd_td
+        _cfq = ["status=in.(DONE,CLOSED,CANCELLED)",
+                "order=updated_at.desc.nullslast,created_at.desc"]
+        if _c_per == "최근 1개월":
+            _cfq.append(f"updated_at=gte.{_cd_d.today() - _cd_td(days=31)}")
+        elif _c_per == "최근 3개월":
+            _cfq.append(f"updated_at=gte.{_cd_d.today() - _cd_td(days=92)}")
+        elif _c_per == "올해":
+            _cfq.append(f"updated_at=gte.{_cd_d.today().year}-01-01")
+        if (_c_q or "").strip():
+            _ck = _c_q.strip()
+            _cfq.append(f"or=(wo_number.ilike.*{_ck}*,pn.ilike.*{_ck}*,"
+                        f"w_lot.ilike.*{_ck}*)")
+        try:
+            _cwos = fetch("wo_tracking", "*", "&".join(_cfq), limit=300)
+        except Exception as e:
+            st.error(f"종결 지시 조회 실패: {e}")
+            _cwos = []
+        if len(_cwos) == 300:
+            st.warning("조회가 300건에서 잘렸습니다 — 기간을 좁히거나 "
+                       "검색어로 필터하세요.")
+        if not _cwos:
+            st.info("조건에 맞는 종결 지시가 없습니다.")
+        else:
+            def _cfl(v):
+                try:
+                    return float(v or 0)
+                except (TypeError, ValueError):
+                    return 0.0
+            _c_i = toss_grid([{
+                "지시번호": w["wo_number"],
+                "품번": w.get("pn") or "-",
+                "소재 LOT": w.get("w_lot") or "-",
+                "투입": _cfl(w.get("input_qty")),
+                "완성": _cfl(w.get("output_qty")),
+                "특채": _cfl(w.get("tokusai_qty")),
+                "반품": _cfl(w.get("return_qty")),
+                "기타": _cfl(w.get("scrap_qty")),
+                "상태": status_ko(w.get("status")),
+                "종결일": str(w.get("updated_at") or "")[:10] or "-",
+            } for w in _cwos], key="pe_closed_grid",
+                badge_cols=("상태",), strong_cols=("지시번호",),
+                num_cols=("투입", "완성", "특채", "반품", "기타"))
+            _cw = _cwos[_c_i if _c_i is not None else 0]
+            try:
+                _cb = fetch("wo_batches",
+                            "batch_id,batch_no,qty,step_code,step_name,status,"
+                            "location",
+                            f"wo_id=eq.{_cw['wo_id']}&order=batch_no.asc",
+                            limit=100)
+            except Exception:
+                _cb = []
+            try:
+                _ce = fetch("wo_events",
+                            "event_id,event_type,qty,detail,event_date,"
+                            "created_by,created_at,batch_id",
+                            f"wo_id=eq.{_cw['wo_id']}&order=created_at.desc",
+                            limit=100)
+            except Exception:
+                _ce = []
+            st.markdown(f"##### {_cw['wo_number']} · {_cw.get('pn') or '-'} — "
+                        f"{status_ko(_cw.get('status'))}")
+            _cc1, _cc2 = st.columns(2)
+            with _cc1:
+                st.markdown("**배치**")
+                if _cb:
+                    toss_table([{
+                        "배치": b["batch_no"], "수량": _cfl(b.get("qty")),
+                        "공정": b.get("step_name") or b.get("step_code") or "-",
+                        "상태": {"OPEN": "진행", "DONE": "완성", "SCRAP": "기타",
+                               "RETURN": "반품", "MERGED": "합류 종결",
+                               "CANCELLED": "취소"}.get(b.get("status"),
+                                                       b.get("status") or "-"),
+                        "위치": b.get("location") or "-",
+                    } for b in _cb], num_cols=("수량",), strong_cols=("배치",))
+                else:
+                    st.info("배치 기록 없음 (구 방식 처리)")
+            with _cc2:
+                st.markdown("**처리 이력**")
+                if _ce:
+                    toss_table([{
+                        "일자": str(e.get("event_date") or "")[:10],
+                        "처리": EVENT_KO.get(e.get("event_type"),
+                                           e.get("event_type")),
+                        "수량": _cfl(e.get("qty")),
+                        "처리자": e.get("created_by") or "-",
+                    } for e in _ce[:20]], num_cols=("수량",))
+                else:
+                    st.info("이력 없음")
+
+            # ── 검사 판정 취소 — 허용 조건 검사 + 사유 표시 ──
+            _last = _ce[0] if _ce else None
+            _dn = [b for b in _cb if b.get("status") == "DONE"]
+            _why = None
+            if (_cw.get("status") or "") not in ("CLOSED", "DONE"):
+                _why = f"지시 상태가 {status_ko(_cw.get('status'))} 이라 검사 판정 취소 대상이 아닙니다."
+            elif not _cb:
+                _why = "배치 기록이 없는 구 방식 지시입니다."
+            elif len(_cb) != 1 or not _dn:
+                _why = f"배치가 분기·합류되어 있습니다 (배치 {len(_cb)}개)."
+            elif not _last or _last.get("event_type") != "INSPECT":
+                _why = ("검사 이후 처리({})가 있습니다.".format(
+                    EVENT_KO.get((_last or {}).get("event_type"),
+                                 (_last or {}).get("event_type") or "-")))
+            else:
+                _bn = _dn[0]["batch_no"]
+                try:
+                    _ltx = fetch("inventory_transactions", "txn_id,txn_type,qty",
+                                 f"lot_number=eq.{_bn}", limit=200)
+                except Exception:
+                    _ltx = []
+                _other = [t for t in _ltx if t.get("txn_type") != "PROD_OUTPUT"]
+                _dt = _last.get("detail") or {}
+                _outq = _cfl(_dt.get("output"))
+                if _other:
+                    _why = ("완성 LOT {} 에 출고·조정 기록 {}건이 있습니다."
+                            .format(_bn, len(_other)))
+                elif abs(_outq - _cfl(_dn[0].get("qty"))) > 1e-6:
+                    _why = "부분 판정(배치 수량 ≠ 완성 수량)입니다."
+                elif _cfl(_dt.get("rework")) > 0 or _cfl(_dt.get("return")) > 0 \
+                        or _cfl(_dt.get("scrap")) > 0:
+                    _why = "재작업·반품·기타가 포함된 판정입니다."
+            with st.expander("검사 판정 취소 — 예외 상황 전용 (관리자)"):
+                if current_user().get("role") != "admin":
+                    st.info("관리자만 실행할 수 있습니다.")
+                elif _why:
+                    st.warning("이 지시는 여기서 취소할 수 없습니다 — " + _why
+                               + " 이런 경우는 마스터 관리 › 품번별 맞추기에서 "
+                                 "정정합니다.")
+                else:
+                    _ic_k = f"pe_ic_{_cw['wo_id']}"
+                    _ic_reason = st.text_input("취소 사유 (필수)", key=_ic_k + "_r")
+                    if st.button("검사 판정 취소", type="primary", key=_ic_k,
+                                 disabled=not (_ic_reason or "").strip(),
+                                 help="완성 재고 기록을 지우고 작업지시·배치를 "
+                                      "검사 대기로 되돌립니다. 출력한 완성 라벨은 "
+                                      "회수하세요"):
+                        st.session_state[f"cfm_{_ic_k}"] = True
+                    if st.session_state.get(f"cfm_{_ic_k}") and confirm_gate(
+                            _ic_k, f"{_cw['wo_number']} 의 검사 판정(완성 "
+                                   f"{_outq:,.0f})을 취소합니다 — 완성 재고에서 "
+                                   "빠지고 검사 대기로 돌아갑니다. 실행할까요?"):
+                        try:
+                            _db.delete("inventory_transactions",
+                                       f"lot_number=eq.{_bn}&txn_type=eq.PROD_OUTPUT"
+                                       f"&work_order=eq.{_cw['wo_number']}")
+                            _fld = {
+                                "pass_qty": max(0.0, _cfl(_cw.get("pass_qty"))
+                                                - _cfl(_dt.get("pass"))),
+                                "tokusai_qty": max(0.0, _cfl(_cw.get("tokusai_qty"))
+                                                   - _cfl(_dt.get("tokusai"))),
+                                "output_qty": max(0.0, _cfl(_cw.get("output_qty"))
+                                                  - _outq),
+                            }
+                            _fld["status"] = wo_derive_status({**_cw, **_fld})
+                            from datetime import datetime as _ic_now
+                            _fld["updated_at"] = _ic_now.utcnow().isoformat()
+                            _db.update("wo_tracking", f"wo_id=eq.{_cw['wo_id']}", _fld)
+                            _db.update("wo_batches", f"batch_id=eq.{_dn[0]['batch_id']}",
+                                       {"step_code": "INSPECT", "step_name": "검사",
+                                        "status": "OPEN", "location": "사내",
+                                        "step_status": "WAIT"})
+                            _db.insert("wo_events", [{
+                                "wo_id": _cw["wo_id"], "wo_number": _cw["wo_number"],
+                                "w_lot": _cw.get("w_lot"), "pn": _cw.get("pn"),
+                                "event_type": "INSPECT_CANCEL", "qty": _outq,
+                                "batch_id": _dn[0]["batch_id"],
+                                "detail": {"reason": _ic_reason.strip(),
+                                           "cancelled_event_id": _last.get("event_id"),
+                                           "orig": _dt},
+                                "event_date": _cd_d.today().isoformat(),
+                                "created_by": current_user_name()}])
+                            _sk.notify(f"[검사 취소] {_cw.get('pn') or '-'} "
+                                       f"{_outq:,.0f} EA · LOT {_bn} — "
+                                       f"{current_user_name()} ({_ic_reason.strip()})")
+                            st.success(f"검사 판정 취소 — {_cw['wo_number']} 검사 "
+                                       "대기로 복귀. 공정 처리 탭에서 다시 판정하세요.")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"취소 실패: {e} — 정합 점검에서 확인하세요.")
+
     # ════════ TAB 3: 공정 현황판 ════════
     with pe_tab_board:
         # ── 공정별 현황 — 지금 어느 공정에 얼마가 있는지 (배치 기반,
@@ -15494,48 +15768,9 @@ elif page == "공정 관리":
                 strong_cols=("공정",))
 
         st.divider()
-        st.markdown("##### 지시별 상세 — 종결 지시 조회는 여기서")
-        _bf1, _bf2, _bf3 = st.columns([1, 1, 2])
-        _b_closed = _bf1.checkbox("종결 포함 보기", value=False,
-                                key="pe_board_closed",
-                                help="완료·종결된 작업지시까지 포함해 "
-                                     "조회합니다 — 문서 재발행은 LOT "
-                                     "추적에서")
+        st.markdown("##### 지시별 상세")
+        # 종결 지시 조회는 '종결 지시' 탭으로 분리 (2026-09-16 사용자)
         _wos = _pe_all
-        if _b_closed:
-            # 종결 포함은 시간이 갈수록 쌓인다 — 기간·검색을 서버
-            # 필터로 걸어 대량에서도 조회 가능하게 (2026-08-29)
-            _b_per = _bf2.selectbox("기간",
-                ["최근 1개월", "최근 3개월", "올해", "전체"],
-                key="pe_board_period",
-                label_visibility="collapsed")
-            _b_q = _bf3.text_input("지시·품번 검색",
-                key="pe_board_q", label_visibility="collapsed",
-                placeholder="검색 — 지시번호 · 품번 · 소재 LOT")
-            _bfq = ["order=created_at.desc"]
-            from datetime import date as _bd_d, timedelta as _bd_td
-            if _b_per == "최근 1개월":
-                _bfq.append("created_at=gte."
-                            f"{(_bd_d.today() - _bd_td(days=31))}")
-            elif _b_per == "최근 3개월":
-                _bfq.append("created_at=gte."
-                            f"{(_bd_d.today() - _bd_td(days=92))}")
-            elif _b_per == "올해":
-                _bfq.append(f"created_at=gte.{_bd_d.today().year}-01-01")
-            if (_b_q or "").strip():
-                _bk = _b_q.strip()
-                _bfq.append(f"or=(wo_number.ilike.*{_bk}*,"
-                            f"pn.ilike.*{_bk}*,w_lot.ilike.*{_bk}*)")
-            try:
-                _wos = fetch("wo_tracking", "*",
-                             "&".join(_bfq), limit=300)
-                if len(_wos) == 300:
-                    st.warning("조회가 300건에서 잘렸습니다 — 기간을 "
-                               "좁히거나 검색어로 필터하세요.")
-                else:
-                    st.caption(f"조회 {len(_wos)}건")
-            except Exception as e:
-                st.error(f"현황 조회 실패: {e}")
 
         if not _wos:
             st.info("진행 중인 작업지시가 없습니다 — 투입 등록에서 시작합니다.")

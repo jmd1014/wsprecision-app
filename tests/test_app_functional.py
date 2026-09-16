@@ -171,7 +171,8 @@ def test_po_prefill_flow(mocked_db):
 
     # prefill 안내 문구 확인
     info_texts = [str(i.value) for i in at.info]
-    assert any("자동 제안" in t for t in info_texts), \
+    # 2026-09-16: 안내 문구를 '미리 담긴 발주 데이터' 로 통일 (자동 제안·복사 공통)
+    assert any("미리 담긴 발주 데이터" in t for t in info_texts), \
         f"prefill 안내 미표시: {info_texts}"
     assert any("SO-2026-001" in t for t in info_texts), \
         "출처 수주 표시 안 됨"
