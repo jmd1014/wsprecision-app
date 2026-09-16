@@ -363,6 +363,17 @@
   것만 버튼 help 로 — 절차는 교육 자료(https://claude.ai/artifact/MQHeCt8FoeQbVNVjHqPVLL)
   가 담당. st.balloons 등 이펙트 금지, 이모지 상태 표시 제거.
 
+- **발주서 메일 발송 = 만들어 두고 꺼 둔 기능** (2026-09-16 사용자 결정: 사용 안정화
+  이후 적용). `utils/po_mail.py`(SMTP SSL/STARTTLS, PDF 첨부, test_to 테스트 모드) +
+  secrets `[mail]` — `enabled=false` 면 `_po_mail_cfg()` 가 None 이라 [메일로 발송]
+  버튼이 아예 없다. 켜면 완료 카드·발주 이력 상세에 버튼(confirm_gate, 거래처
+  이메일 없으면 잠김) → 발송 성공 시 SENT + sent_at/sent_to/mail_message_id
+  (Migration 064). 그때까지는 작성(발송 대기) → 수동 메일 → [발송 완료 처리].
+  발송 계정·앱 비밀번호는 사용자가 secrets 에 직접 넣는다(코드·대화에 두지 않음).
+- 마스터 신규 등록(거래처·자재)은 st.form. 중복 자재 병합은 단계별 역연산을 쌓아
+  실패 시 되돌린다. 마진 대시보드는 sale_price·margin_pct_calc(마스터 단가) 기준.
+  출고 전표 탭 검색(전표번호·거래처·품번·작성자). 홈 미납 수주는 100건씩 조회.
+
 ## DB 작업 규칙
 
 - 스키마 변경은 Supabase MCP `apply_migration`으로 (이력 유지). 2026-09-11 기준 마이그레이션 062까지
