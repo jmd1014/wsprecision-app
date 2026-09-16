@@ -4611,11 +4611,6 @@ elif page == "마스터 관리":
             st.markdown(f"##### 공정 순서 (라우팅) — {_bp['pn']}")
             _cur = get_routing(_bp["product_id"])
             _has_custom = any(s.get("routing_id") for s in _cur)
-            if not _has_custom:
-                st.caption("정의된 라우팅 없음 — 기본 플로우(소재입고 "
-                           "→ 생산 → 검사 → 완성)로 동작합니다. "
-                           "순서를 저장하면 이 제품 전용 라우팅이 "
-                           "생성됩니다.")
             _BASE_STEPS = ["소재입고", "생산", "검사", "완성"]
             _proc_bom = [b for b in brows
                          if (b.get("process_type") or "MATERIAL")
@@ -4643,13 +4638,26 @@ elif page == "마스터 관리":
                 return s.get("step_name") or "생산"
 
             _cur_lbls = [_step_lbl_of(s) for s in _cur]
+            # 사내 생산 없음 (2026-09-16 사용자: 20/40/80/150AHYBV 처럼 사급
+            # 소재를 검사만 거치는 제품) — 생산 공정을 풀에서 빼면 투입 등록
+            # 즉시 검사 대기가 되고 검사 판정으로 완성된다
+            _no_prod_cur = bool(_has_custom and not any(
+                s.get("step_code") == "PROD" for s in _cur))
+            _no_prod = st.checkbox(
+                "사내 생산 없음 — 입고한 소재를 검사만 거쳐 완성 (생산 공정 제외)",
+                value=_no_prod_cur, key=f"rout_noprod_{_bp['product_id']}",
+                help="사급·구매 완제품처럼 사내 가공이 없는 제품. 투입 등록하면 "
+                     "바로 검사 대기가 되고, 검사 판정으로 완성됩니다. 저장해야 "
+                     "적용됩니다")
             # 공정 풀 = 생산·검사 + 이 제품 BOM 공정행 전부 — 구성
             # 선택 없음(BOM 에 있는 공정은 모두 수행, 2026-08-21 확정.
             # 빼려면 BOM 에서 행 삭제). 소재입고·완성은 처음/끝 고정
-            _mid_pool = ["생산", "검사"] + list(_pb_by_lbl.keys())
+            _mid_pool = ((["검사"] if _no_prod else ["생산", "검사"])
+                         + list(_pb_by_lbl.keys()))
             for _l9 in _cur_lbls:
                 if (_l9 not in _mid_pool
-                        and _l9 not in ("소재입고", "완성")):
+                        and _l9 not in ("소재입고", "완성")
+                        and not (_no_prod and _l9 == "생산")):
                     _mid_pool.append(_l9)   # 구버전 스텝 보존
             # 초기 순서 = 기존 라우팅 순서, 순서 없는 새 공정행은
             # 검사 바로 앞에
@@ -13854,6 +13862,12 @@ elif page == "공정 관리":
                     try:
                         _wo = _wo_no.strip()
                         _pn_clean = (_in_pn or "").strip()
+                        # 라우팅에 생산 공정이 없으면(사내 생산 없음) 투입 =
+                        # 인수 — received_qty 를 투입 수량으로 채워 바로
+                        # 검사 대기로 잡는다 (2026-09-16)
+                        _rt_pre = get_routing((_prod0 or {}).get("product_id"))
+                        _no_prod_pre = not any(
+                            s.get("step_code") == "PROD" for s in _rt_pre)
                         _db.insert("wo_tracking", [{
                             "wo_number": _wo,
                             "pn": _pn_clean or None,
@@ -13861,7 +13875,9 @@ elif page == "공정 관리":
                             "material_id": _sel_mid,
                             "w_lot": _sel_lot,
                             "input_qty": _in_prod_qty,
-                            "status": "IN_PROD",
+                            "received_qty": (_in_prod_qty if _no_prod_pre
+                                             else 0),
+                            "status": "INSPECT" if _no_prod_pre else "IN_PROD",
                             "created_by": current_user_name(),
                         }])
                         # 초기 배치 생성 (Phase A — 지시번호-A, 계보 뿌리)
