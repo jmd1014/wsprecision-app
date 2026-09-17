@@ -14,6 +14,9 @@ st.set_page_config(
 # DB 연결 시도 (requests 기반)
 try:
     from db import health_check, fetch, debug_check
+    # PostgREST 필터 값 인용 (2026-09-17): 최상위 값 _fq, or=()/in.() 안 _fqo/_fql
+    # (이름은 페이지 지역 변수와 충돌하지 않는 것으로 — _qv 는 수량 변수로 이미 사용)
+    from db import qv as _fq, qo as _fqo, qol as _fql
     DB_AVAILABLE = True
 except Exception as e:
     DB_AVAILABLE = False
@@ -1126,7 +1129,7 @@ def get_routing(product_id):
     if product_id:
         try:
             rows = fetch("product_routing", "*",
-                         f"product_id=eq.{product_id}&order=seq", limit=50)
+                         f"product_id=eq.{_fq(product_id)}&order=seq", limit=50)
             if rows:
                 return rows
         except Exception:
@@ -1537,7 +1540,7 @@ if page == "홈":
         _h_ps = []
     try:
         _h_mes = fetch("production_log", "total_qty",
-            f"log_date=eq.{_hd.today().isoformat()}&source=eq.MES_UPLOAD",
+            f"log_date=eq.{_fq(_hd.today().isoformat())}&source=eq.MES_UPLOAD",
             limit=2000)
         _mes_today = sum(float(x.get("total_qty") or 0) for x in _h_mes)
     except Exception:
@@ -2063,8 +2066,8 @@ elif page == "마스터 관리":
             _ft_flt = ["archived_at=is.null", "order=pn"]
             if _ft_q.strip():
                 _qq = _ft_q.strip()
-                _ft_flt.append(f"or=(pn.ilike.*{_qq}*,"
-                               f"item_name.ilike.*{_qq}*)")
+                _ft_flt.append(f"or=(pn.ilike.{_fql(_qq)},"
+                               f"item_name.ilike.{_fql(_qq)})")
             _ft_prods = _db.fetch("products",
                                   "product_id,pn,item_name,customer",
                                   "&".join(_ft_flt), limit=300)
@@ -2096,7 +2099,7 @@ elif page == "마스터 관리":
                 try:
                     _lis = _db.fetch("sales_order_items",
                         "soi_id,so_id,pending_qty,due_date",
-                        f"product_id=eq.{_pid}&pending_qty=gt.0", limit=200)
+                        f"product_id=eq.{_fq(_pid)}&pending_qty=gt.0", limit=200)
                     _sids = {l["so_id"] for l in _lis}
                     _dead = set()
                     if _sids:
@@ -2114,7 +2117,7 @@ elif page == "마스터 관리":
                     pass
                 try:
                     _ps = _db.fetch_one("product_stock_v",
-                                        f"product_id=eq.{_pid}",
+                                        f"product_id=eq.{_fq(_pid)}",
                                         "current_stock")
                     out["stock"] = float((_ps or {}).get("current_stock") or 0)
                 except Exception:
@@ -2124,7 +2127,7 @@ elif page == "마스터 관리":
                         "product_lot_stock_v",
                         "lot_number,produced_qty,adjust_qty,issued_qty,"
                         "remain_qty,first_output_date,material_lot",
-                        f"product_id=eq.{_pid}&order=first_output_date",
+                        f"product_id=eq.{_fq(_pid)}&order=first_output_date",
                         limit=100) if float(l.get("remain_qty") or 0) != 0]
                 except Exception:
                     pass
@@ -2134,7 +2137,7 @@ elif page == "마스터 관리":
                             - float(t.get("output_qty") or 0), 0)
                         for t in _db.fetch("wo_tracking",
                             "wo_number,input_qty,output_qty,status",
-                            f"product_id=eq.{_pid}&status=neq.CLOSED",
+                            f"product_id=eq.{_fq(_pid)}&status=neq.CLOSED",
                             limit=100))
                 except Exception:
                     pass
@@ -2142,7 +2145,7 @@ elif page == "마스터 관리":
                     _bl = _db.fetch("bom",
                         "bom_id,material_id,raw_material_name,qty_per_pc,"
                         "shared_factor,process_type",
-                        f"product_id=eq.{_pid}&material_id=not.is.null",
+                        f"product_id=eq.{_fq(_pid)}&material_id=not.is.null",
                         limit=50)
                     _mids = [b["material_id"] for b in _bl]
                     _mm = {}
@@ -2162,7 +2165,7 @@ elif page == "마스터 관리":
                     out["txns"] = _db.fetch("inventory_transactions",
                         "txn_id,txn_type,qty,unit,lot_number,txn_date,remark,"
                         "material_id,product_id,created_by",
-                        f"product_id=eq.{_pid}&order=txn_id.desc", limit=15)
+                        f"product_id=eq.{_fq(_pid)}&order=txn_id.desc", limit=15)
                 except Exception:
                     pass
                 return out
@@ -2235,9 +2238,9 @@ elif page == "마스터 관리":
                         _mcand = _db.fetch("materials",
                             "material_id,raw_name,material_type,spec,"
                             "main_supplier,procurement_type",
-                            f"archived_at=is.null&or=(raw_name.ilike.*{_s}*,"
-                            f"spec.ilike.*{_s}*,material_type.ilike.*{_s}*,"
-                            f"main_supplier.ilike.*{_s}*)&order=raw_name",
+                            f"archived_at=is.null&or=(raw_name.ilike.{_fql(_s)},"
+                            f"spec.ilike.{_fql(_s)},material_type.ilike.{_fql(_s)},"
+                            f"main_supplier.ilike.{_fql(_s)})&order=raw_name",
                             limit=40)
                     except Exception as e:
                         st.error(f"자재 조회 실패: {e}")
@@ -2259,7 +2262,7 @@ elif page == "마스터 관리":
                     if st.button("BOM 저장", type="primary", key="ft_bom_save"):
                         try:
                             _ex = _db.fetch_one("bom",
-                                f"product_id=eq.{_pid}&material_id=eq."
+                                f"product_id=eq.{_fq(_pid)}&material_id=eq."
                                 f"{_mpick['material_id']}", "bom_id")
                             _pay = {"qty_per_pc": float(_qpp),
                                     "shared_factor": int(_shf),
@@ -2268,7 +2271,7 @@ elif page == "마스터 관리":
                                     "source": "품번별 맞추기",
                                     "verification_status": "CONFIRMED"}
                             if _ex:
-                                _db.update("bom", f"bom_id=eq.{_ex['bom_id']}",
+                                _db.update("bom", f"bom_id=eq.{_fq(_ex['bom_id'])}",
                                            _pay)
                                 st.success("BOM 수정 완료")
                             else:
@@ -2279,7 +2282,7 @@ elif page == "마스터 관리":
                             if _mpick.get("raw_name"):
                                 try:  # 제품 소재 표기 동기화 (진실=BOM)
                                     _db.update("products",
-                                        f"product_id=eq.{_pid}",
+                                        f"product_id=eq.{_fq(_pid)}",
                                         {"raw_material_name":
                                              _mpick["raw_name"],
                                          "bom_material_name":
@@ -2617,12 +2620,12 @@ elif page == "마스터 관리":
 
         # ── 쿼리 빌드 ──
         fq_parts = [f"order={sort_map[f_sort]}"]
-        if f_name: fq_parts.append(f"name=ilike.*{f_name}*")
-        if f_biz: fq_parts.append(f"business_no=ilike.*{f_biz}*")
-        if f_group != "전체": fq_parts.append(f"vendor_group=eq.{f_group}")
-        if f_type != "전체": fq_parts.append(f"trade_type=eq.{f_type}")
-        if f_btype: fq_parts.append(f"business_type=ilike.*{f_btype}*")
-        if f_bitem: fq_parts.append(f"business_item=ilike.*{f_bitem}*")
+        if f_name: fq_parts.append(f"name=ilike.*{_fq(f_name)}*")
+        if f_biz: fq_parts.append(f"business_no=ilike.*{_fq(f_biz)}*")
+        if f_group != "전체": fq_parts.append(f"vendor_group=eq.{_fq(f_group)}")
+        if f_type != "전체": fq_parts.append(f"trade_type=eq.{_fq(f_type)}")
+        if f_btype: fq_parts.append(f"business_type=ilike.*{_fq(f_btype)}*")
+        if f_bitem: fq_parts.append(f"business_item=ilike.*{_fq(f_bitem)}*")
         if f_inuse == "사용": fq_parts.append("in_use=eq.true")
         elif f_inuse == "미사용": fq_parts.append("in_use=eq.false")
         fq = "&".join(fq_parts)
@@ -2682,7 +2685,7 @@ elif page == "마스터 관리":
                     cleaned = _re.sub(r'\s+', ' ', cleaned).strip()
                     norm = _re.sub(r'\s+', '', cleaned)
                     try:
-                        dup = fetch("vendors", "vendor_id,name", f"normalized_name=eq.{norm}", limit=1)
+                        dup = fetch("vendors", "vendor_id,name", f"normalized_name=eq.{_fq(norm)}", limit=1)
                     except: dup = []
                     if dup:
                         st.error(f"이미 등록됨: {dup[0]['name']} (ID={dup[0]['vendor_id']})")
@@ -2707,7 +2710,7 @@ elif page == "마스터 관리":
                                 "in_use": True,
                             }])
                             # 새로 등록된 vendor_id 조회
-                            new_v = fetch("vendors", "vendor_id", f"normalized_name=eq.{norm}", limit=1)
+                            new_v = fetch("vendors", "vendor_id", f"normalized_name=eq.{_fq(norm)}", limit=1)
                             new_id = new_v[0]["vendor_id"] if new_v else "?"
                             # 메시지 보존
                             st.session_state.m_last_registered = {
@@ -2786,7 +2789,7 @@ elif page == "마스터 관리":
                         _vupd[_f9] = _nv9
                 if not _vupd:
                     st.info("변경 사항 없음")
-                elif _db.update("vendors", f"vendor_id=eq.{_vid}",
+                elif _db.update("vendors", f"vendor_id=eq.{_fq(_vid)}",
                                 _vupd):
                     st.success(f"{_vd['name']} — {len(_vupd)}개 항목 "
                                "저장")
@@ -2838,7 +2841,7 @@ elif page == "마스터 관리":
                             if orig.get(f) != new.get(f):
                                 updates[f] = new.get(f)
                         if updates:
-                            if _db.update("vendors", f"vendor_id=eq.{orig['vendor_id']}", updates):
+                            if _db.update("vendors", f"vendor_id=eq.{_fq(orig['vendor_id'])}", updates):
                                 changed += 1
                     if changed:
                         st.success(f"{changed}건 업데이트")
@@ -2894,26 +2897,26 @@ elif page == "마스터 관리":
         # ── 쿼리 빌드 ──
         parts = ["order=pn.asc"]
         if fpn:
-            parts.append(f"pn=ilike.*{fpn.strip()}*")
+            parts.append(f"pn=ilike.*{_fq(fpn.strip())}*")
         if fname:
-            parts.append(f"item_name=ilike.*{fname.strip()}*")
+            parts.append(f"item_name=ilike.*{_fq(fname.strip())}*")
         if fcust:
-            parts.append(f"customer=ilike.*{fcust.strip()}*")
+            parts.append(f"customer=ilike.*{_fq(fcust.strip())}*")
         if fgroup:
             # 제품군 = sub_class (032: product_group 삭제, 라벨만 교체)
-            parts.append(f"sub_class=ilike.*{fgroup.strip()}*")
+            parts.append(f"sub_class=ilike.*{_fq(fgroup.strip())}*")
         if fmat:
             mq = fmat.strip()
             parts.append(
-                f"or=(material.ilike.*{mq}*,raw_material_name.ilike.*{mq}*,"
-                f"product_size.ilike.*{mq}*)"
+                f"or=(material.ilike.{_fql(mq)},raw_material_name.ilike.{_fql(mq)},"
+                f"product_size.ilike.{_fql(mq)})"
             )
         if fstatus == "활성":
             parts.append("archived_at=is.null")
         elif fstatus == "휴면":
             parts.append("archived_at=not.is.null")
         if fproc != "전체":
-            parts.append(f"procurement_type=eq.{fproc}")
+            parts.append(f"procurement_type=eq.{_fq(fproc)}")
 
         try:
             prows = fetch("products",
@@ -2993,7 +2996,7 @@ elif page == "마스터 관리":
             # (2026-08-31 사용자 요청: 실적·legacy 값이 보이게)
             try:
                 _ps9 = _db.fetch_one(
-                    "product_stats", f"product_id=eq.{_pid}",
+                    "product_stats", f"product_id=eq.{_fq(_pid)}",
                     "last_unit_price,last_trade_date,avg_unit_price_12m")
             except Exception:
                 _ps9 = None
@@ -3108,7 +3111,7 @@ elif page == "마스터 관리":
                 elif not _pupd:
                     st.info("변경 사항 없음")
                 elif _db.update("products",
-                                f"product_id=eq.{_pid}", _pupd):
+                                f"product_id=eq.{_fq(_pid)}", _pupd):
                     # 판매 단가 변동 이력 — 특정 시기에 바뀌는 값이라
                     # 내역 기록이 중요 (2026-08-31 사용자 확정)
                     if "sale_price" in _pupd:
@@ -3138,7 +3141,7 @@ elif page == "마스터 관리":
             if _pd.get("archived_at"):
                 if pb2.button("휴면 해제", use_container_width=True,
                               key=f"pd_unarch_{_pid}"):
-                    if _db.update("products", f"product_id=eq.{_pid}",
+                    if _db.update("products", f"product_id=eq.{_fq(_pid)}",
                                   {"archived_at": None,
                                    "archive_reason": None}):
                         st.success(f"{_pd['pn']} 휴면 해제")
@@ -3153,7 +3156,7 @@ elif page == "마스터 관리":
                               help="사유를 적어야 처리됩니다 — 휴면 "
                                    "제품은 검색 기본값에서 숨겨집니다",
                               key=f"pd_arch_{_pid}"):
-                    if _db.update("products", f"product_id=eq.{_pid}",
+                    if _db.update("products", f"product_id=eq.{_fq(_pid)}",
                                   {"archived_at": "now()",
                                    "archive_reason": _pd_ar.strip()}):
                         st.success(f"{_pd['pn']} 휴면 처리")
@@ -3253,7 +3256,7 @@ elif page == "마스터 관리":
                         if upd:
                             try:
                                 if _db.update("products",
-                                    f"product_id=eq.{orig['product_id']}", upd):
+                                    f"product_id=eq.{_fq(orig['product_id'])}", upd):
                                     chg += 1
                             except Exception:
                                 pass
@@ -3329,9 +3332,9 @@ elif page == "마스터 관리":
                 try:
                     _np_cands = fetch("materials",
                         "material_id,raw_name,material_type,spec",
-                        f"or=(raw_name.ilike.*{_np_kw}*,"
-                        f"material_type.ilike.*{_np_kw}*,"
-                        f"spec.ilike.*{_np_kw}*)"
+                        f"or=(raw_name.ilike.{_fql(_np_kw)},"
+                        f"material_type.ilike.{_fql(_np_kw)},"
+                        f"spec.ilike.{_fql(_np_kw)})"
                         "&archived_at=is.null&order=raw_name", limit=15)
                 except Exception:
                     _np_cands = []
@@ -3369,7 +3372,7 @@ elif page == "마스터 관리":
             _pn_new = new_pn.strip()
             try:
                 existing = _db.fetch_one("products",
-                    f"pn=eq.{_pn_new}", "product_id,pn")
+                    f"pn=eq.{_fq(_pn_new)}", "product_id,pn")
             except Exception:
                 existing = None
             _np_sim = (similar_materials(_np_newmat["raw_name"],
@@ -3439,7 +3442,7 @@ elif page == "마스터 관리":
                             "source": "신규 제품 자동 연결",
                         }])
                         _db.update("products",
-                            f"product_id=eq.{new_pid}",
+                            f"product_id=eq.{_fq(new_pid)}",
                             {"raw_material_name": _np_matrow["raw_name"],
                              "bom_material_name": _np_matrow["raw_name"]})
                         _bom_msg = (f" · 자재 {_np_matrow['material_id']} "
@@ -3578,11 +3581,11 @@ elif page == "마스터 관리":
             q = mat_q.strip()
             # raw_name / material_id / material_type / spec / main_supplier 모두 OR 검색
             mfq.append(
-                f"or=(raw_name.ilike.*{q}*,material_id.ilike.*{q}*,"
-                f"material_type.ilike.*{q}*,spec.ilike.*{q}*,"
-                f"main_supplier.ilike.*{q}*)"
+                f"or=(raw_name.ilike.{_fql(q)},material_id.ilike.{_fql(q)},"
+                f"material_type.ilike.{_fql(q)},spec.ilike.{_fql(q)},"
+                f"main_supplier.ilike.{_fql(q)})"
             )
-        if mat_type_q: mfq.append(f"material_type=ilike.*{mat_type_q}*")
+        if mat_type_q: mfq.append(f"material_type=ilike.*{_fq(mat_type_q)}*")
         try:
             mrows = fetch("materials",
                 "material_id,raw_name,material_type,spec,unit,stock_qty,main_supplier,procurement_type",
@@ -3623,7 +3626,7 @@ elif page == "마스터 관리":
             try:
                 _mu_bom = fetch("bom",
                     "product_id,qty_per_pc,shared_factor,process_type",
-                    f"material_id=eq.{_mid}", limit=200)
+                    f"material_id=eq.{_fq(_mid)}", limit=200)
                 _mu_bom = [b for b in _mu_bom
                            if (b.get("process_type") or "MATERIAL")
                            == "MATERIAL" and b.get("product_id")]
@@ -3718,18 +3721,18 @@ elif page == "마스터 관리":
                 elif not _mupd:
                     st.info("변경 사항 없음")
                 elif _db.update("materials",
-                                f"material_id=eq.{_mid}", _mupd):
+                                f"material_id=eq.{_fq(_mid)}", _mupd):
                     # 자재명 변경 → BOM 표기·제품 소재 표기 동기화
                     # (진실=BOM material_id, 표기는 자동 유지)
                     _sync_err = None
                     if "raw_name" in _mupd:
                         try:
                             _db.update("bom",
-                                f"material_id=eq.{_mid}",
+                                f"material_id=eq.{_fq(_mid)}",
                                 {"raw_material_name":
                                      _mupd["raw_name"]})
                             for _b9 in fetch("bom", "product_id",
-                                    f"material_id=eq.{_mid}"
+                                    f"material_id=eq.{_fq(_mid)}"
                                     "&process_type=eq.MATERIAL",
                                     limit=100):
                                 _db.update("products",
@@ -3783,7 +3786,7 @@ elif page == "마스터 관리":
                         upd = {k: new[k] for k in ("raw_name","material_type","spec","stock_qty","procurement_type")
                                if orig.get(k) != new.get(k)}
                         if upd:
-                            if _db.update("materials", f"material_id=eq.{orig['material_id']}", upd):
+                            if _db.update("materials", f"material_id=eq.{_fq(orig['material_id'])}", upd):
                                 chg += 1
                     if chg: st.success(f"{chg}건 update"); st.rerun()
                     else: st.info("변경 사항 없음")
@@ -3817,8 +3820,8 @@ elif page == "마스터 관리":
                 _nn = _nm_name.strip()
                 try:
                     _dup = fetch("materials", "material_id,raw_name,spec",
-                        f"raw_name=eq.{_nn}"
-                        + (f"&spec=eq.{_nm_spec.strip()}"
+                        f"raw_name=eq.{_fq(_nn)}"
+                        + (f"&spec=eq.{_fq(_nm_spec.strip())}"
                            if (_nm_spec or "").strip() else ""),
                         limit=1)
                 except Exception:
@@ -3980,27 +3983,27 @@ elif page == "마스터 관리":
                                     _did = m["material_id"]
                                     _keep_pids = {b["product_id"] for b in
                                         _db.fetch("bom", "product_id",
-                                            f"material_id=eq.{_kid}",
+                                            f"material_id=eq.{_fq(_kid)}",
                                             limit=500)}
                                     for b in _db.fetch("bom", "*",
-                                            f"material_id=eq.{_did}",
+                                            f"material_id=eq.{_fq(_did)}",
                                             limit=500):
                                         if b["product_id"] in _keep_pids:
                                             _db.delete(
                                                 "bom",
-                                                f"bom_id=eq.{b['bom_id']}")
+                                                f"bom_id=eq.{_fq(b['bom_id'])}")
                                             _row_b = dict(b)
                                             _undo.append(("insert", "bom",
                                                           None, _row_b))
                                         else:
                                             _db.update(
                                                 "bom",
-                                                f"bom_id=eq.{b['bom_id']}",
+                                                f"bom_id=eq.{_fq(b['bom_id'])}",
                                                 {"material_id": _kid,
                                                  "raw_material_name":
                                                  _keep["raw_name"]})
                                             _undo.append(("update", "bom",
-                                                f"bom_id=eq.{b['bom_id']}",
+                                                f"bom_id=eq.{_fq(b['bom_id'])}",
                                                 {"material_id": _did,
                                                  "raw_material_name":
                                                  b.get("raw_material_name")}))
@@ -4015,7 +4018,7 @@ elif page == "마스터 관리":
                                             ("purchase_ledger", "ledger_id",
                                              "matched_material_id")):
                                         _ids = [r[_pk] for r in _db.fetch(
-                                            _tbl, _pk, f"{_col}=eq.{_did}",
+                                            _tbl, _pk, f"{_col}=eq.{_fq(_did)}",
                                             limit=5000)]
                                         for _i0 in range(0, len(_ids), 100):
                                             _chunk = _ids[_i0:_i0 + 100]
@@ -4029,19 +4032,19 @@ elif page == "마스터 관리":
                                         _ks = float(_keep.get("stock_qty") or 0)
                                         _db.update(
                                             "materials",
-                                            f"material_id=eq.{_kid}",
+                                            f"material_id=eq.{_fq(_kid)}",
                                             {"stock_qty": _ks + _ds})
                                         _undo.append(("update", "materials",
-                                                      f"material_id=eq.{_kid}",
+                                                      f"material_id=eq.{_fq(_kid)}",
                                                       {"stock_qty": _ks}))
                                         _keep["stock_qty"] = _ks + _ds
                                     _db.update(
-                                        "materials", f"material_id=eq.{_did}",
+                                        "materials", f"material_id=eq.{_fq(_did)}",
                                         {"archived_at": _today,
                                          "stock_qty": 0, "in_use": False,
                                          "remark": f"{_kid} 로 병합 ({_today})"})
                                     _undo.append(("update", "materials",
-                                                  f"material_id=eq.{_did}",
+                                                  f"material_id=eq.{_fq(_did)}",
                                                   {"archived_at": None,
                                                    "stock_qty": _ds,
                                                    "in_use": m.get("in_use", True),
@@ -4107,16 +4110,16 @@ elif page == "마스터 관리":
                 qq = bom_q.strip()
                 pmatch = fetch("products",
                     "product_id,pn,item_name,customer,sub_class",
-                    f"or=(pn.ilike.*{qq}*,product_id.ilike.*{qq}*,"
-                    f"item_name.ilike.*{qq}*,customer.ilike.*{qq}*)"
+                    f"or=(pn.ilike.{_fql(qq)},product_id.ilike.{_fql(qq)},"
+                    f"item_name.ilike.{_fql(qq)},customer.ilike.{_fql(qq)})"
                     "&archived_at=is.null&order=pn", limit=100)
                 # 자재 역검색 — 그 자재를 쓰는 제품도 후보에
                 try:
                     mmatch = fetch("materials", "material_id",
-                        f"or=(material_id.ilike.*{qq}*,"
-                        f"raw_name.ilike.*{qq}*,"
-                        f"material_type.ilike.*{qq}*,"
-                        f"spec.ilike.*{qq}*)", limit=50)
+                        f"or=(material_id.ilike.{_fql(qq)},"
+                        f"raw_name.ilike.{_fql(qq)},"
+                        f"material_type.ilike.{_fql(qq)},"
+                        f"spec.ilike.{_fql(qq)})", limit=50)
                     _mids9 = [m["material_id"] for m in mmatch]
                     if _mids9:
                         _bl9 = fetch("bom", "product_id",
@@ -4194,7 +4197,7 @@ elif page == "마스터 관리":
                            "process_vendor_id")
             try:
                 brows = fetch("bom", full_select,
-                    f"product_id=eq.{_bp['product_id']}"
+                    f"product_id=eq.{_fq(_bp['product_id'])}"
                     "&order=bom_id.asc", limit=100)
             except Exception as e:
                 st.error(f"BOM 조회 실패: {e}"); brows = []
@@ -4285,9 +4288,9 @@ elif page == "마스터 관리":
                     try:
                         _sw_mc = fetch("materials",
                             "material_id,raw_name,spec",
-                            f"or=(raw_name.ilike.*{_sw_kw}*,"
-                            f"material_type.ilike.*{_sw_kw}*,"
-                            f"spec.ilike.*{_sw_kw}*)"
+                            f"or=(raw_name.ilike.{_fql(_sw_kw)},"
+                            f"material_type.ilike.{_fql(_sw_kw)},"
+                            f"spec.ilike.{_fql(_sw_kw)})"
                             "&archived_at=is.null&order=raw_name",
                             limit=15)
                     except Exception:
@@ -4341,7 +4344,7 @@ elif page == "마스터 관리":
                                 _sw_m["raw_name"]
                         if not _bupd:
                             st.info("변경 사항 없음")
-                        elif _db.update("bom", f"bom_id=eq.{_bid}",
+                        elif _db.update("bom", f"bom_id=eq.{_fq(_bid)}",
                                         _bupd):
                             if _sw_m:
                                 try:  # 제품 소재 표기 동기화 (진실=BOM)
@@ -4467,7 +4470,7 @@ elif page == "마스터 관리":
                             if not _bupd:
                                 st.info("변경 사항 없음")
                             elif _db.update("bom",
-                                            f"bom_id=eq.{_bid}",
+                                            f"bom_id=eq.{_fq(_bid)}",
                                             _bupd):
                                 st.success(
                                     f"{len(_bupd)}개 항목 저장 — "
@@ -4491,8 +4494,8 @@ elif page == "마스터 관리":
                         "계산에서 빠지고, 라우팅에 있던 스텝도 함께 "
                         "제거됩니다. 실행할까요?"):
                 try:
-                    _db.delete("product_routing", f"bom_id=eq.{_bid}")
-                    _db.delete("bom", f"bom_id=eq.{_bid}")
+                    _db.delete("product_routing", f"bom_id=eq.{_fq(_bid)}")
+                    _db.delete("bom", f"bom_id=eq.{_fq(_bid)}")
                     st.success("행 삭제 완료")
                     st.rerun()
                 except Exception as e:
@@ -4517,9 +4520,9 @@ elif page == "마스터 관리":
                         try:
                             m_found = fetch("materials",
                                 "material_id,raw_name,material_type,spec",
-                                f"or=(raw_name.ilike.*{qq}*,"
-                                f"material_type.ilike.*{qq}*,"
-                                f"spec.ilike.*{qq}*)&order=raw_name.asc",
+                                f"or=(raw_name.ilike.{_fql(qq)},"
+                                f"material_type.ilike.{_fql(qq)},"
+                                f"spec.ilike.{_fql(qq)})&order=raw_name.asc",
                                 limit=30)
                         except Exception:
                             m_found = []
@@ -4890,7 +4893,7 @@ elif page == "마스터 관리":
                         "사라집니다. 실행할까요?"):
                 try:
                     _db.delete("product_routing",
-                               f"product_id=eq.{_bp['product_id']}")
+                               f"product_id=eq.{_fq(_bp['product_id'])}")
                     st.success("라우팅 삭제 — 기본 플로우로 "
                                "동작합니다.")
                     st.rerun()
@@ -5151,7 +5154,7 @@ elif page == "마스터 관리":
             import db as _lg_db
             _lg_flt = "order=changed_at.desc"
             if _lg_tbl != "전체":
-                _lg_flt += f"&table_name=eq.{_lg_tbl}"
+                _lg_flt += f"&table_name=eq.{_fq(_lg_tbl)}"
             _lg_rows = _lg_db.fetch(
                 "master_change_log",
                 "changed_at,table_name,record_id,field_name,old_value,"
@@ -5408,7 +5411,7 @@ elif page == "수주 관리":
                     _ps9 = None
                     try:
                         _ps9 = _db.fetch_one("product_stats",
-                            f"product_id=eq.{_p['product_id']}",
+                            f"product_id=eq.{_fq(_p['product_id'])}",
                             "last_unit_price,last_trade_date")
                     except Exception:
                         pass
@@ -5430,7 +5433,7 @@ elif page == "수주 관리":
                         _mrows9 = fetch("product_material_price_status_v",
                             "material_id,master_raw_name,price_source,"
                             "effective_price,last_purchase_date",
-                            f"product_id=eq.{_p['product_id']}", limit=10)
+                            f"product_id=eq.{_fq(_p['product_id'])}", limit=10)
                     except Exception:
                         _mrows9 = []
                     if _mrows9:
@@ -5460,7 +5463,7 @@ elif page == "수주 관리":
                                    use_container_width=True):
                         _sos9 = ", ".join(sorted(_g["sos"]))
                         if _db.update("products",
-                                      f"product_id=eq.{_p['product_id']}",
+                                      f"product_id=eq.{_fq(_p['product_id'])}",
                                       {"archived_at": None,
                                        "archive_reason": None}):
                             _so_log("products", _p["product_id"],
@@ -5468,7 +5471,7 @@ elif page == "수주 관리":
                                     None, f"수주 {_sos9} 진행 — 수주 단계 활성화")
                             if _upd_price:
                                 _db.update("products",
-                                           f"product_id=eq.{_p['product_id']}",
+                                           f"product_id=eq.{_fq(_p['product_id'])}",
                                            {"sale_price": _g["price"]})
                                 _so_log("products", _p["product_id"],
                                         "sale_price", _p.get("sale_price"),
@@ -5497,7 +5500,7 @@ elif page == "수주 관리":
                             if _npn9:
                                 try:
                                     _dup9 = _db.fetch_one(
-                                        "products", f"pn=eq.{_npn9}",
+                                        "products", f"pn=eq.{_fq(_npn9)}",
                                         "product_id,archived_at")
                                 except Exception:
                                     _dup9 = None
@@ -5583,7 +5586,7 @@ elif page == "수주 관리":
             if action == "KEEP":
                 _tags = [n] if tag_side == "new" else olds
                 for _t in _tags:
-                    _db.update("sales_order_items", f"soi_id=eq.{_t['soi_id']}",
+                    _db.update("sales_order_items", f"soi_id=eq.{_fq(_t['soi_id'])}",
                                {"price_kind": tag_kind})
                 _db.insert("so_line_replacements", [{
                     "old_soi_id": o["soi_id"], "new_soi_id": n["soi_id"],
@@ -5605,30 +5608,30 @@ elif page == "수주 관리":
                 st.rerun()
                 return
             new_has = bool(fetch("so_delivery_schedule", "sched_id",
-                                 f"soi_id=eq.{n['soi_id']}", limit=1))
+                                 f"soi_id=eq.{_fq(n['soi_id'])}", limit=1))
             _create_all, _recs, _closed_sum, _n_close = [], [], 0.0, 0
             for o in olds:
                 pend = float(o.get("pending_qty") or 0)
                 rounds = fetch("so_delivery_schedule",
                                "sched_id,due_date,qty,delivered_qty,note",
-                               f"soi_id=eq.{o['soi_id']}&order=due_date,seq",
+                               f"soi_id=eq.{_fq(o['soi_id'])}&order=due_date,seq",
                                limit=100)
                 close, create = _rp_rounds(rounds, new_has or not move_rounds)
                 for sid, qb, dl in close:
-                    _db.update("so_delivery_schedule", f"sched_id=eq.{sid}",
+                    _db.update("so_delivery_schedule", f"sched_id=eq.{_fq(sid)}",
                                {"qty": dl})
                 _n_close += len(close)
                 _create_all += [dict(c, src=o["so_number"]) for c in create]
-                _db.update("sales_order_items", f"soi_id=eq.{o['soi_id']}", {
+                _db.update("sales_order_items", f"soi_id=eq.{_fq(o['soi_id'])}", {
                     "pending_qty": 0, "status": "REPLACED",
                     "replaced_by_soi": n["soi_id"],
                     "remark": ((o.get("remark") or "") + " · " if o.get("remark")
                                else "") + f"{n['so_number']} 로 대체(단가 변경) {_today}"})
                 _others = fetch("sales_order_items", "soi_id,pending_qty",
-                                f"so_id=eq.{o['so_id']}", limit=200)
+                                f"so_id=eq.{_fq(o['so_id'])}", limit=200)
                 if all(float(x.get("pending_qty") or 0) <= 0 for x in _others):
                     _so_row = _ck_so.get(o["so_id"]) or {}
-                    _db.update("sales_orders", f"so_id=eq.{o['so_id']}", {
+                    _db.update("sales_orders", f"so_id=eq.{_fq(o['so_id'])}", {
                         "status": "CANCELLED",
                         "remark": ((_so_row.get("remark") or "") + " · "
                                    if _so_row.get("remark") else "")
@@ -5658,8 +5661,8 @@ elif page == "수주 관리":
                                                  key=lambda c: c["due_date"]))])
                 _moved = [x["sched_id"] for x in fetch(
                     "so_delivery_schedule", "sched_id",
-                    f"soi_id=eq.{n['soi_id']}&note=like.{_tag}*", limit=200)]
-            _db.update("sales_order_items", f"soi_id=eq.{n['soi_id']}", {
+                    f"soi_id=eq.{_fq(n['soi_id'])}&note=like.{_tag}*", limit=200)]
+            _db.update("sales_order_items", f"soi_id=eq.{_fq(n['soi_id'])}", {
                 "price_kind": "REPLACE",
                 "remark": ((n.get("remark") or "") + " · " if n.get("remark")
                            else "") + "구 수주 {} 대체".format(
@@ -5670,7 +5673,7 @@ elif page == "수주 관리":
                 _m_old = _p.get("sale_price")
                 _new_sp = float(n.get("unit_price") or 0)
                 if _new_sp > 0 and _db.update("products",
-                                              f"product_id=eq.{n['product_id']}",
+                                              f"product_id=eq.{_fq(n['product_id'])}",
                                               {"sale_price": _new_sp}):
                     _so_log("products", n["product_id"], "sale_price", _m_old,
                             _new_sp, "수주 {} 단가 변경 (구 {} {:,.0f} → {:,.0f})"
@@ -5699,46 +5702,46 @@ elif page == "수주 관리":
         try:
             if r["action"] == "REPLACE":
                 _o = _db.fetch_one("sales_order_items",
-                                   f"soi_id=eq.{r['old_soi_id']}",
+                                   f"soi_id=eq.{_fq(r['old_soi_id'])}",
                                    "soi_id,so_id,qty,received_qty,status")
                 if _o:
                     _pend = max(float(_o.get("qty") or 0)
                                 - float(_o.get("received_qty") or 0), 0)
                     _db.update("sales_order_items",
-                               f"soi_id=eq.{r['old_soi_id']}",
+                               f"soi_id=eq.{_fq(r['old_soi_id'])}",
                                {"pending_qty": _pend,
                                 "status": r.get("old_line_status") or (
                                     "PARTIAL" if float(_o.get("received_qty")
                                                        or 0) > 0 else "PENDING"),
                                 "replaced_by_soi": None})
                     if r.get("old_so_status"):
-                        _db.update("sales_orders", f"so_id=eq.{_o['so_id']}",
+                        _db.update("sales_orders", f"so_id=eq.{_fq(_o['so_id'])}",
                                    {"status": r["old_so_status"]})
                 for c in (r.get("closed_rounds") or []):
                     _db.update("so_delivery_schedule",
-                               f"sched_id=eq.{c['sched_id']}",
+                               f"sched_id=eq.{_fq(c['sched_id'])}",
                                {"qty": c["qty_before"]})
                 for sid in (r.get("moved_rounds") or []):
                     _db.delete("so_delivery_schedule",
-                               f"sched_id=eq.{sid}&delivered_qty=eq.0")
+                               f"sched_id=eq.{_fq(sid)}&delivered_qty=eq.0")
                 if r.get("master_updated"):
                     _n = _db.fetch_one("sales_order_items",
-                                       f"soi_id=eq.{r['new_soi_id']}",
+                                       f"soi_id=eq.{_fq(r['new_soi_id'])}",
                                        "product_id")
                     if _n and _n.get("product_id"):
                         _db.update("products",
-                                   f"product_id=eq.{_n['product_id']}",
+                                   f"product_id=eq.{_fq(_n['product_id'])}",
                                    {"sale_price": r.get("master_old_price")})
                         _so_log("products", _n["product_id"], "sale_price",
                                 r.get("new_price"), r.get("master_old_price"),
                                 "수주 대체 되돌리기")
-                _db.update("sales_order_items", f"soi_id=eq.{r['new_soi_id']}",
+                _db.update("sales_order_items", f"soi_id=eq.{_fq(r['new_soi_id'])}",
                            {"price_kind": None})
             else:
                 _db.update("sales_order_items",
-                           f"soi_id=eq.{r.get('tagged_soi_id') or r['new_soi_id']}",
+                           f"soi_id=eq.{_fq(r.get('tagged_soi_id') or r['new_soi_id'])}",
                            {"price_kind": None})
-            _db.update("so_line_replacements", f"repl_id=eq.{r['repl_id']}",
+            _db.update("so_line_replacements", f"repl_id=eq.{_fq(r['repl_id'])}",
                        {"reverted_at": _rp_date.today().isoformat(),
                         "reverted_by": _who})
             st.session_state["rp_flash"] = "결정을 되돌렸습니다."
@@ -5877,7 +5880,7 @@ elif page == "수주 관리":
                     # 문자열을 정식명으로 통일해야 중복 검증·명세서 조회가 맞는다
                     try:
                         _vsn = fetch("vendors", "vendor_id,name",
-                                     f"short_name=eq.{items[0]['customer']}",
+                                     f"short_name=eq.{_fq(items[0]['customer'])}",
                                      limit=1)
                         if _vsn:
                             for it in items:
@@ -6039,7 +6042,7 @@ elif page == "수주 관리":
                     try:
                         for _m in fetch("customer_part_mapping",
                                 "customer_part_no,product_id,canonical_pn",
-                                f"customer=eq.{items[0]['customer']}", limit=500):
+                                f"customer=eq.{_fq(items[0]['customer'])}", limit=500):
                             if _m.get("product_id"):
                                 _cpm[_mk(_m["customer_part_no"])] = (
                                     _m["canonical_pn"], _m["product_id"], False)
@@ -6136,12 +6139,12 @@ elif page == "수주 관리":
                                   f'name=eq."{cust_name}"', limit=1)
                         if not v:
                             v = fetch("vendors", "vendor_id",
-                                      f"short_name=eq.{cust_name}", limit=1)
+                                      f"short_name=eq.{_fq(cust_name)}", limit=1)
                         if not v:
                             _ct = (cust_name.replace("㈜", "")
                                    .replace("(주)", "").strip())
                             v = fetch("vendors", "vendor_id",
-                                      f"name=ilike.*{_ct}*", limit=1)
+                                      f"name=ilike.*{_fq(_ct)}*", limit=1)
                         vendor_id = v[0]["vendor_id"] if v else None
 
                         saved_so = 0; saved_items = 0
@@ -6165,7 +6168,7 @@ elif page == "수주 관리":
                                 }
                                 _db.insert("sales_orders", [header_payload])
                                 so_row = _db.fetch_one("sales_orders",
-                                    f"so_number=eq.{header['so_number']}&customer=eq.{header['customer']}",
+                                    f"so_number=eq.{_fq(header['so_number'])}&customer=eq.{_fq(header['customer'])}",
                                     "so_id")
                                 if not so_row: continue
 
@@ -6228,9 +6231,9 @@ elif page == "수주 관리":
                     try:
                         _m_cands = fetch("products",
                             "product_id,pn,alias_list",
-                            f"or=(pn.ilike.*{m_pn_q.strip()}*,"
-                            f"alias_list.ilike.*{m_pn_q.strip()}*,"
-                            f"item_name.ilike.*{m_pn_q.strip()}*)"
+                            f"or=(pn.ilike.{_fql(m_pn_q.strip())},"
+                            f"alias_list.ilike.{_fql(m_pn_q.strip())},"
+                            f"item_name.ilike.{_fql(m_pn_q.strip())})"
                             "&archived_at=is.null&order=pn", limit=30)
                     except Exception:
                         _m_cands = []
@@ -6278,7 +6281,7 @@ elif page == "수주 관리":
                     _mq_pn = mq_pn.strip()
                     try:
                         _mq_dup = _db.fetch_one("products",
-                            f"pn=eq.{_mq_pn}", "product_id,archived_at")
+                            f"pn=eq.{_fq(_mq_pn)}", "product_id,archived_at")
                     except Exception:
                         _mq_dup = None
                     if _mq_dup:
@@ -6327,13 +6330,13 @@ elif page == "수주 관리":
                 # 중복 체크
                 try:
                     dup = fetch("sales_orders", "so_id,so_number",
-                                f"so_number=eq.{m_so_no}&customer=eq.{m_cust}", limit=1)
+                                f"so_number=eq.{_fq(m_so_no)}&customer=eq.{_fq(m_cust)}", limit=1)
                 except Exception: dup = []
                 if dup:
                     st.error(f"이미 등록됨: 수주 {m_so_no} / 거래처 {m_cust} (so_id={dup[0]['so_id']})")
                 else:
                     try:
-                        v = fetch("vendors", "vendor_id", f"name=ilike.*{m_cust}*&limit=1", limit=1)
+                        v = fetch("vendors", "vendor_id", f"name=ilike.*{_fq(m_cust)}*&limit=1", limit=1)
                         vendor_id = v[0]["vendor_id"] if v else None
                         _db.insert("sales_orders", [{
                             "so_number": m_so_no, "customer": m_cust, "vendor_id": vendor_id,
@@ -6343,7 +6346,7 @@ elif page == "수주 관리":
                             "status": "DRAFT", "created_by": current_user_name(),
                         }])
                         so_row = _db.fetch_one("sales_orders",
-                            f"so_number=eq.{m_so_no}&customer=eq.{m_cust}", "so_id")
+                            f"so_number=eq.{_fq(m_so_no)}&customer=eq.{_fq(m_cust)}", "so_id")
                         if so_row:
                             for it in st.session_state.m_so_items:
                                 _db.insert("sales_order_items", [{
@@ -6441,8 +6444,8 @@ elif page == "수주 관리":
             common_fq.append(f"so_date=gte.{(today - _td(days=90)).isoformat()}")
         elif sl_period == "올해":
             common_fq.append(f"so_date=gte.{today.year}-01-01")
-        if sl_cust: common_fq.append(f"customer=ilike.*{sl_cust}*")
-        if sl_status != "전체": common_fq.append(f"status=eq.{sl_status}")
+        if sl_cust: common_fq.append(f"customer=ilike.*{_fq(sl_cust)}*")
+        if sl_status != "전체": common_fq.append(f"status=eq.{_fq(sl_status)}")
 
         # ── 뷰 1: 수주별 ──
         if view_mode == "수주별 (헤더)":
@@ -6483,7 +6486,7 @@ elif page == "수주 관리":
                             f"{so['customer']}")
                 if so:
                     sitems = fetch("sales_order_items", "*",
-                                   f"so_id=eq.{so['so_id']}&order=line_no", limit=200)
+                                   f"so_id=eq.{_fq(so['so_id'])}&order=line_no", limit=200)
                     if sitems:
                         toss_table([{
                             "라인": i["line_no"],
@@ -6507,7 +6510,7 @@ elif page == "수주 관리":
                         format_func=status_ko,
                         index=statuses.index(so["status"]) if so["status"] in statuses else 0)
                     if rc2.button("상태 저장"):
-                        if _db.update("sales_orders", f"so_id=eq.{so['so_id']}", {"status": new_st}):
+                        if _db.update("sales_orders", f"so_id=eq.{_fq(so['so_id'])}", {"status": new_st}):
                             st.success(f"상태 변경: {status_ko(new_st)}"); st.rerun()
             else:
                 st.info("조건에 맞는 수주가 없습니다 — 기간·상태 필터를 '전체'로 "
@@ -6526,7 +6529,7 @@ elif page == "수주 관리":
                 p_search = st.text_input("품목 검색", placeholder="품번 또는 자재명")
                 item_filter = f"so_id=in.({ids_str})&order=due_date.asc.nullslast"
                 if p_search:
-                    item_filter += f"&or=(canonical_pn.ilike.*{p_search}*,customer_part_no.ilike.*{p_search}*,customer_item_name.ilike.*{p_search}*)"
+                    item_filter += f"&or=(canonical_pn.ilike.{_fql(p_search)},customer_part_no.ilike.{_fql(p_search)},customer_item_name.ilike.{_fql(p_search)})"
                 try: sitems = fetch("sales_order_items", "*", item_filter, limit=1000)
                 except Exception as e: st.error(e); sitems = []
 
@@ -7097,16 +7100,16 @@ elif page == "수주 관리":
                 _q = _sq.strip()
                 try:
                     _by_pn = fetch("sales_order_items", "soi_id,so_id",
-                        f"or=(canonical_pn.ilike.*{_q}*,"
-                        f"customer_part_no.ilike.*{_q}*,"
-                        f"customer_item_name.ilike.*{_q}*)", limit=500)
+                        f"or=(canonical_pn.ilike.{_fql(_q)},"
+                        f"customer_part_no.ilike.{_fql(_q)},"
+                        f"customer_item_name.ilike.{_fql(_q)})", limit=500)
                     _hit_soi = {r["soi_id"] for r in _by_pn}
                     _hit_so = {r["so_id"] for r in _by_pn}
                 except Exception:
                     _hit_soi, _hit_so = set(), set()
                 try:
                     _by_so = fetch("sales_orders", "so_id",
-                        f"or=(so_number.ilike.*{_q}*,customer.ilike.*{_q}*)",
+                        f"or=(so_number.ilike.{_fql(_q)},customer.ilike.{_fql(_q)})",
                         limit=300)
                     _hit_so |= {r["so_id"] for r in _by_so}
                 except Exception:
@@ -7254,7 +7257,7 @@ elif page == "수주 관리":
                     try:
                         _rows = fetch("so_delivery_schedule",
                             "sched_id,seq,due_date,qty,delivered_qty,note",
-                            f"soi_id=eq.{_li['soi_id']}&order=seq.asc",
+                            f"soi_id=eq.{_fq(_li['soi_id'])}&order=seq.asc",
                             limit=200)
                     except Exception as e:
                         st.error(f"스케줄 조회 실패 (Migration 027 필요): {e}")
@@ -7276,7 +7279,7 @@ elif page == "수주 관리":
                     _prev = {}
                     try:
                         _sib = fetch("sales_order_items", "soi_id",
-                            f"product_id=eq.{_li.get('product_id')}"
+                            f"product_id=eq.{_fq(_li.get('product_id'))}"
                             f"&soi_id=neq.{_li['soi_id']}", limit=50) \
                             if _li.get("product_id") else []
                         _sib_ids = [str(x["soi_id"]) for x in _sib]
@@ -7498,7 +7501,7 @@ elif page == "수주 관리":
                                                 _acc += _q
                                                 _db.update(
                                                     "so_delivery_schedule",
-                                                    f"sched_id=eq.{_r['sched_id']}",
+                                                    f"sched_id=eq.{_fq(_r['sched_id'])}",
                                                     {"qty": float(_q)})
                                             st.success(
                                                 f"총량 {_new_tot:,.0f} 로 "
@@ -7539,7 +7542,7 @@ elif page == "수주 관리":
                                                 + _td(days=int(_shift)))
                                             _db.update(
                                                 "so_delivery_schedule",
-                                                f"sched_id=eq.{_r['sched_id']}",
+                                                f"sched_id=eq.{_fq(_r['sched_id'])}",
                                                 {"due_date":
                                                  _nd.isoformat()})
                                             _n += 1
@@ -7627,7 +7630,7 @@ elif page == "수주 관리":
                     # 이상 신호 (Migration 038, 2026-08-19)
                     try:
                         _ln9 = _db.fetch_one("sales_order_items",
-                            f"soi_id=eq.{_li['soi_id']}",
+                            f"soi_id=eq.{_fq(_li['soi_id'])}",
                             "received_qty,presched_qty") or {}
                         _rcv9 = float(_ln9.get("received_qty") or 0)
                         _ps9 = float(_ln9.get("presched_qty") or 0)
@@ -7670,7 +7673,7 @@ elif page == "수주 관리":
                                           key=f"{_rk}_ok"):
                                 try:
                                     _db.delete("so_delivery_schedule",
-                                               f"soi_id=eq.{_li['soi_id']}")
+                                               f"soi_id=eq.{_fq(_li['soi_id'])}")
                                     st.session_state[_rk] = False
                                     st.session_state[_pend_key] = []
                                     st.success("전체 삭제 완료")
@@ -7755,7 +7758,7 @@ elif page == "수주 관리":
                                 if _cands:
                                     _o9 = _cands.pop(0)
                                     _db.update("so_delivery_schedule",
-                                               f"sched_id=eq.{_o9['sched_id']}",
+                                               f"sched_id=eq.{_fq(_o9['sched_id'])}",
                                                {"qty": _r9["qty"],
                                                 "note": _r9.get("note"),
                                                 "seq": _r9["seq"],
@@ -7776,7 +7779,7 @@ elif page == "수주 관리":
                                 # 라인 납기 = 첫 회차 (화면 납기 표시 기준)
                                 try:
                                     _db.update("sales_order_items",
-                                        f"soi_id=eq.{_li['soi_id']}",
+                                        f"soi_id=eq.{_fq(_li['soi_id'])}",
                                         {"due_date":
                                          _keep[0]["due_date"]})
                                 except Exception:
@@ -7883,13 +7886,13 @@ elif page == "출고 관리":
                 _sh_cand = fetch("sales_order_items",
                     "soi_id,so_id,canonical_pn,customer_part_no,"
                     "pending_qty,due_date",
-                    f"pending_qty=gt.0&or=(canonical_pn.ilike.*{_qq2}*,"
-                    f"customer_part_no.ilike.*{_qq2}*,"
-                    f"customer_item_name.ilike.*{_qq2}*)",
+                    f"pending_qty=gt.0&or=(canonical_pn.ilike.{_fql(_qq2)},"
+                    f"customer_part_no.ilike.{_fql(_qq2)},"
+                    f"customer_item_name.ilike.{_fql(_qq2)})",
                     limit=30)
                 if not _sh_cand:
                     _hit_so2 = [s["so_id"] for s in fetch("sales_orders",
-                        "so_id", f"so_number=ilike.*{_qq2}*", limit=20)]
+                        "so_id", f"so_number=ilike.*{_fq(_qq2)}*", limit=20)]
                     if _hit_so2:
                         _sh_cand = fetch("sales_order_items",
                             "soi_id,so_id,canonical_pn,customer_part_no,"
@@ -8091,7 +8094,7 @@ elif page == "출고 관리":
                 if not _dup_guard:
                     try:
                         _cnt = len(fetch("shipments", "shipment_id",
-                                         f"ship_date=eq.{_sd}",
+                                         f"ship_date=eq.{_fq(_sd)}",
                                          limit=100))
                     except Exception:
                         _cnt = 0
@@ -8103,7 +8106,7 @@ elif page == "출고 관리":
                             "status": "DRAFT",
                             "created_by": current_user_name()}])
                         _srow = _db.fetch_one("shipments",
-                                              f"ship_no=eq.{_ship_no}",
+                                              f"ship_no=eq.{_fq(_ship_no)}",
                                               "shipment_id")
                         _db.insert("shipment_items", [{
                             "shipment_id": _srow["shipment_id"],
@@ -8189,11 +8192,11 @@ elif page == "출고 관리":
             if _cf_sq:
                 _cf_hit = {x["shipment_id"] for x in fetch(
                     "shipment_items", "shipment_id",
-                    f"or=(pn.ilike.*{_cf_sq}*,customer.ilike.*{_cf_sq}*,"
-                    f"customer_pn.ilike.*{_cf_sq}*)", limit=1000)}
+                    f"or=(pn.ilike.{_fql(_cf_sq)},customer.ilike.{_fql(_cf_sq)},"
+                    f"customer_pn.ilike.{_fql(_cf_sq)})", limit=1000)}
                 _cf_ships = fetch("shipments", _cf_cols,
-                    _cf_q + f"&or=(ship_no.ilike.*{_cf_sq}*,"
-                    f"created_by.ilike.*{_cf_sq}*"
+                    _cf_q + f"&or=(ship_no.ilike.{_fql(_cf_sq)},"
+                    f"created_by.ilike.{_fql(_cf_sq)}"
                     + (",shipment_id.in.(" + ",".join(
                         str(i) for i in sorted(_cf_hit)[:300]) + ")"
                        if _cf_hit else "")
@@ -8235,7 +8238,7 @@ elif page == "출고 관리":
                     "si_id,soi_id,so_id,sched_id,product_id,pn,"
                     "customer_pn,item_name,customer,so_number,qty,unit,"
                     "unit_price",
-                    f"shipment_id=eq.{_cf_pick['shipment_id']}"
+                    f"shipment_id=eq.{_fq(_cf_pick['shipment_id'])}"
                     "&order=si_id.asc", limit=200)
             except Exception as e:
                 st.error(f"전표 품목 조회 실패: {e}")
@@ -8277,7 +8280,7 @@ elif page == "출고 관리":
                         _vs = fetch("vendors",
                             "name,business_no,ceo_name,phone,address,"
                             "business_type,business_item",
-                            f"name=ilike.*{_term}*", limit=5)
+                            f"name=ilike.*{_fq(_term)}*", limit=5)
                         if _vs:
                             out[_cu] = _vs[0]
                     except Exception:
@@ -8416,7 +8419,7 @@ elif page == "출고 관리":
                             try:
                                 _rr9 = fetch("so_delivery_schedule",
                                     "sched_id,due_date,qty,delivered_qty",
-                                    f"soi_id=eq.{_soi}"
+                                    f"soi_id=eq.{_fq(_soi)}"
                                     "&order=due_date.asc,seq.asc",
                                     limit=100)
                                 _nd9, _au9, _rest9 = plan_round_release(
@@ -8424,17 +8427,17 @@ elif page == "출고 관리":
                                     x.get("sched_id"))
                                 for _sid9, _v9 in _nd9.items():
                                     _db.update("so_delivery_schedule",
-                                               f"sched_id=eq.{_sid9}",
+                                               f"sched_id=eq.{_fq(_sid9)}",
                                                {"delivered_qty": _v9})
                                 for _aid9, _aq9 in _au9:
                                     if _aid9 is None:
                                         continue
                                     if _aq9 <= 1e-9:
                                         _db.delete("shipment_allocations",
-                                                   f"alloc_id=eq.{_aid9}")
+                                                   f"alloc_id=eq.{_fq(_aid9)}")
                                     else:
                                         _db.update("shipment_allocations",
-                                                   f"alloc_id=eq.{_aid9}",
+                                                   f"alloc_id=eq.{_fq(_aid9)}",
                                                    {"qty": _aq9})
                                 if _rest9 > 1e-9:
                                     _warns.append(
@@ -8449,7 +8452,7 @@ elif page == "출고 관리":
                                       - _q, 0.0)
                             _nq = float(_li.get("qty") or 0)
                             _db.update("sales_order_items",
-                                       f"soi_id=eq.{_soi}",
+                                       f"soi_id=eq.{_fq(_soi)}",
                                        {"received_qty": _nr,
                                         "pending_qty": max(_nq - _nr, 0),
                                         "status": line_status(_nq, _nr)})
@@ -8462,7 +8465,7 @@ elif page == "출고 관리":
                             _nr = float(_li.get("received_qty") or 0) + d
                             _nq = float(_li.get("qty") or 0)
                             _db.update("sales_order_items",
-                                       f"soi_id=eq.{_soi}",
+                                       f"soi_id=eq.{_fq(_soi)}",
                                        {"received_qty": _nr,
                                         "pending_qty": max(_nq - _nr, 0),
                                         "status": line_status(_nq, _nr)})
@@ -8471,7 +8474,7 @@ elif page == "출고 관리":
                             try:
                                 _rr9 = fetch("so_delivery_schedule",
                                     "sched_id,due_date,qty,delivered_qty",
-                                    f"soi_id=eq.{_soi}"
+                                    f"soi_id=eq.{_fq(_soi)}"
                                     "&order=due_date.asc,seq.asc",
                                     limit=100)
                                 _prev9 = {r["sched_id"]:
@@ -8496,7 +8499,7 @@ elif page == "출고 관리":
                                                           _sdate))
                                 for _sid9, _v9 in _al9.items():
                                     _db.update("so_delivery_schedule",
-                                               f"sched_id=eq.{_sid9}",
+                                               f"sched_id=eq.{_fq(_sid9)}",
                                                {"delivered_qty": _v9})
                                 _dl9 = {s: v - _prev9.get(s, 0)
                                         for s, v in _al9.items()}
@@ -8544,7 +8547,7 @@ elif page == "출고 관리":
                                     "remark": _tag + " (LOT 미지정)",
                                     "created_by": _user})
                     if not keep_line_qty:
-                        _db.update("shipment_items", f"si_id=eq.{_si}",
+                        _db.update("shipment_items", f"si_id=eq.{_fq(_si)}",
                                    {"qty": new})
                     _revs9.append({
                         "shipment_id": pick["shipment_id"], "rev_no": _rev,
@@ -8566,13 +8569,13 @@ elif page == "출고 관리":
                 for _sid7 in _so_ids9:
                     try:
                         _fr = fetch("sales_order_items", "qty,received_qty",
-                                    f"so_id=eq.{_sid7}", limit=100)
+                                    f"so_id=eq.{_fq(_sid7)}", limit=100)
                         _all7 = all(float(r.get("received_qty") or 0)
                                     >= float(r.get("qty") or 0)
                                     for r in _fr) if _fr else False
                         _any7 = any(float(r.get("received_qty") or 0) > 0
                                     for r in _fr) if _fr else False
-                        _db.update("sales_orders", f"so_id=eq.{_sid7}",
+                        _db.update("sales_orders", f"so_id=eq.{_fq(_sid7)}",
                                    {"status": "DELIVERED" if _all7
                                     else "PARTIAL" if _any7
                                     else "CONFIRMED"})
@@ -8586,7 +8589,7 @@ elif page == "출고 관리":
                                  "cancel_reason": reason or None})
                 try:
                     _db.update("shipments",
-                               f"shipment_id=eq.{pick['shipment_id']}",
+                               f"shipment_id=eq.{_fq(pick['shipment_id'])}",
                                _hdr)
                 except Exception as e:
                     _warns.append(f"전표 헤더 갱신 실패: {e}")
@@ -8597,7 +8600,7 @@ elif page == "출고 관리":
                     _rvs = fetch("shipment_revisions",
                         "rev_no,action,pn,qty_before,qty_after,reason,"
                         "created_by,created_at",
-                        f"shipment_id=eq.{pick['shipment_id']}"
+                        f"shipment_id=eq.{_fq(pick['shipment_id'])}"
                         "&order=rev_id.desc", limit=200)
                 except Exception:
                     _rvs = []
@@ -8830,7 +8833,7 @@ elif page == "출고 관리":
                         if not bool(_brow.get("선택")):
                             try:
                                 _db.delete("shipment_items",
-                                           f"si_id=eq.{_x['si_id']}")
+                                           f"si_id=eq.{_fq(_x['si_id'])}")
                                 _n_del += 1
                             except Exception:
                                 pass
@@ -8840,7 +8843,7 @@ elif page == "출고 관리":
                         if abs(_nq - float(_x.get("qty") or 0)) > 1e-9:
                             try:
                                 _db.update("shipment_items",
-                                           f"si_id=eq.{_x['si_id']}",
+                                           f"si_id=eq.{_fq(_x['si_id'])}",
                                            {"qty": _nq})
                                 _n_upd += 1
                             except Exception:
@@ -8976,7 +8979,7 @@ elif page == "출고 관리":
                                else "PARTIAL" if _nr > 0 else "PENDING")
                         try:
                             if not _db.update("sales_order_items",
-                                    f"soi_id=eq.{_soi5}",
+                                    f"soi_id=eq.{_fq(_soi5)}",
                                     {"received_qty": _nr,
                                      "pending_qty": _np, "status": _ns}):
                                 continue
@@ -8987,7 +8990,7 @@ elif page == "출고 관리":
                         try:
                             _rr = fetch("so_delivery_schedule",
                                 "sched_id,due_date,qty,delivered_qty",
-                                f"soi_id=eq.{_soi5}"
+                                f"soi_id=eq.{_fq(_soi5)}"
                                 "&order=due_date.asc,seq.asc", limit=100)
                             _prev6 = {r["sched_id"]:
                                       float(r.get("delivered_qty") or 0)
@@ -9022,7 +9025,7 @@ elif page == "출고 관리":
                                                       _cf_date))
                             for _sid6, _nd in _al6.items():
                                 _db.update("so_delivery_schedule",
-                                           f"sched_id=eq.{_sid6}",
+                                           f"sched_id=eq.{_fq(_sid6)}",
                                            {"delivered_qty": _nd})
                             # 라인별 회차 충당 저장 — 정정·취소 때 정확히
                             # 되돌리기 위해 (Migration 053)
@@ -9119,7 +9122,7 @@ elif page == "출고 관리":
                         try:
                             _fr = fetch("sales_order_items",
                                         "qty,received_qty",
-                                        f"so_id=eq.{_sid7}", limit=100)
+                                        f"so_id=eq.{_fq(_sid7)}", limit=100)
                             _all7 = all(
                                 float(x.get("received_qty") or 0)
                                 >= float(x.get("qty") or 0)
@@ -9128,7 +9131,7 @@ elif page == "출고 관리":
                                 float(x.get("received_qty") or 0) > 0
                                 for x in _fr) if _fr else False
                             _db.update("sales_orders",
-                                       f"so_id=eq.{_sid7}",
+                                       f"so_id=eq.{_fq(_sid7)}",
                                        {"status": "DELIVERED" if _all7
                                         else "PARTIAL" if _any7
                                         else "CONFIRMED"})
@@ -9363,7 +9366,7 @@ elif page == "출고 관리":
                         _dv_sois = fetch(
                             "sales_order_items",
                             "soi_id,so_id,qty,received_qty,pending_qty",
-                            f"canonical_pn=eq.{_dv_pick}"
+                            f"canonical_pn=eq.{_fq(_dv_pick)}"
                             "&order=soi_id.asc", limit=100)
                     except Exception:
                         _dv_sois = []
@@ -9669,7 +9672,7 @@ elif page == "생산 계획":
                         rec.pop("group_code", None)   # 확정한 장비군 유지
                         rec.pop("product_id", None)
                         _db.update("product_op_std",
-                                   f"op_id=eq.{ex['op_id']}", rec)
+                                   f"op_id=eq.{_fq(ex['op_id'])}", rec)
                         _n_upd += 1
                     else:
                         rec["uph_std"] = o["uph_auto"]
@@ -9903,7 +9906,7 @@ elif page == "생산 계획":
                     try:
                         _lk_c = fetch("products",
                                       "product_id,pn,item_name,archived_at",
-                                      f"pn=ilike.*{_lk_q.strip()}*"
+                                      f"pn=ilike.*{_fq(_lk_q.strip())}*"
                                       "&order=archived_at.nullsfirst,pn",
                                       limit=20)
                     except Exception:
@@ -9918,7 +9921,7 @@ elif page == "생산 계획":
                                   use_container_width=True):
                         try:
                             _db.update("product_op_std",
-                                       f"pn=eq.{_sp_pn}",
+                                       f"pn=eq.{_fq(_sp_pn)}",
                                        {"product_id": _lk_pick["product_id"]})
                             st.success(f"{_sp_pn} → {_lk_pick['pn']} 연결")
                             st.rerun()
@@ -10019,7 +10022,7 @@ elif page == "생산 계획":
                                   "updated_at": _now9})
                     try:
                         if _db.update("product_op_std",
-                                      f"op_id=eq.{o['op_id']}", _diff):
+                                      f"op_id=eq.{_fq(o['op_id'])}", _diff):
                             _n_chg += 1
                             for k, v in _diff.items():
                                 if k in _old:
@@ -10045,7 +10048,7 @@ elif page == "생산 계획":
             try:
                 _pm9 = fetch("product_op_machine",
                              "process,machine_id,runs,hours,qty,uph_actual,"
-                             "last_date", f"pn=eq.{_sp_pn}&order=process,runs.desc",
+                             "last_date", f"pn=eq.{_fq(_sp_pn)}&order=process,runs.desc",
                              limit=200)
             except Exception:
                 _pm9 = []
@@ -10053,7 +10056,7 @@ elif page == "생산 계획":
                 _lg9 = fetch("product_op_std_log",
                              "process,field,old_value,new_value,reason,"
                              "changed_by,changed_at",
-                             f"pn=eq.{_sp_pn}&order=log_id.desc", limit=100)
+                             f"pn=eq.{_fq(_sp_pn)}&order=log_id.desc", limit=100)
             except Exception:
                 _lg9 = []
             xm1, xm2 = st.columns(2)
@@ -10368,7 +10371,7 @@ elif page == "생산 계획":
                         if not ch.get("process"):
                             if _old:
                                 _db.delete("production_schedule",
-                                           f"sched_id=eq.{_old['sched_id']}")
+                                           f"sched_id=eq.{_fq(_old['sched_id'])}")
                                 _n_del += 1
                             continue
                         _k2 = (ch.get("pn"), ch.get("process"))
@@ -10388,7 +10391,7 @@ elif page == "생산 계획":
                                "updated_at": _now_s}
                         if _old:
                             _db.update("production_schedule",
-                                       f"sched_id=eq.{_old['sched_id']}", rec)
+                                       f"sched_id=eq.{_fq(_old['sched_id'])}", rec)
                             _n_upd += 1
                         else:
                             rec.update({"machine_id": mid, "plan_date": d,
@@ -10482,7 +10485,7 @@ elif page == "생산 계획":
                             if not _v:
                                 if _old:
                                     _db.delete("production_schedule",
-                                               f"sched_id=eq.{_old['sched_id']}")
+                                               f"sched_id=eq.{_fq(_old['sched_id'])}")
                                     _n_del += 1
                                 continue
                             _k2 = _sb_labels.get(_v)
@@ -10503,7 +10506,7 @@ elif page == "생산 계획":
                                    "plan_hours": _hps, "updated_at": _now_s}
                             if _old:
                                 _db.update("production_schedule",
-                                           f"sched_id=eq.{_old['sched_id']}", rec)
+                                           f"sched_id=eq.{_fq(_old['sched_id'])}", rec)
                                 _n_upd += 1
                             else:
                                 rec.update({"machine_id": mid,
@@ -10690,7 +10693,7 @@ elif page == "생산 계획":
                                s["shift"]): s for s in _sb_all(
                         "production_schedule",
                         "sched_id,machine_id,plan_date,shift",
-                        f"machine_id=eq.{_e_m}&plan_date=gte.{_e_d0.isoformat()}"
+                        f"machine_id=eq.{_fq(_e_m)}&plan_date=gte.{_e_d0.isoformat()}"
                         f"&plan_date=lte.{_e_d1.isoformat()}"
                         "&status=neq.CANCELLED&order=sched_id")}
                     _n_ins, _n_upd, _n_skip, _ins_rows = 0, 0, 0, []
@@ -10712,7 +10715,7 @@ elif page == "생산 계획":
                             ex = _exist.get((_e_m, _d.isoformat(), sh))
                             if ex:
                                 _db.update("production_schedule",
-                                           f"sched_id=eq.{ex['sched_id']}", rec)
+                                           f"sched_id=eq.{_fq(ex['sched_id'])}", rec)
                                 _n_upd += 1
                             else:
                                 rec.update({"machine_id": _e_m,
@@ -10780,7 +10783,7 @@ elif page == "생산 계획":
                         s = _srt[int(_bi)]
                         if bool(_brow.get("비움")):
                             _db.delete("production_schedule",
-                                       f"sched_id=eq.{s['sched_id']}")
+                                       f"sched_id=eq.{_fq(s['sched_id'])}")
                             _n_d += 1
                             continue
                         _new = {"plan_qty": float(_brow.get("수량") or 0),
@@ -10795,7 +10798,7 @@ elif page == "생산 계획":
                                 "note": s.get("note") or None}
                         if _new != _old:
                             _db.update("production_schedule",
-                                       f"sched_id=eq.{s['sched_id']}", _new)
+                                       f"sched_id=eq.{_fq(s['sched_id'])}", _new)
                             _n_a += 1
                     st.success(f"조정 {_n_a}건 · 비움 {_n_d}건")
                     st.session_state["sb_adj_nonce"] = _adj_nonce + 1
@@ -10892,7 +10895,7 @@ elif page == "생산 계획":
                     if _new != _old:
                         try:
                             if _db.update("machines",
-                                          f"machine_id=eq.{_m0['machine_id']}",
+                                          f"machine_id=eq.{_fq(_m0['machine_id'])}",
                                           _new):
                                 _n_mc += 1
                         except Exception as e:
@@ -11111,7 +11114,7 @@ elif page == "발주/입고":
         except Exception as e:
             return False, f"메일 발송 실패 — 발주는 발송 대기로 남습니다: {e}"
         from datetime import datetime as _pm_now
-        if not _db.update("purchase_orders", f"po_number=eq.{po_no}",
+        if not _db.update("purchase_orders", f"po_number=eq.{_fq(po_no)}",
                           {"status": "SENT",
                            "sent_at": _pm_now.now().isoformat(),
                            "sent_to": ", ".join(_sent_to),
@@ -11740,7 +11743,7 @@ elif page == "발주/입고":
                             "이 식별 번호는 사라집니다. 실행할까요?"):
                     try:
                         _db.delete("inventory_transactions",
-                                   f"txn_id=eq.{_r9['txn_id']}")
+                                   f"txn_id=eq.{_fq(_r9['txn_id'])}")
                         _poi9c = _poi_m.get(_r9.get("ref_id"), {})
                         if _poi9c.get("po_id"):
                             try:
@@ -11796,7 +11799,7 @@ elif page == "발주/입고":
                             try:
                                 _dupx = fetch("inventory_transactions",
                                               "txn_id",
-                                              f"lot_number=eq.{_nw}",
+                                              f"lot_number=eq.{_fq(_nw)}",
                                               limit=1)
                             except Exception:
                                 _dupx = [1]
@@ -11809,7 +11812,7 @@ elif page == "발주/입고":
                                 try:
                                     _db.update(
                                         "inventory_transactions",
-                                        f"txn_id=eq.{_r9['txn_id']}",
+                                        f"txn_id=eq.{_fq(_r9['txn_id'])}",
                                         {"lot_number": _nw})
                                     w_lot_sync_counter()
                                     st.success(f"식별 번호 변경 → {_nw} "
@@ -11993,7 +11996,7 @@ elif page == "발주/입고":
                     norm = _re.sub(r'\s+', '', cleaned)
                     try:
                         dup = fetch("vendors", "vendor_id,name",
-                                    f"normalized_name=eq.{norm}", limit=1)
+                                    f"normalized_name=eq.{_fq(norm)}", limit=1)
                     except Exception:
                         dup = []
                     if dup:
@@ -12017,7 +12020,7 @@ elif page == "발주/입고":
                                 "verification_status": "수기등록",
                                 "in_use": True}])
                             new_v = fetch("vendors", "vendor_id",
-                                          f"normalized_name=eq.{norm}", limit=1)
+                                          f"normalized_name=eq.{_fq(norm)}", limit=1)
                             st.session_state.po_last_registered = {
                                 "name": cleaned,
                                 "id": new_v[0]["vendor_id"] if new_v else "?",
@@ -12055,7 +12058,7 @@ elif page == "발주/입고":
                 품명이 '품번 (사이즈)' 형식이어도 품번으로 찾는다."""
                 try:
                     pos = fetch("purchase_orders", "po_id,po_number,po_date",
-                                f"vendor_id=eq.{vid}&order=po_date.desc",
+                                f"vendor_id=eq.{_fq(vid)}&order=po_date.desc",
                                 limit=30)
                     if not pos:
                         return None, None, None, None
@@ -12095,7 +12098,7 @@ elif page == "발주/입고":
             _vh_pns = set()
             try:
                 _vh_pos = fetch("purchase_orders", "po_id",
-                                f"vendor_id=eq.{vendor['vendor_id']}", limit=300)
+                                f"vendor_id=eq.{_fq(vendor['vendor_id'])}", limit=300)
                 if _vh_pos:
                     _vh_items = fetch("purchase_order_items", "item_name",
                                       "po_id=in.(" + ",".join(
@@ -12121,9 +12124,9 @@ elif page == "발주/입고":
                     _res = fetch("products",
                                  "product_id,pn,raw_material_name,product_size,"
                                  "material,bom_material_name,material_unit_price",
-                                 f"archived_at=is.null&or=(pn.ilike.*{_q}*,"
-                                 f"alias_list.ilike.*{_q}*,item_name.ilike.*{_q}*,"
-                                 f"bom_material_name.ilike.*{_q}*)&order=pn",
+                                 f"archived_at=is.null&or=(pn.ilike.{_fql(_q)},"
+                                 f"alias_list.ilike.{_fql(_q)},item_name.ilike.{_fql(_q)},"
+                                 f"bom_material_name.ilike.{_fql(_q)})&order=pn",
                                  limit=40)
                 except Exception as e:
                     st.error(f"검색 실패: {e}")
@@ -12136,7 +12139,7 @@ elif page == "발주/입고":
                 if not _res and not (_vh_only and _vh_pns):
                     try:
                         arch = fetch("products", "pn",
-                                     f"pn=ilike.*{_q}*&archived_at=not.is.null",
+                                     f"pn=ilike.*{_fq(_q)}*&archived_at=not.is.null",
                                      limit=5)
                     except Exception:
                         arch = []
@@ -12449,7 +12452,7 @@ elif page == "발주/입고":
                                            if po_remark.strip() else "")}
                                     _db.insert("purchase_orders", [_po_record])
                                     po_row = _db.fetch_one(
-                                        "purchase_orders", f"po_number=eq.{po_no}",
+                                        "purchase_orders", f"po_number=eq.{_fq(po_no)}",
                                         "po_id")
                                     if po_row:
                                         _bom_map = {}
@@ -12528,7 +12531,7 @@ elif page == "발주/입고":
         elif period == "올해":
             fq_parts.append(f"po_date=gte.{today.year}-01-01")
         if status_f != "전체":
-            fq_parts.append(f"status=eq.{status_f}")
+            fq_parts.append(f"status=eq.{_fq(status_f)}")
         fq_h = "&".join(fq_parts)
 
         try:
@@ -12591,7 +12594,7 @@ elif page == "발주/입고":
                         f"{po['po_number']} · {po['_vname']}")
             if po:
                 items = fetch("purchase_order_items", "*",
-                              f"po_id=eq.{po['po_id']}&order=line_no", limit=50)
+                              f"po_id=eq.{_fq(po['po_id'])}&order=line_no", limit=50)
                 item_df = pd.DataFrame([{
                     "NO": i.get("line_no"),
                     "품명": i.get("item_name"),
@@ -12617,7 +12620,7 @@ elif page == "발주/입고":
                 with rc1:
                     try:
                         full_vendor = _db.fetch_one(
-                            "vendors", f"vendor_id=eq.{po['vendor_id']}",
+                            "vendors", f"vendor_id=eq.{_fq(po['vendor_id'])}",
                             "business_no,ceo_name,address,phone,email") or {}
                         re_po_data = {
                             "po_number": po["po_number"],
@@ -12693,7 +12696,7 @@ elif page == "발주/입고":
                     try:
                         _po_rcv9 = fetch("po_item_receipt_v",
                             "received_qty",
-                            f"po_id=eq.{po['po_id']}", limit=50)
+                            f"po_id=eq.{_fq(po['po_id'])}", limit=50)
                     except Exception:
                         _po_rcv9 = []
                     _has_rcv9 = any(float(x.get("received_qty") or 0) > 0
@@ -12703,7 +12706,7 @@ elif page == "발주/입고":
                                      use_container_width=True,
                                      key=f"po_uncancel_{po['po_id']}"):
                             if _db.update("purchase_orders",
-                                    f"po_id=eq.{po['po_id']}",
+                                    f"po_id=eq.{_fq(po['po_id'])}",
                                     {"status": "SENT"}):
                                 st.success("취소 해제 — 발주중으로 "
                                            "복구되었습니다.")
@@ -12765,7 +12768,7 @@ elif page == "발주/입고":
                                     "취소합니다 — 모든 라인이 입고 "
                                     "대기에서 사라집니다. 실행할까요?"):
                             if _db.update("purchase_orders",
-                                    f"po_id=eq.{po['po_id']}",
+                                    f"po_id=eq.{_fq(po['po_id'])}",
                                     {"status": "CANCELLED"}):
                                 st.success("발주 취소 완료")
                                 st.rerun()
@@ -12787,12 +12790,12 @@ elif page == "발주/입고":
                                       "대기에 다시 나타납니다.",
                                  key=f"po_unclose_{po['po_id']}"):
                         if _db.update("purchase_order_items",
-                                f"po_id=eq.{po['po_id']}"
+                                f"po_id=eq.{_fq(po['po_id'])}"
                                 "&closed_at=not.is.null",
                                 {"closed_at": None}):
                             if po["status"] == "CLOSED":
                                 _db.update("purchase_orders",
-                                    f"po_id=eq.{po['po_id']}",
+                                    f"po_id=eq.{_fq(po['po_id'])}",
                                     {"status": "SENT"})
                             st.success("종결 해제 — 미입고가 입고 "
                                        "대기에 복구되었습니다.")
@@ -12925,7 +12928,7 @@ elif page == "발주/입고":
                     if _r.get("product_id"):
                         try:
                             _bh0 = fetch("bom", "material_id",
-                                f"product_id=eq.{_r['product_id']}"
+                                f"product_id=eq.{_fq(_r['product_id'])}"
                                 "&material_id=not.is.null", limit=1)
                             if _bh0:
                                 _bm = _bh0[0]["material_id"]
@@ -12936,7 +12939,7 @@ elif page == "발주/입고":
                         try:
                             _prev = fetch("purchase_order_items",
                                 "material_id",
-                                f"item_name=eq.{_inm}"
+                                f"item_name=eq.{_fq(_inm)}"
                                 "&material_id=not.is.null", limit=1)
                             if _prev:
                                 _bm = _prev[0]["material_id"]
@@ -12950,7 +12953,7 @@ elif page == "발주/입고":
                                 continue
                             try:
                                 _ph = fetch("products", "product_id",
-                                    f"pn=eq.{_try_pn}", limit=1)
+                                    f"pn=eq.{_fq(_try_pn)}", limit=1)
                                 if _ph:
                                     _bh = fetch("bom", "material_id",
                                         f"product_id="
@@ -12972,7 +12975,7 @@ elif page == "발주/입고":
                         try:
                             _mc = fetch("materials",
                                 "material_id,raw_name,spec",
-                                f"material_id=eq.{_bm}", limit=1)
+                                f"material_id=eq.{_fq(_bm)}", limit=1)
                         except Exception:
                             _mc = []
                     elif (_mk or "").strip():
@@ -12980,9 +12983,9 @@ elif page == "발주/입고":
                         try:
                             _mc = fetch("materials",
                                 "material_id,raw_name,spec",
-                                f"or=(raw_name.ilike.*{_kw4}*,"
-                                f"material_type.ilike.*{_kw4}*,"
-                                f"spec.ilike.*{_kw4}*)&order=raw_name",
+                                f"or=(raw_name.ilike.{_fql(_kw4)},"
+                                f"material_type.ilike.{_fql(_kw4)},"
+                                f"spec.ilike.{_fql(_kw4)})&order=raw_name",
                                 limit=15)
                         except Exception:
                             _mc = []
@@ -13086,30 +13089,30 @@ elif page == "발주/입고":
                         }])
                         if not _r.get("material_id"):
                             _db.update("purchase_order_items",
-                                       f"poi_id=eq.{_r['poi_id']}",
+                                       f"poi_id=eq.{_fq(_r['poi_id'])}",
                                        {"material_id": _mid8})
                         # 발주 헤더 상태 자동 갱신
                         try:
                             _fr5 = fetch("po_item_receipt_v",
                                          "receipt_status",
-                                         f"po_id=eq.{_r['po_id']}",
+                                         f"po_id=eq.{_fq(_r['po_id'])}",
                                          limit=50)
                             _sts5 = [f["receipt_status"] for f in _fr5]
                             if _sts5 and all(s == "RECEIVED"
                                              for s in _sts5):
                                 _db.update("purchase_orders",
-                                           f"po_id=eq.{_r['po_id']}",
+                                           f"po_id=eq.{_fq(_r['po_id'])}",
                                            {"status": "RECEIVED"})
                             elif any(s in ("PARTIAL", "RECEIVED")
                                      for s in _sts5):
                                 _db.update("purchase_orders",
-                                           f"po_id=eq.{_r['po_id']}",
+                                           f"po_id=eq.{_fq(_r['po_id'])}",
                                            {"status": "PARTIAL"})
                         except Exception:
                             pass
                         try:
                             _mrow8 = _db.fetch_one("materials",
-                                f"material_id=eq.{_mid8}",
+                                f"material_id=eq.{_fq(_mid8)}",
                                 "material_type,spec") or {}
                         except Exception:
                             _mrow8 = {}
@@ -13160,14 +13163,14 @@ elif page == "발주/입고":
                             "발주 이력 > 종결 해제)"):
                     from datetime import datetime as _scl_dt
                     if _db.update("purchase_order_items",
-                            f"poi_id=eq.{_r['poi_id']}",
+                            f"poi_id=eq.{_fq(_r['poi_id'])}",
                             {"closed_at":
                                  _scl_dt.now().isoformat()}):
                         # 발주 헤더 자동 승격 — 전 라인이 끝났으면
                         try:
                             _fr6 = fetch("po_item_receipt_v",
                                 "receipt_status,pending_qty",
-                                f"po_id=eq.{_r['po_id']}", limit=50)
+                                f"po_id=eq.{_fq(_r['po_id'])}", limit=50)
                             if _fr6 and all(
                                     float(x.get("pending_qty") or 0)
                                     <= 0 for x in _fr6):
@@ -13175,7 +13178,7 @@ elif page == "발주/입고":
                                     x["receipt_status"] == "RECEIVED"
                                     for x in _fr6)
                                 _db.update("purchase_orders",
-                                    f"po_id=eq.{_r['po_id']}",
+                                    f"po_id=eq.{_fq(_r['po_id'])}",
                                     {"status": "RECEIVED" if _all_rc
                                                else "CLOSED"})
                         except Exception:
@@ -13184,7 +13187,7 @@ elif page == "발주/입고":
                         try:
                             _rh2 = _db.fetch_one(
                                 "purchase_orders",
-                                f"po_id=eq.{_r['po_id']}",
+                                f"po_id=eq.{_fq(_r['po_id'])}",
                                 "remark") or {}
                             _old_rmk = (_rh2.get("remark")
                                         or "").strip()
@@ -13194,7 +13197,7 @@ elif page == "발주/입고":
                                 f"({_scl_dt.now().date().isoformat()}"
                                 f", {current_user_name()})")
                             _db.update("purchase_orders",
-                                f"po_id=eq.{_r['po_id']}",
+                                f"po_id=eq.{_fq(_r['po_id'])}",
                                 {"remark": (_old_rmk + " / "
                                             if _old_rmk else "")
                                            + _scl_note})
@@ -13252,9 +13255,9 @@ elif page == "발주/입고":
                 try:
                     _dr_cands = fetch("materials",
                         "material_id,raw_name,material_type,spec,unit",
-                        f"or=(raw_name.ilike.*{_dr_kw.strip()}*,"
-                        f"material_type.ilike.*{_dr_kw.strip()}*,"
-                        f"spec.ilike.*{_dr_kw.strip()}*)&order=raw_name",
+                        f"or=(raw_name.ilike.{_fql(_dr_kw.strip())},"
+                        f"material_type.ilike.{_fql(_dr_kw.strip())},"
+                        f"spec.ilike.{_fql(_dr_kw.strip())})&order=raw_name",
                         limit=15)
                 except Exception:
                     _dr_cands = []
@@ -13395,7 +13398,7 @@ elif page == "공정 관리":
         한눈에 보여준다."""
         try:
             _tb = fetch("wo_batches", "*",
-                        f"wo_number=eq.{wo_number}&order=batch_id",
+                        f"wo_number=eq.{_fq(wo_number)}&order=batch_id",
                         limit=200)
         except Exception:
             _tb = []
@@ -13588,23 +13591,23 @@ elif page == "공정 관리":
             _wos = []
             try:
                 _wos = fetch("wo_tracking", "*",
-                    f"or=(wo_number.eq.{_tk},w_lot.eq.{_tk},"
-                    f"pn.eq.{_tk})", limit=20)
+                    f"or=(wo_number.eq.{_fqo(_tk)},w_lot.eq.{_fqo(_tk)},"
+                    f"pn.eq.{_fqo(_tk)})", limit=20)
                 if not _wos:
                     # 품번 부분 일치 (2026-08-28 — 품번 추적 지원)
                     _wos = fetch("wo_tracking", "*",
-                        f"pn=ilike.*{_tk}*&order=created_at.desc",
+                        f"pn=ilike.*{_fq(_tk)}*&order=created_at.desc",
                         limit=10)
                 if not _wos:
                     # 배치번호(가지 포함)로 검색 → 소속 지시
                     _b0 = fetch("wo_batches", "wo_number",
-                                f"batch_no=eq.{_tk}", limit=1)
+                                f"batch_no=eq.{_fq(_tk)}", limit=1)
                     if not _b0 and "-" in _tk:
                         _b0 = fetch("wo_batches", "wo_number",
                                     f"batch_no=like.{_tk}*", limit=1)
                     if _b0:
                         _wos = fetch("wo_tracking", "*",
-                            f"wo_number=eq.{_b0[0]['wo_number']}",
+                            f"wo_number=eq.{_fq(_b0[0]['wo_number'])}",
                             limit=5)
             except Exception as e:
                 st.error(f"조회 실패: {e}")
@@ -13624,7 +13627,7 @@ elif page == "공정 관리":
                     try:
                         for x in fetch("inventory_transactions",
                                 "txn_date,txn_type,qty,remark",
-                                f"lot_number=eq.{_tw['w_lot']}"
+                                f"lot_number=eq.{_fq(_tw['w_lot'])}"
                                 "&order=txn_id", limit=50):
                             _mrows.append({
                                 "일자": x.get("txn_date"),
@@ -13640,7 +13643,7 @@ elif page == "공정 관리":
                         for e in fetch("wo_events",
                                 "event_date,event_type,qty,step_name,"
                                 "detail,created_by",
-                                f"w_lot=eq.{_tw['w_lot']}"
+                                f"w_lot=eq.{_fq(_tw['w_lot'])}"
                                 "&event_type=in.(MAT_OUT_SEND,"
                                 "MAT_OUT_RETURN)&order=event_id",
                                 limit=50):
@@ -13672,7 +13675,7 @@ elif page == "공정 관리":
                     _tev = fetch("wo_events",
                         "event_date,event_type,qty,step_name,detail,"
                         "created_by",
-                        f"wo_number=eq.{_tw['wo_number']}&order=event_id",
+                        f"wo_number=eq.{_fq(_tw['wo_number'])}&order=event_id",
                         limit=200)
                 except Exception:
                     _tev = []
@@ -13695,7 +13698,7 @@ elif page == "공정 관리":
                 try:
                     _lots = [b["batch_no"] for b in fetch("wo_batches",
                         "batch_no,status",
-                        f"wo_number=eq.{_tw['wo_number']}"
+                        f"wo_number=eq.{_fq(_tw['wo_number'])}"
                         "&status=eq.DONE", limit=100)]
                 except Exception:
                     pass
@@ -13807,7 +13810,7 @@ elif page == "공정 관리":
                 if _ref_poi:
                     try:
                         _poi_row = _db.fetch_one("purchase_order_items",
-                            f"poi_id=eq.{_ref_poi}", "item_name,product_id")
+                            f"poi_id=eq.{_fq(_ref_poi)}", "item_name,product_id")
                         # 발주 라인에 제품이 연결돼 있으면 그 품번 (품명이
                         # "품번 (사이즈)" 형식이어도 정확, 2026-09-02),
                         # 없으면 품명 = 품번인 경우만
@@ -13815,13 +13818,13 @@ elif page == "공정 관리":
                         if (_poi_row or {}).get("product_id"):
                             _pp9 = _db.fetch_one(
                                 "products",
-                                f"product_id=eq.{_poi_row['product_id']}",
+                                f"product_id=eq.{_fq(_poi_row['product_id'])}",
                                 "pn")
                             _cand_pn = (_pp9 or {}).get("pn") or ""
                         if not _cand_pn:
                             _cand_pn = (_poi_row or {}).get("item_name") or ""
                             if not (_cand_pn and _db.fetch_one(
-                                    "products", f"pn=eq.{_cand_pn}",
+                                    "products", f"pn=eq.{_fq(_cand_pn)}",
                                     "product_id")):
                                 _cand_pn = ""
                         if _cand_pn:
@@ -13834,7 +13837,7 @@ elif page == "공정 관리":
                 if True:   # 힌트가 있어도 BOM 후보를 함께 제시 (2026-09-16)
                     try:
                         _bp = fetch("bom", "product_id",
-                            f"material_id=eq.{_sel_mid}", limit=50)
+                            f"material_id=eq.{_fq(_sel_mid)}", limit=50)
                         _bp_ids = list({b["product_id"] for b in _bp
                                         if b.get("product_id")})
                         if _bp_ids:
@@ -13873,7 +13876,7 @@ elif page == "공정 관리":
                 # 작업지시서 품번과 대조해 고르도록 선택창을 항상 보인다)
                 _cands = list(_bom_pns)
                 if _pn_hint and all(p["pn"] != _pn_hint for p in _cands):
-                    _hp = _db.fetch_one("products", f"pn=eq.{_pn_hint}",
+                    _hp = _db.fetch_one("products", f"pn=eq.{_fq(_pn_hint)}",
                                         "product_id") or {}
                     _cands.insert(0, {"pn": _pn_hint,
                                       "product_id": _hp.get("product_id")})
@@ -13910,11 +13913,11 @@ elif page == "공정 관리":
                 if (_in_pn or "").strip():
                     try:
                         _prod0 = _db.fetch_one("products",
-                            f"pn=eq.{_in_pn.strip()}", "product_id")
+                            f"pn=eq.{_fq(_in_pn.strip())}", "product_id")
                         if _prod0:
                             _b0 = fetch("bom", "qty_per_pc,shared_factor",
-                                f"product_id=eq.{_prod0['product_id']}"
-                                f"&material_id=eq.{_sel_mid}", limit=1)
+                                f"product_id=eq.{_fq(_prod0['product_id'])}"
+                                f"&material_id=eq.{_fq(_sel_mid)}", limit=1)
                             if _b0:
                                 _qpp = float(_b0[0].get("qty_per_pc")
                                              or 0)
@@ -13986,7 +13989,7 @@ elif page == "공정 관리":
                     try:
                         _wo_dups = fetch(
                             "wo_tracking", "wo_id,pn,status,w_lot",
-                            f"wo_number=eq.{(_wo_no or '').strip()}",
+                            f"wo_number=eq.{_fq((_wo_no or '').strip())}",
                             limit=20)
                     except Exception:
                         _wo_dups = []
@@ -14057,11 +14060,11 @@ elif page == "공정 관리":
                             # 최신 wo_id) + 배치 접미사는 기존 배치 수
                             # 다음 글자 (A, B, C …)
                             _nwo = _db.fetch_one("wo_tracking",
-                                f"wo_number=eq.{_wo}&w_lot=eq.{_sel_lot}"
+                                f"wo_number=eq.{_fq(_wo)}&w_lot=eq.{_fq(_sel_lot)}"
                                 "&order=wo_id.desc",
                                 "wo_id")
                             _prev_b = fetch("wo_batches", "batch_id",
-                                            f"wo_number=eq.{_wo}",
+                                            f"wo_number=eq.{_fq(_wo)}",
                                             limit=100)
                             _sfx = chr(ord("A") + min(len(_prev_b), 25))
                             _db.insert("wo_batches", [{
@@ -14080,7 +14083,7 @@ elif page == "공정 관리":
                                 "step_status": "WAIT",
                                 "created_by": current_user_name()}])
                             _nb = _db.fetch_one("wo_batches",
-                                f"batch_no=eq.{_wo}-{_sfx}", "batch_id")
+                                f"batch_no=eq.{_fq(_wo)}-{_sfx}", "batch_id")
                             _new_batch_id = (_nb or {}).get("batch_id")
                         except Exception:
                             pass   # 배치는 병행 기록 — 실패해도 투입 진행
@@ -14277,7 +14280,7 @@ elif page == "공정 관리":
             _out_steps = routing_out_steps(_rt)
             try:
                 _rt_evs = fetch("wo_events", "event_type,qty,routing_id",
-                    f"wo_id=eq.{_t['wo_id']}"
+                    f"wo_id=eq.{_fq(_t['wo_id'])}"
                     "&event_type=in.(OUT_SEND,OUT_RETURN)", limit=300)
             except Exception:
                 _rt_evs = []
@@ -14285,7 +14288,7 @@ elif page == "공정 관리":
             if _t.get("w_lot") and routing_out_steps(_rt, stage="MATERIAL"):
                 try:
                     _mat_evs = fetch("wo_events", "event_type,qty",
-                        f"w_lot=eq.{_t['w_lot']}"
+                        f"w_lot=eq.{_fq(_t['w_lot'])}"
                         "&event_type=in.(MAT_OUT_SEND,MAT_OUT_RETURN)",
                         limit=100)
                 except Exception:
@@ -14333,7 +14336,7 @@ elif page == "공정 관리":
                 _stp_open = fetch("wo_batches",
                     "batch_no,qty,step_code,step_name,routing_id,"
                     "step_status,location",
-                    f"wo_id=eq.{_t['wo_id']}&status=eq.OPEN", limit=200)
+                    f"wo_id=eq.{_fq(_t['wo_id'])}&status=eq.OPEN", limit=200)
             except Exception:
                 _stp_open = []
 
@@ -14463,7 +14466,7 @@ elif page == "공정 관리":
                     return
                 fields["status"] = wo_derive_status({**_t, **fields})
                 fields["updated_at"] = _pe_dt.utcnow().isoformat()
-                _db.update("wo_tracking", f"wo_id=eq.{_t['wo_id']}", fields)
+                _db.update("wo_tracking", f"wo_id=eq.{_fq(_t['wo_id'])}", fields)
                 if ledger:
                     _db.insert("inventory_transactions", [ledger])
                 if event:
@@ -14500,7 +14503,7 @@ elif page == "공정 관리":
             # 완성 LOT 번호 = 배치번호 → 회차별 완성 추적이 이어진다.
             try:
                 _bat_all = fetch("wo_batches", "*",
-                    f"wo_number=eq.{_t['wo_number']}&order=batch_no",
+                    f"wo_number=eq.{_fq(_t['wo_number'])}&order=batch_no",
                     limit=200)
             except Exception:
                 _bat_all = []
@@ -14568,7 +14571,7 @@ elif page == "공정 관리":
             def _bat_update(bid, fields):
                 fields = dict(fields)
                 fields["updated_at"] = _pe_dt.utcnow().isoformat()
-                _db.update("wo_batches", f"batch_id=eq.{bid}", fields)
+                _db.update("wo_batches", f"batch_id=eq.{_fq(bid)}", fields)
 
             def _bat_take(b, qty, new_fields):
                 """배치에서 qty 를 떼어 새 상태로. 전량이면 배치 이동,
@@ -14598,7 +14601,7 @@ elif page == "공정 관리":
                     "qty": qty, **_inherit,
                     "created_by": current_user_name()}])
                 _nb = _db.fetch_one("wo_batches",
-                                    f"batch_no=eq.{_new_no}", "batch_id")
+                                    f"batch_no=eq.{_fq(_new_no)}", "batch_id")
                 _bat_update(b["batch_id"],
                             {"qty": float(b["qty"]) - qty})
                 if _nb:
@@ -14667,7 +14670,7 @@ elif page == "공정 관리":
                         try:
                             _lev9 = fetch("wo_events",
                                 "event_id,event_type,qty",
-                                f"batch_id=eq.{_sb['batch_id']}"
+                                f"batch_id=eq.{_fq(_sb['batch_id'])}"
                                 "&order=event_id.desc", limit=1)
                         except Exception:
                             _lev9 = []
@@ -15012,7 +15015,7 @@ elif page == "공정 관리":
                         if not _f_pid and _t.get("pn"):
                             try:
                                 _f_pid = (_db.fetch_one("products",
-                                    f"pn=eq.{_t['pn']}", "product_id")
+                                    f"pn=eq.{_fq(_t['pn'])}", "product_id")
                                     or {}).get("product_id")
                             except Exception:
                                 pass
@@ -15233,7 +15236,7 @@ elif page == "공정 관리":
                                         "step_status": _b_state(_sb),
                                         "created_by": current_user_name()}])
                                     _mg_new = _db.fetch_one("wo_batches",
-                                        f"batch_no=eq.{_mg_no}", "batch_id")
+                                        f"batch_no=eq.{_fq(_mg_no)}", "batch_id")
                                     for b in _mg_sel:
                                         _bat_update(b["batch_id"],
                                                     {"status": "MERGED"})
@@ -15521,7 +15524,7 @@ elif page == "공정 관리":
                     if not _f_pid and _t.get("pn"):
                         try:
                             _f_pid = (_db.fetch_one("products",
-                                f"pn=eq.{_t['pn']}", "product_id")
+                                f"pn=eq.{_fq(_t['pn'])}", "product_id")
                                 or {}).get("product_id")
                         except Exception:
                             pass
@@ -15655,8 +15658,8 @@ elif page == "공정 관리":
                         try:
                             # 원래 투입한 소재 수량 — 원장에서 역산
                             _otx = fetch("inventory_transactions", "qty",
-                                f"work_order=eq.{_t['wo_number']}"
-                                f"&lot_number=eq.{_t.get('w_lot')}"
+                                f"work_order=eq.{_fq(_t['wo_number'])}"
+                                f"&lot_number=eq.{_fq(_t.get('w_lot'))}"
                                 "&txn_type=eq.PROD_INPUT", limit=20)
                             _back = sum(-float(x.get("qty") or 0)
                                         for x in _otx)
@@ -15688,11 +15691,11 @@ elif page == "공정 관리":
                                 # (2026-09-16 리뷰 A6)
                                 _db.delete(
                                     "wo_batches",
-                                    f"wo_id=eq.{_t['wo_id']}")
+                                    f"wo_id=eq.{_fq(_t['wo_id'])}")
                             except Exception:
                                 pass
                             _db.delete("wo_tracking",
-                                       f"wo_id=eq.{_t['wo_id']}")
+                                       f"wo_id=eq.{_fq(_t['wo_id'])}")
                             _sk.notify(_sk.fmt_cancel(
                                 "투입 취소", _t.get("pn"),
                                 float(_t.get("input_qty") or 0),
@@ -15713,7 +15716,7 @@ elif page == "공정 관리":
                 _evs = fetch("wo_events",
                     "event_id,event_type,qty,detail,event_date,"
                     "created_at,created_by",
-                    f"wo_number=eq.{_t['wo_number']}&order=event_id.asc",
+                    f"wo_number=eq.{_fq(_t['wo_number'])}&order=event_id.asc",
                     limit=200)
             except Exception:
                 _evs = []
@@ -15780,8 +15783,8 @@ elif page == "공정 관리":
             _cfq.append(f"updated_at=gte.{_cd_d.today().year}-01-01")
         if (_c_q or "").strip():
             _ck = _c_q.strip()
-            _cfq.append(f"or=(wo_number.ilike.*{_ck}*,pn.ilike.*{_ck}*,"
-                        f"w_lot.ilike.*{_ck}*)")
+            _cfq.append(f"or=(wo_number.ilike.{_fql(_ck)},pn.ilike.{_fql(_ck)},"
+                        f"w_lot.ilike.{_fql(_ck)})")
         try:
             _cwos = fetch("wo_tracking", "*", "&".join(_cfq), limit=300)
         except Exception as e:
@@ -15817,7 +15820,7 @@ elif page == "공정 관리":
                 _cb = fetch("wo_batches",
                             "batch_id,batch_no,qty,step_code,step_name,status,"
                             "location",
-                            f"wo_id=eq.{_cw['wo_id']}&order=batch_no.asc",
+                            f"wo_id=eq.{_fq(_cw['wo_id'])}&order=batch_no.asc",
                             limit=100)
             except Exception:
                 _cb = []
@@ -15825,7 +15828,7 @@ elif page == "공정 관리":
                 _ce = fetch("wo_events",
                             "event_id,event_type,qty,detail,event_date,"
                             "created_by,created_at,batch_id",
-                            f"wo_number=eq.{_cw['wo_number']}&order=created_at.desc",
+                            f"wo_number=eq.{_fq(_cw['wo_number'])}&order=created_at.desc",
                             limit=100)
             except Exception:
                 _ce = []
@@ -15883,7 +15886,7 @@ elif page == "공정 관리":
                 try:
                     _ev_ts = str(_last.get("created_at") or "")[:19]
                     _lk = fetch("batch_links", "link_id,child_batch_id,qty,created_at",
-                                f"parent_batch_id=eq.{_last['batch_id']}"
+                                f"parent_batch_id=eq.{_fq(_last['batch_id'])}"
                                 "&link_type=eq.SPLIT&order=created_at.asc",
                                 limit=50)
                     _lk = [l for l in _lk
@@ -15895,7 +15898,7 @@ elif page == "공정 관리":
                 _fin_lot = _dt.get("lot") or (_pb or {}).get("batch_no")
                 try:
                     _ltx = fetch("inventory_transactions", "txn_id,txn_type,qty",
-                                 f"lot_number=eq.{_fin_lot}", limit=200)
+                                 f"lot_number=eq.{_fq(_fin_lot)}", limit=200)
                 except Exception:
                     _ltx = []
                 _other = [t for t in _ltx if t.get("txn_type") != "PROD_OUTPUT"]
@@ -15933,19 +15936,19 @@ elif page == "공정 관리":
                             _pb9, _dt9 = _plan["pb"], _plan["dt"]
                             if _plan["out"] > 0:
                                 _db.delete("inventory_transactions",
-                                           f"lot_number=eq.{_plan['fin_lot']}"
+                                           f"lot_number=eq.{_fq(_plan['fin_lot'])}"
                                            "&txn_type=eq.PROD_OUTPUT"
-                                           f"&work_order=eq.{_cw['wo_number']}")
+                                           f"&work_order=eq.{_fq(_cw['wo_number'])}")
                             # 자식 배치·계보 삭제, 부모 수량 복원
                             _kq = 0.0
                             for _l9 in _plan["links"]:
                                 _db.delete("batch_links",
-                                           f"link_id=eq.{_l9['link_id']}")
+                                           f"link_id=eq.{_fq(_l9['link_id'])}")
                             for _k9 in _plan["kids"]:
                                 _kq += _cfl(_k9.get("qty"))
                                 _db.delete("wo_batches",
-                                           f"batch_id=eq.{_k9['batch_id']}")
-                            _db.update("wo_batches", f"batch_id=eq.{_pb9['batch_id']}",
+                                           f"batch_id=eq.{_fq(_k9['batch_id'])}")
+                            _db.update("wo_batches", f"batch_id=eq.{_fq(_pb9['batch_id'])}",
                                        {"qty": _cfl(_pb9.get("qty")) + _kq,
                                         "step_code": "INSPECT", "step_name": "검사",
                                         "status": "OPEN", "location": "사내",
@@ -15962,7 +15965,7 @@ elif page == "공정 관리":
                             _fld["status"] = wo_derive_status({**_cw, **_fld})
                             from datetime import datetime as _ic_now
                             _fld["updated_at"] = _ic_now.utcnow().isoformat()
-                            _db.update("wo_tracking", f"wo_id=eq.{_cw['wo_id']}", _fld)
+                            _db.update("wo_tracking", f"wo_id=eq.{_fq(_cw['wo_id'])}", _fld)
                             _db.insert("wo_events", [{
                                 "wo_id": _cw["wo_id"], "wo_number": _cw["wo_number"],
                                 "w_lot": _cw.get("w_lot"), "pn": _cw.get("pn"),
@@ -16236,7 +16239,7 @@ elif page == "생산 보고":
         q = [f"log_date=gte.{d_from.isoformat()}",
              f"log_date=lte.{d_to.isoformat()}"]
         if d_shift != "전체":
-            q.append(f"shift=eq.{d_shift}")
+            q.append(f"shift=eq.{_fq(d_shift)}")
         if d_src == "MES":
             q.append("source=eq.MES_UPLOAD")
         elif d_src == "생산일정 시트":
@@ -16526,8 +16529,8 @@ elif page == "생산 보고":
                 try:
                     p_cands = fetch("products",
                         "product_id,pn,customer",
-                        f"or=(pn.ilike.*{qq}*,item_name.ilike.*{qq}*,"
-                        f"customer.ilike.*{qq}*)"
+                        f"or=(pn.ilike.{_fql(qq)},item_name.ilike.{_fql(qq)},"
+                        f"customer.ilike.{_fql(qq)})"
                         f"&archived_at=is.null&order=pn.asc", limit=20)
                 except Exception as e:
                     st.error(f"제품 검색 실패: {e}"); p_cands = []
@@ -16582,7 +16585,7 @@ elif page == "생산 보고":
                 try:
                     pb_bom = fetch("bom",
                         "bom_id,material_id,raw_material_name,qty_per_pc,shared_factor",
-                        f"product_id=eq.{sel_prod['product_id']}"
+                        f"product_id=eq.{_fq(sel_prod['product_id'])}"
                         f"&process_type=eq.MATERIAL", limit=20)
                 except Exception:
                     pb_bom = []
@@ -16856,7 +16859,7 @@ elif page == "생산 보고":
                                     rec["uph_std"] = v["uph_sheet"]
                                 _db.update(
                                     "product_op_std",
-                                    f"op_id=eq.{ex['op_id']}",
+                                    f"op_id=eq.{_fq(ex['op_id'])}",
                                     {kk: vv for kk, vv in rec.items()
                                      if vv is not None
                                      or kk in ("ct_sec", "idle_sec")})
@@ -16931,7 +16934,7 @@ elif page == "생산 보고":
                     exist = fetch("production_log",
                         "log_id,shift,machine,process,work_order,"
                         "work_start,work_end,total_qty,defect_qty",
-                        f"log_date=eq.{mes_date.isoformat()}"
+                        f"log_date=eq.{_fq(mes_date.isoformat())}"
                         f"&source=eq.MES_UPLOAD", limit=2000)
                 except Exception:
                     exist = []
@@ -17060,8 +17063,8 @@ elif page == "생산 보고":
                         if exist and dup_mode.startswith("교체"):
                             for _sh in sorted(set(inc["교대"])):
                                 n_del = _db.delete("production_log",
-                                    f"log_date=eq.{mes_date.isoformat()}"
-                                    f"&shift=eq.{_sh}&source=eq.MES_UPLOAD")
+                                    f"log_date=eq.{_fq(mes_date.isoformat())}"
+                                    f"&shift=eq.{_fq(_sh)}&source=eq.MES_UPLOAD")
                                 if n_del:
                                     st.info(f"기존 {_sh} {n_del}행 삭제 (교체)")
                         recs = []
@@ -17114,7 +17117,7 @@ elif page == "생산 보고":
 
         h_filter = ["order=log_date.desc,log_id.desc"]
         if h_q:
-            h_filter.append(f"pn=ilike.*{h_q.strip()}*")
+            h_filter.append(f"pn=ilike.*{_fq(h_q.strip())}*")
         if h_src == "수기 보고":
             h_filter.append("source=eq.MANUAL")
         elif h_src == "MES 업로드":
@@ -17226,7 +17229,7 @@ elif page == "생산 보고":
                             "txn_date,step_label,txn_type,material_id,"
                             "material_name,pn,qty,unit,ref_table,ref_id,"
                             "remark,created_at",
-                            f"lot_number=eq.{sel_lot}"
+                            f"lot_number=eq.{_fq(sel_lot)}"
                             f"&order=created_at.asc", limit=100)
                     except Exception as e:
                         st.error(f"추적 실패: {e}"); trace_rows = []
@@ -17267,7 +17270,7 @@ elif page == "생산 보고":
                         "pn,txn_date,step_label,txn_type,material_id,"
                         "material_name,qty,unit,lot_number,ref_table,ref_id,"
                         "remark,created_at",
-                        f"pn=ilike.*{qq}*&order=created_at.asc", limit=200)
+                        f"pn=ilike.*{_fq(qq)}*&order=created_at.asc", limit=200)
                 except Exception as e:
                     st.error(f"추적 실패: {e}"); trace_rows = []
 
@@ -17372,9 +17375,9 @@ elif page == "영업 보고":
         _d_iso = _d_pick.isoformat()
         try:
             _d_ships = _sr_ships(
-                f"status=eq.CONFIRMED&ship_date=eq.{_d_iso}")
+                f"status=eq.CONFIRMED&ship_date=eq.{_fq(_d_iso)}")
             _d_drafts = fetch("shipments", "shipment_id,ship_no",
-                              f"status=eq.DRAFT&ship_date=eq.{_d_iso}",
+                              f"status=eq.DRAFT&ship_date=eq.{_fq(_d_iso)}",
                               limit=50)
         except Exception as e:
             st.error(f"조회 실패: {e}")
@@ -17492,7 +17495,7 @@ elif page == "영업 보고":
             st.markdown("##### 마감 잠금")
             try:
                 _mc_row = _db.fetch_one("sales_month_close",
-                                        f"ym=eq.{_m_pick}",
+                                        f"ym=eq.{_fq(_m_pick)}",
                                         "ym,closed_at,closed_by,note")
             except Exception:
                 _mc_row = None
@@ -17513,7 +17516,7 @@ elif page == "영업 보고":
                                 "됩니다. 처리 후 다시 마감하세요."):
                         try:
                             _db.delete("sales_month_close",
-                                       f"ym=eq.{_m_pick}")
+                                       f"ym=eq.{_fq(_m_pick)}")
                             st.success(f"{_m_pick} 마감 해제")
                             st.rerun()
                         except Exception as e:
@@ -17628,7 +17631,7 @@ elif page == "영업 보고":
                         _vs = fetch("vendors",
                                     "name,business_no,ceo_name,phone,"
                                     "address,business_type,business_item",
-                                    f"name=ilike.*{_term}*", limit=5)
+                                    f"name=ilike.*{_fq(_term)}*", limit=5)
                         if _vs:
                             out[_cu] = _vs[0]
                     except Exception:
@@ -17945,7 +17948,7 @@ elif page == "원가 확인":
             qq = pl_q.strip()
             # item / matched_pn / remark 모두 검색 → 자재명/품번/메모 어느 쪽이든 매칭
             filt = [
-                f"or=(item.ilike.*{qq}*,matched_pn.ilike.*{qq}*,remark.ilike.*{qq}*)",
+                f"or=(item.ilike.{_fql(qq)},matched_pn.ilike.{_fql(qq)},remark.ilike.{_fql(qq)})",
                 "order=trade_date.desc"
             ]
             if pl_cats:
@@ -17964,8 +17967,8 @@ elif page == "원가 확인":
                 # 진단: 카테고리 필터를 끄면 결과가 나오는지 점검
                 try:
                     raw_rows = fetch("purchase_ledger", "ledger_id",
-                        f"or=(item.ilike.*{qq}*,matched_pn.ilike.*{qq}*,"
-                        f"remark.ilike.*{qq}*)", limit=5)
+                        f"or=(item.ilike.{_fql(qq)},matched_pn.ilike.{_fql(qq)},"
+                        f"remark.ilike.{_fql(qq)})", limit=5)
                 except Exception:
                     raw_rows = []
                 if raw_rows and pl_cats:
@@ -18161,7 +18164,7 @@ elif page == "원가 확인":
                         "changed_at,old_value,new_value,changed_by,"
                         "reason",
                         f"table_name=eq.products&field_name=eq.sale_price"
-                        f"&record_id=eq.{_p0['product_id']}"
+                        f"&record_id=eq.{_fq(_p0['product_id'])}"
                         "&order=changed_at.desc", limit=20)
                 except Exception:
                     _hist0 = []
@@ -18184,7 +18187,7 @@ elif page == "원가 확인":
                         "qty_per_pc,shared_factor,price_source,"
                         "effective_price,purchase_price_last,"
                         "last_purchase_date,legacy_price",
-                        f"product_id=eq.{_p0['product_id']}", limit=50)
+                        f"product_id=eq.{_fq(_p0['product_id'])}", limit=50)
                 except Exception:
                     _mrows0 = []
                 if _mrows0:
@@ -18213,7 +18216,7 @@ elif page == "원가 확인":
                         "bom",
                         "process_type,raw_material_name,unit_price,"
                         "qty_per_pc,lot_label",
-                        f"product_id=eq.{_p0['product_id']}"
+                        f"product_id=eq.{_fq(_p0['product_id'])}"
                         "&process_type=not.is.null&order=bom_id",
                         limit=50)
                 except Exception:
@@ -18378,8 +18381,8 @@ elif page == "원가 확인":
             parts = [f"archived_at=is.null"]
             qq = q.strip()
             # OR 검색 (PostgREST or= 문법) — 품명·제품군(sub_class) 포함
-            parts.append(f"or=(pn.ilike.*{qq}*,customer.ilike.*{qq}*,"
-                         f"item_name.ilike.*{qq}*,sub_class.ilike.*{qq}*)")
+            parts.append(f"or=(pn.ilike.{_fql(qq)},customer.ilike.{_fql(qq)},"
+                         f"item_name.ilike.{_fql(qq)},sub_class.ilike.{_fql(qq)})")
             parts.append(f"order=total_sales_12m.desc.nullslast")
             try:
                 rows = fetch(SRC_TABLE, COST_FIELDS, "&".join(parts), limit=int(ca_limit))
@@ -18466,7 +18469,7 @@ elif page == "원가 확인":
                     try:
                         prod_bom = fetch("bom",
                             "bom_id,material_id,raw_material_name,process_type",
-                            f"product_id=eq.{row['product_id']}"
+                            f"product_id=eq.{_fq(row['product_id'])}"
                             f"&process_type=eq.MATERIAL", limit=10)
                     except Exception:
                         prod_bom = []
@@ -18493,7 +18496,7 @@ elif page == "원가 확인":
                                 try:
                                     mp_rows = fetch("purchase_ledger",
                                         "trade_date,vendor,item,qty,unit_price,kg_price,ea_price",
-                                        f"matched_material_id=eq.{mat_id}"
+                                        f"matched_material_id=eq.{_fq(mat_id)}"
                                         f"&order=trade_date.desc",
                                         limit=300)
                                 except Exception:
@@ -18506,7 +18509,7 @@ elif page == "원가 확인":
                                 try:
                                     mp_rows = fetch("purchase_ledger",
                                         "trade_date,vendor,item,qty,unit_price,kg_price,ea_price",
-                                        f"item=ilike.*{kw}*"
+                                        f"item=ilike.*{_fq(kw)}*"
                                         f"&order=trade_date.desc",
                                         limit=300)
                                 except Exception:
@@ -18604,7 +18607,7 @@ elif page == "원가 확인":
                     try:
                         sales_rows = fetch("sales_ledger",
                             "voucher_date,item_date,customer,qty,unit,unit_price,amount,remark",
-                            f"product_id=eq.{row['product_id']}"
+                            f"product_id=eq.{_fq(row['product_id'])}"
                             f"&order=item_date.desc.nullslast",
                             limit=50)
                     except Exception as e:
@@ -18693,7 +18696,7 @@ elif page == "원가 확인":
                             "bom_id,process_type,material_id,raw_material_name,"
                             "qty_per_pc,shared_factor,unit_price,lot_label,"
                             "verification_status",
-                            f"product_id=eq.{row['product_id']}&order=bom_id.asc",
+                            f"product_id=eq.{_fq(row['product_id'])}&order=bom_id.asc",
                             limit=50)
                     except Exception as e:
                         st.error(f"BOM 조회 실패: {e}"); bom_rows = []
@@ -18763,7 +18766,7 @@ elif page == "원가 확인":
                                 if o_v != n_v:
                                     try:
                                         if _db.update("bom",
-                                            f"bom_id=eq.{o['bom_id']}",
+                                            f"bom_id=eq.{_fq(o['bom_id'])}",
                                             {"unit_price": n_v}):
                                             chg += 1
                                     except Exception:
@@ -19077,7 +19080,7 @@ elif page == "원가 확인":
                                     pass
                             try:
                                 if _db.update("products",
-                                    f"product_id=eq.{r['product_id']}", payload):
+                                    f"product_id=eq.{_fq(r['product_id'])}", payload):
                                     ok_n += 1
                                 else:
                                     fail_n += 1
@@ -19103,8 +19106,8 @@ elif page == "원가 확인":
                         "product_id,pn,customer,material_unit_price,outsourcing_per_pc,"
                         "heat_treat_per_pc,surface_per_pc,estimated_cost_per_pc,"
                         "avg_unit_price,margin_pct",
-                        f"or=(pn.ilike.*{sq}*,item_name.ilike.*{sq}*,"
-                        f"customer.ilike.*{sq}*)"
+                        f"or=(pn.ilike.{_fql(sq)},item_name.ilike.{_fql(sq)},"
+                        f"customer.ilike.{_fql(sq)})"
                         f"&archived_at=is.null&order=pn.asc", limit=30)
                 except Exception as e:
                     st.error(f"검색 실패: {e}"); matches = []
@@ -19126,7 +19129,7 @@ elif page == "원가 확인":
                             bs = fetch("bom",
                                 "bom_id,material_id,raw_material_name,qty_per_pc,"
                                 "shared_factor,verification_status",
-                                f"product_id=eq.{m['product_id']}&order=bom_id.asc",
+                                f"product_id=eq.{_fq(m['product_id'])}&order=bom_id.asc",
                                 limit=50)
                         except Exception as e:
                             st.error(f"BOM 조회 실패: {e}"); bs = []
@@ -19179,7 +19182,7 @@ elif page == "원가 확인":
                                     }
                                     try:
                                         if _db.update("products",
-                                            f"product_id=eq.{m['product_id']}",
+                                            f"product_id=eq.{_fq(m['product_id'])}",
                                             payload):
                                             st.success(
                                                 f"{m['pn']} 소재비 → "
@@ -19211,7 +19214,7 @@ elif page == "원가 확인":
                         "product_id,pn,customer,material,raw_material_name,raw_material_spec,"
                         "material_kg_price,material_unit_price,outsourcing_per_pc,"
                         "heat_treat_per_pc,surface_per_pc,estimated_cost_per_pc,cost_data_quality",
-                        f"or=(pn.ilike.*{eq}*,customer.ilike.*{eq}*)"
+                        f"or=(pn.ilike.{_fql(eq)},customer.ilike.{_fql(eq)})"
                         f"&archived_at=is.null&order=pn.asc",
                         limit=30)
                 except Exception as e:
@@ -19276,7 +19279,7 @@ elif page == "원가 확인":
                                 }
                                 try:
                                     ok = _db.update("products",
-                                        f"product_id=eq.{r['product_id']}", payload)
+                                        f"product_id=eq.{_fq(r['product_id'])}", payload)
                                     if ok:
                                         st.success(f"{r['pn']} 원가 저장 완료")
                                         st.rerun()
@@ -19296,8 +19299,8 @@ elif page == "원가 확인":
             parts = ["archived_at=is.null", "order=pn.asc"]
             if bq:
                 qq = bq.strip()
-                parts.append(f"or=(pn.ilike.*{qq}*,customer.ilike.*{qq}*,"
-                             f"item_name.ilike.*{qq}*,sub_class.ilike.*{qq}*)")
+                parts.append(f"or=(pn.ilike.{_fql(qq)},customer.ilike.{_fql(qq)},"
+                             f"item_name.ilike.{_fql(qq)},sub_class.ilike.{_fql(qq)})")
             try:
                 rows = fetch("products",
                     "product_id,pn,customer,material_unit_price,outsourcing_per_pc,"
@@ -19402,7 +19405,7 @@ elif page == "원가 확인":
                         ok_n, fail_n = 0, 0
                         for pid, payload in changed:
                             try:
-                                if _db.update("products", f"product_id=eq.{pid}", payload):
+                                if _db.update("products", f"product_id=eq.{_fq(pid)}", payload):
                                     ok_n += 1
                                 else:
                                     fail_n += 1

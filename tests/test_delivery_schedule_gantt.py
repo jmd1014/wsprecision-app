@@ -206,11 +206,12 @@ def test_plan_rate_thresholds(sched_db):
     by_color = {}
     for color, pct in rates:
         by_color.setdefault(color, set()).add(int(pct))
+    # 색은 토스 팔레트 (2026-08 디자인 통일): 빨강 #f04452 / 주황 #dd6b02 / 초록 #01a76b
     # 4PDVN-02 5,040/91,648 = 5% · 8HFDV-VM-05 500/8,500 = 6% → 30% 미만
-    assert by_color.get("#d9480f") == {5, 6}, rates
+    assert by_color.get("#f04452") == {5, 6}, rates
     # 4PDVN-03·8PDVN-02·단발 2건 = 100% → 70% 초과
-    assert by_color.get("#2f9e44") == {100}, rates
-    assert "#e8590c" not in by_color  # 30~70% 구간 데이터 없음
+    assert by_color.get("#01a76b") == {100}, rates
+    assert "#dd6b02" not in by_color  # 30~70% 구간 데이터 없음
 
 
 def test_week_totals_match_chip_sums(sched_db):

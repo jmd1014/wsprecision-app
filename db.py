@@ -7,6 +7,31 @@ import streamlit as st
 import requests
 import json
 import time
+import urllib.parse as _up
+
+
+# ─── PostgREST 필터 값 인용 (2026-09-17 보안 점검 반영) ───
+# 실측 규칙 (이 프로젝트 DB 로 확인):
+#  · 최상위 `col=op.값` 은 값 전체를 그대로 받으므로 콤마·괄호는 문제없고
+#    URL 을 깨는 & # % + 만 percent-encoding 하면 된다 (* 는 ilike 와일드카드).
+#    큰따옴표로 감싸면 오히려 따옴표까지 문자로 비교되어 빈 결과가 난다.
+#  · `or=(a.op.값,b.op.값)` / `in.(값,값)` 안에서는 콤마·괄호가 구분자라
+#    큰따옴표로 감싼 뒤 percent-encoding 해야 한다 (와일드카드 * 는 따옴표
+#    안에서도 동작).
+def qv(v) -> str:
+    """최상위 필터 값 — `f"pn=ilike.*{qv(q)}*"`, `f"customer=eq.{qv(c)}"`."""
+    return _up.quote(str(v if v is not None else ""), safe="*")
+
+
+def qo(v) -> str:
+    """or=()/and=()/in.() 안의 값 — `f"or=(pn.eq.{qo(x)},name.ilike.{qol(x)})"`."""
+    s = str(v if v is not None else "").replace("\\", "\\\\").replace('"', '\\"')
+    return _up.quote('"' + s + '"', safe="")
+
+
+def qol(v) -> str:
+    """or=() 안의 ilike 부분일치 값 — `*값*` 를 통째로 인용."""
+    return qo("*" + str(v if v is not None else "") + "*")
 
 
 def _headers(role: str = "service_role"):

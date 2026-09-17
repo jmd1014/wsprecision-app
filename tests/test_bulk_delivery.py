@@ -43,13 +43,13 @@ SOS = [{"so_id": 100, "so_number": "SO-100", "customer": "㈜엠제이티",
         "status": "CONFIRMED", "so_date": "2026-07-01", "due_date": None},
        {"so_id": 101, "so_number": "SO-101", "customer": "미진정밀",
         "status": "PARTIAL", "so_date": "2026-07-02", "due_date": None}]
-STOCK = {"P1": 1000.0, "P2": 150.0}
+STOCK = {"P1": 1000.0, "P2": 300.0}   # P2 는 회차 합 200 이상 (확정 재고 검사)
 LOTS = {"P1": [{"product_id": "P1", "lot_number": "20260801-001",
                 "remain_qty": 600},
                {"product_id": "P1", "lot_number": "20260803-001",
                 "remain_qty": 400}],
         "P2": [{"product_id": "P2", "lot_number": "20260804-001",
-                "remain_qty": 150}]}
+                "remain_qty": 300}]}
 
 # 상태 저장 mock — shipments/shipment_items 는 실제로 쌓인다
 SHIPMENTS, SHIP_ITEMS = [], []
@@ -289,6 +289,10 @@ def test_cancelled_draft_releases_items(ship_db):
     at2 = _open_shipping(ship_db)
     at2.button(key="cf_cancel").click()
     at2.run()
+    # 2단계 확인 (confirm_gate) — 실행 확정까지 눌러야 반영
+    at2.button(key="cf_cancel_cfm_ok").click()
+    at2.run()
+    assert not at2.exception, [str(e.value) for e in at2.exception]
     assert SHIPMENTS[0]["status"] == "CANCELLED"
     at3 = _open_shipping(ship_db)
     ed = next(d.value for d in at3.dataframe
@@ -352,4 +356,4 @@ def test_confirm_stock_guard(ship_db):
         assert any("완성 재고 부족" in e.value for e in at2.error)
         assert at2.button(key="cf_go").disabled
     finally:
-        STOCK["P2"] = 150.0
+        STOCK["P2"] = 300.0

@@ -458,3 +458,13 @@
 - 사이드바 "처리 중…" 칩은 런 시작에 그리고 스크립트 끝에서 지운다(`_busy_ph`).
 - 마스터 관리 › 이력 조회 탭: master_change_log·login_log 열람. 권한 분리 때 화면
   재편과 함께 이동 예정.
+
+## PostgREST 필터 값 인용 (2026-09-17 보안 점검 반영)
+- 사용자 입력·이름·날짜 등 값을 필터 문자열에 넣을 때는 반드시 헬퍼를 쓴다
+  (`db.qv/qo/qol`, 앱에서는 `_fq/_fqo/_fql` 로 import — `_qv` 는 수량 변수라 충돌).
+  - 최상위 `col=op.값` → `f"pn=ilike.*{_fq(q)}*"`, `f"customer=eq.{_fq(c)}"`
+    (percent-encoding 만. 실측: 최상위 값을 큰따옴표로 감싸면 따옴표까지 비교되어 빈 결과)
+  - `or=(...)`/`in.(...)` 안 → `f"or=(pn.ilike.{_fql(q)},name.eq.{_fqo(v)})"`
+    (큰따옴표 + percent-encoding — 콤마·괄호가 구분자라서)
+- 테스트 목(mock) 이 `filter_query.split("x=eq.")` 로 값을 파싱하므로 ID·날짜처럼
+  특수문자 없는 값은 인코딩 후에도 동일하다. 한글·괄호 값은 목에서 unquote 가 필요.

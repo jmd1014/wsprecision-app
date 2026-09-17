@@ -90,6 +90,20 @@ def test_truncation_noted(monkeypatch):
     assert noted["so_delivery_schedule"] == (300, 300)
 
 
+def test_filter_quoting():
+    # 최상위: URL 을 깨는 문자만 인코딩, * 는 와일드카드로 유지
+    assert db.qv("*A&B*") == "*A%26B*"
+    assert db.qv("(주)명진") == "%28%EC%A3%BC%29%EB%AA%85%EC%A7%84"
+    assert db.qv("2026-09-16T00:00:00+09:00") == "2026-09-16T00%3A00%3A00%2B09%3A00"
+    assert db.qv(None) == ""
+    assert db.qv(96) == "96"
+    # or=()/in.() 안: 큰따옴표로 감싸 콤마·괄호를 값으로, 따옴표는 이스케이프
+    assert db.qo("A,B") == "%22A%2CB%22"
+    assert db.qo('x"y') == "%22x%5C%22y%22"
+    # 따옴표 안의 * 도 인코딩되지만 PostgREST 는 와일드카드로 해석 (실측)
+    assert db.qol("ABV") == "%22%2AABV%2A%22"
+
+
 def test_truncation_rule():
     # 작은 limit(최근 N건) 은 의도된 것 — 기록 안 함, 상한 미만도 기록 안 함
     ss = {}

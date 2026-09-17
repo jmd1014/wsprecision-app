@@ -321,9 +321,10 @@ def test_input_cancel_action(routing_db):
                if r.options and "투입 취소" in r.options)
     _pr.set_value("투입 취소")
     at.run()
-    at.checkbox(key="pe_cx_ok").set_value(True)
-    at.run()
+    # 확인 체크박스 → 2단계 확인(confirm_gate) 로 바뀜 (2026-09): 버튼 → 실행 확정
     at.button(key="pe_cx_btn").click()
+    at.run()
+    at.button(key="pe_cx_9_cfm_ok").click()
     at.run()
     assert not at.exception, [str(e.value) for e in at.exception]
     _ev = [(t, r) for t, recs in INSERTED if t == "wo_events"
