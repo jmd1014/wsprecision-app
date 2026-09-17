@@ -559,9 +559,36 @@ if DB_AVAILABLE and not st.session_state.get("auth_user"):
                                        value=True)
                 _li_go = st.form_submit_button("로그인", type="primary",
                                                use_container_width=True)
+            def _login_log(uid, ok, note=None):
+                """로그인 기록 (Migration 065) — 실패해도 로그인은 진행"""
+                try:
+                    _hdr = {}
+                    try:
+                        _hdr = dict(st.context.headers or {})
+                    except Exception:
+                        pass
+                    _adb.insert("login_log", [{
+                        "username": (uid or "")[:80], "ok": bool(ok),
+                        "note": note,
+                        "ip": (_hdr.get("X-Forwarded-For")
+                               or _hdr.get("x-forwarded-for") or "")[:80] or None,
+                        "user_agent": (_hdr.get("User-Agent")
+                                       or _hdr.get("user-agent") or "")[:200] or None}])
+                except Exception:
+                    pass
+
             if _li_go:
-                _u = _users.get((_li_id or "").strip())
+                _uid_in = (_li_id or "").strip()
+                _u = _users.get(_uid_in)
+                _lock = _auth.lock_remaining(_uid_in)
+                if _lock > 0:
+                    st.error(f"로그인 시도가 너무 많습니다 — {_lock // 60 + 1}분 뒤 "
+                             "다시 시도하세요.")
+                    _login_log(_uid_in, False, "locked")
+                    st.stop()
                 if _u and _auth.verify_pw(_li_pw, _u.get("pw", "")):
+                    _auth.clear_fail(_uid_in)
+                    _login_log(_uid_in, True)
                     st.session_state["auth_user"] = {
                         "username": (_li_id or "").strip(),
                         "name": _u.get("name") or _li_id,
@@ -576,7 +603,14 @@ if DB_AVAILABLE and not st.session_state.get("auth_user"):
                                 _secret).encode("utf-8")).decode())
                     st.rerun()
                 else:
-                    st.error("아이디 또는 비밀번호가 맞지 않습니다.")
+                    _locked = _auth.record_fail(_uid_in)
+                    _login_log(_uid_in, False,
+                               "bad password" if _u else "unknown user")
+                    if _locked:
+                        st.error(f"아이디 또는 비밀번호가 맞지 않습니다 — {_auth.MAX_FAIL}회 "
+                                 f"실패로 {_locked // 60}분 동안 잠깁니다.")
+                    else:
+                        st.error("아이디 또는 비밀번호가 맞지 않습니다.")
             st.stop()
 
 # 자동 로그인 쿠키 — 인증된 매 런마다 다시 기록 (멱등).
@@ -586,9 +620,19 @@ if DB_AVAILABLE and not st.session_state.get("auth_user"):
 # 반드시 저장되고, 새 세션마다 토큰이 재발급되어 만료가 계속 연장된다.
 if (st.session_state.get("auth_user")
         and st.session_state.get("auth_cookie_value")):
+    # Secure 속성: HTTPS(Cloud)에서만 전송. localhost 개발 서버(http)는
+    # Secure 쿠키가 저장되지 않으므로 호스트로 구분 (2026-09-17 보안 점검)
+    try:
+        _ck_host = (dict(st.context.headers or {}).get("Host")
+                    or dict(st.context.headers or {}).get("host") or "")
+    except Exception:
+        _ck_host = ""
+    _ck_secure = ("" if _ck_host.startswith(("localhost", "127.0.0.1"))
+                  else "; Secure")
     _cookie_js(
         "document.cookie='ws_auth={}; path=/; max-age=1209600; "
-        "SameSite=Lax';".format(st.session_state["auth_cookie_value"]))
+        "SameSite=Lax{}';".format(st.session_state["auth_cookie_value"],
+                                  _ck_secure))
 
 
 # ─── 상태 표기 (영문 코드 → 한글 배지) ───

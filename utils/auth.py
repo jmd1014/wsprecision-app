@@ -16,15 +16,52 @@ import time
 
 PBKDF2_ITER = 200_000
 
-# 비밀번호 규칙 (2026-08-05 정립) — 화면 안내문과 검사를 한곳에서 관리
-PW_RULES = "6자 이상 · 앞뒤 공백 불가 · 아이디와 동일 불가 (영문·숫자·기호 자유)"
+# 비밀번호 규칙 (2026-08-05 정립, 2026-09-17 최소 8자) — 화면 안내문과 검사를
+# 한곳에서 관리. 기존 비밀번호는 그대로 유효하고 새로 정할 때만 적용된다.
+MIN_PW = 8
+PW_RULES = f"{MIN_PW}자 이상 · 앞뒤 공백 불가 · 아이디와 동일 불가 (영문·숫자·기호 자유)"
+
+# 로그인 시도 제한 (2026-09-17 보안 점검): 같은 아이디로 MAX_FAIL 회 연속
+# 실패하면 LOCK_SEC 동안 잠금. 프로세스 메모리 기준(재시작 시 초기화) —
+# 공개 주소의 무차별 대입을 늦추는 목적이라 그 정도면 충분하다.
+MAX_FAIL = 5
+LOCK_SEC = 300
+_fails: dict = {}
+
+
+def lock_remaining(username: str) -> int:
+    """잠금이면 남은 초, 아니면 0"""
+    rec = _fails.get((username or "").strip())
+    if not rec:
+        return 0
+    left = int(rec.get("until", 0) - time.time())
+    if left <= 0 and rec.get("until"):
+        _fails.pop((username or "").strip(), None)
+        return 0
+    return max(left, 0)
+
+
+def record_fail(username: str) -> int:
+    """실패 1회 기록 — 잠금이 걸리면 잠금 초, 아니면 0 을 돌려준다"""
+    key = (username or "").strip()
+    rec = _fails.setdefault(key, {"n": 0, "until": 0})
+    rec["n"] += 1
+    if rec["n"] >= MAX_FAIL:
+        rec["until"] = time.time() + LOCK_SEC
+        rec["n"] = 0
+        return LOCK_SEC
+    return 0
+
+
+def clear_fail(username: str):
+    _fails.pop((username or "").strip(), None)
 
 
 def check_password(pw: str, username: str = None):
     """규칙 위반이면 사유 문자열, 통과면 None"""
     pw = pw or ""
-    if len(pw) < 6:
-        return "6자 이상이어야 합니다."
+    if len(pw) < MIN_PW:
+        return f"{MIN_PW}자 이상이어야 합니다."
     if pw != pw.strip():
         return "앞뒤에 공백은 쓸 수 없습니다."
     if username and pw == username:

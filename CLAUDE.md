@@ -421,6 +421,14 @@
   확정하면 DB 직접 정정(일시적 오류, 기능 안 만듦). 테스트 시기 이력 정리 후보는
   메모리 test-data-cleanup-backlog 참고.
 
+- **보안 점검 반영 (2026-09-17)**: 로그인 5회 연속 실패 → 5분 잠금(`utils/auth.py`
+  `record_fail/lock_remaining/clear_fail`, 프로세스 메모리), 로그인 성공·실패·잠금은
+  `login_log`(Migration 065, IP·UA 는 프록시 헤더 있을 때만) 기록. 새 비밀번호 최소
+  8자(`MIN_PW`, 기존 비밀번호는 유효). 자동 로그인 쿠키는 localhost 가 아니면
+  `Secure` 속성. 백업 테이블 RLS 전부 켬. 미착수: 검색어를 PostgREST 필터에 넣는
+  84곳의 값 인용 처리(읽기 전용 영향), 공개 스키마 백업 테이블 정리(테스트 이력
+  정리와 함께).
+
 ## DB 작업 규칙
 
 - 스키마 변경은 Supabase MCP `apply_migration`으로 (이력 유지). 2026-09-11 기준 마이그레이션 062까지

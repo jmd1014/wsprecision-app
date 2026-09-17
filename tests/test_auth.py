@@ -55,14 +55,15 @@ def test_token_expiry():
 def test_password_rules():
     """비밀번호 규칙 (2026-08-05 정립): 6자 이상 · 앞뒤 공백 불가 ·
     아이디와 동일 불가. 그 외 문자 구성은 자유."""
-    assert auth.check_password("abc12!") is None          # 정확히 6자
+    assert auth.check_password("abc12!") is not None      # 6자 → 2026-09-17 부터 거부
+    assert auth.check_password("abc12!xy") is None        # 정확히 8자
     assert auth.check_password("한글비밀번호도됨") is None
     assert auth.check_password("abc12") is not None       # 5자
     assert auth.check_password("") is not None
     assert auth.check_password(None) is not None
     assert auth.check_password(" abc123") is not None     # 앞 공백
     assert auth.check_password("abc123 ") is not None     # 뒤 공백
-    assert auth.check_password("ab cd12") is None         # 중간 공백은 허용
+    assert auth.check_password("ab cd1234") is None         # 중간 공백은 허용
     assert auth.check_password("김민수김민수", "김민수김민수") is not None
 
 
@@ -217,7 +218,7 @@ def test_password_change_rejects_short(auth_db):
     next(b for b in at.sidebar.button
          if getattr(b, "label", "") == "변경").click()
     at.run()
-    assert any("6자 이상" in e.value for e in at.error)
+    assert any("8자 이상" in e.value for e in at.error)
 
 
 @pytestmark_app
@@ -240,7 +241,7 @@ def test_account_tab_creates_user(auth_db):
     pw = next(t for t in acct_inputs if "초기 비밀번호" in (t.label or ""))
     ids.set_value("박작업")
     name.set_value("박작업")
-    pw.set_value("wk1234!")
+    pw.set_value("wk1234!ab")
     next(b for b in at.button
          if getattr(b, "label", "") == "계정 추가").click()
     at.run()
@@ -249,7 +250,7 @@ def test_account_tab_creates_user(auth_db):
     saved = _j.loads(SAVED["app_settings"]["value"])
     assert "박작업" in saved
     assert saved["박작업"]["role"] == "worker"
-    assert auth.verify_pw("wk1234!", saved["박작업"]["pw"])
+    assert auth.verify_pw("wk1234!ab", saved["박작업"]["pw"])
 
 
 @pytestmark_app
@@ -263,7 +264,7 @@ def test_account_tab_rejects_duplicate_id(auth_db):
     next(t for t in acct_inputs
          if "아이디" in (t.label or "")).set_value("현장")
     next(t for t in acct_inputs
-         if "초기 비밀번호" in (t.label or "")).set_value("abc123!")
+         if "초기 비밀번호" in (t.label or "")).set_value("abc123!xy")
     next(b for b in at.button
          if getattr(b, "label", "") == "계정 추가").click()
     at.run()
@@ -333,3 +334,24 @@ def test_created_by_uses_logged_in_name(auth_db):
     rows = [r for t, recs in INSERTED if t == "inventory_transactions"
             for r in recs]
     assert rows and rows[-1]["created_by"] == "김민수"
+
+
+def test_password_min_length_8():
+    from utils import auth as a
+    assert a.check_password("abcdefg", "u") is not None      # 7자 → 거부
+    assert a.check_password("abcdefgh", "u") is None         # 8자 → 통과
+
+
+def test_login_lockout_after_5_fails(monkeypatch):
+    from utils import auth as a
+    a._fails.clear()
+    assert a.lock_remaining("kim") == 0
+    for i in range(4):
+        assert a.record_fail("kim") == 0
+    assert a.record_fail("kim") == a.LOCK_SEC          # 5회째 → 잠금
+    assert 0 < a.lock_remaining("kim") <= a.LOCK_SEC
+    a.clear_fail("kim")
+    assert a.lock_remaining("kim") == 0
+    # 잠금 만료 후 자동 해제
+    a.record_fail("lee"); a._fails["lee"]["until"] = 1
+    assert a.lock_remaining("lee") == 0
