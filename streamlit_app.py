@@ -1366,6 +1366,11 @@ with st.sidebar:
     page = nav_admin or nav_flow or "홈"
     if not _is_admin and page in MENU_ADMIN:
         page = "홈"
+    # 처리 중 표시 — 화면 실행 시작에 바로 그려지고 스크립트 끝에서 지운다.
+    # (클릭마다 화면 전체가 다시 실행되는 동안 멈춘 듯 보이는 것 완화, 2026-09-17)
+    _busy_ph = st.empty()
+    _busy_ph.markdown('<span class="ws-chip">처리 중…</span>',
+                      unsafe_allow_html=True)
 
     # ── 계정 ──
     if current_user():
@@ -1435,6 +1440,12 @@ with st.sidebar:
 
 
 # ─── 페이지 라우팅 ───
+# 조회 상한 감지·조회 프로파일은 화면(런) 단위 — 매 런 시작에 비우고 끝에서
+# 관리자에게 표시
+st.session_state["_fetch_truncated"] = {}
+st.session_state["_fetch_prof"] = []
+import time as _run_time
+_run_t0 = _run_time.perf_counter()
 
 if page == "홈":
     # ── 업무 진행 대시보드 (2026-07-24 개편) — 수주→출고 전 단계 요약 ──
@@ -1905,10 +1916,10 @@ elif page == "마스터 관리":
     # 점검)은 2026-08-05 제거 — 제외 규칙 자체는 DB 뷰에 내장되어
     # 계속 적용된다. 중복 자재 병합 도구는 자재 편집 하단으로 이동.
     (tab_fit, tab1, tab_prod, tab_mat, tab_bom,
-     tab_dq, tab_acct, tab_dsn) = st.tabs([
+     tab_dq, tab_acct, tab_dsn, tab_log) = st.tabs([
         "품번별 맞추기",
         "거래처 편집", "제품 편집", "자재 편집", "BOM 편집",
-        "정합 점검", "계정 관리", "디자인 데이터 내보내기"
+        "정합 점검", "계정 관리", "디자인 데이터 내보내기", "이력 조회"
     ])
 
     # ─── Tab: 정합 점검 (Migration 038, 2026-08-19) ───
@@ -5106,6 +5117,109 @@ elif page == "마스터 관리":
                 mime="application/json", use_container_width=True)
             with st.expander("미리보기 (앞부분)"):
                 st.code(_txt[:2000], language="json")
+
+    # ─── Tab: 이력 조회 (2026-09-17) — 쌓이기만 하던 기록을 보는 곳 ───
+    # 마스터 변경 이력(master_change_log) + 로그인 기록(login_log, 065).
+    # 권한 분리 때 마스터 화면 재편과 함께 옮길 수 있게 자기완결형으로 둔다.
+    with tab_log:
+        from datetime import (datetime as _lg_dt, timedelta as _lg_td,
+                              timezone as _lg_tz)
+
+        def _lg_kst(v):
+            """ISO(UTC) → 'MM-DD HH:MM' KST. 파싱 실패 시 원문."""
+            if not v:
+                return "-"
+            try:
+                d = _lg_dt.fromisoformat(str(v).replace("Z", "+00:00"))
+                if d.tzinfo is None:
+                    d = d.replace(tzinfo=_lg_tz.utc)
+                return (d.astimezone(_lg_tz(_lg_td(hours=9)))
+                        .strftime("%m-%d %H:%M"))
+            except Exception:
+                return str(v)
+
+        st.markdown("##### 마스터 변경 이력")
+        _lgc1, _lgc2 = st.columns([1, 2])
+        _lg_tbl = _lgc1.selectbox(
+            "대상", ["전체", "products", "materials", "vendors", "bom",
+                    "sales_orders", "sales_order_items", "wo_tracking"],
+            key="lg_tbl", help="변경된 테이블로 좁혀 봅니다.")
+        _lg_q = _lgc2.text_input(
+            "품번·항목·사유 검색", key="lg_q",
+            help="레코드 ID, 항목명, 사유에 포함된 글자로 거릅니다.")
+        try:
+            import db as _lg_db
+            _lg_flt = "order=changed_at.desc"
+            if _lg_tbl != "전체":
+                _lg_flt += f"&table_name=eq.{_lg_tbl}"
+            _lg_rows = _lg_db.fetch(
+                "master_change_log",
+                "changed_at,table_name,record_id,field_name,old_value,"
+                "new_value,changed_by,reason", _lg_flt, limit=500)
+        except Exception as _e:
+            _lg_rows = []
+            st.error(f"변경 이력 조회 실패: {_e}")
+        if _lg_q:
+            _q = _lg_q.strip().lower()
+            _lg_rows = [r for r in _lg_rows if _q in " ".join(
+                str(r.get(k) or "") for k in
+                ("record_id", "field_name", "reason")).lower()]
+        if _lg_rows:
+            st.caption(f"{len(_lg_rows):,}건 (최근 500건 안에서)")
+            toss_table([{
+                "시각": _lg_kst(r.get("changed_at")),
+                "테이블": r.get("table_name"),
+                "레코드": r.get("record_id"),
+                "항목": r.get("field_name"),
+                "이전": r.get("old_value"),
+                "이후": r.get("new_value"),
+                "변경자": r.get("changed_by"),
+                "사유": r.get("reason"),
+            } for r in _lg_rows[:300]], strong_cols=("레코드",), scroll=True)
+        else:
+            st.info("표시할 변경 이력이 없습니다.")
+
+        st.divider()
+        st.markdown("##### 로그인 기록")
+        _lg_only_fail = st.checkbox("실패·잠금만", key="lg_fail",
+                                    help="비밀번호 오류와 잠금 기록만 봅니다.")
+        try:
+            _ll_flt = "order=created_at.desc"
+            if _lg_only_fail:
+                _ll_flt += "&ok=eq.false"
+            _ll_rows = _lg_db.fetch(
+                "login_log", "created_at,username,ok,note,ip,user_agent",
+                _ll_flt, limit=300)
+        except Exception as _e:
+            _ll_rows = []
+            st.error(f"로그인 기록 조회 실패: {_e}")
+        if _ll_rows:
+            _ll_n_fail = sum(1 for r in _ll_rows if not r.get("ok"))
+            st.caption(f"{len(_ll_rows):,}건 · 실패 {_ll_n_fail:,}건 "
+                       "(최근 300건, 자동 로그인은 기록하지 않음)")
+
+            def _ll_result(r):
+                if r.get("ok"):
+                    return "성공"
+                return "잠금" if (r.get("note") or "") == "locked" else "실패"
+
+            def _ll_ua(u):
+                u = str(u or "")
+                for k in ("Edg/", "Chrome/", "Safari/", "Firefox/"):
+                    if k in u:
+                        return k.rstrip("/")
+                return u[:20] or "-"
+
+            toss_table([{
+                "시각": _lg_kst(r.get("created_at")),
+                "아이디": r.get("username"),
+                "결과": _ll_result(r),
+                "비고": r.get("note") if r.get("note") != "locked" else "잠금 중 시도",
+                "IP": r.get("ip"),
+                "브라우저": _ll_ua(r.get("user_agent")),
+            } for r in _ll_rows], badge_cols=("결과",), scroll=True)
+        else:
+            st.info("로그인 기록이 아직 없습니다. (2026-09-17 이후 로그인부터 쌓입니다)")
 
 
 elif page == "수주 관리":
@@ -19402,3 +19516,36 @@ elif page == "원가 확인":
 
 st.divider()
 st.caption("© 2026 우성정밀 · 부산광역시 기장군 산단4로 71")
+
+# ─── 런 종료 — 처리 중 표시 해제 + 조회 상한 도달 경고(관리자) ───
+try:
+    _busy_ph.empty()
+except Exception:
+    pass
+_trunc = st.session_state.get("_fetch_truncated") or {}
+if current_user().get("role") == "admin":
+    with st.sidebar:
+        if _trunc:
+            st.warning(
+                "조회 상한 도달 — 일부 행이 빠졌을 수 있습니다: "
+                + ", ".join(f"{t}({n:,})" for t, n in sorted(_trunc.items()))
+                + ". 해당 조회의 limit 을 올려야 합니다.")
+        # 이 화면(런)의 조회 프로파일 — 느린 화면 원인 확인용 (2026-09-17)
+        _prof = st.session_state.get("_fetch_prof") or []
+        _db_ms = sum(p[1] for p in _prof)
+        _all_ms = (_run_time.perf_counter() - _run_t0) * 1000.0
+        _hit = sum(1 for p in _prof if p[2])
+        st.caption(f"이 화면: 조회 {len(_prof)}회 (캐시 {_hit}) · "
+                   f"DB {_db_ms:,.0f}ms · 전체 {_all_ms:,.0f}ms")
+        if _prof:
+            with st.expander("조회 상세"):
+                _agg = {}
+                for _t, _ms, _c in _prof:
+                    _a = _agg.setdefault(_t, [0, 0.0, 0])
+                    _a[0] += 1
+                    _a[1] += _ms
+                    _a[2] += 1 if _c else 0
+                for _t, (_n, _ms, _c) in sorted(
+                        _agg.items(), key=lambda kv: -kv[1][1]):
+                    st.caption(f"{_t}: {_n}회 · {_ms:,.0f}ms"
+                               + (f" · 캐시 {_c}" if _c else ""))

@@ -440,3 +440,21 @@
   `db.update`는 실패 시 False만 반환하므로 앱에서는 else 분기로 오류를 반드시 표출
 - **새 테이블은 반드시 `ENABLE ROW LEVEL SECURITY`**, **새 뷰는 `WITH (security_invoker = true)`** — 정책은 만들지 않음 (anon 차단이 목적, 앱은 service_role)
 - 파괴적 변경 전 백업 테이블(`*_backup_MMDD`) 생성 관례 유지
+
+## 읽기 캐시·조회 상한 (2026-09-17 성능 조치)
+- `db.fetch` 는 모든 조회를 `st.cache_data` 로 캐시한다 — 마스터(`db.CACHED_TABLES`:
+  products, materials, vendors, bom, product_routing, product_op_std,
+  product_op_machine, machines, customer_part_mapping) 5분, 그 외 60초. 이 모듈의
+  insert/update/delete 는 테이블과 무관하게 캐시 **전체**를 비우므로(뷰·파생 데이터
+  정합) 앱 안에서 일어난 변경은 항상 즉시 보인다. 실측(2026-09-17): 화면 시간의 95%
+  가 DB 왕복(회당 ~240ms × 20~30회) 이라 캐시 적중 시 화면이 1초 안쪽.
+  - 쓰기는 반드시 db.py 를 거칠 것 (requests 직접 호출 금지 — 캐시가 못 비움).
+  - MCP 등 외부 SQL 로 고친 값은 최대 TTL 만큼 늦게 보인다: 급하면 `db.clear_cache()`.
+  - 특정 호출만 캐시를 끄려면 `fetch(..., cache=False)` (예: 방금 쓴 값을 다른 경로로
+    바꾼 뒤 재확인).
+- limit ≥ 200 인 조회가 limit 만큼 꽉 차서 오면 세션 `_fetch_truncated` 에 기록되고
+  런 끝에 관리자 사이드바에 경고가 뜬다. 경고가 보이면 해당 조회의 limit 을 올린다
+  (조용한 절단 방지). 최근 N건 목적의 작은 limit 은 대상 아님.
+- 사이드바 "처리 중…" 칩은 런 시작에 그리고 스크립트 끝에서 지운다(`_busy_ph`).
+- 마스터 관리 › 이력 조회 탭: master_change_log·login_log 열람. 권한 분리 때 화면
+  재편과 함께 이동 예정.

@@ -6,6 +6,7 @@ Supabase REST API 직접 호출 (supabase-py 대신 requests 사용)
 import streamlit as st
 import requests
 import json
+import time
 
 
 def _headers(role: str = "service_role"):
@@ -107,8 +108,30 @@ def debug_check() -> dict:
     return info
 
 
-def fetch(table: str, select: str = "*", filter_query: str = "", limit: int = 1000) -> list:
-    """SELECT — 페이지네이션은 호출자가 처리"""
+# ─── 읽기 캐시 (2026-09-17 성능 조치) ───
+# 마스터성 테이블은 읽기가 잦고(화면당 20~60 회 왕복 × 220ms) 쓰기는 드물다.
+# 프로세스 공유 캐시(st.cache_data) 로 5분 보관하고, 이 모듈을 거치는
+# insert/update/delete 가 그 테이블을 건드리면 즉시 비운다. 원장·작업지시·
+# 수주처럼 매 처리마다 바뀌는 테이블은 캐시하지 않는다. MCP 등 외부 SQL 로
+# 마스터를 고친 경우는 TTL(5분) 후 반영 — 급하면 clear_cache().
+CACHED_TABLES = frozenset({
+    "products", "materials", "vendors", "bom", "product_routing",
+    "product_op_std", "product_op_machine", "machines",
+    "customer_part_mapping",
+})
+CACHE_TTL = 300
+# 그 외(원장·작업지시·수주·뷰) 도 짧게 캐시한다 (2026-09-17 실측: 화면 시간의
+# 95% 가 DB 왕복, 화면당 20~30회 × 240ms). 이 앱의 모든 쓰기는 이 모듈을 거치므로
+# 어떤 테이블이든 쓰기가 일어나면 캐시 전체를 비워 앱 안에서는 항상 최신이다.
+# 외부(MCP SQL 등) 변경만 최대 TTL 만큼 늦게 보인다.
+CACHE_TTL_TX = 60
+
+# 조회 상한 감지: limit 이상 행이 오면(= 딱 맞게 잘렸을 가능성) 세션에 기록.
+# 작은 limit(최근 N건 조회) 은 의도된 것이라 제외. 화면 끝에서 관리자에게 표시.
+TRUNC_MIN_LIMIT = 200
+
+
+def _fetch_raw(table: str, select: str, filter_query: str, limit: int) -> list:
     url = f"{_url()}/rest/v1/{table}?select={select}&limit={limit}"
     if filter_query:
         url += f"&{filter_query}"
@@ -116,6 +139,58 @@ def fetch(table: str, select: str = "*", filter_query: str = "", limit: int = 10
     if r.status_code not in (200, 206):
         raise RuntimeError(f"{table} fetch {r.status_code}: {r.text[:200]}")
     return r.json()
+
+
+@st.cache_data(ttl=CACHE_TTL, show_spinner=False)
+def _fetch_cached(table: str, select: str, filter_query: str, limit: int) -> list:
+    return _fetch_raw(table, select, filter_query, limit)
+
+
+@st.cache_data(ttl=CACHE_TTL_TX, show_spinner=False)
+def _fetch_cached_tx(table: str, select: str, filter_query: str, limit: int) -> list:
+    return _fetch_raw(table, select, filter_query, limit)
+
+
+def clear_cache():
+    """읽기 캐시 전체 비우기 (이 모듈의 모든 쓰기 후 자동, 외부 변경 시 수동)."""
+    for f in (_fetch_cached, _fetch_cached_tx):
+        try:
+            f.clear()
+        except Exception:
+            pass
+
+
+def _note_truncation(table: str, limit: int, n: int):
+    if limit < TRUNC_MIN_LIMIT or n < limit:
+        return
+    try:
+        st.session_state.setdefault("_fetch_truncated", {})[table] = limit
+    except Exception:
+        pass
+
+
+def fetch(table: str, select: str = "*", filter_query: str = "",
+          limit: int = 1000, cache: bool | None = None) -> list:
+    """SELECT — 페이지네이션은 호출자가 처리.
+
+    cache: None 이면 캐시(마스터 5분, 그 외 60초), False 로 끄기.
+    """
+    use_cache = True if cache is None else bool(cache)
+    t0 = time.perf_counter()
+    if not use_cache:
+        rows = _fetch_raw(table, select, filter_query, limit)
+    elif table in CACHED_TABLES:
+        rows = _fetch_cached(table, select, filter_query, limit)
+    else:
+        rows = _fetch_cached_tx(table, select, filter_query, limit)
+    _note_truncation(table, limit, len(rows))
+    # 런 단위 조회 프로파일 (관리자 사이드바 진단용) — (테이블, ms, 캐시여부)
+    try:
+        st.session_state.setdefault("_fetch_prof", []).append(
+            (table, (time.perf_counter() - t0) * 1000.0, use_cache))
+    except Exception:
+        pass
+    return rows
 
 
 def fetch_one(table: str, filter_query: str, select: str = "*"):
@@ -133,6 +208,7 @@ def insert(table: str, records: list[dict]) -> int:
     )
     if r.status_code not in (200, 201, 204):
         raise RuntimeError(f"{table} insert {r.status_code}: {r.text[:200]}")
+    clear_cache()
     return len(records)
 
 
@@ -142,6 +218,7 @@ def update(table: str, filter_query: str, fields: dict) -> bool:
         headers={**_headers(), "Prefer": "return=minimal"},
         data=json.dumps(fields, ensure_ascii=False, default=str),
     )
+    clear_cache()
     return r.status_code in (200, 204)
 
 
@@ -155,6 +232,7 @@ def delete(table: str, filter_query: str) -> int:
     )
     if r.status_code not in (200, 204):
         raise RuntimeError(f"{table} delete {r.status_code}: {r.text[:200]}")
+    clear_cache()
     try:
         return len(r.json())
     except Exception:
