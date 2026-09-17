@@ -1456,6 +1456,9 @@ if page == "홈":
         st.warning("Streamlit Cloud Secrets 등록이 완료되지 않았습니다.")
         st.info("**share.streamlit.io → Settings → Secrets**에 Supabase 키를 "
                 "등록하면 활성화됩니다.")
+        # DB 모듈 임포트 자체가 실패한 경우 원인 표시 (2026-09-17 배포 진단)
+        import sys as _dsys
+        st.code(f"python {_dsys.version.split()[0]} · {globals().get('DB_ERROR', '-')}")
         st.stop()
 
     import pandas as pd
