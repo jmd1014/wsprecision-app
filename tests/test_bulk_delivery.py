@@ -357,3 +357,53 @@ def test_confirm_stock_guard(ship_db):
         assert at2.button(key="cf_go").disabled
     finally:
         STOCK["P2"] = 300.0
+
+
+def test_add_lines_to_open_draft(ship_db):
+    """작성중 전표에 추가 (2026-09-18): 같은 출고일 작성중 전표가 있으면
+    담기 표 아래 '…에 추가' 버튼이 생기고, 누르면 그 전표에 라인이 붙는다."""
+    at = _open_shipping(ship_db)
+    _register(at)                       # 3회차 → 전표 1 (DRAFT)
+    assert len(SHIPMENTS) == 1
+    _n0 = len([x for x in SHIP_ITEMS if x["shipment_id"] == 1])
+    # 새 수주 라인 1건 추가 (전표에 없는 라인 → 담기 표에 나타남)
+    SOS.append({"so_id": 102, "so_number": "SO-102", "customer": "미진정밀",
+                "status": "CONFIRMED", "so_date": "2026-07-03",
+                "due_date": None})
+    LINES[13] = {"soi_id": 13, "so_id": 102, "canonical_pn": "4PDVN-03",
+                 "customer_part_no": None, "customer_item_name": None,
+                 "product_id": "P1", "qty": 100, "received_qty": 0,
+                 "pending_qty": 100, "unit": "EA", "unit_price": 1000,
+                 "due_date": None}
+    ROUNDS.append({"sched_id": 4, "soi_id": 13, "so_id": 102, "seq": 1,
+                   "due_date": TODAY, "qty": 100, "delivered_qty": 0})
+    try:
+        at2 = _open_shipping(ship_db)
+        assert not any(getattr(b, "key", None) == "ship_reg" and b.disabled
+                       for b in at2.button)
+        at2.button(key="ship_add_draft").click()
+        at2.run()
+        assert not at2.exception, [str(e.value) for e in at2.exception]
+        assert len(SHIPMENTS) == 1, "새 전표가 생기면 안 됨"
+        _n1 = len([x for x in SHIP_ITEMS if x["shipment_id"] == 1])
+        assert _n1 == _n0 + 1
+        assert any(x["soi_id"] == 13 for x in SHIP_ITEMS)
+    finally:
+        SOS.pop()
+        LINES.pop(13, None)
+        ROUNDS.pop()
+
+
+def test_empty_draft_can_be_cancelled(ship_db):
+    """품목이 모두 빠진 작성중 전표(SH-20260916-02 사례)도 취소할 수 있다."""
+    SHIPMENTS.append({"shipment_id": 1, "ship_no": f"SH-{TODAY.replace('-', '')}-01",
+                      "ship_date": TODAY, "status": "DRAFT",
+                      "created_by": "테스트"})
+    at = _open_shipping(ship_db)
+    assert any("품목이 없습니다" in (i.value or "") for i in at.info)
+    at.button(key="cf_cancel_empty").click()
+    at.run()
+    at.button(key="cf_cancel_empty_cfm_ok").click()
+    at.run()
+    assert not at.exception, [str(e.value) for e in at.exception]
+    assert SHIPMENTS[0]["status"] == "CANCELLED"

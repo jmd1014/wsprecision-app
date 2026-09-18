@@ -7836,9 +7836,10 @@ elif page == "출고 관리":
         # 담기 목록에서 제외한다 (2026-08-08 사용자 확정 — 두 전표를
         # 모두 확정하면 이중 출고가 되므로). 전표를 취소하면 다시 뜬다.
         _draft_sois = {}
+        _open_drafts = []
         try:
-            _open_drafts = fetch("shipments", "shipment_id,ship_no",
-                                 "status=eq.DRAFT", limit=50)
+            _open_drafts = fetch("shipments", "shipment_id,ship_no,ship_date",
+                                 "status=eq.DRAFT&order=ship_no.desc", limit=50)
             if _open_drafts:
                 _d_ids = ",".join(str(s["shipment_id"])
                                   for s in _open_drafts)
@@ -7851,6 +7852,7 @@ elif page == "출고 관리":
                             x["soi_id"], _d_no.get(x["shipment_id"], "-"))
         except Exception:
             _draft_sois = {}
+            _open_drafts = []
 
         # 스케줄 자동 리스트업
         _sh_flt = ("due_date=lte." if _sh_late
@@ -7868,8 +7870,9 @@ elif page == "출고 관리":
                         if r["soi_id"] in _draft_sois}
             if _sh_held:
                 st.info("작성중 전표에 이미 담긴 {}개 라인은 목록에서 "
-                        "제외했습니다 ({}) — 수정은 출고 전표 탭에서, "
-                        "다시 담으려면 해당 전표를 취소하세요.".format(
+                        "제외했습니다 ({}) — 수량 수정은 출고 전표 탭에서. "
+                        "다른 라인을 그 전표에 더 넣으려면 아래 "
+                        "'…에 추가' 버튼을 쓰세요.".format(
                             len(_sh_held),
                             ", ".join(sorted(set(_sh_held.values())))))
         except Exception as e:
@@ -8060,7 +8063,72 @@ elif page == "출고 관리":
                 _sh_sel.append((_it, min(_bq, _it["cap"])))
             _sh_total = sum(q for _, q in _sh_sel)
 
-            _rg1, _rg2 = st.columns([1, 1])
+            # 품목 행 payload — 새 전표 생성과 작성중 전표 추가가 공유
+            def _sh_build_items(_sid):
+                return [{
+                    "shipment_id": _sid,
+                    "soi_id": it["li"]["soi_id"],
+                    "so_id": it["so"]["so_id"],
+                    "sched_id": (it["r"]["sched_id"]
+                                 if it.get("r") else None),
+                    "product_id": it["li"].get("product_id"),
+                    "pn": it["pn"],
+                    "customer_pn":
+                        it["li"].get("customer_part_no")
+                        or it["pn"],
+                    "item_name":
+                        it["li"].get("customer_item_name"),
+                    "customer": it["so"].get("customer") or "-",
+                    "so_number":
+                        it["so"].get("so_number") or "-",
+                    "qty": _q9,
+                    "unit": it["li"].get("unit") or "EA",
+                    "unit_price": it["li"].get("unit_price"),
+                } for it, _q9 in _sh_sel]
+
+            # 같은 출고일의 작성중 전표 — 있으면 '그 전표에 추가' 제공
+            # (2026-09-18 사용자 요청: 작성을 마친 전표에 품목을 더 넣을 때
+            # 취소 후 재등록하지 않도록). 확정 전표에는 추가하지 않는다 —
+            # 확정은 수주 반영·재고 차감·명세서 발행이 묶여 있어 추가분은
+            # 새 전표로.
+            _sh_add_tg = [d for d in _open_drafts
+                          if str(d.get("ship_date") or "")
+                          == _sh_ship_d.isoformat()]
+            if _sh_add_tg:
+                _rg1, _rga, _rg2 = st.columns([1, 1, 1])
+                if len(_sh_add_tg) > 1:
+                    _sh_add_no = _rga.selectbox(
+                        "추가할 작성중 전표",
+                        [d["ship_no"] for d in _sh_add_tg],
+                        key="ship_add_draft_pick",
+                        label_visibility="collapsed")
+                else:
+                    _sh_add_no = _sh_add_tg[0]["ship_no"]
+                _sh_add_row = next(d for d in _sh_add_tg
+                                   if d["ship_no"] == _sh_add_no)
+                if _rga.button(
+                        f"{_sh_add_no}에 추가 ({_sh_total:,.0f} · "
+                        f"{len(_sh_sel)}건)",
+                        key="ship_add_draft", use_container_width=True,
+                        disabled=_sh_total <= 0,
+                        help="같은 출고일의 작성중 전표에 담은 라인을 "
+                             "붙입니다. 전표 번호는 그대로이고, 확정 "
+                             "전이라 아무것도 차감되지 않습니다.") \
+                        and click_guard("ship_add_draft"):
+                    try:
+                        _db.insert("shipment_items",
+                                   _sh_build_items(
+                                       _sh_add_row["shipment_id"]))
+                        st.session_state["ship_manual"] = []
+                        st.session_state["ship_edits"] = {}
+                        st.session_state["ship_open_no"] = _sh_add_no
+                        st.success(f"{_sh_add_no}에 {len(_sh_sel)}건 추가 — "
+                                   "출고 전표 탭에서 확인하세요.")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"전표 추가 실패: {e}")
+            else:
+                _rg1, _rg2 = st.columns([1, 1])
             if _rg1.button(
                     f"출고 등록 — 전표 생성 ({_sh_total:,.0f} · "
                     f"{len(_sh_sel)}건)",
@@ -8111,26 +8179,8 @@ elif page == "출고 관리":
                         _srow = _db.fetch_one("shipments",
                                               f"ship_no=eq.{_fq(_ship_no)}",
                                               "shipment_id")
-                        _db.insert("shipment_items", [{
-                            "shipment_id": _srow["shipment_id"],
-                            "soi_id": it["li"]["soi_id"],
-                            "so_id": it["so"]["so_id"],
-                            "sched_id": (it["r"]["sched_id"]
-                                         if it.get("r") else None),
-                            "product_id": it["li"].get("product_id"),
-                            "pn": it["pn"],
-                            "customer_pn":
-                                it["li"].get("customer_part_no")
-                                or it["pn"],
-                            "item_name":
-                                it["li"].get("customer_item_name"),
-                            "customer": it["so"].get("customer") or "-",
-                            "so_number":
-                                it["so"].get("so_number") or "-",
-                            "qty": _q9,
-                            "unit": it["li"].get("unit") or "EA",
-                            "unit_price": it["li"].get("unit_price"),
-                        } for it, _q9 in _sh_sel])
+                        _db.insert("shipment_items",
+                                   _sh_build_items(_srow["shipment_id"]))
                         st.session_state["ship_manual"] = []
                         st.session_state["ship_edits"] = {}
                         st.session_state["ship_open_no"] = _ship_no
@@ -8624,6 +8674,34 @@ elif page == "출고 관리":
 
             if not _cf_items:
                 st.info("전표에 품목이 없습니다.")
+                if _cf_pick.get("status") == "DRAFT":
+                    # 품목이 모두 빠진 작성중 전표 — 취소할 길이 없어
+                    # 남아 있던 문제 (SH-20260916-02). 아무것도 차감하지
+                    # 않은 상태라 취소만 하면 된다.
+                    st.caption("품목이 모두 빠진 작성중 전표입니다. 취소하면 "
+                               "목록에서 사라지고, 다시 담으려면 출고 등록 "
+                               "탭에서 새 전표를 만들거나 다른 작성중 "
+                               "전표에 추가하세요.")
+                    if st.button("전표 취소", key="cf_cancel_empty"):
+                        st.session_state["cfm_cf_cancel_empty"] = True
+                    if (st.session_state.get("cfm_cf_cancel_empty")
+                            and confirm_gate(
+                                "cf_cancel_empty",
+                                f"{_cf_pick['ship_no']} 빈 작성중 전표를 "
+                                "취소합니다.")):
+                        try:
+                            from datetime import datetime as _cx_now0
+                            _db.update("shipments",
+                                       "shipment_id=eq.{}".format(
+                                           _cf_pick["shipment_id"]),
+                                       {"status": "CANCELLED",
+                                        "cancelled_at":
+                                        _cx_now0.now().isoformat(),
+                                        "cancel_reason": "작성중 취소 (품목 없음)"})
+                            st.success("전표 취소됨")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"취소 실패: {e}")
             elif _cf_pick.get("status") == "CANCELLED":
                 import pandas as _cf_pd
                 toss_df(_cf_pd.DataFrame([{
@@ -8831,7 +8909,15 @@ elif page == "출고 관리":
                                    "등록에서 다시 담기)",
                               use_container_width=True):
                     _n_upd, _n_del = 0, 0
-                    for _bi, _brow in _cf_ed.iterrows():
+                    # 전 라인 제외 = 빈 전표 (2026-09-16 SH-20260916-02 사례):
+                    # 비우려면 '전표 취소' 로 — 여기서는 차단
+                    _n_keep = sum(1 for _, _r9 in _cf_ed.iterrows()
+                                  if bool(_r9.get("선택")))
+                    if _n_keep == 0:
+                        st.error("모든 줄을 제외할 수는 없습니다 — 전표를 "
+                                 "비우려면 아래 '전표 취소'를 누르세요.")
+                    for _bi, _brow in ([] if _n_keep == 0
+                                       else list(_cf_ed.iterrows())):
                         _x = _cf_items[int(_bi)]
                         if not bool(_brow.get("선택")):
                             try:
@@ -8851,8 +8937,9 @@ elif page == "출고 관리":
                                 _n_upd += 1
                             except Exception:
                                 pass
-                    st.success(f"정정 저장 — 수정 {_n_upd} · 제외 {_n_del}")
-                    st.rerun()
+                    if _n_keep > 0:
+                        st.success(f"정정 저장 — 수정 {_n_upd} · 제외 {_n_del}")
+                        st.rerun()
                 _cf_over = ac3.checkbox("재고 없이 출고 허용",
                                         value=False, key="cf_over",
                                         help="ERP 이관 전 생산분 등 — "
