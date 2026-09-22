@@ -61,8 +61,11 @@ def _mock_fetch(table, select="*", filter_query="", limit=1000):
         return ITEMS
     if table == "materials" and "not.like.M" in filter_query:
         from urllib.parse import unquote   # 필터 값은 URL 인코딩되어 온다
-        if "절삭" in unquote(filter_query):
+        fq = unquote(filter_query)
+        if "절삭" in fq:
             return MATERIALS_C
+        if "main_supplier=eq." in fq:      # 검색어 없이 → 주공급사 자재 전체
+            return MATERIALS_C if "삼경" in fq else []
         return []
     return []   # products 등 — 마스터에는 아무것도 없음
 
@@ -141,6 +144,30 @@ def test_adhoc_history_listed_without_query(mocked_db):
     assert "자재 이력" in txt, "자재에 연결된 이력(습동유 C001)은 '자재 이력'"
     assert "직접 입력 이력" in txt, "미연결 이력은 '직접 입력 이력'"
     assert "26-0904" in txt, "최근 발주가 최신(26-0904) 이어야 함"
+    # 주공급사가 이 거래처인 마스터 자재(절삭유 C002)는 자재 행으로, 같은 이름의
+    # 이력 행은 중복 없이 한 줄만
+    assert "자재 · 소모품" in txt and txt.count("절삭유") == 1
+
+
+def test_vendor_without_history_lists_its_master_materials(mocked_db):
+    """앱 발주 이력이 없는 거래처(두리처럼)도 검색어 없이 [검색] → 주공급사가 그
+    거래처인 자재 전체가 나온다 (2026-09-22 사용자: 조회 안 됨)."""
+    global POS, ITEMS
+    saved = (POS, ITEMS)
+    POS, ITEMS = [], []
+    try:
+        # 주공급사 필터에 걸리도록 거래처명을 삼경으로 유지 (mock 조건)
+        at = _open_po_page()
+        cb = [c for c in at.checkbox if str(c.key).startswith("po_vh_only")]
+        assert cb and cb[0].value is False and "0종" in cb[0].label
+        [b for b in at.button if b.label == "검색"][0].click().run()
+        assert not at.exception, [str(e.value) for e in at.exception]
+        assert any(b.label == "체크한 품목 담기" for b in at.button), \
+            "이력 없는 거래처도 주공급사 자재 목록이 나와야 함"
+        txt = _grid_texts(at)
+        assert "절삭유" in txt and "자재 · 소모품" in txt
+    finally:
+        POS, ITEMS = saved
 
 
 def test_query_finds_master_material_and_dedups_history(mocked_db):

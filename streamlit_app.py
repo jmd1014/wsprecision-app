@@ -12321,7 +12321,8 @@ elif page == "발주/입고":
                     f"이 거래처 이력만 ({len(_vh_pns)}종)",
                     value=bool(_vh_pns),
                     key=f"po_vh_only_{vendor['vendor_id']}")
-                sq3.form_submit_button("검색", use_container_width=True)
+                _search_go = sq3.form_submit_button("검색",
+                                                    use_container_width=True)
             _res = []
             _mat_res = []   # 자재 마스터(C###) 검색 결과
             if search_q and len(search_q.strip()) >= 2:
@@ -12354,7 +12355,24 @@ elif page == "발주/입고":
                 if _vh_only and _vh_pns:
                     _mat_res = [m for m in _mat_res
                                 if m["raw_name"] in _vh_pns]
-            elif _vh_pns and _vh_only:
+            else:
+                # 검색어 없이 [검색] → 이 거래처가 주공급사인 비생산 자재(C/T)
+                # 전체 — 두리T.M.S 처럼 앱 발주 이력은 없고 마스터에만 공구가
+                # 있는 거래처도 목록이 나오게 (2026-09-22 사용자: 조회 안 됨)
+                try:
+                    _mat_res = fetch(
+                        "materials",
+                        "material_id,raw_name,material_type,spec,main_supplier",
+                        f"archived_at=is.null&material_id=not.like.M*"
+                        f"&main_supplier=eq.{_fq(vendor['name'])}"
+                        "&order=raw_name", limit=300)
+                except Exception:
+                    _mat_res = []
+                if len(_mat_res) >= 300:
+                    st.info("이 거래처 자재가 300건을 넘습니다 — 검색어로 좁히면 "
+                            "전부 찾을 수 있습니다.")
+            if not (search_q and len(search_q.strip()) >= 2) \
+                    and _vh_pns and _vh_only:
                 # 검색어 없이 [검색] → 이 거래처 이력 품번 전체
                 try:
                     _pn_list = sorted(_vh_pns)
@@ -12376,7 +12394,7 @@ elif page == "발주/입고":
             _hist_rows = []
             _hist_arch = []
             _searched = bool(search_q and len(search_q.strip()) >= 2) or \
-                bool(_vh_pns and _vh_only)
+                bool(_vh_pns and _vh_only) or bool(_mat_res)
             if _searched and _vh_hist:
                 _q9 = (search_q or "").strip().lower()
                 _res_pns = {p["pn"] for p in _res}
@@ -12431,6 +12449,10 @@ elif page == "발주/입고":
                 st.warning("이력 중 휴면 제품 {}건은 제외: {} — 마스터 관리에서 "
                            "활성 복귀 후 발주하세요.".format(
                                len(_hist_arch), ", ".join(_hist_arch[:8])))
+            elif _search_go and not search_q and not _res and not _mat_res \
+                    and not _hist_rows:
+                st.info("이 거래처가 주공급사인 자재도, 앱 발주 이력도 없습니다 — "
+                        "품번·자재명으로 검색하거나 아래 '직접 입력'을 이용하세요.")
 
             if _res or _mat_res or _hist_rows:
                 _in_cart = {it.get("product_id")
