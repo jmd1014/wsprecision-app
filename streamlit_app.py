@@ -3582,16 +3582,37 @@ elif page == "마스터 관리":
                                 st.rerun()
                             except Exception as e:
                                 st.error(f"처리 실패: {e}")
+        # ── 구분별 관리 (2026-09-22 사용자 요청): 소재(M###)는 재질·규격·조달·
+        # 재고, 소모품·포장재(C###)·공구(T###)는 자재명·규격·구분·주공급사만.
+        # 카테고리가 달라 목록·상세·신규 등록을 따로 보여 준다 ──
+        _MAT_KINDS = {"소재": "M", "소모품·포장재": "C", "공구": "T"}
+        _mat_kind = st.radio("자재 구분", list(_MAT_KINDS), horizontal=True,
+                             key="mat_kind", label_visibility="collapsed")
+        _mat_prefix = _MAT_KINDS[_mat_kind]
+        _mat_is_stock = _mat_kind == "소재"
+        # 비생산 자재의 구분(material_type) 선택지
+        _mat_type_opts = (["소모품", "포장재"] if _mat_prefix == "C"
+                          else ["공구"] if _mat_prefix == "T" else [])
+
         # 검색 폼 — [검색] 한 번에 조회 (2026-09-02)
         with st.form("mat_filter_form"):
             mc1, mc2, mc3, mc4 = st.columns([2, 2, 1, 1])
             with mc1:
                 mat_q = st.text_input("자재 검색",
-                                      placeholder="예: STS304, 환봉, 8HFDV",
+                                      placeholder=("예: STS304, 환봉, 8HFDV"
+                                                   if _mat_is_stock else
+                                                   "예: 절삭유, 엔드밀, VBMT"),
                                       key="mat_f_q")
             with mc2:
-                mat_type_q = st.text_input("재질 필터", placeholder="예: SUS304",
-                                           key="mat_f_type")
+                if _mat_is_stock:
+                    mat_type_q = st.text_input("재질 필터", placeholder="예: SUS304",
+                                               key="mat_f_type")
+                elif len(_mat_type_opts) > 1:
+                    mat_type_q = st.selectbox("구분 필터", ["전체"] + _mat_type_opts,
+                                              key="mat_f_kind")
+                    mat_type_q = "" if mat_type_q == "전체" else mat_type_q
+                else:
+                    mat_type_q = ""
             with mc3:
                 mat_limit = st.number_input("행수", 20, 500, 100, 20,
                                             key="mat_f_lim")
@@ -3601,7 +3622,7 @@ elif page == "마스터 관리":
                 st.form_submit_button("검색", type="primary",
                                       use_container_width=True)
 
-        mfq = ["order=material_id.asc"]
+        mfq = ["order=material_id.asc", f"material_id=like.{_mat_prefix}*"]
         if mat_q:
             q = mat_q.strip()
             # raw_name / material_id / material_type / spec / main_supplier 모두 OR 검색
@@ -3622,16 +3643,26 @@ elif page == "마스터 관리":
         if mrows:
             # ── 리스트에서 행 선택 → 아래 상세 편집 (2026-08-20 공통
             # 문법, 일괄 수정용 편집 표는 expander 보조) ──
-            _md_i = toss_grid([{
-                "자재ID": r["material_id"],
-                "자재명": r.get("raw_name") or "-",
-                "재질": r.get("material_type") or "-",
-                "규격": r.get("spec") or "-",
-                "재고": float(r.get("stock_qty") or 0),
-                "주공급사": r.get("main_supplier") or "-",
-                "조달": r.get("procurement_type") or "-",
-            } for r in mrows], key="mat_grid",
-                num_cols=("재고",), strong_cols=("자재명",))
+            if _mat_is_stock:
+                _md_i = toss_grid([{
+                    "자재ID": r["material_id"],
+                    "자재명": r.get("raw_name") or "-",
+                    "재질": r.get("material_type") or "-",
+                    "규격": r.get("spec") or "-",
+                    "재고": float(r.get("stock_qty") or 0),
+                    "주공급사": r.get("main_supplier") or "-",
+                    "조달": r.get("procurement_type") or "-",
+                } for r in mrows], key="mat_grid",
+                    num_cols=("재고",), strong_cols=("자재명",))
+            else:
+                _md_i = toss_grid([{
+                    "자재ID": r["material_id"],
+                    "구분": r.get("material_type") or "-",
+                    "자재명": r.get("raw_name") or "-",
+                    "규격": r.get("spec") or "-",
+                    "주공급사": r.get("main_supplier") or "-",
+                } for r in mrows], key=f"mat_grid_{_mat_prefix}",
+                    strong_cols=("자재명",))
             _md = mrows[_md_i if _md_i is not None else 0]
             _mid = _md["material_id"]
             # 선택·값이 바뀌면 카드 입력 기본값 리셋 (2026-08-27)
@@ -3642,21 +3673,25 @@ elif page == "마스터 관리":
                 tuple(f"md_{p}_{_mid}" for p in (
                     "nm", "ty", "sp", "pr", "su")))
             st.markdown(f"##### {_md['raw_name']} ({_mid}) — 상세 편집")
-            st.caption(
-                f"재고 {float(_md.get('stock_qty') or 0):,.1f} "
-                f"{_md.get('unit') or 'EA'} — 재고의 진실은 원장"
-                "(입고·투입·조정). 직접 정정이 필요하면 일괄 편집 표 "
-                "또는 품번별 맞추기에서.")
-            # 이 자재를 쓰는 제품 — BOM 소재행 역조회 (2026-09-01 사용자 요청)
-            try:
-                _mu_bom = fetch("bom",
-                    "product_id,qty_per_pc,shared_factor,process_type",
-                    f"material_id=eq.{_fq(_mid)}", limit=200)
-                _mu_bom = [b for b in _mu_bom
-                           if (b.get("process_type") or "MATERIAL")
-                           == "MATERIAL" and b.get("product_id")]
-            except Exception:
-                _mu_bom = []
+            if _mat_is_stock:
+                st.caption(
+                    f"재고 {float(_md.get('stock_qty') or 0):,.1f} "
+                    f"{_md.get('unit') or 'EA'} — 재고의 진실은 원장"
+                    "(입고·투입·조정). 직접 정정이 필요하면 일괄 편집 표 "
+                    "또는 품번별 맞추기에서.")
+            # 이 자재를 쓰는 제품 — BOM 소재행 역조회 (2026-09-01 사용자 요청).
+            # 비생산 자재는 BOM 에 안 들어가므로 생략
+            _mu_bom = []
+            if _mat_is_stock:
+                try:
+                    _mu_bom = fetch("bom",
+                        "product_id,qty_per_pc,shared_factor,process_type",
+                        f"material_id=eq.{_fq(_mid)}", limit=200)
+                    _mu_bom = [b for b in _mu_bom
+                               if (b.get("process_type") or "MATERIAL")
+                               == "MATERIAL" and b.get("product_id")]
+                except Exception:
+                    _mu_bom = []
             if _mu_bom:
                 _mu_pids = sorted({b["product_id"] for b in _mu_bom})
                 _mu_in = ",".join(f'"{p}"' for p in _mu_pids)
@@ -3701,32 +3736,50 @@ elif page == "마스터 관리":
                     toss_df(pd.DataFrame(_mu_rows),
                             use_container_width=True, hide_index=True,
                             height=min(300, 60 + len(_mu_rows) * 35))
-            else:
+            elif _mat_is_stock:
                 st.caption("이 자재를 소재로 쓰는 BOM 제품 없음")
             # st.form — 입력마다 rerun 하지 않고 저장 때 한 번만
             with st.form(f"md_form_{_mid}"):
-                me1, me2, me3 = st.columns(3)
-                _md_name = me1.text_input("자재명 *",
-                    value=_md.get("raw_name") or "", key=f"md_nm_{_mid}")
-                _md_type = me2.text_input("재질",
-                    value=_md.get("material_type") or "",
-                    key=f"md_ty_{_mid}",
-                    help="입고 라벨의 '재질' 칸에 그대로 인쇄됩니다 — "
-                         "예: S304, SUS630")
-                _md_spec = me3.text_input("규격",
-                    value=_md.get("spec") or "", key=f"md_sp_{_mid}",
-                    help="입고 라벨의 '사이즈' 칸에 그대로 인쇄됩니다")
-                me4, me5 = st.columns([1, 2])
-                _md_proc_opts = ["", "도급", "사급"]
-                _md_proc = me4.selectbox("조달유형", _md_proc_opts,
-                    index=(_md_proc_opts.index(
-                               _md.get("procurement_type"))
-                           if _md.get("procurement_type")
-                           in _md_proc_opts else 0),
-                    key=f"md_pr_{_mid}")
-                _md_sup = me5.text_input("주공급사",
-                    value=_md.get("main_supplier") or "",
-                    key=f"md_su_{_mid}")
+                if _mat_is_stock:
+                    me1, me2, me3 = st.columns(3)
+                    _md_name = me1.text_input("자재명 *",
+                        value=_md.get("raw_name") or "", key=f"md_nm_{_mid}")
+                    _md_type = me2.text_input("재질",
+                        value=_md.get("material_type") or "",
+                        key=f"md_ty_{_mid}",
+                        help="입고 라벨의 '재질' 칸에 그대로 인쇄됩니다 — "
+                             "예: S304, SUS630")
+                    _md_spec = me3.text_input("규격",
+                        value=_md.get("spec") or "", key=f"md_sp_{_mid}",
+                        help="입고 라벨의 '사이즈' 칸에 그대로 인쇄됩니다")
+                    me4, me5 = st.columns([1, 2])
+                    _md_proc_opts = ["", "도급", "사급"]
+                    _md_proc = me4.selectbox("조달유형", _md_proc_opts,
+                        index=(_md_proc_opts.index(
+                                   _md.get("procurement_type"))
+                               if _md.get("procurement_type")
+                               in _md_proc_opts else 0),
+                        key=f"md_pr_{_mid}")
+                    _md_sup = me5.text_input("주공급사",
+                        value=_md.get("main_supplier") or "",
+                        key=f"md_su_{_mid}")
+                else:
+                    # 비생산 자재 — 자재명·규격·구분·주공급사만
+                    me1, me2, me3, me4 = st.columns([2, 1.5, 1, 1.5])
+                    _md_name = me1.text_input("자재명 *",
+                        value=_md.get("raw_name") or "", key=f"md_nm_{_mid}")
+                    _md_spec = me2.text_input("규격",
+                        value=_md.get("spec") or "", key=f"md_sp_{_mid}",
+                        placeholder="예: 20L, φ6*50L")
+                    _md_type = me3.selectbox("구분", _mat_type_opts,
+                        index=(_mat_type_opts.index(_md.get("material_type"))
+                               if _md.get("material_type") in _mat_type_opts
+                               else 0),
+                        key=f"md_ty_{_mid}")
+                    _md_sup = me4.text_input("주공급사",
+                        value=_md.get("main_supplier") or "",
+                        key=f"md_su_{_mid}")
+                    _md_proc = _md.get("procurement_type") or ""
                 _md_save = st.form_submit_button("변경 저장",
                                                  type="primary")
             if _md_save:
@@ -3790,7 +3843,8 @@ elif page == "마스터 관리":
                     column_config={
                         "material_id": st.column_config.TextColumn("자재ID", disabled=True, width="small"),
                         "raw_name": st.column_config.TextColumn("자재명", width="large"),
-                        "material_type": st.column_config.TextColumn("재질"),
+                        "material_type": st.column_config.TextColumn(
+                            "재질" if _mat_is_stock else "구분"),
                         "spec": st.column_config.TextColumn("규격"),
                         "unit": st.column_config.TextColumn("단위", disabled=True, width="small"),
                         "stock_qty": st.column_config.NumberColumn("재고 (EA)", format="%.2f"),
@@ -3821,26 +3875,35 @@ elif page == "마스터 관리":
             st.caption("자재 ID 는 자동 채번 — 소재 M###, 소모품·공구·포장재는 "
                        "C###. 재고는 발주·입고로 잡는 것이 정석이며, 초기 "
                        "재고는 실사값이 있을 때만 넣으세요.")
-            with st.form("nm_form"):
-                nm0, nm1, nm2, nm3 = st.columns([1, 2, 1, 1])
-                _nm_kind = nm0.selectbox(
-                    "구분", ("소재",) + NONPROD_MATERIAL_TYPES, key="nm_kind")
-                _nm_name = nm1.text_input("자재명 *", key="nm_name",
-                    placeholder="예: S45C Ø45 환봉 / 절삭유")
-                _nm_type = nm2.text_input("재질", key="nm_type",
-                    placeholder="예: S45C (소재만)")
-                _nm_spec = nm3.text_input("규격", key="nm_spec",
-                    placeholder="예: Ø45*2000 / 20L")
-                nm4, nm5, nm6 = st.columns(3)
-                _nm_sup = nm4.text_input("주공급사", key="nm_sup")
-                _nm_proc = nm5.selectbox("조달유형", ["", "도급", "사급"],
-                                         key="nm_proc")
-                _nm_stock = nm6.number_input("초기 재고 (EA)", 0.0,
-                    step=1.0, key="nm_stock")
-                if _nm_kind != "소재":
-                    # 비생산 자재는 재질 대신 구분이 material_type
-                    _nm_type = _nm_kind
+            with st.form(f"nm_form_{_mat_prefix}"):
+                if _mat_is_stock:
+                    nm1, nm2, nm3 = st.columns([2, 1, 1])
+                    _nm_name = nm1.text_input("자재명 *", key="nm_name",
+                        placeholder="예: S45C Ø45 환봉")
+                    _nm_type = nm2.text_input("재질", key="nm_type",
+                        placeholder="예: S45C")
+                    _nm_spec = nm3.text_input("규격", key="nm_spec",
+                        placeholder="예: Ø45*2000")
+                    nm4, nm5, nm6 = st.columns(3)
+                    _nm_sup = nm4.text_input("주공급사", key="nm_sup")
+                    _nm_proc = nm5.selectbox("조달유형", ["", "도급", "사급"],
+                                             key="nm_proc")
+                    _nm_stock = nm6.number_input("초기 재고 (EA)", 0.0,
+                        step=1.0, key="nm_stock")
+                else:
+                    # 비생산 자재(C/T) — 자재명·규격·구분·주공급사만, 구분이
+                    # material_type, 재고·조달 없음
+                    nm1, nm2, nm3, nm4 = st.columns([2, 1.5, 1, 1.5])
+                    _nm_name = nm1.text_input("자재명 *", key=f"nm_name_{_mat_prefix}",
+                        placeholder=("예: 절삭유" if _mat_prefix == "C"
+                                     else "예: INSERT TIP VBMT 160404HQ PR1125"))
+                    _nm_spec = nm2.text_input("규격", key=f"nm_spec_{_mat_prefix}",
+                        placeholder="예: 20L / φ6*50L")
+                    _nm_type = nm3.selectbox("구분", _mat_type_opts,
+                                             key=f"nm_kind_{_mat_prefix}")
+                    _nm_sup = nm4.text_input("주공급사", key=f"nm_sup_{_mat_prefix}")
                     _nm_proc = ""
+                    _nm_stock = 0.0
                 _nm_force = st.checkbox(
                     "유사 자재 경고 무시하고 등록 (다른 자재임을 확인함)",
                     key="nm_force")
