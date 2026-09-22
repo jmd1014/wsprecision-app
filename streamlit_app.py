@@ -1176,16 +1176,26 @@ def similar_materials(name=None, spec=None, limit=5):
     return _out[:limit]
 
 
-def next_material_id():
-    """자재 ID 자동 채번 — M### (기존 최대 번호 +1)"""
+# 비생산 자재(소모품·공구·포장재)는 M### 과 다른 접두어 C### 로 구분 —
+# 소재(M)와 한눈에 갈리고 M 채번(M* 만 셈)과 섞이지 않는다 (2026-09-22 사용자 요청)
+NONPROD_MATERIAL_TYPES = ("소모품", "공구", "포장재")
+
+
+def material_id_prefix(material_type):
+    """자재 구분 → ID 접두어. 소모품·공구·포장재 = C, 그 외(소재) = M."""
+    return "C" if (material_type or "").strip() in NONPROD_MATERIAL_TYPES else "M"
+
+
+def next_material_id(prefix="M"):
+    """자재 ID 자동 채번 — {prefix}### (그 접두어의 기존 최대 번호 +1)"""
     try:
         _rows = fetch("materials", "material_id",
-                      "material_id=like.M*", limit=5000)
-        _mx = max((int(r["material_id"][1:]) for r in _rows
-                   if r["material_id"][1:].isdigit()), default=0)
+                      f"material_id=like.{prefix}*", limit=5000)
+        _mx = max((int(r["material_id"][len(prefix):]) for r in _rows
+                   if r["material_id"][len(prefix):].isdigit()), default=0)
     except Exception:
         _mx = 0
-    return f"M{_mx + 1:03d}"
+    return f"{prefix}{_mx + 1:03d}"
 
 
 def wo_stage_qty(t):
@@ -3514,7 +3524,7 @@ elif page == "마스터 관리":
                     _last = _g["lines"][0]
                     _lp = _ad_pos.get(_last["po_id"]) or {}
                     with st.container(border=True):
-                        ad1, ad2, ad3 = st.columns([3, 1, 1])
+                        ad1, ad0, ad2, ad3 = st.columns([3, 1, 1, 1])
                         ad1.markdown(
                             "**{}** · 재질 {} · 규격 {} · 최근 {} {} · 단가 "
                             "₩{:,} · 발주 {}건 · 거래처 {}".format(
@@ -3525,14 +3535,21 @@ elif page == "마스터 관리":
                                 int(_last.get("unit_price") or 0),
                                 len(_g["lines"]),
                                 ", ".join(sorted(_g["vendors"])) or "-"))
+                        # 구분 — 직접 입력 품목은 대개 소모품·공구·포장재라
+                        # 기본 소모품 (C###), 소재면 M###
+                        _ad_kind = ad0.selectbox(
+                            "구분", NONPROD_MATERIAL_TYPES + ("소재",),
+                            key=f"ad_kind_{_gi}", label_visibility="collapsed")
                         if ad2.button("자재 등록", key=f"ad_reg_{_gi}",
                                       type="primary", use_container_width=True):
                             try:
-                                _mid = next_material_id()
+                                _mid = next_material_id(
+                                    material_id_prefix(_ad_kind))
                                 _db.insert("materials", [{
                                     "material_id": _mid, "raw_name": _k,
-                                    "material_type": _last.get("material")
-                                    or None,
+                                    "material_type": (
+                                        _ad_kind if _ad_kind != "소재"
+                                        else _last.get("material") or None),
                                     "spec": _last.get("spec") or None,
                                     "unit": "EA", "in_use": True,
                                     "main_supplier": (sorted(_g["vendors"])[0]
@@ -3796,23 +3813,29 @@ elif page == "마스터 관리":
 
         # ── 신규 자재 등록 (2026-08-12 — 기능 공백 보완) ──
         with st.expander("신규 자재 등록"):
-            st.caption("자재 ID 는 자동 채번(M###)됩니다. 재고는 "
-                       "발주·입고로 잡는 것이 정석이며, 초기 재고는 "
-                       "실사값이 있을 때만 넣으세요.")
+            st.caption("자재 ID 는 자동 채번 — 소재 M###, 소모품·공구·포장재는 "
+                       "C###. 재고는 발주·입고로 잡는 것이 정석이며, 초기 "
+                       "재고는 실사값이 있을 때만 넣으세요.")
             with st.form("nm_form"):
-                nm1, nm2, nm3 = st.columns(3)
+                nm0, nm1, nm2, nm3 = st.columns([1, 2, 1, 1])
+                _nm_kind = nm0.selectbox(
+                    "구분", ("소재",) + NONPROD_MATERIAL_TYPES, key="nm_kind")
                 _nm_name = nm1.text_input("자재명 *", key="nm_name",
-                    placeholder="예: S45C Ø45 환봉")
+                    placeholder="예: S45C Ø45 환봉 / 절삭유")
                 _nm_type = nm2.text_input("재질", key="nm_type",
-                    placeholder="예: S45C")
+                    placeholder="예: S45C (소재만)")
                 _nm_spec = nm3.text_input("규격", key="nm_spec",
-                    placeholder="예: Ø45*2000")
+                    placeholder="예: Ø45*2000 / 20L")
                 nm4, nm5, nm6 = st.columns(3)
                 _nm_sup = nm4.text_input("주공급사", key="nm_sup")
                 _nm_proc = nm5.selectbox("조달유형", ["", "도급", "사급"],
                                          key="nm_proc")
                 _nm_stock = nm6.number_input("초기 재고 (EA)", 0.0,
                     step=1.0, key="nm_stock")
+                if _nm_kind != "소재":
+                    # 비생산 자재는 재질 대신 구분이 material_type
+                    _nm_type = _nm_kind
+                    _nm_proc = ""
                 _nm_force = st.checkbox(
                     "유사 자재 경고 무시하고 등록 (다른 자재임을 확인함)",
                     key="nm_force")
@@ -3849,14 +3872,8 @@ elif page == "마스터 관리":
                         "다시 등록하세요.")
                 else:
                     try:
-                        _all_mid = fetch("materials", "material_id",
-                                         "material_id=like.M*",
-                                         limit=3000)
-                        _mx = max((int(m["material_id"][1:])
-                                   for m in _all_mid
-                                   if m["material_id"][1:].isdigit()),
-                                  default=0)
-                        _new_mid = f"M{_mx + 1:03d}"
+                        _new_mid = next_material_id(
+                            material_id_prefix(_nm_type))
                         _db.insert("materials", [{
                             "material_id": _new_mid,
                             "raw_name": _nn,
@@ -12200,7 +12217,7 @@ elif page == "발주/입고":
                     _vh_rank = {p["po_id"]: i for i, p in enumerate(_vh_pos)}
                     _vh_items = fetch("purchase_order_items",
                                       "poi_id,po_id,item_name,material,spec,"
-                                      "qty,unit_price",
+                                      "qty,unit_price,material_id",
                                       "po_id=in.(" + ",".join(
                                           str(p["po_id"]) for p in _vh_pos)
                                       + ")", limit=2000)
@@ -12215,6 +12232,7 @@ elif page == "발주/입고":
                             continue
                         _po9 = _vh_pmap.get(i["po_id"]) or {}
                         _vh_hist[_nm] = {
+                            "material_id": i.get("material_id"),
                             "material": i.get("material") or "",
                             "spec": i.get("spec") or "",
                             "qty": int(float(i.get("qty") or 0)),
@@ -12237,6 +12255,7 @@ elif page == "발주/입고":
                     key=f"po_vh_only_{vendor['vendor_id']}")
                 sq3.form_submit_button("검색", use_container_width=True)
             _res = []
+            _mat_res = []   # 자재 마스터(C###) 검색 결과
             if search_q and len(search_q.strip()) >= 2:
                 _q = search_q.strip()
                 try:
@@ -12252,6 +12271,21 @@ elif page == "발주/입고":
                 _all_n = len(_res)
                 if _vh_only and _vh_pns:
                     _res = [p for p in _res if p["pn"] in _vh_pns]
+                # 비생산 자재(C### — 소모품·공구·포장재)는 자재 마스터에서
+                # 이름·규격으로 검색 (2026-09-22: 수기 입력이 매핑되는 줄
+                # 알았다는 사용자 피드백 — 마스터 자재를 고르면 연결됨)
+                try:
+                    _mat_res = fetch(
+                        "materials",
+                        "material_id,raw_name,material_type,spec,main_supplier",
+                        f"archived_at=is.null&material_id=like.C*"
+                        f"&or=(raw_name.ilike.{_fql(_q)},spec.ilike.{_fql(_q)})"
+                        "&order=raw_name", limit=40)
+                except Exception:
+                    _mat_res = []
+                if _vh_only and _vh_pns:
+                    _mat_res = [m for m in _mat_res
+                                if m["raw_name"] in _vh_pns]
             elif _vh_pns and _vh_only:
                 # 검색어 없이 [검색] → 이 거래처 이력 품번 전체
                 try:
@@ -12278,8 +12312,10 @@ elif page == "발주/입고":
             if _searched and _vh_hist:
                 _q9 = (search_q or "").strip().lower()
                 _res_pns = {p["pn"] for p in _res}
+                _res_mats = {m["raw_name"] for m in _mat_res}
                 _cand = [n for n in sorted(_vh_hist)
                          if n.split(" (")[0] not in _res_pns
+                         and n not in _res_mats
                          and (not _q9 or _q9 in n.lower())]
                 if _cand:
                     _known = {}
@@ -12303,7 +12339,7 @@ elif page == "발주/입고":
                         _hist_rows.append((n, _vh_hist[n]))
 
             if search_q and len(search_q.strip()) >= 2 and not _res \
-                    and not _hist_rows:
+                    and not _mat_res and not _hist_rows:
                 _q = search_q.strip()
                 if _vh_only and _vh_pns and _all_n:
                     st.info(f"이 거래처 이력에 없는 품번 — 전체 품목 "
@@ -12328,7 +12364,7 @@ elif page == "발주/입고":
                            "활성 복귀 후 발주하세요.".format(
                                len(_hist_arch), ", ".join(_hist_arch[:8])))
 
-            if _res or _hist_rows:
+            if _res or _mat_res or _hist_rows:
                 _in_cart = {it.get("product_id")
                             for it in st.session_state.po_items}
                 _in_cart_names = {(it.get("item_name") or "").strip()
@@ -12350,6 +12386,20 @@ elif page == "발주/입고":
                         "구분": "마스터",
                         "담김": "담김" if p["product_id"] in _in_cart else "",
                         "_p": p, "_vp": vp, "_vq": vq})
+                for m in _mat_res:
+                    vp, vq, vpo, vdt = _get_vendor_recent_line(
+                        vendor["vendor_id"], m["raw_name"])
+                    _rows.append({
+                        "담기": False, "품번": m["raw_name"],
+                        "재질": "-", "제품 사이즈": "-",
+                        "소재 (BOM 자재명)": m.get("spec") or "-",
+                        "최근 단가": vp or 0, "최근 수량": vq or 0,
+                        "최근 발주": (f"{vpo} · {str(vdt)[:10]}" if vpo else "-"),
+                        "구분": f"자재 · {m.get('material_type') or '-'}",
+                        "담김": "담김" if m["raw_name"] in _in_cart_names else "",
+                        "_adhoc": {"material_id": m["material_id"],
+                                   "material": "", "spec": m.get("spec") or "",
+                                   "qty": vq or 0, "unit_price": vp or 0}})
                 for _nm, _h in _hist_rows:
                     _rows.append({
                         "담기": False, "품번": _nm,
@@ -12360,7 +12410,8 @@ elif page == "발주/입고":
                         "최근 수량": _h["qty"],
                         "최근 발주": (f"{_h['po_number']} · {_h['po_date']}"
                                      if _h.get("po_number") else "-"),
-                        "구분": "직접 입력 이력",
+                        "구분": ("자재 이력" if _h.get("material_id")
+                                 else "직접 입력 이력"),
                         "담김": "담김" if _nm in _in_cart_names else "",
                         "_adhoc": _h})
                 with st.form("po_pick_form"):
@@ -12390,6 +12441,7 @@ elif page == "발주/입고":
                                 st.session_state.po_items.append({
                                     "_uid": str(_po_uuid.uuid4())[:8],
                                     "product_id": None,
+                                    "material_id": _h.get("material_id"),
                                     "item_name": r["품번"],
                                     "material": _h["material"],
                                     "spec": _h["spec"],
@@ -12670,8 +12722,12 @@ elif page == "발주/입고":
                                             "item_name": it["item_name"],
                                             "spec": it.get("spec") or None,
                                             "product_id": it.get("product_id"),
-                                            "material_id": _bom_map.get(
-                                                it.get("product_id")),
+                                            # 자재 마스터(소모품 등)에서 담은
+                                            # 줄은 그 자재, 제품 줄은 BOM 소재
+                                            "material_id": (
+                                                it.get("material_id")
+                                                or _bom_map.get(
+                                                    it.get("product_id"))),
                                             "material": (it.get("material")
                                                          or "").strip() or None,
                                             "qty": it["qty"], "unit": "EA",

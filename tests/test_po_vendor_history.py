@@ -33,18 +33,23 @@ def _po(po_id, no, date):
 
 
 POS = [_po(2, "26-0904", "2026-08-24"), _po(1, "26-0805", "2026-07-30")]
+# 습동유는 자재 마스터(C001)에 연결된 이력, 나머지는 아직 미연결 직접 입력
 ITEMS = [
     {"poi_id": 11, "po_id": 2, "item_name": "습동유", "material": None,
-     "spec": "20L", "qty": 3, "unit_price": 0},
+     "spec": "20L", "qty": 3, "unit_price": 0, "material_id": "C001"},
     {"poi_id": 12, "po_id": 2, "item_name": "절삭유", "material": None,
-     "spec": None, "qty": 3, "unit_price": 0},
+     "spec": None, "qty": 3, "unit_price": 0, "material_id": None},
     {"poi_id": 13, "po_id": 2, "item_name": "유압작동유", "material": None,
-     "spec": None, "qty": 2, "unit_price": 0},
+     "spec": None, "qty": 2, "unit_price": 0, "material_id": None},
     {"poi_id": 1, "po_id": 1, "item_name": "습동유", "material": None,
-     "spec": None, "qty": 5, "unit_price": 0},
+     "spec": None, "qty": 5, "unit_price": 0, "material_id": "C001"},
     {"poi_id": 2, "po_id": 1, "item_name": "절삭유", "material": None,
-     "spec": None, "qty": 10, "unit_price": 0},
+     "spec": None, "qty": 10, "unit_price": 0, "material_id": None},
 ]
+# 자재 마스터의 비생산 자재(C###) — 검색어 '절삭' 에만 걸리는 절삭유 한 건
+MATERIALS_C = [{"material_id": "C002", "raw_name": "절삭유",
+                "material_type": "소모품", "spec": "20L",
+                "main_supplier": "삼경O&T"}]
 
 
 def _mock_fetch(table, select="*", filter_query="", limit=1000):
@@ -54,6 +59,11 @@ def _mock_fetch(table, select="*", filter_query="", limit=1000):
         return POS
     if table == "purchase_order_items":
         return ITEMS
+    if table == "materials" and "like.C" in filter_query:
+        from urllib.parse import unquote   # 필터 값은 URL 인코딩되어 온다
+        if "절삭" in unquote(filter_query):
+            return MATERIALS_C
+        return []
     return []   # products 등 — 마스터에는 아무것도 없음
 
 
@@ -125,15 +135,17 @@ def test_adhoc_history_listed_without_query(mocked_db):
     assert any(b.label == "체크한 품목 담기" for b in at.button), \
         "결과 표(담기 폼)가 렌더되지 않음"
     txt = _grid_texts(at)
-    if txt:   # AppTest 가 data_editor 값을 노출하는 버전에서만 내용 검증
-        for nm in ("습동유", "절삭유", "유압작동유"):
-            assert nm in txt, f"{nm} 이력 행 누락"
-        assert "직접 입력 이력" in txt
-        assert "26-0904" in txt, "최근 발주가 최신(26-0904) 이어야 함"
+    assert txt, "결과 표 값이 노출되지 않음 (at.dataframe)"
+    for nm in ("습동유", "절삭유", "유압작동유"):
+        assert nm in txt, f"{nm} 이력 행 누락"
+    assert "자재 이력" in txt, "자재에 연결된 이력(습동유 C001)은 '자재 이력'"
+    assert "직접 입력 이력" in txt, "미연결 이력은 '직접 입력 이력'"
+    assert "26-0904" in txt, "최근 발주가 최신(26-0904) 이어야 함"
 
 
-def test_adhoc_history_matches_query(mocked_db):
-    """검색어 '절삭' → 이력에서 절삭유만."""
+def test_query_finds_master_material_and_dedups_history(mocked_db):
+    """검색어 '절삭' → 자재 마스터의 절삭유(C002, 소모품) 한 줄. 같은 이름의
+    이력 행은 중복으로 띄우지 않고, 습동유는 검색어와 안 맞아 제외."""
     at = _open_po_page()
     q = [t for t in at.text_input if t.key == "po_q"]
     assert q
@@ -143,8 +155,10 @@ def test_adhoc_history_matches_query(mocked_db):
     assert not any("일치하는 품목 없음" in i.value for i in at.info)
     assert any(b.label == "체크한 품목 담기" for b in at.button)
     txt = _grid_texts(at)
-    if txt:
-        assert "절삭유" in txt and "습동유" not in txt
+    assert txt
+    assert "절삭유" in txt and "습동유" not in txt
+    assert "자재 · 소모품" in txt, "자재 마스터 행은 '자재 · 소모품' 구분"
+    assert txt.count("절삭유") == 1, "마스터 행과 이력 행이 중복되면 안 됨"
 
 
 def test_query_with_no_match_still_says_none(mocked_db):
