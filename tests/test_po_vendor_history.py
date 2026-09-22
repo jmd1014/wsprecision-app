@@ -59,7 +59,7 @@ def _mock_fetch(table, select="*", filter_query="", limit=1000):
         return POS
     if table == "purchase_order_items":
         return ITEMS
-    if table == "materials" and "like.C" in filter_query:
+    if table == "materials" and "not.like.M" in filter_query:
         from urllib.parse import unquote   # 필터 값은 URL 인코딩되어 온다
         if "절삭" in unquote(filter_query):
             return MATERIALS_C

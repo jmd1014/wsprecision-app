@@ -1176,14 +1176,17 @@ def similar_materials(name=None, spec=None, limit=5):
     return _out[:limit]
 
 
-# 비생산 자재(소모품·공구·포장재)는 M### 과 다른 접두어 C### 로 구분 —
-# 소재(M)와 한눈에 갈리고 M 채번(M* 만 셈)과 섞이지 않는다 (2026-09-22 사용자 요청)
+# 비생산 자재는 M### 과 다른 접두어로 구분 — 소재(M)와 한눈에 갈리고 M 채번
+# (M* 만 셈)과 섞이지 않는다 (2026-09-22 사용자 요청). 소모품·포장재 = C###,
+# 공구 = T### (공구는 수백 종이라 따로 센다)
 NONPROD_MATERIAL_TYPES = ("소모품", "공구", "포장재")
+_MATERIAL_PREFIX = {"소모품": "C", "포장재": "C", "공구": "T"}
+NONPROD_PREFIXES = ("C", "T")
 
 
 def material_id_prefix(material_type):
-    """자재 구분 → ID 접두어. 소모품·공구·포장재 = C, 그 외(소재) = M."""
-    return "C" if (material_type or "").strip() in NONPROD_MATERIAL_TYPES else "M"
+    """자재 구분 → ID 접두어. 소모품·포장재 = C, 공구 = T, 그 외(소재) = M."""
+    return _MATERIAL_PREFIX.get((material_type or "").strip(), "M")
 
 
 def next_material_id(prefix="M"):
@@ -2251,7 +2254,9 @@ elif page == "마스터 관리":
                         _mcand = _db.fetch("materials",
                             "material_id,raw_name,material_type,spec,"
                             "main_supplier,procurement_type",
-                            f"archived_at=is.null&or=(raw_name.ilike.{_fql(_s)},"
+                            # 소재(M###)만 — 소모품·공구(C/T)는 BOM 후보 아님
+                            f"archived_at=is.null&material_id=like.M*"
+                            f"&or=(raw_name.ilike.{_fql(_s)},"
                             f"spec.ilike.{_fql(_s)},material_type.ilike.{_fql(_s)},"
                             f"main_supplier.ilike.{_fql(_s)})&order=raw_name",
                             limit=40)
@@ -3345,7 +3350,7 @@ elif page == "마스터 관리":
                 try:
                     _np_cands = fetch("materials",
                         "material_id,raw_name,material_type,spec",
-                        f"or=(raw_name.ilike.{_fql(_np_kw)},"
+                        f"material_id=like.M*&or=(raw_name.ilike.{_fql(_np_kw)},"
                         f"material_type.ilike.{_fql(_np_kw)},"
                         f"spec.ilike.{_fql(_np_kw)})"
                         "&archived_at=is.null&order=raw_name", limit=15)
@@ -4308,7 +4313,7 @@ elif page == "마스터 관리":
                     try:
                         _sw_mc = fetch("materials",
                             "material_id,raw_name,spec",
-                            f"or=(raw_name.ilike.{_fql(_sw_kw)},"
+                            f"material_id=like.M*&or=(raw_name.ilike.{_fql(_sw_kw)},"
                             f"material_type.ilike.{_fql(_sw_kw)},"
                             f"spec.ilike.{_fql(_sw_kw)})"
                             "&archived_at=is.null&order=raw_name",
@@ -4540,7 +4545,7 @@ elif page == "마스터 관리":
                         try:
                             m_found = fetch("materials",
                                 "material_id,raw_name,material_type,spec",
-                                f"or=(raw_name.ilike.{_fql(qq)},"
+                                f"material_id=like.M*&or=(raw_name.ilike.{_fql(qq)},"
                                 f"material_type.ilike.{_fql(qq)},"
                                 f"spec.ilike.{_fql(qq)})&order=raw_name.asc",
                                 limit=30)
@@ -12278,7 +12283,7 @@ elif page == "발주/입고":
                     _mat_res = fetch(
                         "materials",
                         "material_id,raw_name,material_type,spec,main_supplier",
-                        f"archived_at=is.null&material_id=like.C*"
+                        f"archived_at=is.null&material_id=not.like.M*"
                         f"&or=(raw_name.ilike.{_fql(_q)},spec.ilike.{_fql(_q)})"
                         "&order=raw_name", limit=40)
                 except Exception:
