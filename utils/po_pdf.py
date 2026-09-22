@@ -100,10 +100,17 @@ def build_po_pdf(po_data, items, vendor_info=None):
     ])
     pdf.set_y(max(y1, y2) + 5)
 
-    # ── 품목 표 ──
-    cols = [("NO", 10, "C"), ("품명", 62, "L"), ("재질", 20, "C"),
-            ("규격", 32, "C"), ("수량", 18, "R"), ("단가", 22, "R"),
-            ("금액", 26, "R")]
+    # ── 품목 표 ── 소재 발주: 품명·재질·규격 / 소모성·공구(item_layout=unit):
+    # 품명·규격·단위 — 단위는 수량 앞 (2026-09-22 사용자 요청)
+    unit_layout = (po_data.get("item_layout") == "unit")
+    if unit_layout:
+        cols = [("NO", 10, "C"), ("품명", 68, "L"), ("규격", 32, "C"),
+                ("단위", 14, "C"), ("수량", 18, "R"), ("단가", 22, "R"),
+                ("금액", 26, "R")]
+    else:
+        cols = [("NO", 10, "C"), ("품명", 62, "L"), ("재질", 20, "C"),
+                ("규격", 32, "C"), ("수량", 18, "R"), ("단가", 22, "R"),
+                ("금액", 26, "R")]
     pdf.set_font("NG", "B", 9.5)
     pdf.set_fill_color(*FILL_HEAD)
     pdf.set_text_color(255, 255, 255)
@@ -119,8 +126,12 @@ def build_po_pdf(po_data, items, vendor_info=None):
         amt = float(amt) if amt not in (None, "") else qty * up
         supply += amt
         pdf.set_font("NG", "", 9.5)
-        vals = [str(i), str(it.get("item_name") or ""), str(it.get("material") or ""),
-                str(it.get("spec") or ""), _num(qty), _num(up), _num(amt)]
+        if unit_layout:
+            vals = [str(i), str(it.get("item_name") or ""), str(it.get("spec") or ""),
+                    str(it.get("unit") or "EA"), _num(qty), _num(up), _num(amt)]
+        else:
+            vals = [str(i), str(it.get("item_name") or ""), str(it.get("material") or ""),
+                    str(it.get("spec") or ""), _num(qty), _num(up), _num(amt)]
         # 긴 품명은 글자 크기 축소
         for (name, w, al), v in zip(cols, vals):
             fs = 9.5

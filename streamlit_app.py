@@ -851,7 +851,8 @@ _TOSS_GRID_CSS = {
 
 
 def toss_grid_edit(rows, *, key, editable_cols=(), num_cols=(), strong_cols=(),
-                   columns=None, height=None, select=True, check_col=None):
+                   columns=None, height=None, select=True, check_col=None,
+                   calc_cols=None):
     """토스 스타일 편집 그리드 — (편집 반영된 rows, 선택 행 인덱스) 반환.
 
     toss_grid 와 같은 시각 언어(2026-09-11 사용자 요청: 발주서 품목 표도
@@ -893,6 +894,13 @@ def toss_grid_edit(rows, *, key, editable_cols=(), num_cols=(), strong_cols=(),
         gb.configure_column("_i", hide=True)
         for c in _cols:
             _kw = {"editable": c in editable_cols}
+            if calc_cols and c in calc_cols:
+                # 파생 열 — 그리드 안에서 즉시 계산 (예: 금액 = 수량×단가).
+                # 식은 JS, 행 데이터는 d (2026-09-22: 수량·단가를 고쳐도
+                # rerun 전까지 금액이 안 바뀌던 문제)
+                _kw["valueGetter"] = JsCode(
+                    "function(p){ const d = p.data || {}; return ("
+                    + calc_cols[c] + "); }")
             _cls = []
             if c in num_cols:
                 _cls.append("tt-num")
@@ -12267,6 +12275,7 @@ elif page == "발주/입고":
                                   if p.get("product_size") else p["pn"]),
                     "material": p.get("material") or "",
                     "spec": p.get("raw_material_name") or "",
+                    "unit": "EA",
                     "qty": vendor_qty or 0, "unit_price": upd, "memo": ""})
 
             st.markdown("##### ② 품목 담기")
@@ -12285,7 +12294,7 @@ elif page == "발주/입고":
                     _vh_rank = {p["po_id"]: i for i, p in enumerate(_vh_pos)}
                     _vh_items = fetch("purchase_order_items",
                                       "poi_id,po_id,item_name,material,spec,"
-                                      "qty,unit_price,material_id",
+                                      "qty,unit_price,material_id,unit",
                                       "po_id=in.(" + ",".join(
                                           str(p["po_id"]) for p in _vh_pos)
                                       + ")", limit=2000)
@@ -12301,6 +12310,7 @@ elif page == "발주/입고":
                         _po9 = _vh_pmap.get(i["po_id"]) or {}
                         _vh_hist[_nm] = {
                             "material_id": i.get("material_id"),
+                            "unit": i.get("unit") or "EA",
                             "material": i.get("material") or "",
                             "spec": i.get("spec") or "",
                             "qty": int(float(i.get("qty") or 0)),
@@ -12346,7 +12356,7 @@ elif page == "발주/입고":
                 try:
                     _mat_res = fetch(
                         "materials",
-                        "material_id,raw_name,material_type,spec,main_supplier",
+                        "material_id,raw_name,material_type,spec,main_supplier,unit",
                         f"archived_at=is.null&material_id=not.like.M*"
                         f"&or=(raw_name.ilike.{_fql(_q)},spec.ilike.{_fql(_q)})"
                         "&order=raw_name", limit=40)
@@ -12362,7 +12372,7 @@ elif page == "발주/입고":
                 try:
                     _mat_res = fetch(
                         "materials",
-                        "material_id,raw_name,material_type,spec,main_supplier",
+                        "material_id,raw_name,material_type,spec,main_supplier,unit",
                         f"archived_at=is.null&material_id=not.like.M*"
                         f"&main_supplier=eq.{_fq(vendor['name'])}"
                         "&order=raw_name", limit=300)
@@ -12531,6 +12541,7 @@ elif page == "발주/입고":
                         "담김": "담김" if m["raw_name"] in _in_cart_names else "",
                         "_name": m["raw_name"],
                         "_adhoc": {"material_id": m["material_id"],
+                                   "unit": m.get("unit") or "EA",
                                    "material": "", "spec": m.get("spec") or "",
                                    "qty": vq or 0, "unit_price": vp or 0}})
                 for _nm, _h in _hist_rows:
@@ -12575,6 +12586,7 @@ elif page == "발주/입고":
                                     "product_id": None,
                                     "material_id": _h.get("material_id"),
                                     "item_name": r["_name"],
+                                    "unit": _h.get("unit") or "EA",
                                     "material": _h["material"],
                                     "spec": _h["spec"],
                                     "qty": _h["qty"],
@@ -12597,7 +12609,12 @@ elif page == "발주/입고":
                 with st.form("po_adhoc_form"):
                     nx = st.text_input("품번/품명", key="nx_name")
                     a1, a2, a3 = st.columns(3)
-                    nm = a1.text_input("재질", key="nx_mat")
+                    if sel_bucket == "소재":
+                        nm = a1.text_input("재질", key="nx_mat")
+                        nu = "EA"
+                    else:
+                        nm = ""
+                        nu = a1.text_input("단위", value="EA", key="nx_unit")
                     ns = a2.text_input("규격", key="nx_spec")
                     np_ = a3.number_input("단가", min_value=0, step=100,
                                           key="nx_price")
@@ -12605,7 +12622,8 @@ elif page == "발주/입고":
                         st.session_state.po_items.append({
                             "_uid": str(_po_uuid.uuid4())[:8],
                             "product_id": None, "item_name": nx,
-                            "material": nm, "spec": ns, "qty": 0,
+                            "material": nm, "spec": ns,
+                            "unit": (nu or "EA").strip() or "EA", "qty": 0,
                             "unit_price": int(np_), "memo": ""})
                         st.session_state["po_tbl_nonce"] =                             st.session_state.get("po_tbl_nonce", 0) + 1
                         st.rerun()
@@ -12693,19 +12711,29 @@ elif page == "발주/입고":
                     _tbl_nonce = st.session_state.get("po_tbl_nonce", 0)
                     # 편집 그리드 — 다른 리스트와 같은 양식 (2026-09-11 사용자
                     # 요청). 셀을 고치면 바로 반영, 행 클릭 후 [선택 줄 삭제]
+                    # 소모성·공구 발주는 재질 대신 단위(수기, 수량 앞) —
+                    # 2026-09-22 사용자 요청. 소재 발주는 품명·재질·규격 그대로
+                    _unit_layout = sel_bucket != "소재"
                     _grid_rows = [{
-                        "품명": it["item_name"], "재질": it.get("material") or "",
-                        "규격": it.get("spec") or "",
+                        "품명": it["item_name"],
+                        **({"규격": it.get("spec") or "",
+                            "단위": it.get("unit") or "EA"} if _unit_layout
+                           else {"재질": it.get("material") or "",
+                                 "규격": it.get("spec") or ""}),
                         "수량": int(it.get("qty") or 0),
                         "단가": int(it.get("unit_price") or 0),
                         "금액": int(it.get("qty") or 0) * int(it.get("unit_price") or 0),
                         "메모": it.get("memo") or "",
                     } for it in _items]
                     _ed_rows, _sel_ix = toss_grid_edit(
-                        _grid_rows, key=f"po_grid_{_tbl_nonce}",
-                        editable_cols=("품명", "재질", "규격", "수량", "단가", "메모"),
+                        _grid_rows, key=f"po_grid_{_tbl_nonce}_{sel_bucket}",
+                        editable_cols=(("품명", "규격", "단위", "수량", "단가", "메모")
+                                       if _unit_layout else
+                                       ("품명", "재질", "규격", "수량", "단가", "메모")),
                         num_cols=("수량", "단가", "금액"), strong_cols=("품명",),
-                        select=False, check_col="삭제")
+                        select=False, check_col="삭제",
+                        # 금액은 그리드 안에서 즉시 수량×단가
+                        calc_cols={"금액": "(Number(d['수량'])||0)*(Number(d['단가'])||0)"})
                     # '삭제' 체크 = 즉시 제거 (줄 선택 rerun 없음)
                     _del_uids = [it["_uid"] for it, r in zip(_items, _ed_rows)
                                  if bool(r.get("삭제"))]
@@ -12718,22 +12746,28 @@ elif page == "발주/입고":
                     for it, r in zip(_items, _ed_rows):
                         _new = {
                             "item_name": str(r.get("품명") or it["item_name"]).strip(),
-                            "material": str(r.get("재질") or "").strip(),
                             "spec": str(r.get("규격") or "").strip(),
                             "qty": int(float(r.get("수량") or 0)),
                             "unit_price": int(float(r.get("단가") or 0)),
                             "memo": str(r.get("메모") or "").strip()}
+                        if _unit_layout:
+                            _new["unit"] = str(r.get("단위") or "EA").strip() or "EA"
+                        else:
+                            _new["material"] = str(r.get("재질") or "").strip()
                         if any(it.get(k) != v for k, v in _new.items()):
                             it.update(_new)
                             _changed = True
                     if _changed:
-                        st.rerun()          # 금액·합계 갱신
+                        st.rerun()          # 합계 갱신
                     _total_now = sum(int(it.get("qty") or 0) * int(it.get("unit_price") or 0)
                                      for it in _items)
                     tc1, tc3 = st.columns([4, 1])
                     tc1.caption("셀을 클릭해 고치면 바로 반영되고, [삭제] 를 누르면 "
-                                "그 줄이 바로 빠집니다. 재질 = 제품 마스터, 규격 = "
-                                "BOM 자재명. 합계 ₩{:,} (VAT 별도)".format(_total_now))
+                                "그 줄이 바로 빠집니다. "
+                                + ("단위는 수기 입력 (기본 EA). "
+                                   if _unit_layout else
+                                   "재질 = 제품 마스터, 규격 = BOM 자재명. ")
+                                + "합계 ₩{:,} (VAT 별도)".format(_total_now))
                     if tc3.button("표 비우기", key="po_clear_all",
                                   use_container_width=True):
                         st.session_state.po_items = []
@@ -12786,6 +12820,9 @@ elif page == "발주/입고":
                                 po_no = f"PO-{_date.today().strftime('%Y%m')}-001"
                             po_data = {"po_number": po_no, "po_date": po_date,
                                        "vendor_name": vendor["name"],
+                                       # 소모성·공구: 문서 표도 재질 대신 단위
+                                       "item_layout": ("unit" if sel_bucket != "소재"
+                                                       else "material"),
                                        "delivery_date": delivery_date,
                                        "payment_terms": payment_terms,
                                        "delivery_address": delivery_address,
@@ -12862,7 +12899,9 @@ elif page == "발주/입고":
                                                     it.get("product_id"))),
                                             "material": (it.get("material")
                                                          or "").strip() or None,
-                                            "qty": it["qty"], "unit": "EA",
+                                            "qty": it["qty"],
+                                            "unit": (it.get("unit") or "EA").strip()
+                                            or "EA",
                                             "unit_price": it["unit_price"],
                                             "amount": it["qty"] * it["unit_price"],
                                             "remark": (it.get("memo") or "").strip()
@@ -13001,8 +13040,11 @@ elif page == "발주/입고":
                     try:
                         full_vendor = _db.fetch_one(
                             "vendors", f"vendor_id=eq.{_fq(po['vendor_id'])}",
-                            "business_no,ceo_name,address,phone,email") or {}
+                            "business_no,ceo_name,address,phone,email,vendor_group") or {}
                         re_po_data = {
+                            # 재발급도 작성 때와 같은 표 (소모성·공구 = 단위 열)
+                            "item_layout": ("unit" if full_vendor.get("vendor_group")
+                                            in ("TOOL", "MAT_CONSUMABLES") else "material"),
                             "po_number": po["po_number"],
                             "po_date": po["po_date"],
                             "vendor_name": po["_vname"],
@@ -13026,6 +13068,7 @@ elif page == "발주/입고":
                             "item_name": i.get("item_name"),
                             "material": (i.get("material")
                                          or i.get("remark") or ""),
+                            "unit": i.get("unit") or "EA",
                             "spec": i.get("spec") or "",
                             "qty": int(i.get("qty") or 0),
                             "unit_price": int(i.get("unit_price") or 0),
@@ -13049,9 +13092,11 @@ elif page == "발주/입고":
                             st.session_state["po_prefill_vendor_name"] = po["_vname"]
                             st.session_state["po_prefill_items"] = [{
                                 "product_id": i.get("product_id"),
+                                "material_id": i.get("material_id"),
                                 "item_name": i.get("item_name"),
                                 "material": i.get("material") or "",
                                 "spec": i.get("spec") or "",
+                                "unit": i.get("unit") or "EA",
                                 "qty": int(i.get("qty") or 0),
                                 "unit_price": int(i.get("unit_price") or 0),
                                 "memo": (i.get("remark") or "")

@@ -201,7 +201,11 @@ def fill_po_template(po_data: dict, items: list[dict], vendor_info: dict = None)
     row += 1
 
     # ─── 4. 품목 표 헤더 ───
-    headers = ["NO", "품  명", "재 질", "규 격", "수 량", "단 가", "금 액"]
+    # 소모성·공구(item_layout=unit)는 재질 대신 단위, 수량 앞 (2026-09-22)
+    unit_layout = (po_data.get("item_layout") == "unit")
+    headers = (["NO", "품  명", "규 격", "단 위", "수 량", "단 가", "금 액"]
+               if unit_layout else
+               ["NO", "품  명", "재 질", "규 격", "수 량", "단 가", "금 액"])
     for ci, h in enumerate(headers, 1):
         cell = ws.cell(row, ci, h)
         cell.font = FONT_HEADER
@@ -228,8 +232,12 @@ def fill_po_template(po_data: dict, items: list[dict], vendor_info: dict = None)
             if memo:
                 name_text = f"{name_text}\n  └ {memo}"
             ws.cell(row, 2, name_text)
-            ws.cell(row, 3, item.get("material") or "")
-            ws.cell(row, 4, item.get("spec") or "")
+            if unit_layout:
+                ws.cell(row, 3, item.get("spec") or "")
+                ws.cell(row, 4, item.get("unit") or "EA")
+            else:
+                ws.cell(row, 3, item.get("material") or "")
+                ws.cell(row, 4, item.get("spec") or "")
             qty = int(item.get("qty") or 0)
             up = int(item.get("unit_price") or 0)
             amt = qty * up
