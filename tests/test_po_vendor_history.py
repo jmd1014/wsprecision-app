@@ -52,13 +52,29 @@ MATERIALS_C = [{"material_id": "C002", "raw_name": "절삭유",
                 "main_supplier": "삼경O&T"}]
 
 
+PRODUCT = {"product_id": "P0002", "pn": "20AHYBV-03-X1413", "raw_material_name": "20AHYBV-X1413",
+           "product_size": None, "material": "주물", "bom_material_name": None,
+           "material_unit_price": 7000}
+SO_LINES = [{"product_id": "P0002", "so_id": 90, "pending_qty": 85188, "due_date": "2026-09-11"},
+            {"product_id": "P0002", "so_id": 91, "pending_qty": 500, "due_date": "2026-10-13"}]
+SOS = [{"so_id": 90, "so_number": "202606190003", "customer": "미진정밀", "status": "PARTIAL"},
+       {"so_id": 91, "so_number": "202609020001", "customer": "미진정밀", "status": "DRAFT"}]
+
+
 def _mock_fetch(table, select="*", filter_query="", limit=1000):
+    from urllib.parse import unquote
     if table == "vendors":
         return [VENDOR]
     if table == "purchase_orders":
         return POS
     if table == "purchase_order_items":
         return ITEMS
+    if table == "products" and "20AHYBV" in unquote(filter_query):
+        return [PRODUCT]
+    if table == "sales_order_items" and "pending_qty=gt.0" in filter_query:
+        return SO_LINES
+    if table == "sales_orders" and "so_id=in." in filter_query:
+        return SOS
     if table == "materials" and "not.like.M" in filter_query:
         from urllib.parse import unquote   # 필터 값은 URL 인코딩되어 온다
         fq = unquote(filter_query)
@@ -166,6 +182,22 @@ def test_consumable_bucket_uses_master_columns(mocked_db):
         assert col in txt, f"자재 기준 열 '{col}' 누락"
     assert "품번" not in txt and "BOM 자재명" not in txt, "소모성 발주에 제품 기준 열이 나옴"
     assert "C002" in txt and "절삭유" in txt and "소모품" in txt and "20L" in txt
+
+
+def test_product_rows_show_current_sales_orders(mocked_db):
+    """소재 발주: 제품 행에 현재 미납 수주 합계·가장 이른 납기 (2026-09-22 사용자:
+    발주서 작성 때 수주 정보 참고)."""
+    at = _open_po_page()
+    cb = [c for c in at.checkbox if str(c.key).startswith("po_vh_only")]
+    cb[0].set_value(False)          # 이력 필터 끄고 전체 제품 검색
+    [t for t in at.text_input if t.key == "po_q"][0].set_value("20AHYBV")
+    [b for b in at.button if b.label == "검색"][0].click().run()
+    assert not at.exception, [str(e.value) for e in at.exception]
+    txt = _grid_texts(at)
+    assert "20AHYBV-03-X1413" in txt
+    assert "미납 수주" in txt and "최근 납기" in txt
+    assert "85688" in txt.replace(",", ""), "미납 합계(85,188+500) 누락"
+    assert "2026-09-11" in txt, "가장 이른 납기 누락"
 
 
 def test_vendor_without_history_lists_its_master_materials(mocked_db):

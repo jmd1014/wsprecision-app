@@ -3864,9 +3864,13 @@ elif page == "마스터 관리":
                     _md_sup = me5.text_input("주공급사",
                         value=_md.get("main_supplier") or "",
                         key=f"md_su_{_mid}")
+                    _md_unit = _md.get("unit") or "EA"
                 else:
-                    # 비생산 자재 — 자재명·규격·구분·주공급사만
-                    me1, me2, me3, me4 = st.columns([2, 1.5, 1, 1.5])
+                    # 비생산 자재 — 자재명·규격·구분·단위·주공급사만
+                    me1, me2, me3, me5, me4 = st.columns([2, 1.3, 1, 0.8, 1.4])
+                    _md_unit = me5.text_input("단위",
+                        value=_md.get("unit") or "EA", key=f"md_un_{_mid}",
+                        help="발주서에 담을 때 기본 단위 (예: EA, BOX, 통)")
                     _md_name = me1.text_input("자재명 *",
                         value=_md.get("raw_name") or "", key=f"md_nm_{_mid}")
                     _md_spec = me2.text_input("규격",
@@ -3891,9 +3895,10 @@ elif page == "마스터 관리":
                          (_md_type or "").strip() or None),
                         ("spec", (_md_spec or "").strip() or None),
                         ("procurement_type", _md_proc or None),
+                        ("unit", (_md_unit or "").strip() or "EA"),
                         ("main_supplier",
                          (_md_sup or "").strip() or None)):
-                    if _md.get(_f9) != _nv9:
+                    if (_md.get(_f9) or ("EA" if _f9 == "unit" else None)) != _nv9:
                         _mupd[_f9] = _nv9
                 if not (_md_name or "").strip():
                     st.error("자재명은 비울 수 없습니다.")
@@ -3994,7 +3999,7 @@ elif page == "마스터 관리":
                 else:
                     # 비생산 자재(C/T) — 자재명·규격·구분·주공급사만, 구분이
                     # material_type, 재고·조달 없음
-                    nm1, nm2, nm3, nm4 = st.columns([2, 1.5, 1, 1.5])
+                    nm1, nm2, nm3, nm4, nm5 = st.columns([2, 1.3, 1, 0.8, 1.4])
                     _nm_name = nm1.text_input("자재명 *", key=f"nm_name_{_mat_prefix}",
                         placeholder=("예: 절삭유" if _mat_prefix == "C"
                                      else "예: INSERT TIP VBMT 160404HQ PR1125"))
@@ -4002,9 +4007,13 @@ elif page == "마스터 관리":
                         placeholder="예: 20L / φ6*50L")
                     _nm_type = nm3.selectbox("구분", _mat_type_opts,
                                              key=f"nm_kind_{_mat_prefix}")
-                    _nm_sup = nm4.text_input("주공급사", key=f"nm_sup_{_mat_prefix}")
+                    _nm_unit = nm4.text_input("단위", value="EA",
+                                              key=f"nm_unit_{_mat_prefix}")
+                    _nm_sup = nm5.text_input("주공급사", key=f"nm_sup_{_mat_prefix}")
                     _nm_proc = ""
                     _nm_stock = 0.0
+                if _mat_is_stock:
+                    _nm_unit = "EA"
                 _nm_force = st.checkbox(
                     "유사 자재 경고 무시하고 등록 (다른 자재임을 확인함)",
                     key="nm_force")
@@ -4049,7 +4058,7 @@ elif page == "마스터 관리":
                             "material_type":
                                 (_nm_type or "").strip() or None,
                             "spec": (_nm_spec or "").strip() or None,
-                            "unit": "EA",
+                            "unit": (_nm_unit or "").strip() or "EA",
                             "stock_qty": _nm_stock,
                             "main_supplier":
                                 (_nm_sup or "").strip() or None,
@@ -5170,6 +5179,11 @@ elif page == "마스터 관리":
                     _ae_role = st.radio(
                         "역할", ["작업자", "관리자"], horizontal=True,
                         index=1 if _ae.get("role") == "admin" else 0)
+                    # 이름도 여기서 (신규 계정에는 있는데 편집에 없던 항목,
+                    # 2026-09-22 마스터 입력 항목 대조)
+                    _ae_name = st.text_input(
+                        "이름 (기록에 남는 실명)", value=_ae.get("name") or "",
+                        help="입고·조정·출고 이력의 처리자로 표시됩니다")
                     _ae_email = st.text_input(
                         "이메일 (선택)", value=_ae.get("email") or "",
                         help="발주서 메일 발송을 켰을 때 회신 주소·참조로 "
@@ -5191,6 +5205,8 @@ elif page == "마스터 관리":
                             st.error(f"비밀번호: {_bad}")
                         else:
                             _ae["role"] = _new_role
+                            if (_ae_name or "").strip():
+                                _ae["name"] = _ae_name.strip()
                             _ae["email"] = (_ae_email or "").strip() or None
                             if _ae_pw:
                                 _ae["pw"] = _auth.hash_pw(_ae_pw)
@@ -12359,6 +12375,49 @@ elif page == "발주/입고":
                 except Exception:
                     return None, None, None, None
 
+            @st.cache_data(ttl=60)
+            def _po_pending_map(pids):
+                """제품별 현재 미납 수주 — {product_id: {qty, due, lines[]}}.
+                lines = [{so_number, customer, due_date, pending_qty}] 납기순."""
+                pids = sorted({p for p in pids if p})
+                if not pids:
+                    return {}
+                out = {}
+                try:
+                    _ln = []
+                    for _i0 in range(0, len(pids), 80):
+                        _ln += fetch("sales_order_items",
+                                     "product_id,so_id,pending_qty,due_date",
+                                     "product_id=in.({})&pending_qty=gt.0"
+                                     "&order=due_date.asc".format(",".join(
+                                         f'"{x}"' for x in pids[_i0:_i0 + 80])),
+                                     limit=1000)
+                    _sids = sorted({l["so_id"] for l in _ln if l.get("so_id")})
+                    _som = {}
+                    for _i0 in range(0, len(_sids), 100):
+                        for s in fetch("sales_orders", "so_id,so_number,customer,status",
+                                       "so_id=in.({})".format(",".join(
+                                           str(x) for x in _sids[_i0:_i0 + 100])),
+                                       limit=200):
+                            _som[s["so_id"]] = s
+                    for l in _ln:
+                        s = _som.get(l.get("so_id")) or {}
+                        if s.get("status") == "CANCELLED":
+                            continue
+                        e = out.setdefault(l["product_id"],
+                                           {"qty": 0, "due": None, "lines": []})
+                        q = int(float(l.get("pending_qty") or 0))
+                        e["qty"] += q
+                        d = str(l.get("due_date") or "")[:10] or None
+                        if d and (e["due"] is None or d < e["due"]):
+                            e["due"] = d
+                        e["lines"].append({"so_number": s.get("so_number") or "-",
+                                           "customer": s.get("customer") or "-",
+                                           "due_date": d or "-", "pending_qty": q})
+                except Exception:
+                    pass
+                return out
+
             def _po_add(p, vendor_price=None, vendor_qty=None):
                 upd = vendor_price or int(p.get("material_unit_price") or 0)
                 st.session_state.po_items.append({
@@ -12569,7 +12628,11 @@ elif page == "발주/입고":
                 # 주공급사) — 표 내용이 마스터와 다르게 보이던 문제 (2026-09-22)
                 _mat_layout = sel_bucket != "소재"
                 _COLS_PROD = ("담기", "품번", "재질", "제품 사이즈", "소재 (BOM 자재명)",
+                              "미납 수주", "최근 납기",
                               "최근 단가", "최근 수량", "최근 발주", "구분", "담김")
+                # 제품 행의 현재 수주 — 미납 합계·가장 이른 납기 (2026-09-22 사용자:
+                # 발주서 작성 때 수주 정보를 참고하고 싶다)
+                _so_pend = _po_pending_map([p["product_id"] for p in _res])
                 _COLS_MAT = ("담기", "자재ID", "자재명", "구분", "규격", "주공급사",
                              "최근 단가", "최근 수량", "최근 발주", "담김")
                 _cols_use = _COLS_MAT if _mat_layout else _COLS_PROD
@@ -12601,6 +12664,8 @@ elif page == "발주/입고":
                         "제품 사이즈": p.get("product_size") or "-",
                         "소재 (BOM 자재명)": (p.get("raw_material_name")
                                             or p.get("bom_material_name") or "-"),
+                        "미납 수주": (_so_pend.get(p["product_id"]) or {}).get("qty", 0),
+                        "최근 납기": (_so_pend.get(p["product_id"]) or {}).get("due") or "-",
                         "최근 단가": vp or int(p.get("material_unit_price") or 0),
                         "최근 수량": vq or 0,
                         "최근 발주": (f"{vpo} · {str(vdt)[:10]}" if vpo else "-"),
@@ -12627,6 +12692,7 @@ elif page == "발주/입고":
                         "주공급사": m.get("main_supplier") or "-",
                         "재질": "-", "제품 사이즈": "-",
                         "소재 (BOM 자재명)": m.get("spec") or "-",
+                        "미납 수주": 0, "최근 납기": "-",
                         "최근 단가": vp or 0, "최근 수량": vq or 0,
                         "최근 발주": _last,
                         "구분": ((m.get("material_type") or "자재") if _mat_layout
@@ -12645,6 +12711,7 @@ elif page == "발주/입고":
                         "재질": _h["material"] or "-",
                         "제품 사이즈": "-",
                         "소재 (BOM 자재명)": _h["spec"] or "-",
+                        "미납 수주": 0, "최근 납기": "-",
                         "최근 단가": _h["unit_price"],
                         "최근 수량": _h["qty"],
                         "최근 발주": (f"{_h['po_number']} · {_h['po_date']}"
@@ -12807,12 +12874,17 @@ elif page == "발주/입고":
                     # 소모성·공구 발주는 재질 대신 단위(수기, 수량 앞) —
                     # 2026-09-22 사용자 요청. 소재 발주는 품명·재질·규격 그대로
                     _unit_layout = sel_bucket != "소재"
+                    # 소재 발주: 줄마다 그 제품의 현재 미납 수주(참고, 편집 불가)
+                    _cart_pend = ({} if _unit_layout else _po_pending_map(
+                        [it.get("product_id") for it in _items]))
                     _grid_rows = [{
                         "품명": it["item_name"],
                         **({"규격": it.get("spec") or "",
                             "단위": it.get("unit") or "EA"} if _unit_layout
                            else {"재질": it.get("material") or "",
-                                 "규격": it.get("spec") or ""}),
+                                 "규격": it.get("spec") or "",
+                                 "미납 수주": (_cart_pend.get(it.get("product_id"))
+                                              or {}).get("qty", 0)}),
                         "수량": int(it.get("qty") or 0),
                         "단가": int(it.get("unit_price") or 0),
                         "금액": int(it.get("qty") or 0) * int(it.get("unit_price") or 0),
@@ -12823,10 +12895,29 @@ elif page == "발주/입고":
                         editable_cols=(("품명", "규격", "단위", "수량", "단가", "메모")
                                        if _unit_layout else
                                        ("품명", "재질", "규격", "수량", "단가", "메모")),
-                        num_cols=("수량", "단가", "금액"), strong_cols=("품명",),
+                        num_cols=(("수량", "단가", "금액") if _unit_layout
+                                  else ("미납 수주", "수량", "단가", "금액")),
+                        strong_cols=("품명",),
                         select=False, check_col="삭제",
                         # 금액은 그리드 안에서 즉시 수량×단가
                         calc_cols={"금액": "(Number(d['수량'])||0)*(Number(d['단가'])||0)"})
+                    # 참고: 담긴 제품의 미납 수주 상세 (수주번호·고객사·납기·미납)
+                    _pend_lines = [dict(l, pn=it["item_name"])
+                                   for it in _items
+                                   for l in (_cart_pend.get(it.get("product_id"))
+                                             or {}).get("lines", [])]
+                    if _pend_lines:
+                        with st.expander(
+                                "담긴 제품의 현재 수주 {}건 — 미납 합계 {:,}".format(
+                                    len(_pend_lines),
+                                    sum(l["pending_qty"] for l in _pend_lines))):
+                            toss_table([{
+                                "품명": l["pn"], "수주번호": l["so_number"],
+                                "고객사": l["customer"], "납기": l["due_date"],
+                                "미납": l["pending_qty"],
+                            } for l in _pend_lines], num_cols=("미납",),
+                                strong_cols=("품명",),
+                                scroll=len(_pend_lines) > 15)
                     # '삭제' 체크 = 즉시 제거 (줄 선택 rerun 없음)
                     _del_uids = [it["_uid"] for it, r in zip(_items, _ed_rows)
                                  if bool(r.get("삭제"))]

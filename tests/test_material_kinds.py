@@ -119,8 +119,10 @@ def test_tools_view_shows_only_T_with_simple_columns(mocked_db):
     sel = [s for s in at.selectbox if s.key == "md_ty_T001"]
     assert sel and sel[0].options == ["공구"]
     assert not any(s.key == "md_pr_T001" for s in at.selectbox)
-    # 신규 등록 폼 — 공구용 (자재명·규격·구분·주공급사)
+    assert "md_un_T001" in keys, "비생산 자재 상세 편집에 단위 입력이 있어야 함"
+    # 신규 등록 폼 — 공구용 (자재명·규격·구분·단위·주공급사)
     assert "nm_name_T" in keys and "nm_spec_T" in keys and "nm_sup_T" in keys
+    assert "nm_unit_T" in keys, "공구 등록 폼에 단위 입력이 있어야 함"
     assert "nm_type" not in keys, "공구 등록 폼에 재질 입력이 있으면 안 됨"
 
 
