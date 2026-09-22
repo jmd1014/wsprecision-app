@@ -12461,11 +12461,39 @@ elif page == "발주/입고":
                                   for it in st.session_state.po_items
                                   if not it.get("product_id")}
                 _rows = []
+                # 열 구성: 소재 발주는 제품 기준(품번·재질·제품 사이즈·BOM 자재명),
+                # 소모성·공구 발주는 자재 마스터 기준(자재ID·자재명·구분·규격·
+                # 주공급사) — 표 내용이 마스터와 다르게 보이던 문제 (2026-09-22)
+                _mat_layout = sel_bucket != "소재"
+                _COLS_PROD = ("담기", "품번", "재질", "제품 사이즈", "소재 (BOM 자재명)",
+                              "최근 단가", "최근 수량", "최근 발주", "구분", "담김")
+                _COLS_MAT = ("담기", "자재ID", "자재명", "구분", "규격", "주공급사",
+                             "최근 단가", "최근 수량", "최근 발주", "담김")
+                _cols_use = _COLS_MAT if _mat_layout else _COLS_PROD
+                # 자재 행의 최근 단가·수량: ① 이 거래처 앱 발주 이력 ② 매입 원장
+                # (matched_material_id) 최근 행 — 두리처럼 앱 발주가 없어도
+                # 원장 단가가 나오게. 행마다 REST 를 치지 않고 한 번에.
+                _lg_last = {}
+                _mat_ids = [m["material_id"] for m in _mat_res]
+                if _mat_ids:
+                    try:
+                        for _i0 in range(0, len(_mat_ids), 100):
+                            _chunk = ",".join(f'"{x}"' for x in _mat_ids[_i0:_i0 + 100])
+                            for _lr in fetch(
+                                    "purchase_ledger",
+                                    "matched_material_id,unit_price,qty,trade_date",
+                                    f"matched_material_id=in.({_chunk})"
+                                    "&order=trade_date.desc", limit=3000):
+                                _lg_last.setdefault(_lr["matched_material_id"], _lr)
+                    except Exception:
+                        pass
                 for p in _res:
                     vp, vq, vpo, vdt = _get_vendor_recent_line(
                         vendor["vendor_id"], p["pn"])
                     _rows.append({
                         "담기": False, "품번": p["pn"],
+                        "자재ID": p["product_id"], "자재명": p["pn"],
+                        "규격": p.get("product_size") or "-", "주공급사": "-",
                         "재질": p.get("material") or "-",
                         "제품 사이즈": p.get("product_size") or "-",
                         "소재 (BOM 자재명)": (p.get("raw_material_name")
@@ -12473,26 +12501,43 @@ elif page == "발주/입고":
                         "최근 단가": vp or int(p.get("material_unit_price") or 0),
                         "최근 수량": vq or 0,
                         "최근 발주": (f"{vpo} · {str(vdt)[:10]}" if vpo else "-"),
-                        "구분": "마스터",
+                        "구분": "제품" if _mat_layout else "마스터",
                         "담김": "담김" if p["product_id"] in _in_cart else "",
-                        "_p": p, "_vp": vp, "_vq": vq})
+                        "_name": p["pn"], "_p": p, "_vp": vp, "_vq": vq})
                 for m in _mat_res:
-                    vp, vq, vpo, vdt = _get_vendor_recent_line(
-                        vendor["vendor_id"], m["raw_name"])
+                    _h9 = _vh_hist.get(m["raw_name"])
+                    _l9 = _lg_last.get(m["material_id"])
+                    if _h9:
+                        vp, vq = _h9["unit_price"], _h9["qty"]
+                        _last = (f"{_h9['po_number']} · {_h9['po_date']}"
+                                 if _h9.get("po_number") else "-")
+                    elif _l9:
+                        vp = int(float(_l9.get("unit_price") or 0))
+                        vq = int(float(_l9.get("qty") or 0))
+                        _last = f"원장 · {str(_l9.get('trade_date') or '')[:10]}"
+                    else:
+                        vp, vq, _last = 0, 0, "-"
                     _rows.append({
                         "담기": False, "품번": m["raw_name"],
+                        "자재ID": m["material_id"], "자재명": m["raw_name"],
+                        "규격": m.get("spec") or "-",
+                        "주공급사": m.get("main_supplier") or "-",
                         "재질": "-", "제품 사이즈": "-",
                         "소재 (BOM 자재명)": m.get("spec") or "-",
                         "최근 단가": vp or 0, "최근 수량": vq or 0,
-                        "최근 발주": (f"{vpo} · {str(vdt)[:10]}" if vpo else "-"),
-                        "구분": f"자재 · {m.get('material_type') or '-'}",
+                        "최근 발주": _last,
+                        "구분": ((m.get("material_type") or "자재") if _mat_layout
+                                 else f"자재 · {m.get('material_type') or '-'}"),
                         "담김": "담김" if m["raw_name"] in _in_cart_names else "",
+                        "_name": m["raw_name"],
                         "_adhoc": {"material_id": m["material_id"],
                                    "material": "", "spec": m.get("spec") or "",
                                    "qty": vq or 0, "unit_price": vp or 0}})
                 for _nm, _h in _hist_rows:
                     _rows.append({
                         "담기": False, "품번": _nm,
+                        "자재ID": _h.get("material_id") or "-", "자재명": _nm,
+                        "규격": _h["spec"] or "-", "주공급사": vendor["name"],
                         "재질": _h["material"] or "-",
                         "제품 사이즈": "-",
                         "소재 (BOM 자재명)": _h["spec"] or "-",
@@ -12503,21 +12548,18 @@ elif page == "발주/입고":
                         "구분": ("자재 이력" if _h.get("material_id")
                                  else "직접 입력 이력"),
                         "담김": "담김" if _nm in _in_cart_names else "",
-                        "_adhoc": _h})
+                        "_name": _nm, "_adhoc": _h})
                 with st.form("po_pick_form"):
                     _pick_ed = st.data_editor(
-                        pd.DataFrame([{k: v for k, v in r.items()
-                                       if not k.startswith("_")}
+                        pd.DataFrame([{c: r[c] for c in _cols_use}
                                       for r in _rows]),
                         hide_index=True, use_container_width=True,
                         height=min(420, 46 + 36 * len(_rows)),
-                        key=f"po_pick_{vendor['vendor_id']}_{search_q}",
+                        key=f"po_pick_{vendor['vendor_id']}_{search_q}_{sel_bucket}",
                         column_config={
                             "담기": st.column_config.CheckboxColumn(),
                             **{c: st.column_config.Column(disabled=True)
-                               for c in ("품번", "재질", "소재 (BOM 자재명)",
-                                         "제품 사이즈", "최근 단가", "최근 수량",
-                                         "최근 발주", "구분", "담김")}})
+                               for c in _cols_use if c != "담기"}})
                     _pick_go = st.form_submit_button("체크한 품목 담기",
                                                      type="primary")
                 if _pick_go:
@@ -12532,7 +12574,7 @@ elif page == "발주/입고":
                                     "_uid": str(_po_uuid.uuid4())[:8],
                                     "product_id": None,
                                     "material_id": _h.get("material_id"),
-                                    "item_name": r["품번"],
+                                    "item_name": r["_name"],
                                     "material": _h["material"],
                                     "spec": _h["spec"],
                                     "qty": _h["qty"],

@@ -149,6 +149,25 @@ def test_adhoc_history_listed_without_query(mocked_db):
     assert "자재 · 소모품" in txt and txt.count("절삭유") == 1
 
 
+def test_consumable_bucket_uses_master_columns(mocked_db):
+    """소모성·공구 발주 그룹에서는 결과 표가 자재 마스터 기준 열(자재ID·자재명·
+    구분·규격·주공급사)이고, 자재 단가는 앱 발주 이력 → 매입 원장 순으로 채운다."""
+    at = _open_po_page()
+    b = [r for r in at.radio if r.key == "po_bucket"]
+    assert b
+    b[0].set_value("소모성")
+    at.run()
+    [t for t in at.text_input if t.key == "po_q"][0].set_value("절삭")
+    [b for b in at.button if b.label == "검색"][0].click().run()
+    assert not at.exception, [str(e.value) for e in at.exception]
+    txt = _grid_texts(at)
+    assert txt
+    for col in ("자재ID", "자재명", "구분", "규격", "주공급사"):
+        assert col in txt, f"자재 기준 열 '{col}' 누락"
+    assert "품번" not in txt and "BOM 자재명" not in txt, "소모성 발주에 제품 기준 열이 나옴"
+    assert "C002" in txt and "절삭유" in txt and "소모품" in txt and "20L" in txt
+
+
 def test_vendor_without_history_lists_its_master_materials(mocked_db):
     """앱 발주 이력이 없는 거래처(두리처럼)도 검색어 없이 [검색] → 주공급사가 그
     거래처인 자재 전체가 나온다 (2026-09-22 사용자: 조회 안 됨)."""
