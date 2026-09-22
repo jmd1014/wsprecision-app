@@ -12185,17 +12185,42 @@ elif page == "발주/입고":
                     "qty": vendor_qty or 0, "unit_price": upd, "memo": ""})
 
             st.markdown("##### ② 품목 담기")
+            # 이 거래처 발주 이력 — 품번(마스터 연결용)과, 품목별 최근 라인
+            # (마스터에 없는 직접 입력 품목도 이력으로 다시 담기 위해,
+            # 2026-09-22: 삼경O&T 습동유·절삭유처럼 소모품만 있는 거래처는
+            # 이력 검색이 항상 비던 문제)
             _vh_pns = set()
+            _vh_hist = {}   # 품명 → 최근 라인 {material, spec, qty, unit_price, po_number, po_date}
             try:
-                _vh_pos = fetch("purchase_orders", "po_id",
-                                f"vendor_id=eq.{_fq(vendor['vendor_id'])}", limit=300)
+                _vh_pos = fetch("purchase_orders", "po_id,po_number,po_date",
+                                f"vendor_id=eq.{_fq(vendor['vendor_id'])}"
+                                "&order=po_date.desc,po_id.desc", limit=300)
                 if _vh_pos:
-                    _vh_items = fetch("purchase_order_items", "item_name",
+                    _vh_pmap = {p["po_id"]: p for p in _vh_pos}
+                    _vh_rank = {p["po_id"]: i for i, p in enumerate(_vh_pos)}
+                    _vh_items = fetch("purchase_order_items",
+                                      "poi_id,po_id,item_name,material,spec,"
+                                      "qty,unit_price",
                                       "po_id=in.(" + ",".join(
                                           str(p["po_id"]) for p in _vh_pos)
                                       + ")", limit=2000)
-                    _vh_pns = {i["item_name"].split(" (")[0]
-                               for i in _vh_items if i.get("item_name")}
+                    _vh_items = [i for i in _vh_items if i.get("item_name")]
+                    _vh_pns = {i["item_name"].split(" (")[0] for i in _vh_items}
+                    # 최근 발주 순으로 훑으며 품목별 첫 라인만 보관
+                    for i in sorted(_vh_items, key=lambda x: (
+                            _vh_rank.get(x["po_id"], 9999),
+                            -int(x.get("poi_id") or 0))):
+                        _nm = i["item_name"].strip()
+                        if _nm in _vh_hist:
+                            continue
+                        _po9 = _vh_pmap.get(i["po_id"]) or {}
+                        _vh_hist[_nm] = {
+                            "material": i.get("material") or "",
+                            "spec": i.get("spec") or "",
+                            "qty": int(float(i.get("qty") or 0)),
+                            "unit_price": int(float(i.get("unit_price") or 0)),
+                            "po_number": _po9.get("po_number"),
+                            "po_date": str(_po9.get("po_date") or "")[:10]}
             except Exception:
                 pass
             with st.form("po_search_form"):
@@ -12203,9 +12228,13 @@ elif page == "발주/입고":
                 search_q = sq1.text_input("품번 검색", key="po_q",
                                           placeholder="예: 8HFDV, 4PDVN — "
                                                       "비우면 이 거래처 이력 전체")
+                # key 에 거래처 ID — 하나의 key 를 쓰면 처음 본 거래처(이력
+                # 없음)의 '꺼짐'이 다음 거래처에도 남아 이력 검색이 안 됐다
+                # (2026-09-22 삼경O&T)
                 _vh_only = sq2.checkbox(
                     f"이 거래처 이력만 ({len(_vh_pns)}종)",
-                    value=bool(_vh_pns), key="po_vh_only")
+                    value=bool(_vh_pns),
+                    key=f"po_vh_only_{vendor['vendor_id']}")
                 sq3.form_submit_button("검색", use_container_width=True)
             _res = []
             if search_q and len(search_q.strip()) >= 2:
@@ -12220,27 +12249,9 @@ elif page == "발주/입고":
                                  limit=40)
                 except Exception as e:
                     st.error(f"검색 실패: {e}")
+                _all_n = len(_res)
                 if _vh_only and _vh_pns:
-                    _all_n = len(_res)
                     _res = [p for p in _res if p["pn"] in _vh_pns]
-                    if not _res and _all_n:
-                        st.info(f"이 거래처 이력에 없는 품번 — 전체 품목 "
-                                f"{_all_n}건 일치. 체크를 해제하고 다시 검색하세요.")
-                if not _res and not (_vh_only and _vh_pns):
-                    try:
-                        arch = fetch("products", "pn",
-                                     f"pn=ilike.*{_fq(_q)}*&archived_at=not.is.null",
-                                     limit=5)
-                    except Exception:
-                        arch = []
-                    if arch:
-                        st.warning("활성 품목 중 검색 결과 없음 — 휴면 품목 "
-                                   f"{len(arch)}건 일치: "
-                                   f"{', '.join(a['pn'] for a in arch)}. "
-                                   "마스터 관리에서 활성 복귀 후 발주하세요.")
-                    else:
-                        st.info("일치하는 품목 없음 — 아래 '마스터에 없는 품목 "
-                                "즉석 추가'를 이용하세요.")
             elif _vh_pns and _vh_only:
                 # 검색어 없이 [검색] → 이 거래처 이력 품번 전체
                 try:
@@ -12256,9 +12267,73 @@ elif page == "발주/입고":
                                       limit=100)
                 except Exception:
                     pass
-            if _res:
+
+            # 마스터에 없는 이력 품목 — 검색어와 맞는(또는 검색어 없이 이력
+            # 전체) 이력 품명 중 활성 제품이 아닌 것. 휴면 제품은 기존처럼
+            # 경고만, 나머지는 이력 그대로 담을 수 있는 행으로.
+            _hist_rows = []
+            _hist_arch = []
+            _searched = bool(search_q and len(search_q.strip()) >= 2) or \
+                bool(_vh_pns and _vh_only)
+            if _searched and _vh_hist:
+                _q9 = (search_q or "").strip().lower()
+                _res_pns = {p["pn"] for p in _res}
+                _cand = [n for n in sorted(_vh_hist)
+                         if n.split(" (")[0] not in _res_pns
+                         and (not _q9 or _q9 in n.lower())]
+                if _cand:
+                    _known = {}
+                    try:
+                        for _i0 in range(0, len(_cand), 60):
+                            for _p9 in fetch(
+                                    "products", "pn,archived_at",
+                                    "pn=in.({})".format(",".join(
+                                        f'"{x.split(" (")[0]}"'
+                                        for x in _cand[_i0:_i0 + 60])),
+                                    limit=100):
+                                _known[_p9["pn"]] = bool(_p9.get("archived_at"))
+                    except Exception:
+                        pass
+                    for n in _cand:
+                        _pn9 = n.split(" (")[0]
+                        if _pn9 in _known:
+                            if _known[_pn9]:
+                                _hist_arch.append(_pn9)
+                            continue   # 활성 제품인데 검색에 안 걸린 것 — 이력 행 아님
+                        _hist_rows.append((n, _vh_hist[n]))
+
+            if search_q and len(search_q.strip()) >= 2 and not _res \
+                    and not _hist_rows:
+                _q = search_q.strip()
+                if _vh_only and _vh_pns and _all_n:
+                    st.info(f"이 거래처 이력에 없는 품번 — 전체 품목 "
+                            f"{_all_n}건 일치. 체크를 해제하고 다시 검색하세요.")
+                else:
+                    try:
+                        arch = fetch("products", "pn",
+                                     f"pn=ilike.*{_fq(_q)}*&archived_at=not.is.null",
+                                     limit=5)
+                    except Exception:
+                        arch = []
+                    if arch:
+                        st.warning("활성 품목 중 검색 결과 없음 — 휴면 품목 "
+                                   f"{len(arch)}건 일치: "
+                                   f"{', '.join(a['pn'] for a in arch)}. "
+                                   "마스터 관리에서 활성 복귀 후 발주하세요.")
+                    else:
+                        st.info("일치하는 품목 없음 — 아래 '마스터에 없는 자재 "
+                                "직접 입력'을 이용하세요.")
+            elif _hist_arch and not search_q:
+                st.warning("이력 중 휴면 제품 {}건은 제외: {} — 마스터 관리에서 "
+                           "활성 복귀 후 발주하세요.".format(
+                               len(_hist_arch), ", ".join(_hist_arch[:8])))
+
+            if _res or _hist_rows:
                 _in_cart = {it.get("product_id")
                             for it in st.session_state.po_items}
+                _in_cart_names = {(it.get("item_name") or "").strip()
+                                  for it in st.session_state.po_items
+                                  if not it.get("product_id")}
                 _rows = []
                 for p in _res:
                     vp, vq, vpo, vdt = _get_vendor_recent_line(
@@ -12272,8 +12347,22 @@ elif page == "발주/입고":
                         "최근 단가": vp or int(p.get("material_unit_price") or 0),
                         "최근 수량": vq or 0,
                         "최근 발주": (f"{vpo} · {str(vdt)[:10]}" if vpo else "-"),
+                        "구분": "마스터",
                         "담김": "담김" if p["product_id"] in _in_cart else "",
                         "_p": p, "_vp": vp, "_vq": vq})
+                for _nm, _h in _hist_rows:
+                    _rows.append({
+                        "담기": False, "품번": _nm,
+                        "재질": _h["material"] or "-",
+                        "제품 사이즈": "-",
+                        "소재 (BOM 자재명)": _h["spec"] or "-",
+                        "최근 단가": _h["unit_price"],
+                        "최근 수량": _h["qty"],
+                        "최근 발주": (f"{_h['po_number']} · {_h['po_date']}"
+                                     if _h.get("po_number") else "-"),
+                        "구분": "직접 입력 이력",
+                        "담김": "담김" if _nm in _in_cart_names else "",
+                        "_adhoc": _h})
                 with st.form("po_pick_form"):
                     _pick_ed = st.data_editor(
                         pd.DataFrame([{k: v for k, v in r.items()
@@ -12287,7 +12376,7 @@ elif page == "발주/입고":
                             **{c: st.column_config.Column(disabled=True)
                                for c in ("품번", "재질", "소재 (BOM 자재명)",
                                          "제품 사이즈", "최근 단가", "최근 수량",
-                                         "최근 발주", "담김")}})
+                                         "최근 발주", "구분", "담김")}})
                     _pick_go = st.form_submit_button("체크한 품목 담기",
                                                      type="primary")
                 if _pick_go:
@@ -12295,7 +12384,20 @@ elif page == "발주/입고":
                     for _bi, _brow in _pick_ed.iterrows():
                         if bool(_brow.get("담기")):
                             r = _rows[int(_bi)]
-                            _po_add(r["_p"], r["_vp"], r["_vq"])
+                            if r.get("_adhoc"):
+                                # 마스터 연결 없이 이력 그대로 (발주서에만 기재)
+                                _h = r["_adhoc"]
+                                st.session_state.po_items.append({
+                                    "_uid": str(_po_uuid.uuid4())[:8],
+                                    "product_id": None,
+                                    "item_name": r["품번"],
+                                    "material": _h["material"],
+                                    "spec": _h["spec"],
+                                    "qty": _h["qty"],
+                                    "unit_price": _h["unit_price"],
+                                    "memo": ""})
+                            else:
+                                _po_add(r["_p"], r["_vp"], r["_vq"])
                             _n_add += 1
                     if _n_add:
                         st.session_state["po_tbl_nonce"] = \
