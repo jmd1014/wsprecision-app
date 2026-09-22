@@ -2658,7 +2658,10 @@ elif page == "마스터 관리":
 
         try:
             rows = fetch("vendors",
-                         "vendor_id,name,vendor_group,category,trade_type,business_no,ceo_name,phone,address,business_type,business_item,payment_terms,in_use",
+                         "vendor_id,name,short_name,vendor_group,category,trade_type,"
+                         "business_no,ceo_name,phone,fax,email,contact_person,"
+                         "contact_phone,address,business_type,business_item,"
+                         "payment_terms,memo,in_use",
                          fq, limit=f_limit)
         except Exception as e:
             st.error(f"조회 실패: {e}"); rows = []
@@ -2766,62 +2769,128 @@ elif page == "마스터 관리":
             _vd = rows[_vd_i if _vd_i is not None else 0]
             _vid = _vd["vendor_id"]
             # 선택·값이 바뀌면 카드 입력 기본값 리셋 (2026-08-27)
+            # 상세 편집 = 신규 등록과 같은 항목 전부 (2026-09-22 사용자:
+            # 사업자번호 등이 상세에 없고 일괄 편집은 잠겨 있어 못 채움)
+            _VD_FIELDS = (
+                ("name", "nm"), ("short_name", "sn"), ("business_no", "biz"),
+                ("vendor_group", "grp"), ("trade_type", "tt"),
+                ("ceo_name", "ceo"), ("phone", "ph"), ("fax", "fx"),
+                ("email", "em"), ("contact_person", "cp"),
+                ("contact_phone", "cph"), ("address", "ad"),
+                ("business_type", "bt"), ("business_item", "bi"),
+                ("payment_terms", "pay"), ("memo", "mm"), ("in_use", "use"))
             fresh_keys("vdcard",
-                (_vid,) + tuple(str(_vd.get(k)) for k in (
-                    "vendor_group", "ceo_name", "phone", "address",
-                    "payment_terms", "in_use")),
-                tuple(f"vd_{p}_{_vid}" for p in (
-                    "grp", "ceo", "ph", "ad", "pay", "use")))
+                (_vid,) + tuple(str(_vd.get(k)) for k, _ in _VD_FIELDS),
+                tuple(f"vd_{p}_{_vid}" for _, p in _VD_FIELDS))
             st.markdown(f"##### {_vd['name']} — 상세 편집")
-            st.caption(
-                f"사업자번호 {_vd.get('business_no') or '-'} · 업태 "
-                f"{_vd.get('business_type') or '-'} · 종목 "
-                f"{_vd.get('business_item') or '-'} (수정은 관리자 문의)")
             # st.form — 입력마다 rerun 하지 않고 저장 때 한 번만
             with st.form(f"vd_form_{_vid}"):
-                ve1, ve2, ve3 = st.columns(3)
+                ve1, ve2, ve3 = st.columns([2, 1, 1])
+                _vd_name = ve1.text_input("거래처명 *",
+                    value=_vd.get("name") or "", key=f"vd_nm_{_vid}")
+                _vd_short = ve2.text_input("약칭",
+                    value=_vd.get("short_name") or "", key=f"vd_sn_{_vid}",
+                    help="수주 업로드·화면 표시용 짧은 이름 (예: HDX)")
+                _vd_biz = ve3.text_input("사업자번호",
+                    value=_vd.get("business_no") or "", key=f"vd_biz_{_vid}",
+                    placeholder="000-00-00000")
+                ve4, ve5, ve6, ve7 = st.columns([1.2, 1, 1, 1])
                 _vg_opts = [None] + VENDOR_GROUPS
-                _vd_group = ve1.selectbox(
+                _vd_group = ve4.selectbox(
                     "그룹", _vg_opts,
                     index=(_vg_opts.index(_vd.get("vendor_group"))
                            if _vd.get("vendor_group") in _vg_opts else 0),
                     format_func=lambda v: v or "(미지정)",
                     key=f"vd_grp_{_vid}")
-                _vd_ceo = ve2.text_input("대표자",
+                _tt_opts = ["매입", "매출", "혼합"]
+                _vd_tt = ve5.selectbox("거래 구분", _tt_opts,
+                    index=(_tt_opts.index(_vd.get("trade_type"))
+                           if _vd.get("trade_type") in _tt_opts else 0),
+                    key=f"vd_tt_{_vid}")
+                _vd_ceo = ve6.text_input("대표자",
                     value=_vd.get("ceo_name") or "", key=f"vd_ceo_{_vid}")
-                _vd_phone = ve3.text_input("전화",
+                _vd_use = ve7.toggle("사용중",
+                    value=bool(_vd.get("in_use")), key=f"vd_use_{_vid}")
+                ve8, ve9, ve10, ve11 = st.columns(4)
+                _vd_phone = ve8.text_input("전화",
                     value=_vd.get("phone") or "", key=f"vd_ph_{_vid}")
-                ve4, ve5, ve6 = st.columns([2, 2, 1])
-                _vd_addr = ve4.text_input("주소",
-                    value=_vd.get("address") or "", key=f"vd_ad_{_vid}")
-                _vd_pay = ve5.text_input("결제조건",
+                _vd_fax = ve9.text_input("팩스",
+                    value=_vd.get("fax") or "", key=f"vd_fx_{_vid}")
+                _vd_email = ve10.text_input("이메일",
+                    value=_vd.get("email") or "", key=f"vd_em_{_vid}",
+                    help="발주서 메일 발송 주소")
+                _vd_pay = ve11.text_input("결제조건",
                     value=_vd.get("payment_terms") or "",
                     key=f"vd_pay_{_vid}")
-                _vd_use = ve6.toggle("사용중",
-                    value=bool(_vd.get("in_use")), key=f"vd_use_{_vid}")
+                ve12, ve13, ve14, ve15 = st.columns(4)
+                _vd_cp = ve12.text_input("담당자",
+                    value=_vd.get("contact_person") or "", key=f"vd_cp_{_vid}")
+                _vd_cph = ve13.text_input("담당자 연락처",
+                    value=_vd.get("contact_phone") or "", key=f"vd_cph_{_vid}")
+                _vd_bt = ve14.text_input("업태",
+                    value=_vd.get("business_type") or "", key=f"vd_bt_{_vid}")
+                _vd_bi = ve15.text_input("종목",
+                    value=_vd.get("business_item") or "", key=f"vd_bi_{_vid}")
+                ve16, ve17 = st.columns([2, 2])
+                _vd_addr = ve16.text_input("주소",
+                    value=_vd.get("address") or "", key=f"vd_ad_{_vid}")
+                _vd_memo = ve17.text_input("메모",
+                    value=_vd.get("memo") or "", key=f"vd_mm_{_vid}")
                 _vd_save = st.form_submit_button("변경 저장",
                                                  type="primary")
             if _vd_save:
+                import re as _re
                 _vupd = {}
-                for _f9, _nv9 in (
-                        ("vendor_group", _vd_group),
-                        ("ceo_name", (_vd_ceo or "").strip() or None),
-                        ("phone", (_vd_phone or "").strip() or None),
-                        ("address", (_vd_addr or "").strip() or None),
-                        ("payment_terms",
-                         (_vd_pay or "").strip() or None),
-                        ("in_use", bool(_vd_use))):
-                    if _vd.get(_f9) != _nv9:
-                        _vupd[_f9] = _nv9
-                if not _vupd:
-                    st.info("변경 사항 없음")
-                elif _db.update("vendors", f"vendor_id=eq.{_fq(_vid)}",
-                                _vupd):
-                    st.success(f"{_vd['name']} — {len(_vupd)}개 항목 "
-                               "저장")
-                    st.rerun()
-                else:
-                    st.error("저장 실패 — 다시 시도해 주세요.")
+                _nn = (_vd_name or "").strip()
+                _nn = _re.sub(r'\s+', ' ', _nn.replace('（', '(')
+                              .replace('）', ')').replace('㈜', '(주)'))
+                if not _nn:
+                    st.error("거래처명은 비울 수 없습니다.")
+                    _nn = None
+                elif _nn != _vd.get("name"):
+                    _norm = _re.sub(r'\s+', '', _nn)
+                    try:
+                        _dup = fetch("vendors", "vendor_id,name",
+                                     f"normalized_name=eq.{_fq(_norm)}"
+                                     f"&vendor_id=neq.{_fq(_vid)}", limit=1)
+                    except Exception:
+                        _dup = []
+                    if _dup:
+                        st.error(f"같은 이름의 거래처가 이미 있습니다: "
+                                 f"{_dup[0]['name']} (ID={_dup[0]['vendor_id']})")
+                        _nn = None
+                    else:
+                        _vupd["name"] = _nn
+                        _vupd["normalized_name"] = _norm
+                if _nn is not None:
+                    for _f9, _nv9 in (
+                            ("short_name", (_vd_short or "").strip() or None),
+                            ("business_no", (_vd_biz or "").strip() or None),
+                            ("vendor_group", _vd_group),
+                            ("trade_type", _vd_tt),
+                            ("ceo_name", (_vd_ceo or "").strip() or None),
+                            ("phone", (_vd_phone or "").strip() or None),
+                            ("fax", (_vd_fax or "").strip() or None),
+                            ("email", (_vd_email or "").strip() or None),
+                            ("contact_person", (_vd_cp or "").strip() or None),
+                            ("contact_phone", (_vd_cph or "").strip() or None),
+                            ("address", (_vd_addr or "").strip() or None),
+                            ("business_type", (_vd_bt or "").strip() or None),
+                            ("business_item", (_vd_bi or "").strip() or None),
+                            ("payment_terms",
+                             (_vd_pay or "").strip() or None),
+                            ("memo", (_vd_memo or "").strip() or None),
+                            ("in_use", bool(_vd_use))):
+                        if _vd.get(_f9) != _nv9:
+                            _vupd[_f9] = _nv9
+                    if not _vupd:
+                        st.info("변경 사항 없음")
+                    elif _db.update("vendors", f"vendor_id=eq.{_fq(_vid)}",
+                                    _vupd):
+                        st.success(f"{_nn} — {len(_vupd)}개 항목 저장")
+                        st.rerun()
+                    else:
+                        st.error("저장 실패 — 다시 시도해 주세요.")
 
             with st.expander("일괄 편집 (표) — 여러 행을 한 번에 수정"):
                 df = pd.DataFrame(rows)
@@ -2829,21 +2898,31 @@ elif page == "마스터 관리":
                 with st.form("vendor_bulk_form"):
                     edited = st.data_editor(
                     df,
+                    # 거래처명은 상세 편집에서만(중복 검사·정규화), 나머지는
+                    # 여기서도 수정 가능 (2026-09-22: 사업자번호·업태·종목 등이
+                    # 잠겨 있어 못 채우던 문제)
                     column_config={
                         "vendor_id": st.column_config.NumberColumn("ID", width="small", disabled=True),
                         "name": st.column_config.TextColumn("거래처명", width="medium", disabled=True),
+                        "short_name": st.column_config.TextColumn("약칭", width="small"),
                         "vendor_group": st.column_config.SelectboxColumn(
                             "그룹", options=[None] + VENDOR_GROUPS, width="medium"
                         ),
                         "category": st.column_config.TextColumn("카테고리(자동)", disabled=True, width="small"),
-                        "trade_type": st.column_config.TextColumn("구분", width="small", disabled=True),
-                        "business_no": st.column_config.TextColumn("사업자번호", disabled=True, width="small"),
+                        "trade_type": st.column_config.SelectboxColumn(
+                            "구분", options=["매입", "매출", "혼합"], width="small"),
+                        "business_no": st.column_config.TextColumn("사업자번호", width="small"),
                         "ceo_name": st.column_config.TextColumn("대표자"),
                         "phone": st.column_config.TextColumn("전화"),
+                        "fax": st.column_config.TextColumn("팩스"),
+                        "email": st.column_config.TextColumn("이메일", width="medium"),
+                        "contact_person": st.column_config.TextColumn("담당자"),
+                        "contact_phone": st.column_config.TextColumn("담당자 연락처"),
                         "address": st.column_config.TextColumn("주소", width="medium"),
-                        "business_type": st.column_config.TextColumn("업태", disabled=True),
-                        "business_item": st.column_config.TextColumn("종목", disabled=True),
+                        "business_type": st.column_config.TextColumn("업태"),
+                        "business_item": st.column_config.TextColumn("종목"),
                         "payment_terms": st.column_config.TextColumn("결제조건"),
+                        "memo": st.column_config.TextColumn("메모", width="medium"),
                         "in_use": st.column_config.CheckboxColumn("사용", width="small"),
                     },
                     hide_index=True,
@@ -2860,12 +2939,26 @@ elif page == "마스터 관리":
                         "변경 저장 (일괄)", type="primary")
                 if _vb_save:
                     changed = 0
-                    editable_fields = ["vendor_group", "ceo_name", "phone", "address", "payment_terms", "in_use"]
+                    editable_fields = [
+                        "short_name", "vendor_group", "trade_type", "business_no",
+                        "ceo_name", "phone", "fax", "email", "contact_person",
+                        "contact_phone", "address", "business_type",
+                        "business_item", "payment_terms", "memo", "in_use"]
                     for orig, new in zip(rows, edited.to_dict("records")):
                         updates = {}
                         for f in editable_fields:
-                            if orig.get(f) != new.get(f):
-                                updates[f] = new.get(f)
+                            _nv = new.get(f)
+                            # data_editor 는 빈 칸을 NaN/None 으로 — 문자열은
+                            # 공백 제거, 빈 값은 NULL
+                            if isinstance(_nv, float) and _nv != _nv:
+                                _nv = None
+                            if isinstance(_nv, str):
+                                _nv = _nv.strip() or None
+                            if f == "in_use":
+                                _nv = bool(_nv)
+                            if (orig.get(f) or None) != _nv and not (
+                                    f == "in_use" and bool(orig.get(f)) == _nv):
+                                updates[f] = _nv
                         if updates:
                             if _db.update("vendors", f"vendor_id=eq.{_fq(orig['vendor_id'])}", updates):
                                 changed += 1
