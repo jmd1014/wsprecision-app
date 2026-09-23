@@ -201,9 +201,9 @@ def _statement_page(customer, vendor, rows, date_s, accent, copy_label,
  </div>
  {_party_table(customer, vendor, accent)}
  <table class="items">
-  <colgroup><col style="width:46px"><col style="width:134px"><col>
-   <col style="width:46px"><col style="width:62px"><col style="width:56px">
-   <col style="width:78px"><col style="width:70px"><col style="width:56px">
+  <colgroup><col style="width:46px"><col style="width:130px"><col>
+   <col style="width:44px"><col style="width:62px"><col style="width:56px">
+   <col style="width:80px"><col style="width:76px"><col style="width:54px">
   </colgroup>
   <tr><th>월/일</th><th>품번</th><th>품명</th><th>규격</th><th>수량</th>
       <th>단가</th><th>공급가액</th><th>세액</th><th>비고</th></tr>
