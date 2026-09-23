@@ -67,14 +67,18 @@ body{{font-family:'IBM Plex Sans KR',sans-serif;color:#1b2a41;
 .page{{width:200mm;min-height:280mm;margin:0 auto;padding:10mm 8mm;
       page-break-after:always;position:relative}}
 .page:last-child{{page-break-after:auto}}
-.hd{{display:flex;align-items:center;justify-content:space-between;
-    border-bottom:3px solid {accent};padding-bottom:6px;margin-bottom:8px}}
-.hd .tl{{display:flex;align-items:center;gap:12px}}
-/* 로고는 제목보다 낮게(글자 높이의 2/3) — 2026-09-23 사용자: 너무 커서 축소 */
+/* 머리 3분할: 로고(좌) · 제목+사본표기(중앙) · 날짜/페이지(우) — 제목은
+   가운데, 로고는 붙지 않게 (2026-09-23 사용자 요청) */
+.hd{{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;
+    border-bottom:3px solid {accent};padding-bottom:8px;margin-bottom:8px}}
+.hd .tl{{justify-self:start}}
 .hd .logo{{height:16px;width:auto;display:block;opacity:.95}}
-.hd .t{{font-size:24px;font-weight:700;letter-spacing:12px;color:#1b2a41}}
-.hd .copy{{font-size:12px;font-weight:600;color:{accent}}}
-.hd .meta{{font-size:12px;color:#333a45;text-align:right}}
+.hd .tc{{text-align:center;display:flex;flex-direction:column;
+        align-items:center;gap:2px}}
+.hd .t{{font-size:24px;font-weight:700;letter-spacing:12px;color:#1b2a41;
+       padding-left:12px}}   /* letter-spacing 끝 여백 보정 → 시각적 중앙 */
+.hd .copy{{font-size:11.5px;font-weight:600;color:{accent}}}
+.hd .meta{{font-size:12px;color:#333a45;text-align:right;justify-self:end}}
 table{{border-collapse:collapse;width:100%}}
 /* 공급자·공급받는자 두 블록을 같은 폭으로 — colgroup 고정 (2026-09-23:
    두 사본의 비율이 달라 보이던 문제). 값은 칸 안에서 자연스럽게 줄바꿈 */
@@ -195,8 +199,9 @@ def _statement_page(customer, vendor, rows, date_s, accent, copy_label,
 <div class="page">
  <div class="hd">
   <span class="tl">{('<img class="logo" src="' + logo_data_uri() + '" alt="우성정밀">')
-                    if logo_data_uri() else ''}<span class="t">거래명세서</span></span>
-  <span class="copy">({copy_label})</span>
+                    if logo_data_uri() else ''}</span>
+  <span class="tc"><span class="t">거래명세서</span>
+   <span class="copy">({copy_label})</span></span>
   <span class="meta">{date_s}<br>PAGE {page_no}/{page_cnt}</span>
  </div>
  {_party_table(customer, vendor, accent)}
