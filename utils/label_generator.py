@@ -14,35 +14,51 @@ _LABEL_CSS = """
 * {{ box-sizing: border-box; margin: 0; padding: 0; }}
 body {{ font-family: 'Malgun Gothic', sans-serif; color: #1b2a41; }}
 .label {{
-  width: {w}; height: {h}; padding: 4mm 5mm;
+  width: {w}; height: {h}; padding: 3mm 4.5mm 2.5mm;
   border: {border}; border-radius: 2mm;
   display: flex; flex-direction: column;
   page-break-after: {page_break};
   overflow: hidden; background: #fff;
 }}
+/* 공통 틀(제목 · 큰 식별자 · 상세 · 발행일)은 같고, 종류는 머리띠로 구분
+   — 흑백 라벨 프린터에서도 갈리도록 색이 아니라 형태로 (2026-09-23) */
 .hdr {{ display: flex; justify-content: space-between; align-items: center;
-        border-bottom: 1.5pt solid #24406b; padding-bottom: 1.5mm; }}
+        border-bottom: 1.5pt solid #24406b; padding: 0 0 1.2mm; }}
 .hdr .t {{ font-size: 11pt; font-weight: 800; color: #24406b; }}
 .hdr .co {{ font-size: 8pt; color: #7a828d; }}
-.big {{ font-size: 26pt; font-weight: 900; letter-spacing: 1px;
-        text-align: center; padding: 2mm 0 1mm; color: #111; }}
-.badge {{ text-align: center; font-size: 10pt; font-weight: 800;
-          padding: 0.5mm 0 1.5mm; }}
-.badge.ok {{ color: #2f9e44; }}
-.badge.ng {{ color: #d9480f; }}
-.badge.tk {{ color: #e8590c; }}
+.kind-batch .hdr, .kind-finished .hdr {{
+  background: #24406b; color: #fff; border-bottom: 0;
+  padding: 1.2mm 2mm; margin: 0 -1.5mm; border-radius: 1mm; }}
+.kind-batch .hdr .t, .kind-finished .hdr .t, .kind-batch .hdr .co,
+.kind-finished .hdr .co {{ color: #fff; }}
+.kind-finished {{ border: 1.2pt double #24406b; }}
+.kind-inspect .hdr {{ border-bottom: 1.5pt dashed #24406b; }}
+.big {{ font-size: 24pt; font-weight: 900; letter-spacing: .5px;
+        text-align: center; padding: 1.5mm 0 0.5mm; color: #111;
+        line-height: 1.15; white-space: nowrap; overflow: hidden;
+        text-overflow: ellipsis; }}
+.badge {{ text-align: center; font-size: 10.5pt; font-weight: 800;
+          padding: 0.6mm 2mm; margin: 0.5mm auto 1mm; border-radius: 1mm;
+          display: table; }}
+.badge.ok {{ color: #2f9e44; border: 1pt solid #2f9e44; }}
+.badge.ng {{ color: #fff; background: #d9480f; }}
+.badge.tk {{ color: #e8590c; border: 1pt solid #e8590c; }}
+.badge.step {{ color: #24406b; border: 1.2pt solid #24406b; font-size: 12pt; }}
 .rows {{ flex: 1; display: table; width: 100%; }}
 .row {{ display: table-row; }}
-.row .k {{ display: table-cell; font-size: 8.5pt; color: #7a828d;
-           padding: 0.6mm 2mm 0.6mm 0; white-space: nowrap; width: 18mm; }}
-.row .v {{ display: table-cell; font-size: 10.5pt; font-weight: 700; }}
-.ft {{ border-top: 0.5pt solid #e2e5ea; padding-top: 1mm;
+.row .k {{ display: table-cell; font-size: 8pt; color: #7a828d;
+           padding: 0.4mm 2mm 0.4mm 0; white-space: nowrap; width: 17mm;
+           vertical-align: middle; }}
+.row .v {{ display: table-cell; font-size: 10pt; font-weight: 700;
+           line-height: 1.25; vertical-align: middle; }}
+.ft {{ border-top: 0.5pt solid #e2e5ea; padding-top: 0.8mm;
        font-size: 7.5pt; color: #9aa1ab; display: flex;
        justify-content: space-between; }}
 .a4grid {{ display: flex; flex-wrap: wrap; gap: 6mm; padding: 8mm; }}
 """
 
 _BADGE_CLASS = {"합격": "ok", "불합격": "ng", "특채": "tk", "반품": "ng"}
+# labels 항목의 "badge_class" 로 판정 외 배지(예: 이동표의 공정) 지정 가능
 
 
 def labels_html(labels: list, mode: str = "label",
@@ -78,11 +94,13 @@ def labels_html(labels: list, mode: str = "label",
             f'<span class="v">{v if v not in (None, "") else "-"}</span></div>'
             for k, v in lb.get("rows", []))
         badge = lb.get("badge")
+        _bc = lb.get("badge_class") or _BADGE_CLASS.get(badge, "")
         badge_html = (
-            f'<div class="badge {_BADGE_CLASS.get(badge, "")}">'
-            f'{"■ " + badge + " ■"}</div>' if badge else "")
+            f'<div class="badge {_bc}">'
+            f'{badge if _bc == "step" else "■ " + badge + " ■"}</div>'
+            if badge else "")
         cards.append(f"""
-<div class="label">
+<div class="label kind-{lb.get('kind', 'receipt')}">
   <div class="hdr"><span class="t">{lb.get('title', '')}</span>
     <span class="co">우성정밀</span></div>
   <div class="big">{lb.get('big', '')}</div>
@@ -136,17 +154,22 @@ def receipt_labels(items: list, mode: str = "label") -> str:
 
 def batch_labels(items: list, mode: str = "label") -> str:
     """공정 이동표 — 배치가 공정을 이동할 때 실물에 부착 (2026-08-21).
-    items: [{batch_no, pn, qty, step, location, wo_number, w_lot, date}]"""
+    items: [{batch_no, pn, qty, step, location, wo_number, w_lot, date}]
+
+    2026-09-23: 큰 글자는 품번(식별 최우선), 다음 공정은 배지로 강조.
+    배치번호에 작업지시번호가 들어 있어 작업지시 행은 따로 두지 않는다
+    (이중 표기 정정)."""
     labels = [{
+        "kind": "batch",
         "title": "공정 이동표",
-        "big": it.get("batch_no") or "-",
+        "big": it.get("pn") or "-",
+        "badge": f"▶ {it.get('step') or '-'}",
+        "badge_class": "step",
         "rows": [
-            ("품번", it.get("pn")),
+            ("배치번호", it.get("batch_no")),
             ("수량", f"{it.get('qty', 0):,.0f} EA"),
-            ("공정", it.get("step")),
             ("위치", it.get("location")),
-            ("작업지시", it.get("wo_number")),
-            ("소재 LOT", it.get("w_lot")),
+            ("LOT", it.get("w_lot")),
         ],
         "footer": f"발행일 {it.get('date', '')}",
     } for it in items]
@@ -168,6 +191,7 @@ def inspection_labels(items: list, mode: str = "label") -> str:
         if it.get("note"):
             rows.append(("처분", it["note"]))
         labels.append({
+            "kind": "inspect",
             "title": "검사 판정",
             "big": it.get("pn") or "-",
             "badge": it.get("verdict"),
@@ -192,6 +216,7 @@ def finished_labels(items: list, mode: str = "label") -> str:
         if it.get("tokusai"):
             rows.append(("특채 포함", f"{it['tokusai']:,.0f} EA"))
         labels.append({
+            "kind": "finished",
             "title": "완성품",
             "big": it.get("pn") or "-",
             "rows": rows,
@@ -229,31 +254,42 @@ td.l { text-align: left; }
 
 
 def outsource_request_html(data: dict) -> str:
-    """외주 가공 의뢰서 (A4) — 외주 출고 시 실물과 함께 전달.
+    """외주 의뢰서 (A4) — 외주 출고 시 실물과 함께 전달.
+
+    가공 외(열처리·표면처리·검사 등)도 있어 '외주 의뢰서' (2026-09-23).
+    작업 내용은 줄마다 정식 항목(work), 비고(note)와 분리. 외주처가
+    자기 작업지시로 오해하지 않게 '작업지시번호'로 표기.
 
     data: {vendor, process, due_date, issue_date,
-           items: [{pn, wo_number, w_lot, qty, note}], remark}
+           items: [{pn, wo_number, w_lot, qty, work, note}], remark}
     """
     rows = "".join(
-        f"<tr><td>{i + 1}</td><td class='l'>{it.get('pn') or '-'}</td>"
-        f"<td>{it.get('wo_number') or '-'}</td>"
+        f"<tr><td>{i + 1}</td><td class='l pn'>{it.get('pn') or '-'}</td>"
+        f"<td style='white-space:nowrap'>{it.get('wo_number') or '-'}</td>"
         f"<td>{it.get('w_lot') or '-'}</td>"
         f"<td>{it.get('qty', 0):,.0f}</td>"
+        f"<td class='l work'>{it.get('work') or data.get('process') or ''}</td>"
         f"<td class='l'>{it.get('note') or ''}</td></tr>"
         for i, it in enumerate(data.get("items", [])))
     return f"""<!DOCTYPE html><html><head><meta charset='utf-8'>
-<title>외주 가공 의뢰서</title><style>{_DOC_CSS}</style></head>
+<title>외주 의뢰서</title><style>{_DOC_CSS}
+td.pn {{ font-weight: 700; white-space: nowrap; }}
+td.work {{ font-weight: 600; }}
+</style></head>
 <body onload='window.print()'>
-<h1>외주 가공 의뢰서</h1>
+<h1>외주 의뢰서</h1>
 <div class="meta">
   <span>의뢰처: <b>{data.get('vendor', '-')}</b></span>
-  <span>가공 공정: <b>{data.get('process', '-')}</b></span>
+  <span>의뢰 공정: <b>{data.get('process', '-')}</b></span>
   <span>납기 요청일: <b>{data.get('due_date', '-')}</b></span>
   <span>발행일: {data.get('issue_date', '')}</span>
 </div>
 <table>
-<tr><th style="width:8mm">No</th><th>품번</th><th>작업지시</th>
-<th>소재 LOT</th><th style="width:22mm">수량 (EA)</th><th>비고</th></tr>
+<tr><th style="width:8mm">No</th><th style="width:34mm">품번</th>
+<th style="width:32mm;white-space:nowrap">작업지시번호</th>
+<th style="width:18mm">LOT</th>
+<th style="width:16mm;white-space:nowrap">수량 (EA)</th><th>작업 내용</th>
+<th style="width:26mm">비고</th></tr>
 {rows}
 </table>
 <div class="note">특기사항: {data.get('remark') or ''}</div>

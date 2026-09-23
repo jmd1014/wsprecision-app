@@ -53,17 +53,26 @@ body{{font-family:'IBM Plex Sans KR',sans-serif;color:#1b2a41;
 .hd .copy{{font-size:12px;font-weight:600;color:{accent}}}
 .hd .meta{{font-size:12px;color:#333a45;text-align:right}}
 table{{border-collapse:collapse;width:100%}}
-.party td{{border:1px solid #c9cdd4;padding:4px 7px;font-size:11.5px}}
-.party .lab{{background:#f4f5f7;color:#555c66;font-weight:600;width:52px;
-            text-align:center}}
+/* 공급자·공급받는자 두 블록을 같은 폭으로 — colgroup 고정 (2026-09-23:
+   두 사본의 비율이 달라 보이던 문제). 값은 칸 안에서 자연스럽게 줄바꿈 */
+.party{{table-layout:fixed}}
+.party td{{border:1px solid #c9cdd4;padding:4px 5px;font-size:11.5px;
+          vertical-align:middle;word-break:keep-all;overflow-wrap:anywhere;
+          line-height:1.35}}
+.party td.tel{{white-space:nowrap;letter-spacing:-.01em}}
+.party .lab{{background:#f4f5f7;color:#555c66;font-weight:600;
+            text-align:center;white-space:nowrap;font-size:11px}}
 .party .side{{background:{accent}14;color:{accent};font-weight:700;
-             width:26px;text-align:center;font-size:12px}}
-.items{{margin-top:8px}}
-.items th{{border:1px solid #9aa1ab;background:#f4f5f7;padding:5px 6px;
-          font-size:11.5px;font-weight:600;color:#333a45;
-          letter-spacing:.04em}}
-.items td{{border:1px solid #c9cdd4;padding:4.5px 7px;font-size:12px;
-          height:24px}}
+             text-align:center;font-size:12px;line-height:1.3}}
+.items{{margin-top:8px;table-layout:fixed}}
+.items th{{border:1px solid #9aa1ab;background:#f4f5f7;padding:5px 4px;
+          font-size:11px;font-weight:600;color:#333a45;
+          letter-spacing:.02em;white-space:nowrap}}
+.items td{{border:1px solid #c9cdd4;padding:4px 4px;font-size:11.5px;
+          height:24px;overflow:hidden;white-space:nowrap;
+          text-overflow:ellipsis}}
+.items td.pn{{font-weight:600;font-family:'IBM Plex Sans KR',sans-serif}}
+.items td.nm{{font-size:10.5px;color:#333a45}}
 .items .r{{text-align:right}}
 .items .c{{text-align:center}}
 .tot td{{border:1px solid #9aa1ab;background:#f9fafb;font-weight:700;
@@ -82,12 +91,18 @@ def _party_table(customer, vendor, accent="#24406b"):
     v = vendor or {}
     s = SUPPLIER
     _sd = (f'class="side" style="background:{accent}14;color:{accent}" '
-           'rowspan="4"')
+           'rowspan="5"')
+    # 좌우 대칭 colgroup: 구분 24 · 라벨 46 · 값 · 라벨 34 · 값 (한쪽 50%)
+    cols = ("<colgroup>"
+            "<col style='width:22px'><col style='width:46px'><col>"
+            "<col style='width:34px'><col style='width:14%'>"
+            "<col style='width:22px'><col style='width:46px'><col>"
+            "<col style='width:34px'><col style='width:14%'></colgroup>")
     return f"""
-<table class="party"><tr>
- <td {_sd}>공 급 자</td>
+<table class="party">{cols}<tr>
+ <td {_sd}>공<br>급<br>자</td>
  <td class="lab">등록번호</td><td colspan="3">{s['biz_no']}</td>
- <td {_sd}>공급받는자</td>
+ <td {_sd}>공급<br>받는<br>자</td>
  <td class="lab">등록번호</td><td colspan="3">{biz_no_fmt(v.get('business_no'))}</td>
 </tr><tr>
  <td class="lab">상호</td><td>{s['name']}</td>
@@ -95,11 +110,15 @@ def _party_table(customer, vendor, accent="#24406b"):
  <td class="lab">상호</td><td>{customer}</td>
  <td class="lab">성명</td><td>{v.get('ceo_name') or ''}</td>
 </tr><tr>
- <td class="lab">업태/종목</td><td>{s['biz_type']} / {s['biz_item']}</td>
- <td class="lab">전화</td><td>{s['tel']}</td>
- <td class="lab">업태/종목</td>
- <td>{(v.get('business_type') or '')} / {(v.get('business_item') or '')}</td>
- <td class="lab">전화</td><td>{v.get('phone') or ''}</td>
+ <td class="lab">업태</td><td>{s['biz_type']}</td>
+ <td class="lab">종목</td><td>{s['biz_item']}</td>
+ <td class="lab">업태</td><td>{v.get('business_type') or ''}</td>
+ <td class="lab">종목</td><td>{v.get('business_item') or ''}</td>
+</tr><tr>
+ <td class="lab">전화</td><td class="tel">{s['tel']}</td>
+ <td class="lab">팩스</td><td class="tel">{s['fax']}</td>
+ <td class="lab">전화</td><td class="tel">{v.get('phone') or ''}</td>
+ <td class="lab">팩스</td><td class="tel">{v.get('fax') or ''}</td>
 </tr><tr>
  <td class="lab">주소</td><td colspan="3">{s['addr']}</td>
  <td class="lab">주소</td><td colspan="3">{v.get('address') or ''}</td>
@@ -126,15 +145,16 @@ def _item_rows(rows):
         else:
             missing = True
             up_s = sp_s = vt_s = ""
-        name = r.get("customer_pn") or r.get("pn") or "-"
-        if r.get("item_name"):
-            name += " / " + str(r["item_name"])[:26]
+        # 품번(거래처 ERP 표기 우선)과 품명은 별도 열 (2026-09-23 사용자 요청)
+        pn = r.get("customer_pn") or r.get("pn") or "-"
+        nm = str(r.get("item_name") or "")
         body.append(
-            "<tr><td class='c'>{d}</td><td>{n}</td><td class='c'>{sp}</td>"
+            "<tr><td class='c'>{d}</td><td class='pn' title='{pn}'>{pn}</td>"
+            "<td class='nm' title='{nm}'>{nm}</td><td class='c'>{sp}</td>"
             "<td class='r'>{q}{u}</td><td class='r'>{up}</td>"
             "<td class='r'>{su}</td><td class='r'>{vt}</td><td>{rm}</td></tr>"
             .format(d=str(r.get("date") or "")[5:10].replace("-", "/"),
-                    n=name, sp=r.get("spec") or "",
+                    pn=pn, nm=nm, sp=r.get("spec") or "",
                     q=_num(qty), u=(r.get("unit") or "EA"),
                     up=up_s, su=sp_s, vt=vt_s, rm=r.get("remark") or ""))
     return body, sup_sum, vat_sum, missing
@@ -144,7 +164,7 @@ def _statement_page(customer, vendor, rows, date_s, accent, copy_label,
                     page_no, page_cnt):
     body, sup_sum, vat_sum, missing = _item_rows(rows)
     while len(body) < _ROWS_PER_PAGE:
-        body.append("<tr>" + "<td>&nbsp;</td>" * 8 + "</tr>")
+        body.append("<tr>" + "<td>&nbsp;</td>" * 9 + "</tr>")
     note = ("<div style='font-size:10.5px;color:#d9480f;margin-top:4px'>"
             "단가 미입력 품목은 공란 — 협의 단가로 기입하세요</div>"
             if missing else "")
@@ -157,12 +177,14 @@ def _statement_page(customer, vendor, rows, date_s, accent, copy_label,
  </div>
  {_party_table(customer, vendor, accent)}
  <table class="items">
-  <tr><th style="width:40px">날짜</th><th>품명</th>
-      <th style="width:56px">규격</th><th style="width:72px">수량</th>
-      <th style="width:64px">단가</th><th style="width:84px">공급가액</th>
-      <th style="width:70px">세액</th><th style="width:64px">비고</th></tr>
+  <colgroup><col style="width:46px"><col style="width:134px"><col>
+   <col style="width:46px"><col style="width:62px"><col style="width:56px">
+   <col style="width:78px"><col style="width:70px"><col style="width:56px">
+  </colgroup>
+  <tr><th>월/일</th><th>품번</th><th>품명</th><th>규격</th><th>수량</th>
+      <th>단가</th><th>공급가액</th><th>세액</th><th>비고</th></tr>
   {''.join(body)}
-  <tr class="tot"><td colspan="3" style="text-align:center">합계</td>
+  <tr class="tot"><td colspan="4" style="text-align:center">합계</td>
    <td class="r">{_num(sum(float(r.get('qty') or 0) for r in rows))}</td>
    <td></td><td class="r">{_num(sup_sum) if sup_sum else ''}</td>
    <td class="r">{_num(vat_sum) if vat_sum else ''}</td><td></td></tr>
@@ -231,13 +253,15 @@ def delivery_list_html(batch, draft=False, rev_label=None):
     extra_th = ('<th style="width:64px">정정 수량</th>' if draft else "")
     body = []
     for i, r in enumerate(rows, 1):
+        # 품번이 식별의 최우선 — 절대 잘리지 않게, 품명은 보조 (2026-09-23)
         body.append(
-            "<tr><td class='c'>{i}</td><td>{pn}</td><td>{nm}</td>"
+            "<tr><td class='c'>{i}</td><td class='pn'>{pn}</td>"
+            "<td class='nm'>{nm}</td>"
             "<td>{lot}</td><td>{cu}</td><td class='r'>{q} {u}</td>"
             "{ex}<td class='c chk'></td></tr>".format(
                 i=i, pn=r.get("pn") or "-",
                 nm=str(r.get("disp_name") or r.get("item_name")
-                       or "-")[:32],
+                       or "-")[:24],
                 lot=r.get("lots") or "-",
                 cu=r.get("customer") or "-",
                 q=_num(r.get("qty")), u=r.get("unit") or "EA",
@@ -247,6 +271,8 @@ def delivery_list_html(batch, draft=False, rev_label=None):
     css = _base_css(accent) + """
 .items .chk{width:44px}
 .items td.chk{border:1px solid #9aa1ab}
+.items td.pn{font-size:12.5px;font-weight:700;white-space:nowrap;overflow:visible}
+.items td.nm{font-size:10px;color:#555c66}
 """
     note = ("<div style='font-size:11px;color:#d9480f;margin-top:5px'>"
             "확인용 — 아직 출고 처리 전입니다. 수량이 달라지면 정정 "
@@ -264,11 +290,12 @@ def delivery_list_html(batch, draft=False, rev_label=None):
   <span class="meta">{date_s} · {len(rows)}건 · 총 {_num(total)}개</span>
  </div>
  <table class="items">
-  <tr><th style="width:30px">NO</th><th>품번</th><th>품명</th>
-      <th style="width:110px">LOT</th>
-      <th style="width:76px">거래처</th>
-      <th style="width:86px">수량</th>{extra_th}
-      <th style="width:44px">확인</th></tr>
+  <colgroup><col style="width:30px"><col style="width:190px"><col>
+   <col style="width:104px"><col style="width:72px"><col style="width:80px">
+   {'<col style="width:64px">' if draft else ''}<col style="width:44px">
+  </colgroup>
+  <tr><th>NO</th><th>품번</th><th>품명</th><th>LOT</th><th>거래처</th>
+      <th>수량</th>{extra_th}<th>확인</th></tr>
   {''.join(body)}
  </table>
  {note}

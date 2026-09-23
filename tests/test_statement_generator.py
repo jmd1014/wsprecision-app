@@ -47,7 +47,9 @@ def test_statement_amounts_and_customer_notation():
     assert "3,806,400" in html
     assert "380,640" in html
     # 거래처 ERP 표기 우선
-    assert "S80AHYBV-TU-05;PM / FLANGE" in html
+    # 품번(거래처 표기)과 품명은 별도 열 (2026-09-23)
+    assert "S80AHYBV-TU-05;PM" in html and "FLANGE" in html
+    assert "<th>품번</th><th>품명</th>" in html
     # 공급받는자 정보
     assert "606-03-94821" in html and "이미옥" in html
     # 단가 미입력 품목 안내

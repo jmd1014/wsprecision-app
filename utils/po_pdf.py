@@ -189,12 +189,7 @@ def build_po_pdf(po_data, items, vendor_info=None):
         pdf.cell(W - 24, 6.5, str(val or "-"), border="B",
                  new_x="LMARGIN", new_y="NEXT")
     pdf.ln(8)
-
-    # ── 서명 ──
-    pdf.set_font("NG", "", 9.5)
-    pdf.cell(W / 2, 8, f"발주자: {COMPANY_INFO['name']}   (인)", align="C")
-    pdf.cell(W / 2, 8, "수신 확인:                (인)", align="C",
-             new_x="LMARGIN", new_y="NEXT")
+    # 서명란(발주자·수신 확인)은 쓰지 않아 제거 (2026-09-23 사용자 확정)
     # 바닥글 — 자동 페이지 나눔을 끄고 현재 페이지 하단에 고정
     pdf.set_auto_page_break(auto=False)
     pdf.set_font("NG", "", 8)

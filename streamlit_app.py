@@ -8533,7 +8533,7 @@ elif page == "출고 관리":
                              .replace("(주)", "").strip())
                     try:
                         _vs = fetch("vendors",
-                            "name,business_no,ceo_name,phone,address,"
+                            "name,business_no,ceo_name,phone,fax,address,"
                             "business_type,business_item",
                             f"name=ilike.*{_fq(_term)}*", limit=5)
                         if _vs:
@@ -14107,8 +14107,9 @@ elif page == "공정 관리":
                                    "wo_number": _t["wo_number"],
                                    "w_lot": _t.get("w_lot"),
                                    "qty": _re_qty,
-                                   "note": _red.get("process",
-                                                    "")}],
+                                   "work": (_red.get("work")
+                                            or _red.get("process") or ""),
+                                   "note": ""}],
                         "remark": _red.get("note", ""),
                     }))]
             elif _re["event_type"] == "INSPECT":
@@ -15523,6 +15524,13 @@ elif page == "공정 관리":
                                 key=f"bt_oq_{_sb['batch_id']}")
                             _bd = st.date_input("납기 요청일",
                                 key=f"bt_od_{_sb['batch_id']}")
+                        # 작업 내용 — 의뢰서의 정식 항목 (2026-09-23 사용자:
+                        # 비고에 들어가던 것을 제대로 입력)
+                        _bw = st.text_input(
+                            "작업 내용 (의뢰서에 인쇄)",
+                            value=_sb.get("step_name") or "",
+                            key=f"bt_ow_{_sb['batch_id']}",
+                            placeholder="예: QT 열처리 HRC 28~32, 전면 아노다이징")
                         if st.button(
                                 f"외주 출고 ({_bq:,.0f})",
                                 type="primary", disabled=not _bq_ok(_bq),
@@ -15544,8 +15552,10 @@ elif page == "공정 관리":
                                            "wo_number": _no,
                                            "w_lot": _t.get("w_lot"),
                                            "qty": _bq,
-                                           "note": _sb.get("step_name")
-                                                   or "외주"}],
+                                           "work": (_bw or "").strip()
+                                                   or _sb.get("step_name")
+                                                   or "외주",
+                                           "note": ""}],
                                 "remark": f"배치 {_no}",
                             })
                             _wo_apply(
@@ -15557,6 +15567,8 @@ elif page == "공정 관리":
                                        "batch_id": _nid,
                                        "detail": {"vendor": _bv,
                                                   "due": str(_bd),
+                                                  "work": (_bw or "").strip()
+                                                  or _sb.get("step_name"),
                                                   "batch_no": _no}},
                                 # 의뢰서 즉시 다운로드 박스는 이동표와
                                 # 중복이라 제거 (2026-08-21) — 출력은
@@ -16037,6 +16049,10 @@ elif page == "공정 관리":
                             key="pe_o_qty")
                         _o_due = st.date_input("납기 요청일",
                                                key="pe_o_due")
+                    _o_work = st.text_input(
+                        "작업 내용 (의뢰서에 인쇄)", value=_o_proc or "",
+                        key=f"pe_o_work_{_o_proc}",
+                        placeholder="예: QT 열처리 HRC 28~32, 전면 아노다이징")
                     _o_note = st.text_input("특기사항 (선택)",
                                             key="pe_o_note")
                     if st.button(f"외주 출고 ({_o_qty:,.0f})",
@@ -16053,7 +16069,10 @@ elif page == "공정 관리":
                             "items": [{"pn": _t.get("pn"),
                                        "wo_number": _t["wo_number"],
                                        "w_lot": _t.get("w_lot"),
-                                       "qty": _o_qty, "note": _o_proc}],
+                                       "qty": _o_qty,
+                                       "work": (_o_work or "").strip()
+                                               or _o_proc,
+                                       "note": ""}],
                             "remark": _o_note,
                         })
                         _wo_apply(
@@ -16064,6 +16083,8 @@ elif page == "공정 관리":
                                    "step_name": _o_proc,
                                    "detail": {"vendor": _o_vendor,
                                               "process": _o_proc,
+                                              "work": (_o_work or "").strip()
+                                              or _o_proc,
                                               "due": str(_o_due),
                                               "note": _o_note}},
                             # 의뢰서 즉시 다운로드 박스는 중복 제거
@@ -18238,7 +18259,7 @@ elif page == "영업 보고":
                              .replace("(주)", "").strip())
                     try:
                         _vs = fetch("vendors",
-                                    "name,business_no,ceo_name,phone,"
+                                    "name,business_no,ceo_name,phone,fax,"
                                     "address,business_type,business_item",
                                     f"name=ilike.*{_fq(_term)}*", limit=5)
                         if _vs:
