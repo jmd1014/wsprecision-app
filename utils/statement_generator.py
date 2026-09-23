@@ -69,8 +69,9 @@ body{{font-family:'IBM Plex Sans KR',sans-serif;color:#1b2a41;
 .page:last-child{{page-break-after:auto}}
 .hd{{display:flex;align-items:center;justify-content:space-between;
     border-bottom:3px solid {accent};padding-bottom:6px;margin-bottom:8px}}
-.hd .tl{{display:flex;align-items:center;gap:14px}}
-.hd .logo{{height:30px;width:auto;display:block}}
+.hd .tl{{display:flex;align-items:center;gap:12px}}
+/* 로고는 제목보다 낮게(글자 높이의 2/3) — 2026-09-23 사용자: 너무 커서 축소 */
+.hd .logo{{height:16px;width:auto;display:block;opacity:.95}}
 .hd .t{{font-size:24px;font-weight:700;letter-spacing:12px;color:#1b2a41}}
 .hd .copy{{font-size:12px;font-weight:600;color:{accent}}}
 .hd .meta{{font-size:12px;color:#333a45;text-align:right}}
