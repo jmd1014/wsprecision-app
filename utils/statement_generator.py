@@ -43,6 +43,14 @@ def logo_data_uri():
     return _LOGO_URI
 
 
+def _pn_col_px(names, lo=130, hi=250, per_char=7.6, pad=16):
+    """품번 열 폭(px) — 그 장에서 가장 긴 품번이 한 줄에 다 들어가게.
+    품번은 중요 식별자라 절대 잘리지 않아야 한다 (2026-09-23 사용자 요청).
+    hi 를 넘는 초장문은 줄바꿈으로 전부 표시."""
+    longest = max((len(str(n or "")) for n in names), default=0)
+    return int(min(hi, max(lo, longest * per_char + pad)))
+
+
 def biz_no_fmt(v):
     s = "".join(ch for ch in str(v or "") if ch.isdigit())
     if len(s) == 10:
@@ -98,7 +106,10 @@ table{{border-collapse:collapse;width:100%}}
 .items td{{border:1px solid #c9cdd4;padding:4px 4px;font-size:11.5px;
           height:24px;overflow:hidden;white-space:nowrap;
           text-overflow:ellipsis}}
-.items td.pn{{font-weight:600;font-family:'IBM Plex Sans KR',sans-serif}}
+/* 품번은 절대 말줄임 없음 — 열 폭을 내용에 맞추고, 그래도 넘치면 줄바꿈 */
+.items td.pn{{font-weight:600;font-family:'IBM Plex Sans KR',sans-serif;
+             white-space:normal;overflow:visible;text-overflow:clip;
+             word-break:break-all;line-height:1.25}}
 .items td.nm{{font-size:10.5px;color:#333a45}}
 .items .r{{text-align:right}}
 .items .c{{text-align:center}}
@@ -206,7 +217,8 @@ def _statement_page(customer, vendor, rows, date_s, accent, copy_label,
  </div>
  {_party_table(customer, vendor, accent)}
  <table class="items">
-  <colgroup><col style="width:46px"><col style="width:130px"><col>
+  <colgroup><col style="width:46px">
+   <col style="width:{_pn_col_px(r.get('customer_pn') or r.get('pn') for r in rows)}px"><col>
    <col style="width:44px"><col style="width:62px"><col style="width:56px">
    <col style="width:80px"><col style="width:76px"><col style="width:54px">
   </colgroup>
@@ -302,7 +314,8 @@ def delivery_list_html(batch, draft=False, rev_label=None):
     css = _base_css(accent) + """
 .items .chk{width:44px}
 .items td.chk{border:1px solid #9aa1ab}
-.items td.pn{font-size:12.5px;font-weight:700;white-space:nowrap;overflow:visible}
+.items td.pn{font-size:12.5px;font-weight:700;white-space:normal;overflow:visible;
+             text-overflow:clip;word-break:break-all;line-height:1.25}
 .items td.nm{font-size:10px;color:#555c66}
 """
     note = ("<div style='font-size:11px;color:#d9480f;margin-top:5px'>"
@@ -321,7 +334,8 @@ def delivery_list_html(batch, draft=False, rev_label=None):
   <span class="meta">{date_s} · {len(rows)}건 · 총 {_num(total)}개</span>
  </div>
  <table class="items">
-  <colgroup><col style="width:30px"><col style="width:190px"><col>
+  <colgroup><col style="width:30px">
+   <col style="width:{_pn_col_px((r.get('pn') for r in rows), lo=150, hi=280, per_char=8.2)}px"><col>
    <col style="width:104px"><col style="width:72px"><col style="width:80px">
    {'<col style="width:64px">' if draft else ''}<col style="width:44px">
   </colgroup>

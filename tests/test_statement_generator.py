@@ -58,6 +58,22 @@ def test_statement_amounts_and_customer_notation():
     assert "606-02-14529" in html and "김태식" in html
 
 
+def test_pn_column_grows_for_long_part_numbers():
+    """품번은 중요 식별자 — 긴 품번이면 열 폭이 커져 잘리지 않는다 (2026-09-23)."""
+    from utils.statement_generator import (transaction_statements_html,
+                                           delivery_list_html, _pn_col_px)
+    assert _pn_col_px(["ABC"]) == 130                     # 짧으면 기본 폭
+    assert _pn_col_px(["H11SDF-3C-10-01-RV-P-LONG-X"]) > 200
+    long_pn = "S80AHYBV-TU-05;PM-EXTRA-LONG-CODE"
+    html = transaction_statements_html({"date": "2026-09-23", "rows": [
+        {"customer": "A", "customer_pn": long_pn, "pn": "X", "qty": 1, "unit_price": 10}]})
+    assert long_pn in html
+    assert f"width:{_pn_col_px([long_pn])}px" in html
+    dl = delivery_list_html({"date": "2026-09-23", "rows": [
+        {"pn": long_pn, "item_name": "n", "qty": 1, "unit": "EA"}]})
+    assert long_pn in dl and "text-overflow:clip" in dl
+
+
 def test_delivery_list_totals():
     html = delivery_list_html(BATCH)
     assert "출고 리스트" in html
