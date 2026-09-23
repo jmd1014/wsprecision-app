@@ -186,8 +186,7 @@ def inspection_labels(items: list, mode: str = "label") -> str:
             ("작업지시", it.get("wo_number")),
             ("식별 번호", it.get("w_lot")),
             ("수량", f"{it.get('qty', 0):,.0f} EA"),
-            ("검사일", it.get("date")),
-        ]
+        ]   # 일자는 하단(검사일)에만 — 본문 이중 표기 제거 (2026-09-23)
         if it.get("note"):
             rows.append(("처분", it["note"]))
         labels.append({
@@ -210,9 +209,8 @@ def finished_labels(items: list, mode: str = "label") -> str:
             ("완성 LOT", it.get("lot") or "-"),
             ("수량", f"{it.get('qty', 0):,.0f} EA"),
             ("작업지시", it.get("wo_number")),
-            ("소재 LOT", it.get("w_lot")),
-            ("완성일", it.get("date")),
-        ]
+            ("LOT", it.get("w_lot")),
+        ]   # 일자는 하단(완성일)에만 (2026-09-23)
         if it.get("tokusai"):
             rows.append(("특채 포함", f"{it['tokusai']:,.0f} EA"))
         labels.append({
@@ -294,7 +292,6 @@ td.work {{ font-weight: 600; }}
 </table>
 <div class="note">특기사항: {data.get('remark') or ''}</div>
 <div class="sign">
-  <div class="box"><div class="line"></div>발주: 우성정밀</div>
   <div class="box"><div class="line"></div>인수: {data.get('vendor', '')}</div>
 </div>
 <div class="ft">우성정밀 · 부산광역시 기장군 산단4로 71 · WS-ERP</div>

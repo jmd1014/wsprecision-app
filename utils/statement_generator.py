@@ -22,6 +22,26 @@ SUPPLIER = {
 
 _ROWS_PER_PAGE = 14
 
+# 회사 로고(가로형, 바탕 투명) — assets/logo_h.png 를 data URI 로 임베드해
+# HTML 한 파일로 인쇄·보관 가능 (2026-09-23 사용자 요청: 거래명세서에 로고)
+_LOGO_PATH = __import__("os").path.join(
+    __import__("os").path.dirname(__import__("os").path.dirname(
+        __import__("os").path.abspath(__file__))), "assets", "logo_h.png")
+_LOGO_URI = None
+
+
+def logo_data_uri():
+    global _LOGO_URI
+    if _LOGO_URI is None:
+        try:
+            import base64
+            with open(_LOGO_PATH, "rb") as f:
+                _LOGO_URI = ("data:image/png;base64,"
+                             + base64.b64encode(f.read()).decode())
+        except Exception:
+            _LOGO_URI = ""
+    return _LOGO_URI
+
 
 def biz_no_fmt(v):
     s = "".join(ch for ch in str(v or "") if ch.isdigit())
@@ -47,8 +67,10 @@ body{{font-family:'IBM Plex Sans KR',sans-serif;color:#1b2a41;
 .page{{width:200mm;min-height:280mm;margin:0 auto;padding:10mm 8mm;
       page-break-after:always;position:relative}}
 .page:last-child{{page-break-after:auto}}
-.hd{{display:flex;align-items:baseline;justify-content:space-between;
+.hd{{display:flex;align-items:center;justify-content:space-between;
     border-bottom:3px solid {accent};padding-bottom:6px;margin-bottom:8px}}
+.hd .tl{{display:flex;align-items:center;gap:14px}}
+.hd .logo{{height:30px;width:auto;display:block}}
 .hd .t{{font-size:24px;font-weight:700;letter-spacing:12px;color:#1b2a41}}
 .hd .copy{{font-size:12px;font-weight:600;color:{accent}}}
 .hd .meta{{font-size:12px;color:#333a45;text-align:right}}
@@ -171,7 +193,8 @@ def _statement_page(customer, vendor, rows, date_s, accent, copy_label,
     return f"""
 <div class="page">
  <div class="hd">
-  <span class="t">거래명세서</span>
+  <span class="tl">{('<img class="logo" src="' + logo_data_uri() + '" alt="우성정밀">')
+                    if logo_data_uri() else ''}<span class="t">거래명세서</span></span>
   <span class="copy">({copy_label})</span>
   <span class="meta">{date_s}<br>PAGE {page_no}/{page_cnt}</span>
  </div>
@@ -220,8 +243,10 @@ def transaction_statements_html(batch, vendors_map=None, rev_label=None):
     for cust, rows in by_cust.items():
         chunks = [rows[i:i + _ROWS_PER_PAGE]
                   for i in range(0, len(rows), _ROWS_PER_PAGE)] or [[]]
-        for accent, label in (("#e8590c", "공급자용"),
-                              ("#2f9e44", "공급받는자용")):
+        # 앱 전체 톤에 맞춰 블루 계열 — 공급자용 남색, 공급받는자용 파랑
+        # (2026-09-23 사용자 요청; 이전 주황/초록)
+        for accent, label in (("#24406b", "공급자용"),
+                              ("#1b64da", "공급받는자용")):
             for pi, ch in enumerate(chunks, 1):
                 pages.append((accent, _statement_page(
                     cust, vendors_map.get(cust), ch, date_s, accent,
@@ -230,7 +255,7 @@ def transaction_statements_html(batch, vendors_map=None, rev_label=None):
     # 강조색은 페이지 생성 시 이미 반영됨 (공급자용 주황 / 받는자용 초록)
     return ("<!doctype html><html><head><meta charset='utf-8'>"
             f"<title>거래명세서 {date_s}</title>"
-            f"<style>{_base_css('#e8590c')}</style></head><body>"
+            f"<style>{_base_css('#24406b')}</style></head><body>"
             + "".join(p for _, p in pages)
             + "<script>window.print&&setTimeout("
               "()=>window.print(),300)</script></body></html>")
