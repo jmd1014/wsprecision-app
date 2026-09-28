@@ -208,11 +208,11 @@ def _statement_page(customer, vendor, rows, date_s, accent, copy_label,
             if missing else "")
     return f"""
 <div class="page">
- <div class="hd">
+ <div class="hd" style="border-bottom-color:{accent}">
   <span class="tl">{('<img class="logo" src="' + logo_data_uri() + '" alt="우성정밀">')
                     if logo_data_uri() else ''}</span>
   <span class="tc"><span class="t">거래명세서</span>
-   <span class="copy">({copy_label})</span></span>
+   <span class="copy" style="color:{accent}">({copy_label})</span></span>
   <span class="meta">{date_s}<br>PAGE {page_no}/{page_cnt}</span>
  </div>
  {_party_table(customer, vendor, accent)}
