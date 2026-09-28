@@ -1197,6 +1197,25 @@ def material_id_prefix(material_type):
     return _MATERIAL_PREFIX.get((material_type or "").strip(), "M")
 
 
+# 작업지시 NO 형식 — MES 발행 YYYYMMDD-NNN, 앱 자동채번(사내 생산 없음 제품)
+# YYYYMMDD-F01 (F = 완성품, 2026-09-28 사용자 결정). 배치번호는 NO-A 로 파생.
+WO_NUMBER_RE = r"\d{8}-(?:\d{3}|F\d{2})"
+WO_AUTO_PREFIX = "F"
+
+
+def next_auto_wo_number(day_iso, existing):
+    """사내 생산 없음 제품의 작업지시 NO 자동채번 — 그날 F 번호 중 최대+1.
+    day_iso 'YYYY-MM-DD', existing = 그날 wo_number 목록(어떤 형식이든)."""
+    import re as _re
+    day = str(day_iso).replace("-", "")[:8]
+    mx = 0
+    for w in existing or []:
+        m = _re.fullmatch(day + "-" + WO_AUTO_PREFIX + r"(\d{2})", str(w or ""))
+        if m:
+            mx = max(mx, int(m.group(1)))
+    return f"{day}-{WO_AUTO_PREFIX}{mx + 1:02d}"
+
+
 def kst_date(ts):
     """DB 타임스탬프(UTC ISO) → KST 날짜 'YYYY-MM-DD'. 빈 값은 '-'.
     전표 등록일 같은 참고 일자 표시용 (2026-09-28)."""
@@ -14564,14 +14583,38 @@ elif page == "공정 관리":
                 # 투입 전 소재 외주 게이트 폐지 (2026-08-20 사용자 확정)
                 # — 투입 후 모든 공정은 라우팅 순서대로 배치 단위 처리
 
+                # 사내 생산 없음(라우팅에 생산 공정 없음) 제품은 MES 작업지시가
+                # 없으므로 앱이 YYYYMMDD-F01 로 자동채번 (2026-09-28 사용자 결정)
+                _auto_wo = None
+                if _prod0:
+                    try:
+                        _rt_auto = get_routing(_prod0.get("product_id"))
+                        if _rt_auto and not any(
+                                s.get("step_code") == "PROD" for s in _rt_auto):
+                            _today_iso = _pe_date.today().isoformat()
+                            _day8 = _today_iso.replace("-", "")
+                            _auto_wo = next_auto_wo_number(_today_iso, [
+                                w["wo_number"] for w in fetch(
+                                    "wo_tracking", "wo_number",
+                                    f"wo_number=like.{_day8}-{WO_AUTO_PREFIX}*",
+                                    limit=100)])
+                    except Exception:
+                        _auto_wo = None
                 ic1, ic2, ic3 = st.columns(3)
                 with ic1:
-                    _wo_no = st.text_input("작업지시 NO *",
-                        placeholder="예: 20260723-001 (필수)",
-                        key="pe_wo_no",
-                        help="필수 입력 — MES 작업지시서의 번호. 현장 "
-                             "연결과 MES 실적 자동 연동의 키라 입력해야 "
-                             "투입 등록 버튼이 열립니다")
+                    if _auto_wo:
+                        _wo_no = st.text_input("작업지시 NO *",
+                            value=_auto_wo, key=f"pe_wo_no_auto_{_auto_wo}",
+                            help="사내 생산 없음 제품 — MES 작업지시가 없어 앱이 "
+                                 "F 번호로 발행합니다. 필요하면 고칠 수 있습니다")
+                        st.caption("사내 생산 없음 — 작업지시 NO는 자동채번됩니다")
+                    else:
+                        _wo_no = st.text_input("작업지시 NO *",
+                            placeholder="예: 20260723-001 (필수)",
+                            key="pe_wo_no",
+                            help="필수 입력 — MES 작업지시서의 번호. 현장 "
+                                 "연결과 MES 실적 자동 연동의 키라 입력해야 "
+                                 "투입 등록 버튼이 열립니다")
                 with ic2:
                     # 동적 키 — LOT·잔여가 바뀌면 기본값으로 리셋
                     # (고정 키 + 세션 pop 방식은 리셋이 불안정,
@@ -14611,7 +14654,7 @@ elif page == "공정 관리":
                                 f"{_in_prod_qty:,.0f} — 수량 차이가 큽니다. "
                                 "품번·소재 수량을 확인하세요.")
 
-                _wo_ok = bool(_pe_re.fullmatch(r"\d{8}-\d{3}",
+                _wo_ok = bool(_pe_re.fullmatch(WO_NUMBER_RE,
                                               (_wo_no or "").strip()))
                 # 지시번호 중복 검사 (2026-09-01): 같은 번호가 다른 품번에
                 # 이미 쓰이면 오입력 — 배치 번호(NO-A)까지 충돌해 배치
@@ -14631,7 +14674,7 @@ elif page == "공정 관리":
                                 (_in_pn or "").strip()]
                 if _wo_no and not _wo_ok:
                     st.error("작업지시 NO 형식이 다릅니다 — YYYYMMDD-NNN "
-                             "(예: 20260723-001)")
+                             "(예: 20260723-001) 또는 자동채번 YYYYMMDD-F01")
                 elif not _wo_no:
                     st.warning("작업지시 NO는 필수입니다 — 입력해야 "
                                "투입 등록 버튼이 열립니다.")
