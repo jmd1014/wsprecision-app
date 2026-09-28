@@ -266,7 +266,7 @@ def monthly_report_html(month, rows, issued_by=""):
 
     body = (
         _kpis([("전표", f"{len(agg['ship_nos'])}건"),
-               ("출고일수", f"{len(agg['by_date'])}일"),
+               ("납품일수", f"{len(agg['by_date'])}일"),
                ("거래처", f"{len(agg['customers'])}곳"),
                ("총 수량", _num(a["qty"])),
                ("공급가액", _num(a["supply"])),
@@ -274,7 +274,7 @@ def monthly_report_html(month, rows, issued_by=""):
         + _missing_note(agg)
         + "<h3>거래처별 합계</h3>" + _by_customer_table(agg)
         + "<h3>일자별 합계</h3>"
-        + _sum_table(["출고일", "전표", "수량", "공급가액", "세액",
+        + _sum_table(["납품일", "전표", "수량", "공급가액", "세액",
                       "합계"], "".join(by_date), dt_tot)
         + "<h3>품번별 합계 (금액순)</h3>"
         + _sum_table(["품번", "거래처", "라인", "수량", "합계(VAT포함)"],

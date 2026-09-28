@@ -1197,6 +1197,23 @@ def material_id_prefix(material_type):
     return _MATERIAL_PREFIX.get((material_type or "").strip(), "M")
 
 
+def kst_date(ts):
+    """DB 타임스탬프(UTC ISO) → KST 날짜 'YYYY-MM-DD'. 빈 값은 '-'.
+    전표 등록일 같은 참고 일자 표시용 (2026-09-28)."""
+    if not ts:
+        return "-"
+    try:
+        import datetime as _dtm
+        s = str(ts).replace("Z", "+00:00")
+        d = _dtm.datetime.fromisoformat(s)
+        if d.tzinfo is None:
+            d = d.replace(tzinfo=_dtm.timezone.utc)
+        return d.astimezone(_dtm.timezone(_dtm.timedelta(hours=9))).strftime(
+            "%Y-%m-%d")
+    except Exception:
+        return str(ts)[:10]
+
+
 def next_material_id(prefix="M"):
     """자재 ID 자동 채번 — {prefix}### (그 접두어의 기존 최대 번호 +1)"""
     try:
@@ -8288,7 +8305,7 @@ elif page == "출고 관리":
                     "unit_price": it["li"].get("unit_price"),
                 } for it, _q9 in _sh_sel]
 
-            # 같은 출고일의 작성중 전표 — 있으면 '그 전표에 추가' 제공
+            # 같은 납품일의 작성중 전표 — 있으면 '그 전표에 추가' 제공
             # (2026-09-18 사용자 요청: 작성을 마친 전표에 품목을 더 넣을 때
             # 취소 후 재등록하지 않도록). 확정 전표에는 추가하지 않는다 —
             # 확정은 수주 반영·재고 차감·명세서 발행이 묶여 있어 추가분은
@@ -8313,7 +8330,7 @@ elif page == "출고 관리":
                         f"{len(_sh_sel)}건)",
                         key="ship_add_draft", use_container_width=True,
                         disabled=_sh_total <= 0,
-                        help="같은 출고일의 작성중 전표에 담은 라인을 "
+                        help="같은 납품일의 작성중 전표에 담은 라인을 "
                              "붙입니다. 전표 번호는 그대로이고, 확정 "
                              "전이라 아무것도 차감되지 않습니다.") \
                         and click_guard("ship_add_draft"):
@@ -8441,8 +8458,8 @@ elif page == "출고 관리":
                  "전체": "shipment_id=gt.0"}[_cf_filter]
         try:
             _cf_cols = ("shipment_id,ship_no,ship_date,status,created_by,"
-                        "confirmed_at,rev_no,revised_at,cancelled_at,"
-                        "cancel_reason")
+                        "created_at,confirmed_at,rev_no,revised_at,"
+                        "cancelled_at,cancel_reason")
             _cf_sq = (_cf_search or "").strip().replace(",", " ")
             if _cf_sq:
                 _cf_hit = {x["shipment_id"] for x in fetch(
@@ -8474,9 +8491,12 @@ elif page == "출고 관리":
             if _open_no:
                 _cf_ships.sort(
                     key=lambda s: s["ship_no"] != _open_no)
+            # 납품일 = 전표·명세서 날짜(입력값), 등록일 = 전표를 만든 날(참고)
+            # — 2026-09-28 사용자 결정: 추가 입력 없이 등록일을 참고값으로
             _cf_i = toss_grid([{
                 "전표번호": s["ship_no"],
-                "출고일": s.get("ship_date"),
+                "납품일": s.get("ship_date"),
+                "등록일": kst_date(s.get("created_at")),
                 "상태": _cf_stko.get(s.get("status"), s.get("status")),
                 "정정": (f"v{int(s.get('rev_no') or 0) + 1}"
                          if s.get("rev_no") else "-"),
@@ -9054,7 +9074,7 @@ elif page == "출고 관리":
                     _cx_reason = st.text_input(
                         "취소 사유 (전표 취소 시 필수)",
                         key="cf_cx_reason_{}".format(_cf_pick["shipment_id"]),
-                        placeholder="예: 거래처 착오, 출고일 오류")
+                        placeholder="예: 거래처 착오, 납품일 오류")
                     if st.button("전표 취소 (전체 역반영)", key="cf_cancel",
                                  disabled=not _cx_reason.strip()):
                         st.session_state["cfm_cf_cancel"] = True
@@ -9223,7 +9243,7 @@ elif page == "출고 관리":
                         + ". 정정 저장에서 수량을 미납 이하로 고친 뒤 "
                           "확정하세요.")
                 if _cf_locked:
-                    st.error(f"{_cf_ym} 월 마감 — 마감된 월의 출고일로는 "
+                    st.error(f"{_cf_ym} 월 마감 — 마감된 월의 납품일로는 "
                              "확정할 수 없습니다 (영업 보고 > 월 마감에서 "
                              "해제 후 진행).")
                 if st.button(
@@ -9497,7 +9517,7 @@ elif page == "출고 관리":
             if _dv_from:
                 _dv_cond += f"&ship_date=gte.{_dv_from}"
             _dv_ships = fetch(
-                "shipments", "shipment_id,ship_no,ship_date,created_by",
+                "shipments", "shipment_id,ship_no,ship_date,created_by,created_at",
                 _dv_cond + "&order=ship_date.desc,shipment_id.desc",
                 limit=300)
         except Exception as e:
@@ -9524,6 +9544,7 @@ elif page == "출고 관리":
                         _s0 = _dv_smap.get(x["shipment_id"]) or {}
                         x["ship_no"] = _s0.get("ship_no")
                         x["ship_date"] = _s0.get("ship_date")
+                        x["reg"] = _s0.get("created_at")   # 등록일(참고)
                         x["by"] = _s0.get("created_by")
                         _dv_rows.append(x)
                 except Exception:
@@ -9625,7 +9646,7 @@ elif page == "출고 관리":
                     "거래처": ", ".join(sorted(a["cust"])) or "-",
                     "출고 수량": a["qty"],
                     "횟수": a["n"],
-                    "최근 출고일": a["last"] or "-",
+                    "최근 납품일": a["last"] or "-",
                 } for pn, a in _dv_list],
                     key="dstat_grid",
                     num_cols=("출고 수량", "횟수"),
@@ -9639,7 +9660,8 @@ elif page == "출고 관리":
                                if r.get("pn") == _dv_pick]
                     st.markdown("**출고 라인 (기간 내)**")
                     toss_df(pd.DataFrame([{
-                        "출고일": r.get("ship_date"),
+                        "납품일": r.get("ship_date"),
+                        "등록일": kst_date(r.get("reg")),
                         "전표": r.get("ship_no"),
                         "수주번호": r.get("so_number") or "-",
                         "수량": float(r.get("qty") or 0),
@@ -9741,7 +9763,8 @@ elif page == "출고 관리":
             else:
                 # ── 출고 이력 (라인 단위 시간순) ──
                 toss_df(pd.DataFrame([{
-                    "출고일": r.get("ship_date"),
+                    "납품일": r.get("ship_date"),
+                    "등록일": kst_date(r.get("reg")),
                     "전표": r.get("ship_no"),
                     "품번": r.get("pn"),
                     "품명": _dv_name(r),
@@ -18080,7 +18103,7 @@ elif page == "영업 보고":
             st.markdown(
                 '<div class="kpi-row">'
                 + _sr_kpi("전표", f"{len(_m_ships)}건")
-                + _sr_kpi("출고일수", f"{len(_m_agg['by_date'])}일")
+                + _sr_kpi("납품일수", f"{len(_m_agg['by_date'])}일")
                 + _sr_kpi("거래처", f"{len(_m_agg['customers'])}곳")
                 + _sr_kpi("총 수량", _ma["qty"])
                 + _sr_kpi("공급가액", _ma["supply"], tone="good")
@@ -18096,7 +18119,7 @@ elif page == "영업 보고":
                              column_config=_NUMCOL)
             with _mc2:
                 st.markdown("##### 일자별 합계")
-                _m_dt = [{"출고일": d, "수량": s["qty"],
+                _m_dt = [{"납품일": d, "수량": s["qty"],
                           "공급가액": s["supply"], "합계": s["total"]}
                          for d, s in sorted(_m_agg["by_date"].items())]
                 toss_df(_sr_pd.DataFrame(_m_dt),
@@ -18220,7 +18243,7 @@ elif page == "영업 보고":
                 _xs = _r_bysh.get(s["shipment_id"], [])
                 _ag = _sr.aggregate(_xs)
                 _r_sum.append({
-                    "전표": s["ship_no"], "출고일": s["ship_date"],
+                    "전표": s["ship_no"], "납품일": s["ship_date"],
                     "거래처": ", ".join(sorted(_ag["customers"])),
                     "품목수": _ag["all"]["lines"],
                     "수량": _ag["all"]["qty"],
