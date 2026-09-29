@@ -1,5 +1,5 @@
 """
-발주/입고 › ② 품목 담기 — 마스터에 없는 거래처 이력 품목 검색 (2026-09-22)
+구매 관리 › ② 품목 담기 — 마스터에 없는 거래처 이력 품목 검색 (2026-09-22)
 
 삼경O&T 처럼 발주 이력이 전부 직접 입력 품목(습동유·절삭유·유압작동유)인
 거래처는 "이 거래처 이력만" 검색이 제품 마스터에서만 찾아 항상 비었다.
@@ -118,7 +118,7 @@ def _open_po_page():
                               "service_role_key": "mock_service"}
     at.secrets["auth"] = {"disabled": True}
     at.run()
-    at.sidebar.radio[0].set_value("발주/입고")
+    at.sidebar.radio[0].set_value("구매 관리")
     at.sidebar.radio[1].set_value(None)
     at.run()
     assert not at.exception, [str(e.value) for e in at.exception]

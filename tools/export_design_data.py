@@ -54,7 +54,7 @@ data = {
             "good": "#2f9e44", "font": "IBM Plex Sans KR",
         },
         "menu": {
-            "flow": ["홈", "수주 관리", "생산 계획", "발주/입고",
+            "flow": ["홈", "수주 관리", "생산 계획", "구매 관리",
                      "공정 관리", "출고 관리"],
             "admin": ["마스터 관리", "원가 확인", "생산 보고"],
         },
@@ -271,7 +271,7 @@ data["process"] = {
     } for w in wo[:20]],
 }
 
-# ── 발주/입고 ──
+# ── 구매 관리 ──
 data["purchase"] = {
     "receipt_status": [{
         "PO": r.get("po_id"), "품명": r.get("item_name"),

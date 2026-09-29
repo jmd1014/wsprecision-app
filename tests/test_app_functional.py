@@ -23,7 +23,7 @@ APP_FILE = os.path.join(os.path.dirname(os.path.dirname(__file__)),
 PAGES_FLOW = [
     "홈",
     "수주 관리",
-    "발주/입고",
+    "구매 관리",
     "생산 계획",
     "공정 관리",
     "출고 관리",
@@ -163,9 +163,9 @@ def test_po_prefill_flow(mocked_db):
     ]
     at.session_state["po_prefill_source_so"] = "SO-2026-001"
 
-    _goto(at, "발주/입고")
+    _goto(at, "구매 관리")
     assert not at.exception, (
-        f"발주/입고 prefill 렌더 예외: "
+        f"구매 관리 prefill 렌더 예외: "
         f"{[str(e.value) for e in at.exception]}"
     )
 

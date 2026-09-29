@@ -18,8 +18,8 @@
 
 | 이벤트 | 코드 위치 힌트 (streamlit_app.py) |
 |---|---|
-| 발주 (발주서 발송/상태 SENT) | 발주/입고 페이지, PO 상태 변경·새 발주서 작성 |
-| 소재 입고 | 발주/입고 > 입고 처리 탭 (txn_type=RECEIPT, W-LOT 발행) |
+| 발주 (발주서 발송/상태 SENT) | 구매 관리 페이지, PO 상태 변경·새 발주서 작성 |
+| 소재 입고 | 구매 관리 > 입고 처리 탭 (txn_type=RECEIPT, W-LOT 발행) |
 | 작업 투입 | 공정 관리 투입 등록 (wo_events INPUT insert 지점) |
 | 작업 완료(인수) | `_wo_apply()` event RECEIVE |
 | 외주 투입 | `_wo_apply()` event OUT_SEND |
