@@ -3624,15 +3624,17 @@ elif page == "마스터 관리":
         try:
             _ad_lines = fetch("purchase_order_items",
                               "poi_id,po_id,item_name,material,spec,qty,unit_price,"
-                              "remark",
+                              "unit,remark",
                               "product_id=is.null&material_id=is.null"
                               "&adhoc_once=eq.false&order=poi_id.desc", limit=300)
             _ad_pos = {}
             if _ad_lines:
+                # (2026-09-29 수정: 집합의 원소는 ID 정수인데 l["po_id"] 로 읽어
+                #  TypeError → except 로 빠져 목록이 항상 비던 버그)
                 _ad_pos = {p["po_id"]: p for p in fetch(
                     "purchase_orders", "po_id,po_number,po_date,vendor_id,status",
                     "po_id=in.({})".format(",".join(
-                        str(l["po_id"]) for l in {x["po_id"] for x in _ad_lines})),
+                        str(pid) for pid in sorted({x["po_id"] for x in _ad_lines}))),
                     limit=300)}
             _ad_vn = {}
             _vids = {p.get("vendor_id") for p in _ad_pos.values()
@@ -3693,7 +3695,9 @@ elif page == "마스터 관리":
                                         _ad_kind if _ad_kind != "소재"
                                         else _last.get("material") or None),
                                     "spec": _last.get("spec") or None,
-                                    "unit": "EA", "in_use": True,
+                                    # 발주 줄의 단위(BOX·통 등)를 마스터 기본 단위로
+                                    "unit": (_last.get("unit") or "EA").strip() or "EA",
+                                    "in_use": "사용",
                                     "main_supplier": (sorted(_g["vendors"])[0]
                                                       if _g["vendors"] else None),
                                     "remark": "발주서 직접 입력 품목에서 등록 "

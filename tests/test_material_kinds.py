@@ -30,6 +30,12 @@ MATS = [
      "main_supplier": "두리T.M.S", "procurement_type": None},
 ]
 CALLS = []
+# 발주서에서 직접 입력한 라인(마스터 미연결) — 자재 편집 상단 등록 카드 대상
+ADHOC_LINES = [{"poi_id": 110, "po_id": 41, "item_name": "나사플러그게이지M10*1.25P*36.5",
+                "material": None, "spec": "D14.3 GO측", "qty": 2, "unit_price": 432700,
+                "unit": "EA", "remark": "검교정 포함"}]
+ADHOC_POS = [{"po_id": 41, "po_number": "PO-202609-008", "po_date": "2026-09-29",
+              "vendor_id": 206, "status": "DRAFT"}]
 
 
 def _mock_fetch(table, select="*", filter_query="", limit=1000):
@@ -39,6 +45,12 @@ def _mock_fetch(table, select="*", filter_query="", limit=1000):
             if f"material_id=like.{pre}*" in filter_query:
                 return [m for m in MATS if m["material_id"].startswith(pre)]
         return list(MATS)
+    if table == "purchase_order_items" and "adhoc_once=eq.false" in filter_query:
+        return list(ADHOC_LINES)
+    if table == "purchase_orders" and "po_id=in.(41)" in filter_query:
+        return list(ADHOC_POS)
+    if table == "vendors" and "vendor_id=in.(206)" in filter_query:
+        return [{"vendor_id": 206, "name": "(주)대일정공"}]
     return []
 
 
@@ -87,6 +99,21 @@ def _kind_radio(at):
 
 def _grid_text(at):
     return "\n".join(f.value.to_string() for f in at.dataframe)
+
+
+def test_unregistered_po_lines_offer_registration(mocked_db):
+    """발주서 직접 입력 라인이 자재 편집 상단 '마스터에 없는 품목' 카드에 뜨고,
+    구분(소모품/공구/포장재/소재) 선택과 [자재 등록]·[일회성] 버튼이 있어야 한다
+    (2026-09-29: 발주 ID 집합 순회 버그로 목록이 항상 비던 회귀)."""
+    at = _open_master()
+    assert any("마스터에 없는 품목" in (e.label or "") for e in at.expander), \
+        "직접 입력 라인 등록 카드가 안 보임"
+    sel = [s for s in at.selectbox if str(s.key).startswith("ad_kind_")]
+    assert sel and sel[0].options == ["소모품", "공구", "포장재", "소재"]
+    assert any(str(b.key).startswith("ad_reg_") for b in at.button)
+    assert any(str(b.key).startswith("ad_once_") for b in at.button)
+    txt = " ".join(m.value for m in at.markdown)
+    assert "나사플러그게이지" in txt and "(주)대일정공" in txt
 
 
 def test_default_is_stock_materials(mocked_db):
