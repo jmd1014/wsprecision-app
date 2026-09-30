@@ -6,7 +6,8 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from utils.sales_report import (  # noqa: E402
-    aggregate, daily_report_html, line_amounts, monthly_report_html)
+    aggregate, daily_report_html, line_amounts, monthly_report_html,
+    period_report_html)
 
 ROWS = [
     {"ship_no": "SH-20260806-01", "date": "2026-08-06",
@@ -81,3 +82,14 @@ def test_reports_without_missing_have_no_warning():
     html = daily_report_html("2026-08-07", [ROWS[2]])
     assert "단가 미입력" not in html
     assert "1,400,000" in html and "140,000" in html
+
+
+def test_period_report_shows_range_and_customers():
+    html = period_report_html("2026-07-26", "2026-08-25", ROWS[:2],
+                              issued_by="김민수", customers=["미진정밀"])
+    assert "마감 보고서" in html and "월 마감 보고서" not in html
+    assert "2026-07-26 ~ 2026-08-25" in html and "거래처 미진정밀" in html
+    assert "3,806,400" in html and "단가 미입력 1건" in html
+    # 거래처 미선택이면 거래처 줄 없음
+    assert "<br>거래처 " not in period_report_html(
+        "2026-08-01", "2026-08-31", ROWS)

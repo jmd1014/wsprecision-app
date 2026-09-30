@@ -341,7 +341,7 @@ def test_sales_report_daily_monthly_reissue_after_confirm(ship_db):
     assert any("단가 미입력 1건" in (w.value or "") for w in at3.warning)
     labels = {getattr(b, "label", "") for b in at3.get("download_button")}
     assert any("일일 결산 리포트 인쇄" in l for l in labels)
-    assert any("월 마감 보고서 인쇄" in l for l in labels)
+    assert any("마감 보고서 인쇄" in l for l in labels)
     assert any("거래명세서 재발행" in l for l in labels)
     assert any("출고 리스트 재발행" in l for l in labels)
 

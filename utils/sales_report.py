@@ -225,6 +225,31 @@ def monthly_report_html(month, rows, issued_by=""):
     month: "YYYY-MM", rows: 해당 월 확정 전표 라인
     (date=ship_date, ship_no 포함).
     """
+    try:
+        y, m = str(month).split("-")
+        title_month = f"{y}년 {int(m)}월"
+    except ValueError:
+        title_month = str(month)
+    meta = title_month + (f"<br>작성 {issued_by}" if issued_by else "")
+    return _doc("월 마감 보고서", meta, _close_body(rows))
+
+
+def period_report_html(date_from, date_to, rows, issued_by="",
+                       customers=None):
+    """마감 보고서 (기간) — 거래처마다 마감일이 달라 기간·거래처로 뽑는다.
+
+    date_from/date_to: "YYYY-MM-DD" (납품일 기준, 양끝 포함),
+    customers: 선택한 거래처 목록 (비면 전체).
+    """
+    meta = f"{date_from} ~ {date_to}"
+    if customers:
+        meta += "<br>거래처 " + ", ".join(str(c) for c in customers)
+    if issued_by:
+        meta += f"<br>작성 {issued_by}"
+    return _doc("마감 보고서", meta, _close_body(rows))
+
+
+def _close_body(rows):
     agg = aggregate(rows)
     a = agg["all"]
 
@@ -279,10 +304,4 @@ def monthly_report_html(month, rows, issued_by=""):
         + "<h3>품번별 합계 (금액순)</h3>"
         + _sum_table(["품번", "거래처", "라인", "수량", "합계(VAT포함)"],
                      "".join(by_pn), pn_tot))
-    try:
-        y, m = str(month).split("-")
-        title_month = f"{y}년 {int(m)}월"
-    except ValueError:
-        title_month = str(month)
-    meta = title_month + (f"<br>작성 {issued_by}" if issued_by else "")
-    return _doc("월 마감 보고서", meta, body)
+    return body

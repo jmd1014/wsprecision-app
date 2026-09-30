@@ -8460,7 +8460,7 @@ elif page == "출고 관리":
                 st.rerun()
 
         # 월 마감 잠금 — 마감된 월의 전표는 확정·정정·취소 차단
-        # (영업 보고 > 월 마감에서 잠금/해제, Migration 053)
+        # (영업 보고 > 마감 조회에서 잠금/해제, Migration 053)
         try:
             _cf_closed = {r["ym"] for r in fetch("sales_month_close",
                                                  "ym", limit=200)}
@@ -9006,7 +9006,7 @@ elif page == "출고 관리":
 
                 if _cf_locked:
                     st.info(f"{_cf_ym} 월 마감 — 이 전표는 정정·취소할 수 "
-                            "없습니다. 필요하면 영업 보고 > 월 마감에서 "
+                            "없습니다. 필요하면 영업 보고 > 마감 조회에서 "
                             "마감을 해제하세요 (관리자).")
                 else:
                     # ── 전표 정정: 같은 전표번호 유지, 차이만 역반영 ──
@@ -9267,7 +9267,7 @@ elif page == "출고 관리":
                           "확정하세요.")
                 if _cf_locked:
                     st.error(f"{_cf_ym} 월 마감 — 마감된 월의 납품일로는 "
-                             "확정할 수 없습니다 (영업 보고 > 월 마감에서 "
+                             "확정할 수 없습니다 (영업 보고 > 마감 조회에서 "
                              "해제 후 진행).")
                 if st.button(
                         f"출고 확정 ({_cf_total:,.0f} · "
@@ -17997,7 +17997,8 @@ elif page == "영업 보고":
     st.caption(
         "**출고 확정된 전표만** 집계합니다 — 작성중 전표는 확정 전까지 "
         "매출로 잡히지 않습니다. 확정 전표를 정정하면 집계에 즉시 "
-        "반영되며, **월 마감**을 잠그면 그 달의 전표는 확정·정정·취소가 "
+        "반영되며, 마감 조회에서 **월 잠금**을 하면 그 달의 전표는 "
+        "확정·정정·취소가 "
         "차단됩니다.")
 
     if not DB_AVAILABLE:
@@ -18007,7 +18008,7 @@ elif page == "영업 보고":
     import pandas as _sr_pd
     from datetime import date as _sr_date
     import utils.sales_report as _sr
-    if not hasattr(_sr, "monthly_report_html"):
+    if not hasattr(_sr, "period_report_html"):
         import importlib as _sr_il
         _sr = _sr_il.reload(_sr)  # Cloud 재배포 시 sys.modules 캐시 가드
     from utils.statement_generator import (
@@ -18067,7 +18068,7 @@ elif page == "영업 보고":
                for c in ("수량", "단가", "공급가액", "세액", "합계",
                          "합계(VAT포함)")}
 
-    t_day, t_month, t_re = st.tabs(["일일 결산", "월 마감", "명세서 재발행"])
+    t_day, t_month, t_re = st.tabs(["일일 결산", "마감 조회", "명세서 재발행"])
 
     # ════════ TAB 1: 일일 결산 ════════
     with t_day:
@@ -18128,28 +18129,99 @@ elif page == "영업 보고":
                 file_name=f"일일결산_{_d_iso}.html", mime="text/html",
                 key="sr_dl_day", type="primary")
 
-    # ════════ TAB 2: 월 마감 ════════
+    # ════════ TAB 2: 마감 조회 (기간) ════════
+    # 거래처마다 마감일이 달라(말일·25일·15일/말일) 달력 월 고정 대신
+    # 기간 + 거래처로 조회한다 (2026-09-30). 잠금은 달력 월 단위 그대로.
     with t_month:
-        try:
-            _m_all = _sr_ships("status=eq.CONFIRMED")
-        except Exception as e:
-            st.error(f"조회 실패: {e}")
-            _m_all = []
-        _m_months = sorted({str(s["ship_date"])[:7] for s in _m_all
-                            if s.get("ship_date")}, reverse=True)
-        if not _m_months:
-            st.info("확정 전표가 아직 없습니다 — 출고 확정 후 월 마감을 "
-                    "쓸 수 있습니다.")
+        import calendar as _sr_cal
+        from datetime import timedelta as _sr_td
+        _today9 = _sr_date.today()
+        _bm_opts, _by9, _bm9 = [], _today9.year, _today9.month
+        for _ in range(24):
+            _bm_opts.append(f"{_by9:04d}-{_bm9:02d}")
+            _by9, _bm9 = (_by9 - 1, 12) if _bm9 == 1 else (_by9, _bm9 - 1)
+        _RANGES = ["1일 ~ 말일", "전월 26일 ~ 25일", "1일 ~ 15일",
+                   "16일 ~ 말일", "직접 입력"]
+        _pc1, _pc2, _pc3, _pc4 = st.columns([1, 1.3, 1, 1])
+        _bm_pick = _pc1.selectbox("기준 월", _bm_opts, key="sr_base_month")
+        _rg_pick = _pc2.selectbox(
+            "범위", _RANGES, key="sr_range",
+            help="거래처 마감일에 맞춰 고릅니다 — 말일 마감은 1일~말일, "
+                 "25일 마감은 전월 26일~25일, 월 2회 마감은 1~15일 / "
+                 "16일~말일.")
+        _yy9, _mm9 = int(_bm_pick[:4]), int(_bm_pick[5:7])
+        _last9 = _sr_cal.monthrange(_yy9, _mm9)[1]
+        if _rg_pick == "전월 26일 ~ 25일":
+            _p_from = (_sr_date(_yy9, _mm9, 1)
+                       - _sr_td(days=1)).replace(day=26)
+            _p_to = _sr_date(_yy9, _mm9, 25)
+        elif _rg_pick == "1일 ~ 15일":
+            _p_from, _p_to = _sr_date(_yy9, _mm9, 1), _sr_date(_yy9, _mm9, 15)
+        elif _rg_pick == "16일 ~ 말일":
+            _p_from = _sr_date(_yy9, _mm9, 16)
+            _p_to = _sr_date(_yy9, _mm9, _last9)
         else:
-            _m_pick = st.selectbox("마감 월", _m_months, key="sr_month")
-            _m_ships = [s for s in _m_all
-                        if str(s["ship_date"])[:7] == _m_pick]
-            _m_rows = _sr_items(_m_ships)
+            _p_from = _sr_date(_yy9, _mm9, 1)
+            _p_to = _sr_date(_yy9, _mm9, _last9)
+        if _rg_pick == "직접 입력":
+            _p_from = _pc3.date_input("시작일", _p_from, key="sr_from")
+            _p_to = _pc4.date_input("종료일", _p_to, key="sr_to")
+        else:
+            _pc3.text_input("시작일", _p_from.isoformat(), disabled=True,
+                            key=f"sr_from_ro_{_bm_pick}_{_rg_pick}")
+            _pc4.text_input("종료일", _p_to.isoformat(), disabled=True,
+                            key=f"sr_to_ro_{_bm_pick}_{_rg_pick}")
+        _pf_iso, _pt_iso = _p_from.isoformat(), _p_to.isoformat()
+        _m_ships, _m_drafts = [], []
+        if _p_from > _p_to:
+            st.error("시작일이 종료일보다 늦습니다.")
+        else:
+            try:
+                _m_ships = [
+                    s for s in _sr_ships(
+                        "status=eq.CONFIRMED"
+                        f"&ship_date=gte.{_fq(_pf_iso)}"
+                        f"&ship_date=lte.{_fq(_pt_iso)}")
+                    if _pf_iso <= str(s.get("ship_date") or "")[:10]
+                    <= _pt_iso]
+                _m_drafts = [
+                    d for d in fetch(
+                        "shipments", "shipment_id,ship_no,ship_date",
+                        "status=eq.DRAFT"
+                        f"&ship_date=gte.{_fq(_pf_iso)}"
+                        f"&ship_date=lte.{_fq(_pt_iso)}", limit=50)
+                    if _pf_iso <= str(d.get("ship_date") or "")[:10]
+                    <= _pt_iso]
+            except Exception as e:
+                st.error(f"조회 실패: {e}")
+            if len(_m_ships) >= 1000:
+                st.warning("확정 전표가 1,000건 상한에 걸렸습니다 — 기간을 "
+                           "나눠 조회하세요.")
+        _m_rows_all = _sr_items(_m_ships) if _m_ships else []
+        _cu_opts = sorted({x.get("customer") for x in _m_rows_all
+                           if x.get("customer")})
+        _cu_pick = st.multiselect(
+            "거래처", _cu_opts, key="sr_cust",
+            placeholder="전체 (마감 대상 거래처만 보려면 선택)")
+        _cu_pick = [c for c in _cu_pick if c in _cu_opts]
+        _m_rows = ([x for x in _m_rows_all if x.get("customer") in _cu_pick]
+                   if _cu_pick else _m_rows_all)
+        if _m_drafts:
+            st.warning(
+                "이 기간의 작성중 전표 {}건({})은 집계에 포함되지 "
+                "않았습니다.".format(
+                    len(_m_drafts),
+                    ", ".join(d["ship_no"] for d in _m_drafts[:8])
+                    + (" 외" if len(_m_drafts) > 8 else "")))
+        if not _m_rows:
+            if _p_from <= _p_to:
+                st.info(f"{_pf_iso} ~ {_pt_iso} 확정 전표가 없습니다.")
+        else:
             _m_agg = _sr.aggregate(_m_rows)
             _ma = _m_agg["all"]
             st.markdown(
                 '<div class="kpi-row">'
-                + _sr_kpi("전표", f"{len(_m_ships)}건")
+                + _sr_kpi("전표", f"{len(_m_agg['ship_nos'])}건")
                 + _sr_kpi("납품일수", f"{len(_m_agg['by_date'])}일")
                 + _sr_kpi("거래처", f"{len(_m_agg['customers'])}곳")
                 + _sr_kpi("총 수량", _ma["qty"])
@@ -18183,72 +18255,83 @@ elif page == "영업 보고":
                          use_container_width=True, hide_index=True,
                          column_config=_NUMCOL)
             st.download_button(
-                "월 마감 보고서 인쇄", _sr.monthly_report_html(
-                    _m_pick, _m_rows, current_user_name()),
-                file_name=f"월마감_{_m_pick}.html", mime="text/html",
-                key="sr_dl_month", type="primary")
+                "마감 보고서 인쇄", _sr.period_report_html(
+                    _pf_iso, _pt_iso, _m_rows, current_user_name(),
+                    customers=_cu_pick),
+                file_name="마감_{}_{}{}.html".format(
+                    _pf_iso, _pt_iso,
+                    "_" + _cu_pick[0] if len(_cu_pick) == 1 else ""),
+                mime="text/html", key="sr_dl_month", type="primary")
 
-            # ── 월 마감 잠금 (Migration 053 sales_month_close) ──
-            # 잠긴 달의 전표는 출고 관리에서 확정·정정·취소가 차단된다.
-            # 세금계산서 발행 뒤 수량이 바뀌면 매출 집계와 어긋나므로,
-            # 마감 후 정정은 관리자가 해제하고 처리한 뒤 다시 잠근다.
-            st.markdown("##### 마감 잠금")
-            try:
-                _mc_row = _db.fetch_one("sales_month_close",
-                                        f"ym=eq.{_fq(_m_pick)}",
-                                        "ym,closed_at,closed_by,note")
-            except Exception:
-                _mc_row = None
-            _mc_admin = current_user().get("role") == "admin"
-            if _mc_row:
-                st.success("{} 마감됨 — {} · {}{}".format(
-                    _m_pick, str(_mc_row.get("closed_at") or "")[:16],
-                    _mc_row.get("closed_by") or "-",
-                    f" · {_mc_row.get('note')}" if _mc_row.get("note")
-                    else ""))
-                if _mc_admin:
-                    if st.button("마감 해제", key="sr_mc_open"):
-                        st.session_state["cfm_sr_mc_open"] = True
-                    if st.session_state.get("cfm_sr_mc_open") \
-                            and confirm_gate("sr_mc_open",
-                                f"{_m_pick} 마감을 해제합니다 — 그 달의 "
-                                "전표를 다시 확정·정정·취소할 수 있게 "
-                                "됩니다. 처리 후 다시 마감하세요."):
-                        try:
-                            _db.delete("sales_month_close",
-                                       f"ym=eq.{_fq(_m_pick)}")
-                            st.success(f"{_m_pick} 마감 해제")
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"해제 실패: {e}")
-                else:
-                    st.caption("마감 해제는 관리자만 할 수 있습니다.")
+        st.markdown("##### 월 잠금")
+        _lk_def = (_pt_iso[:7] if _rg_pick == "직접 입력" else _bm_pick)
+        _lk_opts = _bm_opts if _lk_def in _bm_opts else [_lk_def] + _bm_opts
+        _lk_pick = st.selectbox(
+            "잠글 월 (납품일 기준 달력 월)", _lk_opts,
+            index=_lk_opts.index(_lk_def),
+            key=f"sr_lock_month_{_lk_def}",
+            help="잠금은 조회 기간과 상관없이 달력 월 단위입니다 — 잠긴 "
+                 "달의 납품일 전표는 확정·정정·취소가 차단됩니다.")
+        # ── 월 마감 잠금 (Migration 053 sales_month_close) ──
+        # 잠긴 달의 전표는 출고 관리에서 확정·정정·취소가 차단된다.
+        # 세금계산서 발행 뒤 수량이 바뀌면 매출 집계와 어긋나므로,
+        # 마감 후 정정은 관리자가 해제하고 처리한 뒤 다시 잠근다.
+        try:
+            _mc_row = _db.fetch_one("sales_month_close",
+                                    f"ym=eq.{_fq(_lk_pick)}",
+                                    "ym,closed_at,closed_by,note")
+        except Exception:
+            _mc_row = None
+        _mc_admin = current_user().get("role") == "admin"
+        if _mc_row:
+            st.success("{} 마감됨 — {} · {}{}".format(
+                _lk_pick, str(_mc_row.get("closed_at") or "")[:16],
+                _mc_row.get("closed_by") or "-",
+                f" · {_mc_row.get('note')}" if _mc_row.get("note")
+                else ""))
+            if _mc_admin:
+                if st.button("마감 해제", key="sr_mc_open"):
+                    st.session_state["cfm_sr_mc_open"] = True
+                if st.session_state.get("cfm_sr_mc_open") \
+                        and confirm_gate("sr_mc_open",
+                            f"{_lk_pick} 마감을 해제합니다 — 그 달의 "
+                            "전표를 다시 확정·정정·취소할 수 있게 "
+                            "됩니다. 처리 후 다시 마감하세요."):
+                    try:
+                        _db.delete("sales_month_close",
+                                   f"ym=eq.{_fq(_lk_pick)}")
+                        st.success(f"{_lk_pick} 마감 해제")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"해제 실패: {e}")
             else:
-                st.caption("아직 마감되지 않은 달입니다 — 전표를 자유롭게 "
-                           "정정할 수 있습니다.")
-                if _mc_admin:
-                    _mc_note = st.text_input(
-                        "마감 메모 (선택)", key=f"sr_mc_note_{_m_pick}",
-                        placeholder="예: 세금계산서 발행 완료")
-                    if st.button("월 마감 확정 (잠금)", key="sr_mc_close",
-                                 type="primary"):
-                        st.session_state["cfm_sr_mc_close"] = True
-                    if st.session_state.get("cfm_sr_mc_close") \
-                            and confirm_gate("sr_mc_close",
-                                f"{_m_pick} 를 마감합니다 — 이후 그 달의 "
-                                "전표는 확정·정정·취소가 차단됩니다. "
-                                "실행할까요?"):
-                        try:
-                            _db.insert("sales_month_close", [{
-                                "ym": _m_pick,
-                                "closed_by": current_user_name(),
-                                "note": _mc_note.strip() or None}])
-                            st.success(f"{_m_pick} 마감 완료")
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"마감 실패: {e}")
-                else:
-                    st.caption("월 마감은 관리자만 할 수 있습니다.")
+                st.caption("마감 해제는 관리자만 할 수 있습니다.")
+        else:
+            st.caption("아직 마감되지 않은 달입니다 — 전표를 자유롭게 "
+                       "정정할 수 있습니다.")
+            if _mc_admin:
+                _mc_note = st.text_input(
+                    "마감 메모 (선택)", key=f"sr_mc_note_{_lk_pick}",
+                    placeholder="예: 세금계산서 발행 완료")
+                if st.button("월 마감 확정 (잠금)", key="sr_mc_close",
+                             type="primary"):
+                    st.session_state["cfm_sr_mc_close"] = True
+                if st.session_state.get("cfm_sr_mc_close") \
+                        and confirm_gate("sr_mc_close",
+                            f"{_lk_pick} 를 마감합니다 — 이후 그 달의 "
+                            "전표는 확정·정정·취소가 차단됩니다. "
+                            "실행할까요?"):
+                    try:
+                        _db.insert("sales_month_close", [{
+                            "ym": _lk_pick,
+                            "closed_by": current_user_name(),
+                            "note": _mc_note.strip() or None}])
+                        st.success(f"{_lk_pick} 마감 완료")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"마감 실패: {e}")
+            else:
+                st.caption("월 마감은 관리자만 할 수 있습니다.")
 
     # ════════ TAB 3: 명세서 재발행 ════════
     with t_re:

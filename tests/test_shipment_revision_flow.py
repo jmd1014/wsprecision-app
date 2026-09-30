@@ -262,6 +262,8 @@ def test_sales_report_month_close_button(rev_db):
     """영업 보고 > 월 마감: 관리자에게 잠금 버튼, 마감 후 해제 버튼."""
     _seed()
     at = _open("영업 보고")
+    at.selectbox(key="sr_base_month").set_value("2026-09")
+    at.run()
     assert [b for b in at.button if b.key == "sr_mc_close"]
     at.button(key="sr_mc_close").click()
     at.run()
@@ -270,3 +272,30 @@ def test_sales_report_month_close_button(rev_db):
     assert not at.exception, [str(e.value) for e in at.exception]
     assert [r for t, recs in INSERTED if t == "sales_month_close"
             for r in recs if r["ym"] == "2026-09"]
+
+
+def test_sales_report_period_query(rev_db):
+    """마감 조회 — 기준 월 + 범위로 기간을 정하고 그 기간의 확정 전표만 집계
+    (2026-09-30: 거래처별 마감일이 달라 달력 월 고정 → 기간 조회)."""
+    _seed()
+    at = _open("영업 보고")
+    at.selectbox(key="sr_base_month").set_value("2026-09")
+    at.run()
+    assert not at.exception, [str(e.value) for e in at.exception]
+    labels = {getattr(b, "label", "") for b in at.get("download_button")}
+    assert any("마감 보고서 인쇄" in l for l in labels)   # 9/1 확정 전표 포함
+    assert [m for m in at.multiselect if m.key == "sr_cust"]
+    # 16일~말일 — 9/1 전표는 범위 밖
+    at.selectbox(key="sr_range").set_value("16일 ~ 말일")
+    at.run()
+    assert not at.exception, [str(e.value) for e in at.exception]
+    assert any("2026-09-16 ~ 2026-09-30 확정 전표가 없습니다" in str(i.value)
+               for i in at.info)
+    # 전월 26일~25일 — 8/26 ~ 9/25 로 9/1 전표 포함
+    at.selectbox(key="sr_range").set_value("전월 26일 ~ 25일")
+    at.run()
+    assert any(t.value == "2026-08-26" for t in at.text_input)
+    labels = {getattr(b, "label", "") for b in at.get("download_button")}
+    assert any("마감 보고서 인쇄" in l for l in labels)
+    # 잠금은 달력 월 그대로
+    assert [b for b in at.button if b.key == "sr_mc_close"]
