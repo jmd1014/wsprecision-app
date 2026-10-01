@@ -6454,6 +6454,28 @@ elif page == "수주 관리":
             with mc1:
                 m_so_no = st.text_input("거래처 발주번호 *", placeholder="예: PO-2026-001")
                 m_cust = st.text_input("거래처명 *", placeholder="예: 신규 고객사")
+                # 마스터에 같은 거래처가 있으면 마스터 표기로 저장 — '엠제이티'
+                # 와 '(주)엠제이티' 처럼 법인 표기만 다른 이름이 섞이면 명세서·
+                # 마감 조회에서 다른 거래처로 갈린다 (2026-10-01)
+                m_cust = (m_cust or "").strip()
+                if m_cust:
+                    def _vkey9(n):
+                        return (str(n or "").replace("(주)", "")
+                                .replace("㈜", "").replace("주식회사", "")
+                                .replace(" ", "").lower())
+                    try:
+                        _mv9 = [v["name"] for v in fetch(
+                            "vendors", "name,in_use",
+                            "name=ilike.*{}*".format(_fq(
+                                m_cust.replace("(주)", "").replace("㈜", "")
+                                .replace("주식회사", "").strip())), limit=20)
+                            if _vkey9(v.get("name")) == _vkey9(m_cust)]
+                    except Exception:
+                        _mv9 = []
+                    if _mv9 and m_cust not in _mv9:
+                        st.caption(f"거래처 마스터 표기로 저장됩니다: "
+                                   f"**{_mv9[0]}**")
+                        m_cust = _mv9[0]
                 m_so_date = st.date_input("수주일", value=_date.today())
             with mc2:
                 m_due = st.date_input("납기일", value=_date.today() + _td(days=14))
@@ -18258,6 +18280,63 @@ elif page == "영업 보고":
                 + "</div>", unsafe_allow_html=True)
             _sr_missing_note(_m_agg)
 
+            # ── 출력 — 조회 조건(기간·거래처) 그대로 3종 ──
+            # 마감 보고서 = 내부 영업보고용 / 거래내역서 = 거래처에 보내
+            # 내역·합계를 확인받는 문서(거래처마다 1부씩, 2026-10-01).
+            # 표 아래에 있으면 안 보인다는 사용자 보고 → KPI 바로 아래로.
+            import utils.statement_generator as _sr_sg
+            if not hasattr(_sr_sg, "account_statements_html"):
+                import importlib as _sr_il2
+                _sr_sg = _sr_il2.reload(_sr_sg)
+            _ac_custs = sorted({x.get("customer") for x in _m_rows
+                                if x.get("customer")})
+            _ac_vmap = {}
+            for _cu9 in _ac_custs:
+                try:
+                    _ac_vs = fetch(
+                        "vendors",
+                        "name,business_no,ceo_name,phone,fax,address,"
+                        "business_type,business_item",
+                        "name=ilike.*{}*".format(_fq(
+                            _cu9.replace("㈜", "").replace("(주)", "")
+                            .strip())), limit=5)
+                    if _ac_vs:
+                        _ac_vmap[_cu9] = next(
+                            (v for v in _ac_vs if v.get("name") == _cu9),
+                            _ac_vs[0])
+                except Exception:
+                    pass
+            _ac_tag = "{}_{}{}".format(
+                _pf_iso, _pt_iso,
+                "_" + _ac_custs[0] if len(_ac_custs) == 1 else "")
+            with st.container(border=True):
+                _ob1, _ob2, _ob3 = st.columns(3)
+                _ob1.download_button(
+                    "마감 보고서 인쇄", _sr.period_report_html(
+                        _pf_iso, _pt_iso, _m_rows, current_user_name(),
+                        customers=_cu_pick),
+                    file_name=f"마감_{_ac_tag}.html", mime="text/html",
+                    key="sr_dl_month", type="primary",
+                    use_container_width=True,
+                    help="내부 영업보고용 — 거래처별·일자별·품번별 합계")
+                _ob2.download_button(
+                    "거래내역서 인쇄", _sr_sg.account_statements_html(
+                        _m_rows, _pf_iso, _pt_iso, _ac_vmap,
+                        issued_on=_today9.isoformat()),
+                    file_name=f"거래내역서_{_ac_tag}.html",
+                    mime="text/html", key="sr_dl_acct", type="primary",
+                    use_container_width=True,
+                    help="거래처 확인용 — 조회된 거래처마다 1부씩, 납품 "
+                         "내역과 합계 금액")
+                _ob3.download_button(
+                    "거래내역서 엑셀", _sr_sg.account_statements_xlsx(
+                        _m_rows, _pf_iso, _pt_iso),
+                    file_name=f"거래내역서_{_ac_tag}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument."
+                         "spreadsheetml.sheet",
+                    key="sr_dl_acct_x", use_container_width=True,
+                    help="거래처 확인용 — 거래처마다 시트 1장")
+
             _mc1, _mc2 = st.columns(2)
             with _mc1:
                 st.markdown("##### 거래처별 합계")
@@ -18282,60 +18361,6 @@ elif page == "영업 보고":
             toss_df(_sr_pd.DataFrame(_m_pn),
                          use_container_width=True, hide_index=True,
                          column_config=_NUMCOL)
-            st.download_button(
-                "마감 보고서 인쇄", _sr.period_report_html(
-                    _pf_iso, _pt_iso, _m_rows, current_user_name(),
-                    customers=_cu_pick),
-                file_name="마감_{}_{}{}.html".format(
-                    _pf_iso, _pt_iso,
-                    "_" + _cu_pick[0] if len(_cu_pick) == 1 else ""),
-                mime="text/html", key="sr_dl_month", type="primary")
-
-            # ── 거래내역서 — 거래처에 보내 내역·합계를 확인받는 문서 ──
-            # 마감 보고서(내부 영업보고용)와 달리 거래처 1곳의 납품 내역을
-            # 납품일 순으로 싣고 합계 금액만 낸다 (2026-10-01 사용자 요청)
-            _ac_custs = sorted({x.get("customer") for x in _m_rows
-                                if x.get("customer")})
-            _ac_one = _ac_custs[0] if len(_ac_custs) == 1 else None
-            _ac_help = (None if _ac_one else
-                        "거래처를 한 곳만 선택하면 발행됩니다")
-            _ac_html, _ac_xlsx = "", b""
-            if _ac_one:
-                import utils.statement_generator as _sr_sg
-                if not hasattr(_sr_sg, "account_statement_html"):
-                    import importlib as _sr_il2
-                    _sr_sg = _sr_il2.reload(_sr_sg)
-                _ac_v = None
-                try:
-                    _ac_vs = fetch(
-                        "vendors",
-                        "name,business_no,ceo_name,phone,fax,address,"
-                        "business_type,business_item",
-                        "name=ilike.*{}*".format(_fq(
-                            _ac_one.replace("㈜", "").replace("(주)", "")
-                            .strip())), limit=5)
-                    _ac_v = _ac_vs[0] if _ac_vs else None
-                except Exception:
-                    _ac_v = None
-                _ac_html = _sr_sg.account_statement_html(
-                    _ac_one, _ac_v, _m_rows, _pf_iso, _pt_iso,
-                    issued_on=_today9.isoformat())
-                _ac_xlsx = _sr_sg.account_statement_xlsx(
-                    _ac_one, _m_rows, _pf_iso, _pt_iso)
-            st.markdown("##### 거래내역서 (거래처 확인용)")
-            _ac1, _ac2 = st.columns(2)
-            _ac_fn = "거래내역서_{}_{}_{}".format(
-                _ac_one or "거래처", _pf_iso, _pt_iso)
-            _ac1.download_button(
-                "거래내역서 인쇄", _ac_html, file_name=_ac_fn + ".html",
-                mime="text/html", key="sr_dl_acct", disabled=not _ac_one,
-                help=_ac_help, use_container_width=True)
-            _ac2.download_button(
-                "거래내역서 엑셀", _ac_xlsx, file_name=_ac_fn + ".xlsx",
-                mime="application/vnd.openxmlformats-officedocument."
-                     "spreadsheetml.sheet",
-                key="sr_dl_acct_x", disabled=not _ac_one,
-                help=_ac_help, use_container_width=True)
 
         st.markdown("##### 월 잠금")
         _lk_def = (_pt_iso[:7] if _rg_pick == "직접 입력" else _bm_pick)

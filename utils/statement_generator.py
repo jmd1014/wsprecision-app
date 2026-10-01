@@ -390,37 +390,27 @@ def _acct_rows(rows):
 
 
 _ACCT_CSS = """
-.acct{min-height:0;page-break-after:auto}
+.acct{min-height:0;page-break-after:always}
+.acct:last-of-type{page-break-after:auto}
 .acct .period{margin:8px 0 2px;font-size:12.5px;font-weight:600;
   color:#1b2a41;display:flex;justify-content:space-between}
 .acct .items td{height:auto;padding:4px 5px}
 .acct .items td.nm{white-space:normal;overflow:visible;line-height:1.25}
 .acct .items thead{display:table-header-group}
 .acct .items tr{page-break-inside:avoid}
-.acct .sum{margin:12px 0 0 auto;width:300px}
+.acct .sum{margin:12px 0 0 auto;width:300px;page-break-inside:avoid}
 .acct .sum td{border:1px solid #9aa1ab;padding:6px 9px;font-size:12.5px}
 .acct .sum td.k{background:#f4f5f7;font-weight:600;color:#333a45;width:44%}
 .acct .sum td.v{text-align:right;font-weight:600}
 .acct .sum tr.g td{font-size:14px;font-weight:700;background:#24406b14;
   color:#24406b}
-.acct .cfm{margin-top:22px;font-size:12px;color:#333a45;display:flex;
-  justify-content:space-between;align-items:flex-end;
-  page-break-inside:avoid}
-.acct .cfm .stamp{border-bottom:1px solid #9aa1ab;min-width:170px;
-  display:inline-block;padding:0 6px 2px}
 .acct .foot{margin-top:16px;display:flex;justify-content:space-between;
   font-size:10.5px;color:#9aa1ab}
 @page{size:A4;margin:8mm 0}
 """
 
 
-def account_statement_html(customer, vendor, rows, date_from, date_to,
-                           issued_on=""):
-    """거래내역서 (인쇄용 HTML) — 거래처 1곳 · 기간(납품일 기준, 양끝 포함).
-
-    rows: [{date, ship_no, customer_pn, pn, item_name, qty, unit, unit_price}]
-    품번은 거래명세서와 같이 거래처 표기(customer_pn) 우선.
-    """
+def _acct_page(customer, vendor, rows, date_from, date_to, issued_on):
     accent = "#24406b"
     lines, q_sum, sup_sum, vat_sum, missing = _acct_rows(rows)
     body = []
@@ -440,9 +430,7 @@ def account_statement_html(customer, vendor, rows, date_from, date_to,
             "다시 발행합니다</div>" if missing else "")
     logo = (f'<img class="logo" src="{logo_data_uri()}" alt="우성정밀">'
             if logo_data_uri() else "")
-    return f"""<!doctype html><html><head><meta charset='utf-8'>
-<title>거래내역서 {customer} {date_from}~{date_to}</title>
-<style>{_base_css(accent)}{_ACCT_CSS}</style></head><body>
+    return f"""
 <div class="page acct">
  <div class="hd">
   <span class="tl">{logo}</span>
@@ -472,25 +460,54 @@ def account_statement_html(customer, vendor, rows, date_from, date_to,
   <tr class="g"><td class="k">합계 금액</td>
    <td class="v">{_num(sup_sum + vat_sum)} 원</td></tr>
  </table>
- <div class="cfm"><span>위 거래 내역을 확인합니다.</span>
-  <span>확인자 : <span class="stamp">&nbsp;</span> (인)</span></div>
  <div class="foot"><span>{SUPPLIER['name']} · {SUPPLIER['addr']}</span>
   <span>Tel {SUPPLIER['tel']} · Fax {SUPPLIER['fax']}</span></div>
-</div>
-<script>window.print&&setTimeout(()=>window.print(),300)</script>
-</body></html>"""
+</div>"""
 
 
-def account_statement_xlsx(customer, rows, date_from, date_to):
-    """거래내역서 (엑셀) — 거래처가 자기 장부와 대조하기 쉽게. bytes 반환."""
-    import io as _io
-    import openpyxl
+def _acct_groups(rows):
+    """조회된 라인을 거래처별로 묶는다 (거래처명 순)."""
+    by = {}
+    for r in rows:
+        by.setdefault(r.get("customer") or "-", []).append(r)
+    return sorted(by.items())
+
+
+def account_statements_html(rows, date_from, date_to, vendors_map=None,
+                            issued_on=""):
+    """거래내역서 (인쇄용 HTML) — 조회 조건에 걸린 거래처마다 1부씩.
+
+    rows: [{customer, date, ship_no, customer_pn, pn, item_name, qty, unit,
+            unit_price}] — 기간(납품일 기준, 양끝 포함)·거래처 필터 결과.
+    거래처별로 쪽을 나눠 한 파일에 담는다 (거래처 1곳이면 1부).
+    품번은 거래명세서와 같이 거래처 표기(customer_pn) 우선.
+    vendors_map: {거래처명: vendors 행}
+    """
+    vendors_map = vendors_map or {}
+    groups = _acct_groups(rows)
+    title = (groups[0][0] if len(groups) == 1
+             else f"{len(groups)}개 거래처")
+    return ("<!doctype html><html><head><meta charset='utf-8'>"
+            f"<title>거래내역서 {title} {date_from}~{date_to}</title>"
+            f"<style>{_base_css('#24406b')}{_ACCT_CSS}</style></head><body>"
+            + "".join(_acct_page(c, vendors_map.get(c), rs, date_from,
+                                 date_to, issued_on) for c, rs in groups)
+            + "<script>window.print&&setTimeout(()=>window.print(),300)"
+              "</script></body></html>")
+
+
+def account_statement_html(customer, vendor, rows, date_from, date_to,
+                           issued_on=""):
+    """거래처 1곳용 — account_statements_html 의 단일 거래처 형태."""
+    rs = [dict(r, customer=customer) for r in rows]
+    return account_statements_html(rs, date_from, date_to,
+                                   {customer: vendor}, issued_on)
+
+
+def _acct_sheet(ws, customer, rows, date_from, date_to):
     from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 
     lines, q_sum, sup_sum, vat_sum, _missing = _acct_rows(rows)
-    wb = openpyxl.Workbook()
-    ws = wb.active
-    ws.title = "거래내역서"
     thin = Side(style="thin", color="9AA1AB")
     box = Border(left=thin, right=thin, top=thin, bottom=thin)
     head_fill = PatternFill("solid", fgColor="E9EEF5")
@@ -552,7 +569,31 @@ def account_statement_xlsx(customer, rows, date_from, date_to):
     for col, w in zip("ABCDEFGH", (11, 12, 17, 30, 30, 10, 11, 14)):
         ws.column_dimensions[col].width = w
     ws.freeze_panes = ws.cell(row=hr + 1, column=1)
+
+
+def account_statements_xlsx(rows, date_from, date_to):
+    """거래내역서 (엑셀) — 거래처마다 시트 1장. bytes 반환."""
+    import io as _io
+    import openpyxl
+
+    wb = openpyxl.Workbook()
+    wb.remove(wb.active)
+    used = set()
+    for cust, rs in _acct_groups(rows) or [("-", [])]:
+        name = "".join(ch for ch in str(cust) if ch not in '[]:*?/\\')[:28] \
+            or "거래처"
+        base, k = name, 2
+        while name in used:
+            name = f"{base}_{k}"
+            k += 1
+        used.add(name)
+        _acct_sheet(wb.create_sheet(name), cust, rs, date_from, date_to)
     buf = _io.BytesIO()
     wb.save(buf)
     return buf.getvalue()
 
+
+def account_statement_xlsx(customer, rows, date_from, date_to):
+    """거래처 1곳용 — account_statements_xlsx 의 단일 거래처 형태."""
+    return account_statements_xlsx(
+        [dict(r, customer=customer) for r in rows], date_from, date_to)

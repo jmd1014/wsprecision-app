@@ -144,3 +144,33 @@ def test_account_statement_lists_lines_and_totals_only():
     assert vals[6][2] == "SH-20260827-01" and vals[6][7] == 100000
     flat = [v for r in vals for v in r]
     assert "합계 금액" in flat and 220000 in flat
+
+
+def test_account_statements_one_per_customer_no_sign_line():
+    """조회에 걸린 거래처마다 1부(HTML 쪽·엑셀 시트), 확인자 서명 줄 없음."""
+    import io as _io
+    import openpyxl
+    from utils.statement_generator import (
+        account_statements_html, account_statements_xlsx)
+    rows = [
+        {"customer": "미진정밀", "date": "2026-09-10",
+         "ship_no": "SH-20260910-01", "pn": "A-1", "qty": 10,
+         "unit_price": 1000},
+        {"customer": "(주)엠제이티", "date": "2026-09-11",
+         "ship_no": "SH-20260911-01", "pn": "B-1", "qty": 5,
+         "unit_price": 2000},
+        {"customer": "미진정밀", "date": "2026-09-12",
+         "ship_no": "SH-20260912-01", "pn": "A-2", "qty": 1,
+         "unit_price": 500},
+    ]
+    html = account_statements_html(rows, "2026-09-01", "2026-09-30",
+                                   {"미진정밀": {"ceo_name": "김대표"}})
+    assert html.count('class="page acct"') == 2
+    assert "확인자" not in html and "확인합니다" not in html
+    assert "김대표" in html
+    # 거래처별 합계가 따로 — 미진 10,500+1,050 / 엠제이티 10,000+1,000
+    assert "11,550 원" in html and "11,000 원" in html
+    wb = openpyxl.load_workbook(_io.BytesIO(
+        account_statements_xlsx(rows, "2026-09-01", "2026-09-30")))
+    assert wb.sheetnames == ["(주)엠제이티", "미진정밀"]
+    assert wb["미진정밀"]["B2"].value == "미진정밀"
