@@ -249,9 +249,9 @@ def test_query_with_no_match_still_says_none(mocked_db):
     assert not any(b.label == "체크한 품목 담기" for b in at.button)
 
 
-def test_cart_shows_pending_orders_as_reference_not_grid_column(mocked_db):
-    """③ 발주서 표: 미납 수주는 입력 표의 열이 아니라 아래 회색 참고 줄로
-    (2026-10-01 사용자: 수량 옆에 있어 발주서에 들어가는 값으로 보여 놀람)."""
+def test_cart_has_no_pending_order_reference(mocked_db):
+    """③ 발주서 표에는 미납 수주를 두지 않는다 — 열도, 참고 줄도 없음. ② 검색
+    표에만 나온다 (2026-10-01 사용자: 발주서에 들어가는 값으로 보여 놀람)."""
     at = _open_po_page()
     at.session_state["po_items"] = [{
         "item_name": "20AHYBV-03-X1413", "product_id": "P0002",
@@ -260,5 +260,10 @@ def test_cart_shows_pending_orders_as_reference_not_grid_column(mocked_db):
     at.run()
     assert not at.exception, [str(e.value) for e in at.exception]
     md = " ".join(str(m.value) for m in at.markdown)
-    assert "참고 · 미납 수주" in md and "발주서에 들어가지 않습니다" in md
-    assert "85,688" in md and "09/11" in md
+    # 같은 페이지의 발주 필요량 탭에도 '미납 수주' 문구가 있어 참고 줄 문구로 본다
+    assert "참고 · 미납 수주" not in md and "발주서에 들어가지 않습니다" not in md
+    assert not any("수주 상세" in (e.label or "") or "현재 수주" in (e.label or "")
+                   for e in at.expander)
+    # 지불조건은 기본 공란
+    pay = [t for t in at.text_input if t.label == "지불조건"]
+    assert pay and pay[0].value == ""

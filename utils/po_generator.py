@@ -303,7 +303,7 @@ def fill_po_template(po_data: dict, items: list[dict], vendor_info: dict = None)
 
     conditions = [
         ("• 납  기", po_data.get("delivery_date") or ""),
-        ("• 지불조건", po_data.get("payment_terms") or "말일 마감 60일 현금"),
+        ("• 지불조건", po_data.get("payment_terms") or ""),
         ("• 배 송 지", po_data.get("delivery_address") or COMPANY_INFO["address"]),
         ("• 비  고", po_data.get("remark") or ""),
     ]

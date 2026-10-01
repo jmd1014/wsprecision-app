@@ -12966,11 +12966,8 @@ elif page == "구매 관리":
                     # 소모성·공구 발주는 재질 대신 단위(수기, 수량 앞) —
                     # 2026-09-22 사용자 요청. 소재 발주는 품명·재질·규격 그대로
                     _unit_layout = sel_bucket != "소재"
-                    # 소재 발주: 담긴 제품의 현재 미납 수주는 참고 정보 — 입력 표
-                    # 안에 수량 옆 열로 두면 발주서에 들어가는 값으로 보여 놀란다는
-                    # 사용자 보고(2026-10-01) → 표에서 빼고 아래 회색 참고 줄로
-                    _cart_pend = ({} if _unit_layout else _po_pending_map(
-                        [it.get("product_id") for it in _items]))
+                    # 미납 수주는 ② 검색 표에서만 보여 준다 — 발주서 표(③)에
+                    # 있으면 발주서에 들어가는 값으로 보인다 (2026-10-01 사용자 결정)
                     _grid_rows = [{
                         "품명": it["item_name"],
                         **({"규격": it.get("spec") or "",
@@ -12992,45 +12989,6 @@ elif page == "구매 관리":
                         select=False, check_col="삭제",
                         # 금액은 그리드 안에서 즉시 수량×단가
                         calc_cols={"금액": "(Number(d['수량'])||0)*(Number(d['단가'])||0)"})
-                    # 참고: 담긴 제품의 미납 수주 상세 (수주번호·고객사·납기·미납)
-                    _pend_lines = [dict(l, pn=it["item_name"])
-                                   for it in _items
-                                   for l in (_cart_pend.get(it.get("product_id"))
-                                             or {}).get("lines", [])]
-                    _pend_ref = []
-                    for it in _items:
-                        _pp9 = _cart_pend.get(it.get("product_id")) or {}
-                        if float(_pp9.get("qty") or 0) > 0:
-                            _pend_ref.append(
-                                "<b>{}</b> {:,.0f}{}".format(
-                                    __import__("html").escape(str(it["item_name"])),
-                                    float(_pp9["qty"]),
-                                    " (납기 {})".format(str(_pp9["due"])[5:10]
-                                                        .replace("-", "/"))
-                                    if _pp9.get("due") else ""))
-                    if _pend_ref:
-                        st.markdown(
-                            '<div class="po-ref" style="background:#f4f6fa;'
-                            'border-left:3px solid #9aa1ab;border-radius:6px;'
-                            'padding:7px 12px;margin:2px 0 6px;font-size:12.5px;'
-                            'color:#6b7280;line-height:1.6">'
-                            '<span style="font-weight:700;color:#4b5563">참고 · '
-                            '미납 수주</span> <span style="font-size:11.5px">'
-                            '(발주서에 들어가지 않습니다)</span><br>'
-                            + " &nbsp;·&nbsp; ".join(_pend_ref) + "</div>",
-                            unsafe_allow_html=True)
-                    if _pend_lines:
-                        with st.expander(
-                                "참고 — 수주 상세 {}건 · 미납 합계 {:,}".format(
-                                    len(_pend_lines),
-                                    sum(l["pending_qty"] for l in _pend_lines))):
-                            toss_table([{
-                                "품명": l["pn"], "수주번호": l["so_number"],
-                                "고객사": l["customer"], "납기": l["due_date"],
-                                "미납": l["pending_qty"],
-                            } for l in _pend_lines], num_cols=("미납",),
-                                strong_cols=("품명",),
-                                scroll=len(_pend_lines) > 15)
                     # '삭제' 체크 = 즉시 제거 (줄 선택 rerun 없음)
                     _del_uids = [it["_uid"] for it, r in zip(_items, _ed_rows)
                                  if bool(r.get("삭제"))]
@@ -13076,10 +13034,10 @@ elif page == "구매 관리":
                                                  key="po_date")
                         delivery_date = fc2.text_input("납기", key="po_due",
                                                        placeholder="예: 14일 이내")
+                        # 기본 공란 — 발주서에 지불조건을 찍지 않는다
+                        # (2026-10-01 사용자 요청, 필요할 때만 직접 입력)
                         payment_terms = fc3.text_input(
-                            "지불조건", value=vendor.get("payment_terms")
-                            or "말일 마감 60일 현금",
-                            key=f"po_pay_{vendor['vendor_id']}")
+                            "지불조건", value="", key="po_pay_blank")
                         fc4, fc5 = st.columns(2)
                         contact_person = fc4.text_input(
                             "담당자", value=current_user_name(),
