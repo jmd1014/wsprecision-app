@@ -9088,6 +9088,16 @@ elif page == "출고 관리":
                             if _n_ok:
                                 st.session_state["ship_open_no"] = \
                                     _cf_pick["ship_no"]
+                                _sk.notify(_sk.fmt_ship_edit(
+                                    _cf_pick["ship_no"],
+                                    [x.get("customer") for x in _cf_items],
+                                    [(x.get("pn"), float(x.get("qty") or 0),
+                                      float(_pl[0].get(x["si_id"]) or 0))
+                                     for x in _cf_items
+                                     if abs(float(_pl[0].get(
+                                         x["si_id"], x.get("qty") or 0) or 0)
+                                         - float(x.get("qty") or 0)) > 1e-9],
+                                    current_user_name(), _pl[1]))
                                 st.success(
                                     f"정정 완료 — {_n_ok}개 라인. 문서를 "
                                     "재발행하세요 (정정본 표기).")
@@ -9117,6 +9127,15 @@ elif page == "출고 관리":
                         for _w in _ws:
                             (st.warning if _n_ok else st.error)(_w)
                         if _n_ok:
+                            _cx_live = [x for x in _cf_items
+                                        if float(x.get("qty") or 0) > 0]
+                            _sk.notify(_sk.fmt_ship_cancel(
+                                _cf_pick.get("ship_no") or "-",
+                                [x.get("customer") for x in _cx_live],
+                                len(_cx_live),
+                                sum(float(x.get("qty") or 0)
+                                    for x in _cx_live),
+                                current_user_name(), _cx_reason.strip()))
                             st.success("전표 취소 — 수주·재고 역반영 완료")
                             st.rerun()
             else:
@@ -12107,6 +12126,9 @@ elif page == "구매 관리":
                             except Exception:
                                 pass
                         _mx9c = w_lot_sync_counter()
+                        _sk.notify(_sk.fmt_receipt_cancel(
+                            _d9.get("식별 번호"), _d9.get("자재"),
+                            _d9.get("입고"), current_user_name()))
                         st.success(
                             "입고 취소 — 발주 미입고가 복구되었습니다."
                             + (f" 다음 입고는 W{_mx9c + 1:04d} 부터 "
@@ -13363,6 +13385,9 @@ elif page == "구매 관리":
                             if _db.update("purchase_orders",
                                     f"po_id=eq.{_fq(po['po_id'])}",
                                     {"status": "SENT"}):
+                                _sk.notify(_sk.fmt_po_cancel(
+                                    po["po_number"], po.get("_vname"),
+                                    current_user_name(), restored=True))
                                 st.success("취소 해제 — 발주중으로 "
                                            "복구되었습니다.")
                                 st.rerun()
@@ -13425,6 +13450,9 @@ elif page == "구매 관리":
                             if _db.update("purchase_orders",
                                     f"po_id=eq.{_fq(po['po_id'])}",
                                     {"status": "CANCELLED"}):
+                                _sk.notify(_sk.fmt_po_cancel(
+                                    po["po_number"], po.get("_vname"),
+                                    current_user_name()))
                                 st.success("발주 취소 완료")
                                 st.rerun()
 
@@ -18246,7 +18274,7 @@ elif page == "영업 보고":
                              column_config=_NUMCOL)
 
             st.markdown("##### 품번별 합계 (금액순)")
-            _m_pn = [{"품번": pn, "거래처": cu, "라인": s["lines"],
+            _m_pn = [{"품번": pn, "거래처": cu, "납품 횟수": s["lines"],
                       "수량": s["qty"], "합계(VAT포함)": s["total"]}
                      for (pn, cu), s in sorted(
                          _m_agg["by_pn"].items(),
@@ -18262,6 +18290,52 @@ elif page == "영업 보고":
                     _pf_iso, _pt_iso,
                     "_" + _cu_pick[0] if len(_cu_pick) == 1 else ""),
                 mime="text/html", key="sr_dl_month", type="primary")
+
+            # ── 거래내역서 — 거래처에 보내 내역·합계를 확인받는 문서 ──
+            # 마감 보고서(내부 영업보고용)와 달리 거래처 1곳의 납품 내역을
+            # 납품일 순으로 싣고 합계 금액만 낸다 (2026-10-01 사용자 요청)
+            _ac_custs = sorted({x.get("customer") for x in _m_rows
+                                if x.get("customer")})
+            _ac_one = _ac_custs[0] if len(_ac_custs) == 1 else None
+            _ac_help = (None if _ac_one else
+                        "거래처를 한 곳만 선택하면 발행됩니다")
+            _ac_html, _ac_xlsx = "", b""
+            if _ac_one:
+                import utils.statement_generator as _sr_sg
+                if not hasattr(_sr_sg, "account_statement_html"):
+                    import importlib as _sr_il2
+                    _sr_sg = _sr_il2.reload(_sr_sg)
+                _ac_v = None
+                try:
+                    _ac_vs = fetch(
+                        "vendors",
+                        "name,business_no,ceo_name,phone,fax,address,"
+                        "business_type,business_item",
+                        "name=ilike.*{}*".format(_fq(
+                            _ac_one.replace("㈜", "").replace("(주)", "")
+                            .strip())), limit=5)
+                    _ac_v = _ac_vs[0] if _ac_vs else None
+                except Exception:
+                    _ac_v = None
+                _ac_html = _sr_sg.account_statement_html(
+                    _ac_one, _ac_v, _m_rows, _pf_iso, _pt_iso,
+                    issued_on=_today9.isoformat())
+                _ac_xlsx = _sr_sg.account_statement_xlsx(
+                    _ac_one, _m_rows, _pf_iso, _pt_iso)
+            st.markdown("##### 거래내역서 (거래처 확인용)")
+            _ac1, _ac2 = st.columns(2)
+            _ac_fn = "거래내역서_{}_{}_{}".format(
+                _ac_one or "거래처", _pf_iso, _pt_iso)
+            _ac1.download_button(
+                "거래내역서 인쇄", _ac_html, file_name=_ac_fn + ".html",
+                mime="text/html", key="sr_dl_acct", disabled=not _ac_one,
+                help=_ac_help, use_container_width=True)
+            _ac2.download_button(
+                "거래내역서 엑셀", _ac_xlsx, file_name=_ac_fn + ".xlsx",
+                mime="application/vnd.openxmlformats-officedocument."
+                     "spreadsheetml.sheet",
+                key="sr_dl_acct_x", disabled=not _ac_one,
+                help=_ac_help, use_container_width=True)
 
         st.markdown("##### 월 잠금")
         _lk_def = (_pt_iso[:7] if _rg_pick == "직접 입력" else _bm_pick)

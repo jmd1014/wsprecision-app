@@ -106,3 +106,41 @@ def test_delivery_list_draft_has_correction_column():
     assert "정정 수량" in html
     assert "출고 처리 전" in html
     assert "예정 배분(FIFO)" in html                # LOT 예정 안내
+
+
+def test_account_statement_lists_lines_and_totals_only():
+    """거래내역서 — 거래처 확인용: 납품일 순 내역 + 합계 금액만 (2026-10-01)."""
+    import io as _io
+    import openpyxl
+    from utils.statement_generator import (
+        account_statement_html, account_statement_xlsx)
+    rows = [
+        {"date": "2026-09-10", "ship_no": "SH-20260910-01", "pn": "MRG6-07",
+         "customer_pn": "MRG6-07;OUP", "item_name": "RING", "qty": 100,
+         "unit_price": 1000},
+        {"date": "2026-08-27", "ship_no": "SH-20260827-01",
+         "pn": "H11SDF-2C-10-01", "customer_pn": "H11SDF-2C-10-01-RE-P",
+         "item_name": "BODY", "qty": 50, "unit_price": 2000},
+        {"date": "2026-09-12", "ship_no": "SH-20260912-01", "pn": "X-1",
+         "customer_pn": None, "item_name": "", "qty": 7, "unit_price": None},
+    ]
+    html = account_statement_html("미진정밀", {"business_no": "1234567890"},
+                                  rows, "2026-08-26", "2026-09-25")
+    assert "거래내역서" in html and "2026-08-26 ~ 2026-09-25" in html
+    assert "123-45-67890" in html
+    # 납품일 순 — 8/27 전표가 9/10 보다 먼저, 거래처 품번 표기
+    assert html.find("SH-20260827-01") < html.find("SH-20260910-01")
+    assert "H11SDF-2C-10-01-RE-P" in html and "MRG6-07;OUP" in html
+    # 합계: 공급 200,000 · 세액 20,000 · 합계 220,000, 단가 미입력 1건 안내
+    assert "200,000 원" in html and "20,000 원" in html and "220,000 원" in html
+    assert "단가 미입력 1건" in html
+    assert "품번별" not in html           # 통계·소계는 싣지 않는다
+
+    wb = openpyxl.load_workbook(_io.BytesIO(
+        account_statement_xlsx("미진정밀", rows, "2026-08-26", "2026-09-25")))
+    ws = wb.active
+    vals = [[c.value for c in r] for r in ws.iter_rows()]
+    assert vals[5][:4] == ["No", "납품일", "전표번호", "품번"]
+    assert vals[6][2] == "SH-20260827-01" and vals[6][7] == 100000
+    flat = [v for r in vals for v in r]
+    assert "합계 금액" in flat and 220000 in flat

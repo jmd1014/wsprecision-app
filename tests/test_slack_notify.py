@@ -63,3 +63,17 @@ def test_format_cancels():
                            detail={"cancelled": "STEP_START"}) ==         "[공정 취소] MRG6-07 480 EA · CNC — 김준오 · 시작 취소"
     assert sn.fmt_cancel("투입 취소", "T16ABV", 1500, "김준오",
                          extra="소재 W1108 복원") ==         "[투입 취소] T16ABV 1,500 EA — 김준오 · 소재 W1108 복원"
+
+
+def test_cancel_and_revision_formats():
+    """출고 취소·정정, 입고 취소, 발주 취소 알림 (2026-10-01 누락 보완)."""
+    from utils import slack_notify as sk
+    assert sk.fmt_ship_cancel("SH-20260930-01", ["미진정밀", "미진정밀"], 3,
+                              1200, "홍길동", "거래처 착오") ==         "[출고 취소] SH-20260930-01 · 미진정밀 · 3품목 1,200개 — 홍길동 · 거래처 착오"
+    assert sk.fmt_ship_edit("SH-1", ["A"], [("P1", 100, 80)], "홍", "수량 오기")         == "[출고 정정] SH-1 · A · P1 100→80 — 홍 · 수량 오기"
+    assert "외 1" in sk.fmt_ship_edit(
+        "SH-1", ["A"], [("P%d" % i, 1, 2) for i in range(4)], "홍")
+    assert sk.fmt_receipt_cancel("W0123", "S45C 봉", 500, "홍") ==         "[입고 취소] W0123 · S45C 봉 500 — 홍"
+    assert sk.fmt_po_cancel("PO-202609-008", "대일정공", "홍") ==         "[발주 취소] PO-202609-008 대일정공 — 홍"
+    assert sk.fmt_po_cancel("PO-1", "대일", "홍", restored=True).startswith(
+        "[발주 취소 해제]")

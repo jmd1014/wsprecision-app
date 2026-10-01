@@ -302,6 +302,6 @@ def _close_body(rows):
         + _sum_table(["납품일", "전표", "수량", "공급가액", "세액",
                       "합계"], "".join(by_date), dt_tot)
         + "<h3>품번별 합계 (금액순)</h3>"
-        + _sum_table(["품번", "거래처", "라인", "수량", "합계(VAT포함)"],
+        + _sum_table(["품번", "거래처", "납품 횟수", "수량", "합계(VAT포함)"],
                      "".join(by_pn), pn_tot))
     return body

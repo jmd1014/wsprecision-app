@@ -284,6 +284,8 @@ def test_sales_report_period_query(rev_db):
     assert not at.exception, [str(e.value) for e in at.exception]
     labels = {getattr(b, "label", "") for b in at.get("download_button")}
     assert any("마감 보고서 인쇄" in l for l in labels)   # 9/1 확정 전표 포함
+    assert any("거래내역서 인쇄" in l for l in labels)
+    assert any("거래내역서 엑셀" in l for l in labels)
     assert [m for m in at.multiselect if m.key == "sr_cust"]
     # 16일~말일 — 9/1 전표는 범위 밖
     at.selectbox(key="sr_range").set_value("16일 ~ 말일")

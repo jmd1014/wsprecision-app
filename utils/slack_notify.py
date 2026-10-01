@@ -149,3 +149,33 @@ def fmt_cancel(tag, pn, qty, who, extra=None):
 def fmt_ship(ship_no, customers, n_items, total_qty, who):
     cust = ", ".join(sorted(c for c in set(customers) if c)) or "-"
     return f"[출고] {ship_no} · {cust} · {n_items}품목 {_n(total_qty)}개 — {who}"
+
+
+# ─── 되돌리기 알림 (2026-10-01: 출고 취소·정정, 입고 취소, 발주 취소가
+# 알림 없이 재고·미납을 바꾸던 누락 보완) ───
+
+def fmt_ship_cancel(ship_no, customers, n_items, total_qty, who, reason=None):
+    cust = ", ".join(sorted(c for c in set(customers) if c)) or "-"
+    tail = f" · {reason}" if reason else ""
+    return (f"[출고 취소] {ship_no} · {cust} · {n_items}품목 "
+            f"{_n(total_qty)}개 — {who}{tail}")
+
+
+def fmt_ship_edit(ship_no, customers, changes, who, reason=None):
+    """changes: [(품번, 이전 수량, 정정 수량)…]"""
+    cust = ", ".join(sorted(c for c in set(customers) if c)) or "-"
+    ch = ", ".join(f"{pn or '-'} {_n(a)}→{_n(b)}" for pn, a, b in changes[:3])
+    if len(changes) > 3:
+        ch += f" 외 {len(changes) - 3}"
+    tail = f" · {reason}" if reason else ""
+    return f"[출고 정정] {ship_no} · {cust} · {ch} — {who}{tail}"
+
+
+def fmt_receipt_cancel(lot, material, qty, who):
+    return f"[입고 취소] {lot or '식별 번호 없음'} · {material or '-'} {_n(qty)} — {who}"
+
+
+def fmt_po_cancel(po_number, vendor, who, restored=False):
+    tag = "발주 취소 해제" if restored else "발주 취소"
+    return f"[{tag}] {po_number} {vendor or '-'} — {who}"
+

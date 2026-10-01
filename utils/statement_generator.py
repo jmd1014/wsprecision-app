@@ -351,3 +351,208 @@ def delivery_list_html(batch, draft=False, rev_label=None):
 </div>
 <script>window.print&&setTimeout(()=>window.print(),300)</script>
 </body></html>"""
+
+
+# ─── 거래내역서 — 마감 때 거래처에 보내 내역·합계를 확인받는 문서 ───
+# (2026-10-01 사용자 요청) 마감 보고서는 내부 영업보고용이고, 이 문서는
+# 거래처 한 곳 · 한 기간의 납품 내역을 납품일 순으로 나열하고 합계 금액만
+# 싣는다 (통계·품번별 소계 없음 — 내역 진위 확인이 목적).
+
+def _acct_rows(rows):
+    """납품일·전표 순 정렬 + 라인 금액 계산 → (행 목록, 수량합, 공급합, 세액합, 미입력수)"""
+    out, q_sum, sup_sum, vat_sum, missing = [], 0.0, 0.0, 0.0, 0
+    for r in sorted(rows, key=lambda x: (str(x.get("date") or ""),
+                                         str(x.get("ship_no") or ""))):
+        qty = float(r.get("qty") or 0)
+        up = r.get("unit_price")
+        try:
+            up = float(up) if up not in (None, "") else None
+        except (TypeError, ValueError):
+            up = None
+        supply = vat = None
+        if up and up > 0:
+            supply = qty * up
+            vat = float(round(supply * 0.1))
+            sup_sum += supply
+            vat_sum += vat
+        else:
+            up = None
+            missing += 1
+        q_sum += qty
+        out.append({
+            "date": str(r.get("date") or "")[:10],
+            "ship_no": r.get("ship_no") or "",
+            "pn": r.get("customer_pn") or r.get("pn") or "-",
+            "item_name": str(r.get("item_name") or ""),
+            "qty": qty, "unit": r.get("unit") or "EA",
+            "unit_price": up, "supply": supply, "vat": vat})
+    return out, q_sum, sup_sum, vat_sum, missing
+
+
+_ACCT_CSS = """
+.acct{min-height:0;page-break-after:auto}
+.acct .period{margin:8px 0 2px;font-size:12.5px;font-weight:600;
+  color:#1b2a41;display:flex;justify-content:space-between}
+.acct .items td{height:auto;padding:4px 5px}
+.acct .items td.nm{white-space:normal;overflow:visible;line-height:1.25}
+.acct .items thead{display:table-header-group}
+.acct .items tr{page-break-inside:avoid}
+.acct .sum{margin:12px 0 0 auto;width:300px}
+.acct .sum td{border:1px solid #9aa1ab;padding:6px 9px;font-size:12.5px}
+.acct .sum td.k{background:#f4f5f7;font-weight:600;color:#333a45;width:44%}
+.acct .sum td.v{text-align:right;font-weight:600}
+.acct .sum tr.g td{font-size:14px;font-weight:700;background:#24406b14;
+  color:#24406b}
+.acct .cfm{margin-top:22px;font-size:12px;color:#333a45;display:flex;
+  justify-content:space-between;align-items:flex-end;
+  page-break-inside:avoid}
+.acct .cfm .stamp{border-bottom:1px solid #9aa1ab;min-width:170px;
+  display:inline-block;padding:0 6px 2px}
+.acct .foot{margin-top:16px;display:flex;justify-content:space-between;
+  font-size:10.5px;color:#9aa1ab}
+@page{size:A4;margin:8mm 0}
+"""
+
+
+def account_statement_html(customer, vendor, rows, date_from, date_to,
+                           issued_on=""):
+    """거래내역서 (인쇄용 HTML) — 거래처 1곳 · 기간(납품일 기준, 양끝 포함).
+
+    rows: [{date, ship_no, customer_pn, pn, item_name, qty, unit, unit_price}]
+    품번은 거래명세서와 같이 거래처 표기(customer_pn) 우선.
+    """
+    accent = "#24406b"
+    lines, q_sum, sup_sum, vat_sum, missing = _acct_rows(rows)
+    body = []
+    for i, r in enumerate(lines, 1):
+        body.append(
+            "<tr><td class='c'>{i}</td><td class='c'>{d}</td>"
+            "<td class='c'>{sn}</td><td class='pn'>{pn}</td>"
+            "<td class='nm' title='{nm}'>{nm}</td>"
+            "<td class='r'>{q}</td><td class='r'>{up}</td>"
+            "<td class='r'>{su}</td></tr>".format(
+                i=i, d=r["date"], sn=r["ship_no"], pn=r["pn"],
+                nm=r["item_name"], q=_num(r["qty"]),
+                up=_num(r["unit_price"]) if r["unit_price"] else "",
+                su=_num(r["supply"]) if r["supply"] is not None else ""))
+    note = ("<div style='font-size:10.5px;color:#d9480f;margin-top:4px'>"
+            f"단가 미입력 {missing}건은 금액에서 제외했습니다 — 단가 확정 후 "
+            "다시 발행합니다</div>" if missing else "")
+    logo = (f'<img class="logo" src="{logo_data_uri()}" alt="우성정밀">'
+            if logo_data_uri() else "")
+    return f"""<!doctype html><html><head><meta charset='utf-8'>
+<title>거래내역서 {customer} {date_from}~{date_to}</title>
+<style>{_base_css(accent)}{_ACCT_CSS}</style></head><body>
+<div class="page acct">
+ <div class="hd">
+  <span class="tl">{logo}</span>
+  <span class="tc"><span class="t">거래내역서</span></span>
+  <span class="meta">{('발행 ' + issued_on) if issued_on else ''}</span>
+ </div>
+ {_party_table(customer, vendor, accent)}
+ <div class="period"><span>거래 기간 : {date_from} ~ {date_to} (납품일 기준)</span>
+  <span>{len(lines)}건</span></div>
+ <table class="items">
+  <colgroup><col style="width:30px"><col style="width:84px">
+   <col style="width:104px">
+   <col style="width:{_pn_col_px((r['pn'] for r in lines), lo=130, hi=230)}px">
+   <col><col style="width:62px"><col style="width:60px">
+   <col style="width:86px"></colgroup>
+  <thead><tr><th>No</th><th>납품일</th><th>전표번호</th><th>품번</th>
+   <th>품명</th><th>수량</th><th>단가</th><th>공급가액</th></tr></thead>
+  <tbody>{''.join(body)}
+  <tr class="tot"><td colspan="5" style="text-align:center">합계</td>
+   <td class="r">{_num(q_sum)}</td><td></td>
+   <td class="r">{_num(sup_sum) if sup_sum else ''}</td></tr></tbody>
+ </table>
+ {note}
+ <table class="sum">
+  <tr><td class="k">공급가액</td><td class="v">{_num(sup_sum)} 원</td></tr>
+  <tr><td class="k">세액</td><td class="v">{_num(vat_sum)} 원</td></tr>
+  <tr class="g"><td class="k">합계 금액</td>
+   <td class="v">{_num(sup_sum + vat_sum)} 원</td></tr>
+ </table>
+ <div class="cfm"><span>위 거래 내역을 확인합니다.</span>
+  <span>확인자 : <span class="stamp">&nbsp;</span> (인)</span></div>
+ <div class="foot"><span>{SUPPLIER['name']} · {SUPPLIER['addr']}</span>
+  <span>Tel {SUPPLIER['tel']} · Fax {SUPPLIER['fax']}</span></div>
+</div>
+<script>window.print&&setTimeout(()=>window.print(),300)</script>
+</body></html>"""
+
+
+def account_statement_xlsx(customer, rows, date_from, date_to):
+    """거래내역서 (엑셀) — 거래처가 자기 장부와 대조하기 쉽게. bytes 반환."""
+    import io as _io
+    import openpyxl
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+
+    lines, q_sum, sup_sum, vat_sum, _missing = _acct_rows(rows)
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "거래내역서"
+    thin = Side(style="thin", color="9AA1AB")
+    box = Border(left=thin, right=thin, top=thin, bottom=thin)
+    head_fill = PatternFill("solid", fgColor="E9EEF5")
+    num = "#,##0"
+
+    ws.merge_cells("A1:H1")
+    ws["A1"] = "거 래 내 역 서"
+    ws["A1"].font = Font(size=16, bold=True, color="24406B")
+    ws["A1"].alignment = Alignment(horizontal="center")
+    ws["A2"] = "공급받는자"
+    ws["B2"] = customer
+    ws["A3"] = "공급자"
+    ws["B3"] = f"{SUPPLIER['name']} ({SUPPLIER['biz_no']})"
+    ws["A4"] = "거래 기간"
+    ws["B4"] = f"{date_from} ~ {date_to} (납품일 기준)"
+    for a in ("A2", "A3", "A4"):
+        ws[a].font = Font(bold=True)
+
+    heads = ["No", "납품일", "전표번호", "품번", "품명", "수량", "단가",
+             "공급가액"]
+    hr = 6
+    for c, h in enumerate(heads, 1):
+        cell = ws.cell(row=hr, column=c, value=h)
+        cell.font = Font(bold=True)
+        cell.fill = head_fill
+        cell.border = box
+        cell.alignment = Alignment(horizontal="center")
+    for i, r in enumerate(lines, 1):
+        vals = [i, r["date"], r["ship_no"], r["pn"], r["item_name"],
+                r["qty"], r["unit_price"], r["supply"]]
+        for c, v in enumerate(vals, 1):
+            cell = ws.cell(row=hr + i, column=c, value=v)
+            cell.border = box
+            if c >= 6:
+                cell.number_format = num
+            elif c <= 3:
+                cell.alignment = Alignment(horizontal="center")
+    tr = hr + len(lines) + 1
+    ws.cell(row=tr, column=1, value="합계")
+    ws.merge_cells(start_row=tr, start_column=1, end_row=tr, end_column=5)
+    ws.cell(row=tr, column=6, value=q_sum)
+    ws.cell(row=tr, column=8, value=sup_sum)
+    for c in range(1, 9):
+        cell = ws.cell(row=tr, column=c)
+        cell.font = Font(bold=True)
+        cell.border = box
+        cell.fill = head_fill
+        if c >= 6:
+            cell.number_format = num
+    ws.cell(row=tr, column=1).alignment = Alignment(horizontal="center")
+    for k, (lab, val) in enumerate((("공급가액", sup_sum), ("세액", vat_sum),
+                                    ("합계 금액", sup_sum + vat_sum))):
+        a = ws.cell(row=tr + 2 + k, column=7, value=lab)
+        b = ws.cell(row=tr + 2 + k, column=8, value=val)
+        a.font = b.font = Font(bold=True)
+        a.border = b.border = box
+        a.fill = head_fill
+        b.number_format = num
+    for col, w in zip("ABCDEFGH", (11, 12, 17, 30, 30, 10, 11, 14)):
+        ws.column_dimensions[col].width = w
+    ws.freeze_panes = ws.cell(row=hr + 1, column=1)
+    buf = _io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
