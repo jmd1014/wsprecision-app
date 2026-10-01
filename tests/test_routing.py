@@ -134,7 +134,10 @@ def _fetch(table, select="*", filter_query="", limit=1000):
         return []
     if table == "vendors":
         if "in_use=eq.true" in filter_query:
-            return [{"name": "성보정밀"}]
+            # 거래처 편집 목록도 기본 필터가 사용(in_use=eq.true)이라 같은 행을
+            # 받는다 — 목록이 쓰는 키까지 채운다 (2026-10-01)
+            return [{"vendor_id": 89, "name": "성보정밀", "in_use": True,
+                     "vendor_group": "OUTSOURCE", "trade_type": "매입"}]
         return []
     if table == "wo_batches":
         return [dict(b) for b in WO_BATCHES]
