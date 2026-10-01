@@ -103,3 +103,11 @@ def test_detail_save_writes_new_fields(mocked_db):
     assert f.get("email") == "order@samkyung.co.kr"
     assert f.get("business_type") == "도소매" and f.get("business_item") == "절삭유"
     assert "name" not in f, "이름을 안 바꿨는데 name 이 업데이트에 들어감"
+
+
+def test_vendor_list_defaults_to_in_use(mocked_db):
+    """거래처 편집 초기 화면은 사용여부 = 사용 (2026-10-01: 중지 거래처가 많아
+    전체가 기본이면 목록이 너무 길다)."""
+    at = _open_master()
+    sel = [s for s in at.selectbox if s.label == "사용여부"]
+    assert sel and sel[0].value == "사용"

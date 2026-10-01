@@ -247,3 +247,18 @@ def test_query_with_no_match_still_says_none(mocked_db):
     assert not at.exception, [str(e.value) for e in at.exception]
     assert any("일치하는 품목 없음" in i.value for i in at.info)
     assert not any(b.label == "체크한 품목 담기" for b in at.button)
+
+
+def test_cart_shows_pending_orders_as_reference_not_grid_column(mocked_db):
+    """③ 발주서 표: 미납 수주는 입력 표의 열이 아니라 아래 회색 참고 줄로
+    (2026-10-01 사용자: 수량 옆에 있어 발주서에 들어가는 값으로 보여 놀람)."""
+    at = _open_po_page()
+    at.session_state["po_items"] = [{
+        "item_name": "20AHYBV-03-X1413", "product_id": "P0002",
+        "material": "SUS304", "spec": "주물소재", "qty": 100,
+        "unit_price": 1000, "memo": ""}]
+    at.run()
+    assert not at.exception, [str(e.value) for e in at.exception]
+    md = " ".join(str(m.value) for m in at.markdown)
+    assert "참고 · 미납 수주" in md and "발주서에 들어가지 않습니다" in md
+    assert "85,688" in md and "09/11" in md

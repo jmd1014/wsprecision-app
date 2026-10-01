@@ -2659,7 +2659,9 @@ elif page == "마스터 관리":
             with r2c2:
                 f_bitem = st.text_input("종목", placeholder="예: 환봉")
             with r2c3:
-                f_inuse = st.selectbox("사용여부", ["전체", "사용", "미사용"])
+                # 기본 = 사용 (2026-10-01: 중지 거래처가 많아 초기 화면이 길던 문제)
+                f_inuse = st.selectbox("사용여부", ["전체", "사용", "미사용"],
+                                       index=1)
             with r2c4:
                 f_sort = st.selectbox("정렬", [
                     "그룹 → 이름", "이름 (가나다)", "최근 등록순", "ID 순"
@@ -12964,7 +12966,9 @@ elif page == "구매 관리":
                     # 소모성·공구 발주는 재질 대신 단위(수기, 수량 앞) —
                     # 2026-09-22 사용자 요청. 소재 발주는 품명·재질·규격 그대로
                     _unit_layout = sel_bucket != "소재"
-                    # 소재 발주: 줄마다 그 제품의 현재 미납 수주(참고, 편집 불가)
+                    # 소재 발주: 담긴 제품의 현재 미납 수주는 참고 정보 — 입력 표
+                    # 안에 수량 옆 열로 두면 발주서에 들어가는 값으로 보여 놀란다는
+                    # 사용자 보고(2026-10-01) → 표에서 빼고 아래 회색 참고 줄로
                     _cart_pend = ({} if _unit_layout else _po_pending_map(
                         [it.get("product_id") for it in _items]))
                     _grid_rows = [{
@@ -12972,9 +12976,7 @@ elif page == "구매 관리":
                         **({"규격": it.get("spec") or "",
                             "단위": it.get("unit") or "EA"} if _unit_layout
                            else {"재질": it.get("material") or "",
-                                 "규격": it.get("spec") or "",
-                                 "미납 수주": (_cart_pend.get(it.get("product_id"))
-                                              or {}).get("qty", 0)}),
+                                 "규격": it.get("spec") or ""}),
                         "수량": int(it.get("qty") or 0),
                         "단가": int(it.get("unit_price") or 0),
                         "금액": int(it.get("qty") or 0) * int(it.get("unit_price") or 0),
@@ -12985,8 +12987,7 @@ elif page == "구매 관리":
                         editable_cols=(("품명", "규격", "단위", "수량", "단가", "메모")
                                        if _unit_layout else
                                        ("품명", "재질", "규격", "수량", "단가", "메모")),
-                        num_cols=(("수량", "단가", "금액") if _unit_layout
-                                  else ("미납 수주", "수량", "단가", "금액")),
+                        num_cols=("수량", "단가", "금액"),
                         strong_cols=("품명",),
                         select=False, check_col="삭제",
                         # 금액은 그리드 안에서 즉시 수량×단가
@@ -12996,9 +12997,31 @@ elif page == "구매 관리":
                                    for it in _items
                                    for l in (_cart_pend.get(it.get("product_id"))
                                              or {}).get("lines", [])]
+                    _pend_ref = []
+                    for it in _items:
+                        _pp9 = _cart_pend.get(it.get("product_id")) or {}
+                        if float(_pp9.get("qty") or 0) > 0:
+                            _pend_ref.append(
+                                "<b>{}</b> {:,.0f}{}".format(
+                                    __import__("html").escape(str(it["item_name"])),
+                                    float(_pp9["qty"]),
+                                    " (납기 {})".format(str(_pp9["due"])[5:10]
+                                                        .replace("-", "/"))
+                                    if _pp9.get("due") else ""))
+                    if _pend_ref:
+                        st.markdown(
+                            '<div class="po-ref" style="background:#f4f6fa;'
+                            'border-left:3px solid #9aa1ab;border-radius:6px;'
+                            'padding:7px 12px;margin:2px 0 6px;font-size:12.5px;'
+                            'color:#6b7280;line-height:1.6">'
+                            '<span style="font-weight:700;color:#4b5563">참고 · '
+                            '미납 수주</span> <span style="font-size:11.5px">'
+                            '(발주서에 들어가지 않습니다)</span><br>'
+                            + " &nbsp;·&nbsp; ".join(_pend_ref) + "</div>",
+                            unsafe_allow_html=True)
                     if _pend_lines:
                         with st.expander(
-                                "담긴 제품의 현재 수주 {}건 — 미납 합계 {:,}".format(
+                                "참고 — 수주 상세 {}건 · 미납 합계 {:,}".format(
                                     len(_pend_lines),
                                     sum(l["pending_qty"] for l in _pend_lines))):
                             toss_table([{
