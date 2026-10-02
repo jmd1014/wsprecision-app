@@ -1199,6 +1199,12 @@ def material_id_prefix(material_type):
 
 # 작업지시 NO 형식 — MES 발행 YYYYMMDD-NNN, 앱 자동채번(사내 생산 없음 제품)
 # YYYYMMDD-F01 (F = 완성품, 2026-09-28 사용자 결정). 배치번호는 NO-A 로 파생.
+def _proc_basis_label(v):
+    """BOM 공정행 단가 기준(lot_label) 표시 — '' = 개당, KG = 중량 청구."""
+    return {"": "개당 (EA)", None: "개당 (EA)",
+            "KG": "KG당 (중량)"}.get(v, f"{v}당")
+
+
 WO_NUMBER_RE = r"\d{8}-(?:\d{3}|F\d{2})"
 WO_AUTO_PREFIX = "F"
 
@@ -4628,9 +4634,11 @@ elif page == "마스터 관리":
                 if _cur_vnm and _cur_vnm not in _pv_opts:
                     _pv_opts.append(_cur_vnm)  # 계열 밖 기존 매칭 보존
                 st.caption(
-                    "원가 산정: per_pc = LOT단가 × qty/PC ÷ "
-                    "LOT처리수량 — 표준 단가는 아래에서 바로 입력 "
-                    "(원가 확인 > 단가 관리와 같은 값)")
+                    "개당 공정비 = 단가 × qty/PC ÷ LOT 처리수량 "
+                    "(KG 기준: KG 단가 × 개당 중량) — 지금 **{:,.0f}원**"
+                    .format(float(_bd.get("unit_price") or 0)
+                            * float(_bd.get("qty_per_pc") or 0)
+                            / max(float(_bd.get("shared_factor") or 1), 1)))
                 with st.form(f"bom_procf_{_bid}"):
                     pc1, pc2 = st.columns([2, 1])
                     _bf_nm = pc1.text_input(
@@ -4642,32 +4650,44 @@ elif page == "마스터 관리":
                                if _bd.get("process_type") in _PT_ORDER
                                else 0),
                         format_func=lambda v: _PT_KO.get(v, v))
+                    # 저장된 단가 기준이 KG 면 중량·KG 단가 라벨로 보여 준다
+                    _bd_kg = _bd.get("lot_label") == "KG"
                     pc3, pc4, pc5 = st.columns(3)
                     _bf_qpc = pc3.number_input(
-                        "qty/PC", min_value=0.0,
+                        "개당 중량 (KG)" if _bd_kg else "qty/PC",
+                        min_value=0.0,
                         value=float(_bd.get("qty_per_pc") or 1),
-                        step=0.1, key=f"bomf_q2_{_bid}",
-                        help="제품 1EA당 공정 횟수. 보통 1.")
+                        step=0.01 if _bd_kg else 0.1,
+                        format="%.3f" if _bd_kg else None,
+                        key=f"bomf_q2_{_bid}",
+                        help=("열처리 들어갈 때의 제품 1개 무게"
+                              if _bd_kg else
+                              "제품 1EA당 공정 횟수. 보통 1. "
+                              "단가 기준이 KG 면 개당 중량(KG)"))
                     _bf_lot = pc4.number_input(
                         "LOT 처리수량", min_value=1.0,
                         value=float(_bd.get("shared_factor") or 1),
                         step=1.0, key=f"bomf_lot_{_bid}",
-                        help="1 LOT/CH 에서 처리되는 제품 수")
-                    _lot_opts = ["", "LOT", "CH", "BATCH"]
+                        help="1 LOT/CH 에서 처리되는 제품 수. "
+                             "KG 기준이면 1")
+                    _lot_opts = ["", "LOT", "CH", "BATCH", "KG"]
                     _bf_lbl = pc5.selectbox(
-                        "LOT 단위", _lot_opts,
+                        "단가 기준", _lot_opts,
                         key=f"bomf_lbl_{_bid}",
+                        format_func=_proc_basis_label,
                         index=(_lot_opts.index(_bd.get("lot_label"))
                                if _bd.get("lot_label") in _lot_opts
                                else 0))
                     pc6, pc7 = st.columns([1, 2])
                     _bf_up = pc6.number_input(
-                        "LOT 단가 (원)", min_value=0.0,
+                        "KG 단가 (원)" if _bd_kg else "단가 (원)",
+                        min_value=0.0,
                         value=float(_bd.get("unit_price") or 0),
-                        step=1000.0, key=f"bomf_up_{_bid}",
-                        help="표준 단가 — 1 LOT/CH 처리 비용. 0 이면 "
-                             "미입력으로 저장되어 정합 점검에 "
-                             "표시됩니다")
+                        step=100.0 if _bd_kg else 1000.0,
+                        key=f"bomf_up_{_bid}",
+                        help="표준 단가 — 단가 기준(개당·LOT·CH·KG) 1단위 "
+                             "처리 비용. 0 이면 미입력으로 저장되어 정합 "
+                             "점검에 표시됩니다")
                     _bf_vend = pc7.selectbox(
                         "업체 (공정 계열 거래처)", _pv_opts,
                         key=f"bomf_vend_{_bid}",
@@ -4832,24 +4852,45 @@ elif page == "마스터 관리":
                         list(_PT_KO2.keys()),
                         format_func=lambda v: _PT_KO2.get(v, v),
                         key="bom_proc_type")
+                    # 단가 기준 — KG 는 열처리처럼 중량으로 청구되는 공정
+                    # (2026-10-02 사용자 요청: KG당 1,000원 × 개당 0.35kg).
+                    # 계산식은 같다: 단가 × qty/PC ÷ LOT 처리수량 — KG 기준은
+                    # qty/PC 자리에 개당 중량을 넣고 LOT 처리수량은 1
                     ap3, ap4, ap5 = st.columns(3)
-                    proc_qty = ap3.number_input("qty/PC",
-                        min_value=0.0, value=1.0, step=0.1,
-                        key="bom_proc_qty",
-                        help="제품 1EA당 공정 횟수. 보통 1.")
-                    proc_lot_size = ap4.number_input("LOT 처리수량",
-                        min_value=1, value=1, step=1,
-                        key="bom_proc_lot",
-                        help="1 LOT/CH 에서 처리되는 제품 수. "
-                             "예: 5000EA")
-                    proc_lot_label = ap5.selectbox("LOT 단위",
-                        ["", "LOT", "CH", "BATCH"],
+                    proc_lot_label = ap3.selectbox(
+                        "단가 기준", ["", "LOT", "CH", "BATCH", "KG"],
+                        format_func=_proc_basis_label,
                         key="bom_proc_label")
-                    proc_price = st.number_input(
-                        "LOT 단가 (원) — 표준 단가", min_value=0.0,
-                        value=0.0, step=1000.0, key="bom_proc_price",
-                        help="1 LOT/CH 처리 비용. 나중에 카드에서 "
-                             "수정 가능")
+                    _proc_kg = proc_lot_label == "KG"
+                    if _proc_kg:
+                        proc_qty = ap4.number_input(
+                            "개당 중량 (KG)", min_value=0.0, value=0.0,
+                            step=0.01, format="%.3f", key="bom_proc_qty_kg",
+                            help="열처리 들어갈 때의 제품 1개 무게. "
+                                 "예: 0.35")
+                        proc_lot_size = 1
+                        proc_price = ap5.number_input(
+                            "KG 단가 (원)", min_value=0.0, value=0.0,
+                            step=100.0, key="bom_proc_price_kg",
+                            help="1 KG 처리 비용. 예: 1000")
+                    else:
+                        proc_qty = ap4.number_input("qty/PC",
+                            min_value=0.0, value=1.0, step=0.1,
+                            key="bom_proc_qty",
+                            help="제품 1EA당 공정 횟수. 보통 1.")
+                        proc_lot_size = ap5.number_input("LOT 처리수량",
+                            min_value=1, value=1, step=1,
+                            key="bom_proc_lot",
+                            help="1 LOT/CH 에서 처리되는 제품 수. "
+                                 "예: 5000EA")
+                        proc_price = st.number_input(
+                            "단가 (원) — 표준 단가", min_value=0.0,
+                            value=0.0, step=1000.0, key="bom_proc_price",
+                            help="개당이면 1개 처리 비용, LOT/CH 면 1 LOT "
+                                 "처리 비용. 나중에 카드에서 수정 가능")
+                    if proc_price and proc_qty:
+                        st.caption("개당 공정비 **{:,.0f}원**".format(
+                            proc_price * proc_qty / max(proc_lot_size, 1)))
                     _agrp = {"HEAT": ("HEAT_TREAT",),
                              "SURFACE": ("SURFACE",),
                              "OUTSOURCE": ("OUTSOURCE",)}.get(
