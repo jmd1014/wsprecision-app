@@ -5,8 +5,8 @@
 같은 수주가 매번 다시 나오므로:
 - 새 수주는 (거래처, 수주번호) 로 묶어 등록, 거래처별 vendor_id
 - 이미 있는 수주의 새 행번은 그 수주에 라인만 추가
-- 이미 있는 라인은 건드리지 않고 차이만 참고로 표시
-- 단가는 제품 마스터 판매단가로 채움, 기납품(납품량)은 received_qty
+- 이미 있는 라인은 건드리지 않는다 (납품량은 앱 출고 확정으로만)
+- 단가는 제품 마스터 판매단가로 채움, 수량은 미납품량
 DB 는 mock.
 """
 import io
@@ -140,8 +140,7 @@ def test_dic_upload_two_customers_append_and_price(dic_db):
     assert "DIC (납품예정서등록 엑셀)" in infos
     # 기존 수주(…712): 새 행번 1개는 추가, 이미 있는 행번 3은 그대로
     assert "이미 등록된 수주 **1건**" in infos and "새 행번 1개" in infos
-    assert any("앱과 DIC 값이 다른 라인 1개" in (e.label or "")
-               for e in at.expander)
+    assert not any("다른 라인" in (e.label or "") for e in at.expander)
     # 마스터에 없는 납품공장 경고
     assert any("신공장" in str(w.value) for w in at.warning)
 

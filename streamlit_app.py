@@ -6191,10 +6191,10 @@ elif page == "수주 관리":
                     if dup_so_nums and _is_dic:
                         # ── DIC 재업로드: 미납 조회 화면이라 같은 수주가 매번
                         # 다시 나온다. 기존 수주에 없는 행번만 그 수주에 추가하고,
-                        # 이미 있는 라인은 건드리지 않고 차이만 보여 준다 — 앱의
-                        # 납품량은 출고 확정으로 쌓이므로 파일 값으로 덮으면
-                        # 회차 충당과 어긋나거나 이중 반영될 수 있다 (2026-10-02)
-                        _dx_add, _dx_diff = [], []
+                        # 이미 있는 라인은 건드리지 않는다 — 수주 등록에만 집중하고
+                        # 납품량은 앱의 출고 확정으로만 쌓는다 (2026-10-02 사용자
+                        # 결정: 파일 값으로 맞추면 이중 반영 위험)
+                        _dx_add = []
                         try:
                             _dx_so = {}
                             for _cu0 in _up_custs:
@@ -6211,8 +6211,7 @@ elif page == "수주 관리":
                             for _i0 in range(0, len(_ids0), 80):
                                 for x in fetch(
                                         "sales_order_items",
-                                        "soi_id,so_id,line_no,customer_part_no,"
-                                        "qty,received_qty",
+                                        "soi_id,so_id,line_no,customer_part_no",
                                         "so_id=in.({})".format(",".join(
                                             str(v) for v in _ids0[_i0:_i0 + 80])),
                                         limit=2000):
@@ -6228,31 +6227,12 @@ elif page == "수주 관리":
                                 if _hit is None:
                                     it["_existing_so_id"] = _sid0
                                     _dx_add.append(it)
-                                elif (abs(float(_hit.get("qty") or 0)
-                                          - float(it.get("qty") or 0)) > 0.5
-                                      or abs(float(_hit.get("received_qty") or 0)
-                                             - float(it.get("received_qty") or 0))
-                                      > 0.5):
-                                    _dx_diff.append({
-                                        "수주번호": it["so_number"],
-                                        "행번": it.get("line_no"),
-                                        "품목": it.get("customer_part_no"),
-                                        "수주량(앱)": float(_hit.get("qty") or 0),
-                                        "수주량(DIC)": float(it.get("qty") or 0),
-                                        "납품(앱)": float(_hit.get("received_qty") or 0),
-                                        "납품(DIC)": float(it.get("received_qty") or 0)})
                         except Exception as e:
                             st.warning(f"기존 수주 대조 실패: {e}")
                         st.info(
                             "이미 등록된 수주 **{}건** — 새 행번 {}개는 기존 수주에 "
                             "추가하고, 이미 있는 라인은 그대로 둡니다.".format(
                                 len(dup_so_nums), len(_dx_add)))
-                        if _dx_diff:
-                            with st.expander(
-                                    f"앱과 DIC 값이 다른 라인 {len(_dx_diff)}개 "
-                                    "(참고 — 자동으로 바꾸지 않습니다)"):
-                                toss_df(pd.DataFrame(_dx_diff),
-                                        use_container_width=True, hide_index=True)
                         new_items = new_items + _dx_add
                     elif dup_so_nums:
                         st.warning(
@@ -6495,8 +6475,6 @@ elif page == "수주 관리":
                         "거래처 품명": (it.get("customer_item_name") or "")[:30],
                         "우성정밀 품번": it.get("matched_pn") or "미매칭",
                         "수량": int(it.get("qty") or 0),
-                        **({"기납품": int(it.get("received_qty") or 0)}
-                           if _is_dic else {}),
                         "단가": int(it.get("unit_price") or 0),
                         "금액": int(it.get("amount") or 0),
                         "납기": it.get("due_date"),
