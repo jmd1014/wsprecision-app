@@ -17928,11 +17928,18 @@ elif page == "생산 보고":
 
                 # ── 2) 제품 마스터 매칭 ──
                 try:
-                    all_prods = fetch("products", "product_id,pn",
+                    all_prods = fetch("products", "product_id,pn,alias_list",
                         "archived_at=is.null", limit=3000)
                 except Exception as e:
                     st.error(f"제품 마스터 조회 실패: {e}"); all_prods = []
                 pn_map = {p["pn"]: p["product_id"] for p in all_prods}
+                # 별칭(현장·MES 가 쓰는 옛 품번)도 같은 제품으로 — 디아이씨는
+                # 현장 이름이 'D917137', 제품 품번이 '4D917137-00' (2026-10-05)
+                for p in all_prods:
+                    for _a in str(p.get("alias_list") or "").split(","):
+                        _a = _a.strip()
+                        if _a:
+                            pn_map.setdefault(_a, p["product_id"])
                 pn_set = set(pn_map)
 
                 # ── 3) 기존 저장분과 행 단위 중복 감지 ──
