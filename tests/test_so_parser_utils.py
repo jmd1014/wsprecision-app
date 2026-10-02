@@ -54,3 +54,66 @@ def test_to_date_formats():
     assert _to_date(None) is None
     assert _to_date("") is None
     assert _to_date("not a date") is None
+
+
+# ─── DIC 납품예정서등록 엑셀 (2026-10-02) ───
+def _dic_workbook():
+    import io as _io
+    import openpyxl
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "납품예정서등록(DIC)"
+    ws["A2"] = "납품예정서등록-DIC"
+    ws["A5"] = "납품예정서등록(DIC)"
+    ws.append([])
+    ws["A10"], ws["B10"], ws["C10"] = "업체", "36930", "우성정밀"
+    hdr = [None, "수주일자", "품목", "품목명", "규격", "재질", "구분", "납품공장",
+           "납품공장명", "단위", "수주번호", "행번", "수주량", "납기일", "납품량",
+           "미납품량", "납품창고명"]
+    for j, h in enumerate(hdr, 1):
+        ws.cell(17, j, h)
+    data = [
+        [1, "2026-09-15", "6A433004#1", "COLLOR,SPLINE-선삭", "Ø99*37", "SCM415",
+         "정상", "P10", "중장비공장", "EA ", "PO2609000000712", "3", 400,
+         "2026-10-31", 382, 18, "통합물류창고(중장비)"],
+        [2, "2026-10-01", "624315-45001#1", "SHAFT-IDLER-선삭", "", "S45C",
+         "정상", "P20", "차량2공장", "EA ", "PO2610000000060", "1", 800,
+         "2026-10-09", 0, 800, "통합물류창고(차량2)"],
+        [3, "2026-10-01", "X-1", "신규 공장 품목", "", "", "정상", "P99",
+         "신공장", "EA", "PO2610000000999", "1", 10, "2026-10-09", 0, 10, ""],
+    ]
+    for i, row in enumerate(data):
+        for j, v in enumerate(row, 1):
+            ws.cell(18 + i, j, v)
+    # 아래쪽 다른 표 머리글 — 데이터로 읽으면 안 됨
+    for j, h in enumerate([None, "Title", "납품예정일자", "납품예정수량"], 1):
+        ws.cell(23, j, h)
+    buf = _io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def test_dic_excel_detected_and_parsed():
+    from datetime import date
+    from utils.so_parser import (
+        detect_so_format, group_by_so_number, parse_so_auto)
+    raw = _dic_workbook()
+    assert detect_so_format(raw, "납품예정서등록-DIC.xls") == "DIC"
+    fmt, items = parse_so_auto(raw, "납품예정서등록-DIC.xls")
+    assert fmt == "DIC" and len(items) == 3
+    a, b, c = items
+    # 납품공장 → 거래처 마스터 정식명 (중장비 = 두서, 차량2 = 두동)
+    assert a["customer"] == "(주)디아이씨두서공장"
+    assert b["customer"] == "(주)디아이씨두동공장"
+    assert "신공장" in c["customer"]          # 모르는 공장은 그대로 드러낸다
+    assert a["so_number"] == "PO2609000000712" and a["line_no"] == 3
+    assert a["customer_part_no"] == "6A433004#1"
+    assert a["qty"] == 400 and a["received_qty"] == 382   # 기납품 → 미납 18
+    assert a["so_date"] == date(2026, 9, 15) and a["due_date"] == date(2026, 10, 31)
+    assert a["unit"] == "EA" and a["unit_price"] is None  # 단가 열 없음
+    assert "Ø99*37" in a["remark"] and "SCM415" in a["remark"]
+    # 한 파일에 거래처가 둘 — (거래처, 수주번호) 로 묶인다
+    heads = {(g["header"]["customer"], g["header"]["so_number"])
+             for g in group_by_so_number(items)}
+    assert ("(주)디아이씨두서공장", "PO2609000000712") in heads
+    assert ("(주)디아이씨두동공장", "PO2610000000060") in heads

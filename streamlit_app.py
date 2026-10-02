@@ -5478,6 +5478,7 @@ elif page == "수주 관리":
 
     from datetime import date as _date, timedelta as _td
     from utils.so_parser import (parse_hdx_excel, parse_mijin_excel, parse_mjt_pdf,
+                                 parse_dic_excel,
                                   group_by_so_number, match_canonical_pn)
     import db as _db
     import pandas as pd
@@ -6097,6 +6098,7 @@ elif page == "수주 관리":
                 fmt_labels = {
                     "HDX": "HDX (ERP 엑셀)",
                     "MIJIN": "미진정밀 (외주발주품목조회)",
+                    "DIC": "DIC (납품예정서등록 엑셀)",
                     "MJT_PDF": "(주)엠제이티 (PDF 발주서)",
                     "UNKNOWN_PDF": "알 수 없는 PDF — 수동 파서 선택 필요",
                     "UNKNOWN_EXCEL": "알 수 없는 엑셀 양식 — 수동 파서 선택 필요",
@@ -6107,12 +6109,16 @@ elif page == "수주 관리":
                 # 인식 실패 → 수동 선택 fallback
                 if fmt.startswith("UNKNOWN") or not items:
                     manual = st.selectbox("수동 선택 (자동 인식 실패 시)",
-                        ["선택 안 함", "HDX (엑셀)", "미진정밀 (엑셀)", "엠제이티 (PDF)"])
+                        ["선택 안 함", "HDX (엑셀)", "미진정밀 (엑셀)", "DIC (엑셀)",
+                         "엠제이티 (PDF)"])
                     if manual == "HDX (엑셀)":
                         try: items = parse_hdx_excel(file_bytes, filename)
                         except Exception as e: st.error(e); items = []
                     elif manual == "미진정밀 (엑셀)":
                         try: items = parse_mijin_excel(file_bytes, filename)
+                        except Exception as e: st.error(e); items = []
+                    elif manual == "DIC (엑셀)":
+                        try: items = parse_dic_excel(file_bytes, filename)
                         except Exception as e: st.error(e); items = []
                     elif manual == "엠제이티 (PDF)":
                         try: items = parse_mjt_pdf(file_bytes, filename)
@@ -6125,37 +6131,130 @@ elif page == "수주 관리":
                     # HDX 파일은 거래처를 "HDX"로 파싱하지만 마스터 정식명은
                     # 사업자등록 명칭(현대제뉴인(주)) — 수주·전표의 거래처
                     # 문자열을 정식명으로 통일해야 중복 검증·명세서 조회가 맞는다
-                    try:
-                        _vsn = fetch("vendors", "vendor_id,name",
-                                     f"short_name=eq.{_fq(items[0]['customer'])}",
-                                     limit=1)
-                        if _vsn:
-                            for it in items:
-                                it["customer"] = _vsn[0]["name"]
-                    except Exception:
-                        pass
+                    # 한 파일에 거래처가 둘일 수 있다 (DIC 두 공장) — 거래처별로 처리
+                    for _cu0 in sorted({it["customer"] for it in items
+                                        if it.get("customer")}):
+                        try:
+                            _vsn = fetch("vendors", "vendor_id,name",
+                                         f"short_name=eq.{_fq(_cu0)}", limit=1)
+                            if _vsn:
+                                for it in items:
+                                    if it["customer"] == _cu0:
+                                        it["customer"] = _vsn[0]["name"]
+                        except Exception:
+                            pass
+                    _is_dic = items[0].get("_source") == "DIC_EXCEL"
+                    _up_custs = sorted({it["customer"] for it in items
+                                        if it.get("customer")})
+                    if _is_dic:
+                        try:
+                            _known9 = {v["name"] for v in fetch(
+                                "vendors", "name", "name=like.*디아이씨*", limit=50)}
+                        except Exception:
+                            _known9 = set(_up_custs)
+                        _unk9 = [c for c in _up_custs if c not in _known9]
+                        if _unk9:
+                            st.warning(
+                                "거래처 마스터에 없는 납품공장: "
+                                + ", ".join(_unk9)
+                                + " — 거래처 편집에 등록하거나 납품공장 연결을 "
+                                  "추가해야 명세서·마감 조회에 잡힙니다.")
 
                     # ── 중복 수주번호 검증 (DB 기존 데이터 vs 파싱 결과) ──
+                    # 키 = (거래처, 수주번호)
                     customer_name = items[0]["customer"]
-                    parsed_so_set = sorted({it["so_number"] for it in items if it.get("so_number")})
-                    if parsed_so_set:
-                        existing_filter = (
-                            f"customer=eq.\"{customer_name}\"&"
-                            f"so_number=in.({','.join(parsed_so_set)})"
-                        )
+                    existing_keys = set()
+                    for _cu0 in _up_custs:
+                        _nums0 = sorted({it["so_number"] for it in items
+                                         if it["customer"] == _cu0
+                                         and it.get("so_number")})
+                        if not _nums0:
+                            continue
                         try:
-                            existing = fetch("sales_orders", "so_number", existing_filter, limit=500)
-                            existing_set = {e["so_number"] for e in existing}
+                            for e in fetch(
+                                    "sales_orders", "so_number",
+                                    f"customer=eq.\"{_cu0}\"&"
+                                    f"so_number=in.({','.join(_nums0)})",
+                                    limit=500):
+                                existing_keys.add((_cu0, e["so_number"]))
                         except Exception:
-                            existing_set = set()
-                    else:
-                        existing_set = set()
+                            pass
 
-                    new_items = [it for it in items if it.get("so_number") not in existing_set]
-                    dup_items = [it for it in items if it.get("so_number") in existing_set]
+                    new_items = [it for it in items
+                                 if (it["customer"], it.get("so_number"))
+                                 not in existing_keys]
+                    dup_items = [it for it in items
+                                 if (it["customer"], it.get("so_number"))
+                                 in existing_keys]
                     dup_so_nums = sorted({it["so_number"] for it in dup_items})
 
-                    if dup_so_nums:
+                    if dup_so_nums and _is_dic:
+                        # ── DIC 재업로드: 미납 조회 화면이라 같은 수주가 매번
+                        # 다시 나온다. 기존 수주에 없는 행번만 그 수주에 추가하고,
+                        # 이미 있는 라인은 건드리지 않고 차이만 보여 준다 — 앱의
+                        # 납품량은 출고 확정으로 쌓이므로 파일 값으로 덮으면
+                        # 회차 충당과 어긋나거나 이중 반영될 수 있다 (2026-10-02)
+                        _dx_add, _dx_diff = [], []
+                        try:
+                            _dx_so = {}
+                            for _cu0 in _up_custs:
+                                _n0 = sorted({it["so_number"] for it in dup_items
+                                              if it["customer"] == _cu0})
+                                if _n0:
+                                    for e in fetch(
+                                            "sales_orders", "so_id,so_number",
+                                            f"customer=eq.\"{_cu0}\"&so_number=in.("
+                                            + ",".join(_n0) + ")", limit=200):
+                                        _dx_so[(_cu0, e["so_number"])] = e["so_id"]
+                            _dx_lines = {}
+                            _ids0 = sorted(set(_dx_so.values()))
+                            for _i0 in range(0, len(_ids0), 80):
+                                for x in fetch(
+                                        "sales_order_items",
+                                        "soi_id,so_id,line_no,customer_part_no,"
+                                        "qty,received_qty",
+                                        "so_id=in.({})".format(",".join(
+                                            str(v) for v in _ids0[_i0:_i0 + 80])),
+                                        limit=2000):
+                                    _dx_lines.setdefault(x["so_id"], []).append(x)
+                            for it in dup_items:
+                                _sid0 = _dx_so.get((it["customer"], it["so_number"]))
+                                _hit = next((
+                                    e for e in _dx_lines.get(_sid0, [])
+                                    if str(e.get("customer_part_no") or "").strip()
+                                    == str(it.get("customer_part_no") or "").strip()
+                                    and int(e.get("line_no") or 0)
+                                    == int(it.get("line_no") or 0)), None)
+                                if _hit is None:
+                                    it["_existing_so_id"] = _sid0
+                                    _dx_add.append(it)
+                                elif (abs(float(_hit.get("qty") or 0)
+                                          - float(it.get("qty") or 0)) > 0.5
+                                      or abs(float(_hit.get("received_qty") or 0)
+                                             - float(it.get("received_qty") or 0))
+                                      > 0.5):
+                                    _dx_diff.append({
+                                        "수주번호": it["so_number"],
+                                        "행번": it.get("line_no"),
+                                        "품목": it.get("customer_part_no"),
+                                        "수주량(앱)": float(_hit.get("qty") or 0),
+                                        "수주량(DIC)": float(it.get("qty") or 0),
+                                        "납품(앱)": float(_hit.get("received_qty") or 0),
+                                        "납품(DIC)": float(it.get("received_qty") or 0)})
+                        except Exception as e:
+                            st.warning(f"기존 수주 대조 실패: {e}")
+                        st.info(
+                            "이미 등록된 수주 **{}건** — 새 행번 {}개는 기존 수주에 "
+                            "추가하고, 이미 있는 라인은 그대로 둡니다.".format(
+                                len(dup_so_nums), len(_dx_add)))
+                        if _dx_diff:
+                            with st.expander(
+                                    f"앱과 DIC 값이 다른 라인 {len(_dx_diff)}개 "
+                                    "(참고 — 자동으로 바꾸지 않습니다)"):
+                                toss_df(pd.DataFrame(_dx_diff),
+                                        use_container_width=True, hide_index=True)
+                        new_items = new_items + _dx_add
+                    elif dup_so_nums:
                         st.warning(
                             f"이미 등록된 수주 **{len(dup_so_nums)}건** 자동 제외:\n\n"
                             + "\n".join(f"- `{s}`" for s in dup_so_nums[:10])
@@ -6287,12 +6386,13 @@ elif page == "수주 관리":
                                 if a: cm.setdefault(_mk(a), _v)
                     _cpm = {}
                     try:
-                        for _m in fetch("customer_part_mapping",
-                                "customer_part_no,product_id,canonical_pn",
-                                f"customer=eq.{_fq(items[0]['customer'])}", limit=500):
-                            if _m.get("product_id"):
-                                _cpm[_mk(_m["customer_part_no"])] = (
-                                    _m["canonical_pn"], _m["product_id"], False)
+                        for _cu0 in sorted({it["customer"] for it in items}):
+                            for _m in fetch("customer_part_mapping",
+                                    "customer_part_no,product_id,canonical_pn",
+                                    f"customer=eq.{_fq(_cu0)}", limit=500):
+                                if _m.get("product_id"):
+                                    _cpm[_mk(_m["customer_part_no"])] = (
+                                        _m["canonical_pn"], _m["product_id"], False)
                     except Exception:
                         _cpm = {}
 
@@ -6352,14 +6452,51 @@ elif page == "수주 관리":
                     st.info(f"우성정밀 품번 매칭: **{matched_count}/{len(items)}** "
                             f"({100*matched_count/max(len(items), 1):.1f}%)")
 
+                    # 단가가 없는 양식(DIC)은 제품 마스터 판매단가로 채운다
+                    # (2026-10-02 사용자 확인). 마스터에도 없으면 비워 두고
+                    # 수주 관리에서 채운다
+                    _np_pids = sorted({it["matched_pid"] for it in items
+                                       if it.get("matched_pid")
+                                       and it.get("unit_price") in (None, "")})
+                    if _np_pids:
+                        _sp9 = {}
+                        try:
+                            for _i0 in range(0, len(_np_pids), 80):
+                                for x in fetch(
+                                        "products", "product_id,sale_price",
+                                        "product_id=in.({})".format(",".join(
+                                            _fq(v) for v in _np_pids[_i0:_i0 + 80])),
+                                        limit=200):
+                                    if float(x.get("sale_price") or 0) > 0:
+                                        _sp9[x["product_id"]] = float(x["sale_price"])
+                        except Exception:
+                            _sp9 = {}
+                        _filled9 = 0
+                        for it in items:
+                            if it.get("unit_price") in (None, "") \
+                                    and it.get("matched_pid") in _sp9:
+                                it["unit_price"] = _sp9[it["matched_pid"]]
+                                it["amount"] = round(
+                                    float(it.get("qty") or 0) * it["unit_price"])
+                                _filled9 += 1
+                        _still9 = sum(1 for it in items
+                                      if it.get("unit_price") in (None, ""))
+                        st.caption(
+                            f"단가: 마스터 판매단가로 {_filled9}개 채움"
+                            + (f" · 단가 없음 {_still9}개 (저장 후 수주 관리에서 입력)"
+                               if _still9 else ""))
+
                     # 미리보기
                     df = pd.DataFrame([{
+                        **({"거래처": it.get("customer")} if _is_dic else {}),
                         "수주번호": it.get("so_number"),
                         "라인": it.get("line_no"),
                         "거래처 자재": it.get("customer_part_no"),
                         "거래처 품명": (it.get("customer_item_name") or "")[:30],
                         "우성정밀 품번": it.get("matched_pn") or "미매칭",
                         "수량": int(it.get("qty") or 0),
+                        **({"기납품": int(it.get("received_qty") or 0)}
+                           if _is_dic else {}),
                         "단가": int(it.get("unit_price") or 0),
                         "금액": int(it.get("amount") or 0),
                         "납기": it.get("due_date"),
@@ -6376,29 +6513,73 @@ elif page == "수주 관리":
 
                     # DB 저장
                     if st.button("수주 DB 저장", type="primary", use_container_width=True):
-                        groups = group_by_so_number(items)
+                        # 기존 수주에 붙일 라인(DIC 재업로드의 새 행번)은 따로
+                        _append_items = [it for it in items
+                                         if it.get("_existing_so_id")]
+                        groups = group_by_so_number(
+                            [it for it in items if not it.get("_existing_so_id")])
 
-                        # 거래처 vendor_id 조회
-                        cust_name = items[0]["customer"]
-                        # 정식명 정확 일치 → 약칭 → 법인 표기 뗀 부분 일치.
-                        # "(주)" 같은 PostgREST 예약 문자는 따옴표로 감싼다
-                        v = fetch("vendors", "vendor_id",
-                                  f'name=eq."{cust_name}"', limit=1)
-                        if not v:
+                        # 거래처 vendor_id 조회 — 거래처별 (DIC 는 두 공장)
+                        def _vendor_id_of(cust_name):
+                            # 정식명 정확 일치 → 약칭 → 법인 표기 뗀 부분 일치.
+                            # "(주)" 같은 PostgREST 예약 문자는 따옴표로 감싼다
                             v = fetch("vendors", "vendor_id",
-                                      f"short_name=eq.{_fq(cust_name)}", limit=1)
-                        if not v:
-                            _ct = (cust_name.replace("㈜", "")
-                                   .replace("(주)", "").strip())
-                            v = fetch("vendors", "vendor_id",
-                                      f"name=ilike.*{_fq(_ct)}*", limit=1)
-                        vendor_id = v[0]["vendor_id"] if v else None
+                                      f'name=eq."{cust_name}"', limit=1)
+                            if not v:
+                                v = fetch("vendors", "vendor_id",
+                                          f"short_name=eq.{_fq(cust_name)}", limit=1)
+                            if not v:
+                                _ct = (cust_name.replace("㈜", "")
+                                       .replace("(주)", "").strip())
+                                v = fetch("vendors", "vendor_id",
+                                          f"name=ilike.*{_fq(_ct)}*", limit=1)
+                            return v[0]["vendor_id"] if v else None
+                        _vid_cache = {}
+
+                        def _line_payload(so_id, it):
+                            qty = float(it.get("qty") or 0)
+                            rcv = float(it.get("received_qty") or 0)
+                            return {
+                                "so_id": so_id,
+                                "line_no": it.get("line_no") or 1,
+                                "customer_part_no": it.get("customer_part_no"),
+                                "customer_item_name": it.get("customer_item_name"),
+                                "product_id": it.get("matched_pid"),
+                                "canonical_pn": it.get("matched_pn"),
+                                "qty": qty,
+                                "received_qty": rcv,
+                                "pending_qty": max(qty - rcv, 0),
+                                "unit": it.get("unit") or "EA",
+                                "unit_price": it.get("unit_price"),
+                                "amount": it.get("amount"),
+                                "vat": it.get("vat"),
+                                "total": it.get("total"),
+                                "due_date": it.get("due_date").isoformat() if it.get("due_date") else None,
+                                "mes_work_order": it.get("mes_work_order"),
+                                "remark": it.get("remark"),
+                                "status": ("DELIVERED" if qty and rcv >= qty
+                                           else "PARTIAL" if rcv > 0
+                                           else "PENDING"),
+                            }
 
                         saved_so = 0; saved_items = 0
+                        _appended = 0
+                        for it in _append_items:
+                            try:
+                                _db.insert("sales_order_items",
+                                           [_line_payload(it["_existing_so_id"], it)])
+                                _appended += 1
+                            except Exception as e:
+                                st.warning(f"수주 {it.get('so_number')} 행 "
+                                           f"{it.get('line_no')} 추가 실패: {e}")
                         for g in groups:
                             try:
                                 # 헤더 INSERT
                                 header = g["header"]
+                                if header["customer"] not in _vid_cache:
+                                    _vid_cache[header["customer"]] = \
+                                        _vendor_id_of(header["customer"])
+                                vendor_id = _vid_cache[header["customer"]]
                                 header_payload = {
                                     "so_number": header["so_number"],
                                     "customer": header["customer"],
@@ -6421,34 +6602,17 @@ elif page == "수주 관리":
 
                                 # 품목 INSERT
                                 for it in g["items"]:
-                                    qty = float(it.get("qty") or 0)
-                                    item_payload = {
-                                        "so_id": so_row["so_id"],
-                                        "line_no": it.get("line_no") or 1,
-                                        "customer_part_no": it.get("customer_part_no"),
-                                        "customer_item_name": it.get("customer_item_name"),
-                                        "product_id": it.get("matched_pid"),
-                                        "canonical_pn": it.get("matched_pn"),
-                                        "qty": qty,
-                                        "received_qty": float(it.get("received_qty") or 0),
-                                        "pending_qty": qty - float(it.get("received_qty") or 0),
-                                        "unit": it.get("unit") or "EA",
-                                        "unit_price": it.get("unit_price"),
-                                        "amount": it.get("amount"),
-                                        "vat": it.get("vat"),
-                                        "total": it.get("total"),
-                                        "due_date": it.get("due_date").isoformat() if it.get("due_date") else None,
-                                        "mes_work_order": it.get("mes_work_order"),
-                                        "remark": it.get("remark"),
-                                        "status": "PENDING",
-                                    }
-                                    _db.insert("sales_order_items", [item_payload])
+                                    _db.insert("sales_order_items",
+                                               [_line_payload(so_row["so_id"], it)])
                                     saved_items += 1
                                 saved_so += 1
                             except Exception as e:
                                 st.warning(f"수주 {header['so_number']} 저장 실패: {e}")
 
-                        st.success(f"수주 {saved_so}건 / 품목 {saved_items}개 저장 완료")
+                        st.success(
+                            f"수주 {saved_so}건 / 품목 {saved_items}개 저장 완료"
+                            + (f" · 기존 수주에 {_appended}개 라인 추가"
+                               if _appended else ""))
 
         else:  # 수기 입력
             st.markdown("##### 수기 입력 — 단일 수주 1건")

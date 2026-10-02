@@ -126,6 +126,95 @@ def parse_mijin_excel(file_bytes: bytes, filename: str = "") -> list[dict]:
     return items
 
 
+# ─── DIC (디아이씨) 납품예정서등록 엑셀 ───
+# 납품공장 코드 → 거래처 마스터 정식명 (2026-10-02 사용자 확인: 중장비 = 두서,
+# 차량2 = 두동). 수주·전표의 거래처 문자열은 마스터 이름과 같아야 명세서·
+# 마감 조회가 갈리지 않는다.
+DIC_PLANT_CUSTOMER = {
+    "P10": "(주)디아이씨두서공장",     # 중장비공장
+    "P20": "(주)디아이씨두동공장",     # 차량2공장
+}
+_DIC_MUST = ("수주번호", "행번", "품목", "수주량", "납기일")
+
+
+def dic_customer(plant_code, plant_name="") -> str:
+    code = str(plant_code or "").strip().upper()
+    name = str(plant_name or "").strip()
+    if code in DIC_PLANT_CUSTOMER:
+        return DIC_PLANT_CUSTOMER[code]
+    if "중장비" in name:
+        return DIC_PLANT_CUSTOMER["P10"]
+    if "차량" in name:
+        return DIC_PLANT_CUSTOMER["P20"]
+    # 모르는 공장 — 마스터에 없는 이름으로 두어 화면에서 경고가 뜨게 한다
+    return f"(주)디아이씨 {name or code}".strip()
+
+
+def parse_dic_excel(file_bytes: bytes, filename: str = "") -> list[dict]:
+    """DIC 협력사 포털 '납품예정서등록' 엑셀 파싱.
+
+    위쪽은 조회 조건(업체·납기일 범위), 머리글 행(수주일자·품목·…·수주번호·
+    행번·수주량·납기일·납품량·미납품량)을 찾아 그 아래 데이터 행을 읽는다.
+    단가 열이 없다 — 저장 단계에서 제품 마스터 판매단가로 채운다.
+    납품량(이미 납품된 수량)은 received_qty 로 넣어 미납만 남긴다.
+    한 파일에 두 공장(= 거래처 2곳)이 섞여 있을 수 있다.
+    """
+    wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True)
+    ws = wb[wb.sheetnames[0]]
+    rows = list(ws.iter_rows(values_only=True))
+    hdr_i, headers = None, []
+    for i, r in enumerate(rows[:60]):
+        names = [str(v).strip() if v is not None else "" for v in r]
+        if all(m in names for m in _DIC_MUST):
+            hdr_i, headers = i, names
+            break
+    if hdr_i is None:
+        return []
+    ix = {h: j for j, h in enumerate(headers) if h}
+
+    def g(r, name):
+        j = ix.get(name)
+        v = r[j] if j is not None and j < len(r) else None
+        return v.strip() if isinstance(v, str) else v
+
+    items = []
+    for r in rows[hdr_i + 1:]:
+        so_num = str(g(r, "수주번호") or "").strip()
+        part = str(g(r, "품목") or "").strip()
+        if not so_num or not part:
+            continue                      # 빈 줄·아래쪽 다른 표 머리글
+        qty = _to_num(g(r, "수주량")) or 0
+        rcv = _to_num(g(r, "납품량")) or 0
+        kind = str(g(r, "구분") or "").strip()
+        spec = str(g(r, "규격") or "").strip()
+        mat = str(g(r, "재질") or "").strip()
+        note = " · ".join(x for x in (
+            f"구분 {kind}" if kind and kind != "정상" else "",
+            f"규격 {spec}" if spec else "",
+            f"재질 {mat}" if mat else "") if x)
+        items.append({
+            "_source": "DIC_EXCEL",
+            "_raw_filename": filename,
+            "customer": dic_customer(g(r, "납품공장"), g(r, "납품공장명")),
+            "so_number": so_num,
+            "line_no": _to_int(g(r, "행번")) or (len(items) + 1),
+            "so_date": _to_date(g(r, "수주일자")),
+            "due_date": _to_date(g(r, "납기일")),
+            "customer_part_no": part,
+            "customer_item_name": g(r, "품목명"),
+            "qty": qty,
+            "received_qty": min(rcv, qty) if qty else rcv,
+            "unit": str(g(r, "단위") or "EA").strip() or "EA",
+            "unit_price": None,           # 파일에 단가 없음 → 마스터 판매단가
+            "amount": None,
+            "delivery_address": g(r, "납품창고명") or g(r, "납품공장명"),
+            "remark": note or None,
+            "raw_row": {h: (r[j] if j < len(r) else None)
+                        for h, j in ix.items()},
+        })
+    return items
+
+
 def _pick_line_nums(raw_nums: list[str]) -> list:
     """품목 행의 숫자 토큰 해석 — '수량 단가 금액' 검산 기반.
 
@@ -267,7 +356,7 @@ def parse_mjt_pdf(file_bytes: bytes, filename: str = "") -> list[dict]:
 
 def detect_so_format(file_bytes: bytes, filename: str = "") -> str:
     """
-    파일 양식 자동 인식. 반환: 'HDX' / 'MIJIN' / 'MJT_PDF' / 'UNKNOWN'
+    파일 양식 자동 인식. 반환: 'HDX' / 'MIJIN' / 'DIC' / 'MJT_PDF' / 'UNKNOWN'
     """
     fname_lower = filename.lower()
     # PDF
@@ -289,9 +378,9 @@ def detect_so_format(file_bytes: bytes, filename: str = "") -> str:
     try:
         wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True)
         ws = wb[wb.sheetnames[0]]
-        # 행 1, 2, 3 헤더/타이틀 검사
+        # 행 1~5 헤더/타이틀 검사 (DIC 는 2·5행에 타이틀)
         cells_top = []
-        for r in range(1, min(4, ws.max_row + 1)):
+        for r in range(1, min(6, ws.max_row + 1)):
             for c in range(1, min(15, ws.max_column + 1)):
                 v = ws.cell(r, c).value
                 if v is not None: cells_top.append(str(v))
@@ -300,6 +389,9 @@ def detect_so_format(file_bytes: bytes, filename: str = "") -> str:
         # 미진정밀: 첫 행 "외주발주품목조회" 타이틀
         if '외주발주품목조회' in text_block:
             return 'MIJIN'
+        # DIC: "납품예정서등록-DIC" 타이틀
+        if '납품예정서등록' in text_block and 'DIC' in text_block.upper():
+            return 'DIC'
         # HDX: "MRP", "수주번호", "업체자재코드", "납기요청일" 등 동시 등장
         hdx_keys = ['수주번호', '업체자재코드', '협력업체', 'MRP']
         if sum(1 for k in hdx_keys if k in text_block) >= 2:
@@ -309,6 +401,8 @@ def detect_so_format(file_bytes: bytes, filename: str = "") -> str:
             return 'HDX'
         if '미진' in filename or 'mijin' in fname_lower:
             return 'MIJIN'
+        if 'DIC' in filename.upper() or '디아이씨' in filename:
+            return 'DIC'
         return 'UNKNOWN_EXCEL'
     except Exception:
         return 'UNKNOWN'
@@ -321,6 +415,8 @@ def parse_so_auto(file_bytes: bytes, filename: str = "") -> tuple[str, list[dict
         return fmt, parse_hdx_excel(file_bytes, filename)
     if fmt == 'MIJIN':
         return fmt, parse_mijin_excel(file_bytes, filename)
+    if fmt == 'DIC':
+        return fmt, parse_dic_excel(file_bytes, filename)
     if fmt == 'MJT_PDF':
         return fmt, parse_mjt_pdf(file_bytes, filename)
     return fmt, []
@@ -370,6 +466,8 @@ def parse_so_file(customer_type: str, file_bytes: bytes, filename: str = "") -> 
         return parse_hdx_excel(file_bytes, filename)
     elif customer_type == "미진정밀":
         return parse_mijin_excel(file_bytes, filename)
+    elif customer_type in ("DIC", "디아이씨"):
+        return parse_dic_excel(file_bytes, filename)
     elif customer_type in ("㈜엠제이티", "엠제이티"):
         return parse_mjt_pdf(file_bytes, filename)
     else:
@@ -384,12 +482,14 @@ def group_by_so_number(items: list[dict]) -> list[dict]:
     groups = {}
     for it in items:
         so = it.get("so_number") or "(no_number)"
-        if so not in groups:
-            groups[so] = {"header": None, "items": []}
-        groups[so]["items"].append(it)
+        # 키 = (거래처, 수주번호) — 한 파일에 거래처가 둘일 수 있다 (DIC 두 공장)
+        k = (it.get("customer"), so)
+        if k not in groups:
+            groups[k] = {"header": None, "items": []}
+        groups[k]["items"].append(it)
 
     result = []
-    for so, g in groups.items():
+    for (_cust, so), g in groups.items():
         items_list = g["items"]
         first = items_list[0]
         header = {
