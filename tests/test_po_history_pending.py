@@ -88,9 +88,17 @@ def _fetch(table, select="*", filter_query="", limit=1000):
         if '"D917140"' in fq:
             out.append({"pn": "D917140", "archived_at": "2026-05-07"})
         return out
-    if table == "bom" and "M197" in fq:
+    if table == "bom" and "material_id=in." in fq and "M197" in fq:
         return [{"product_id": "P0852", "material_id": "M197",
-                 "process_type": "MATERIAL"}]
+                 "process_type": "MATERIAL", "qty_per_pc": 1,
+                 "shared_factor": 1}]
+    if table == "bom" and "product_id=in." in fq:
+        # 유성핀은 1:1, 4D917140-00 은 봉재 1개에서 53개가 나온다고 가정
+        return [b for b in (
+            {"product_id": "P0738", "process_type": "MATERIAL",
+             "qty_per_pc": 1, "shared_factor": 1},
+            {"product_id": "P0854", "process_type": "MATERIAL",
+             "qty_per_pc": 1, "shared_factor": 53}) if b["product_id"] in fq]
     if table == "sales_order_items" and "pending_qty=gt.0" in fq:
         return [l for l in SO_LINES if l["product_id"] in fq]
     if table == "sales_orders" and "so_id=in." in fq:
@@ -161,3 +169,21 @@ def test_old_format_history_shows_pending_orders(hist_db):
     assert "4D917140-00" in rows and "D917140/THRUST WASHER" not in rows
     assert int(rows["4D917140-00"]["미납 수주"]) == 1000
     assert not any("휴면 제품" in str(w.value) for w in at.warning)
+
+
+
+def test_default_order_qty_is_pending_converted_to_material():
+    """담을 때 기본 수량 = 미납 수주를 소재 수량으로 환산 (2026-10-05 사용자 요청).
+    봉재 1개에서 53개가 나오면 미납 1,000 → 소재 19개(올림)."""
+    src = open(APP_FILE, encoding="utf-8").read()
+    ns = {}
+    exec(src[src.index("def po_mat_factor"):src.index("def _proc_basis_label")], ns)
+    fac, need = ns["po_mat_factor"], ns["po_need_qty"]
+    assert fac({"qty_per_pc": 1, "shared_factor": 1}) == 1
+    assert abs(fac({"qty_per_pc": 1, "shared_factor": 53}) - 1 / 53) < 1e-12
+    assert fac({"qty_per_pc": None, "shared_factor": None}) == 1
+    assert need([(300, 1)]) == 300
+    assert need([(1000, 1 / 53)]) == 19
+    assert need([(2000, 1 / 53)]) == 38
+    assert need([(243, 1), (1000, 1)]) == 1243      # 같은 소재를 쓰는 제품 합산
+    assert need([(0, 1)]) == 0 and need([]) == 0    # 미납 없으면 0 → 최근 수량 사용

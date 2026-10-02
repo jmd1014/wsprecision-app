@@ -1199,6 +1199,29 @@ def material_id_prefix(material_type):
 
 # 작업지시 NO 형식 — MES 발행 YYYYMMDD-NNN, 앱 자동채번(사내 생산 없음 제품)
 # YYYYMMDD-F01 (F = 완성품, 2026-09-28 사용자 결정). 배치번호는 NO-A 로 파생.
+def po_mat_factor(bom_row):
+    """BOM 소재행 → 제품 1개당 필요한 소재 수량 (EA/PC ÷ 공용계수).
+    봉재 1개에서 제품 53개면 1/53."""
+    try:
+        qpp = float(bom_row.get("qty_per_pc") or 1)
+        sf = float(bom_row.get("shared_factor") or 1) or 1
+        return qpp / sf if sf > 0 else qpp
+    except (TypeError, ValueError):
+        return 1.0
+
+
+def po_need_qty(pairs):
+    """[(제품 미납 수량, 제품 1개당 소재 수량)…] → 발주 기본 수량(소재, 올림)."""
+    import math as _m9
+    t = 0.0
+    for q, f in pairs:
+        try:
+            t += float(q or 0) * float(f or 1)
+        except (TypeError, ValueError):
+            pass
+    return int(_m9.ceil(t - 1e-9)) if t > 0 else 0
+
+
 def po_hist_pn(name):
     """발주 이력 품명에서 품번 부분 — 'pn (사이즈)', 'pn(사이즈)', 'pn/품명'."""
     import re as _re9
@@ -12966,17 +12989,21 @@ elif page == "구매 관리":
                 _h_mids = sorted({str(_h.get("material_id")) for _n, _h in _hist_rows
                                   if str(_h.get("material_id") or "").startswith("M")})
                 _h_bom = {}
+                _h_fac = {}      # (자재, 제품) → 제품 1개당 소재 수량
                 if _h_mids:
                     try:
                         for _i0 in range(0, len(_h_mids), 80):
                             for _b in fetch(
-                                    "bom", "product_id,material_id,process_type",
+                                    "bom", "product_id,material_id,process_type,"
+                                           "qty_per_pc,shared_factor",
                                     "material_id=in.({})".format(",".join(
                                         f'"{x}"' for x in _h_mids[_i0:_i0 + 80])),
                                     limit=2000):
                                 if (_b.get("process_type") or "MATERIAL") == "MATERIAL":
                                     _h_bom.setdefault(_b["material_id"], set()).add(
                                         _b["product_id"])
+                                    _h_fac[(_b["material_id"], _b["product_id"])] = \
+                                        po_mat_factor(_b)
                     except Exception:
                         _h_bom = {}
                 for _n, _h in _hist_rows:
@@ -12998,6 +13025,38 @@ elif page == "구매 관리":
                         if _e.get("due") and (_d is None or _e["due"] < _d):
                             _d = _e["due"]
                     return _q, _d or "-"
+
+                # 담을 때 기본 수량 = 미납 수주를 소재 수량으로 환산한 값
+                # (2026-10-05 사용자 요청). 봉재처럼 소재 1개에서 제품 여러 개가
+                # 나오면 BOM(EA/PC ÷ 공용계수)으로 나눠 올림한다. 미납이 없으면
+                # 종전대로 이 거래처 최근 발주 수량.
+                _p_fac = {}
+                _res_pids = [p["product_id"] for p in _res if _so_pend.get(p["product_id"])]
+                if _res_pids:
+                    try:
+                        for _i0 in range(0, len(_res_pids), 80):
+                            for _b in fetch(
+                                    "bom", "product_id,process_type,qty_per_pc,"
+                                           "shared_factor",
+                                    "product_id=in.({})".format(",".join(
+                                        f'"{x}"' for x in _res_pids[_i0:_i0 + 80])),
+                                    limit=2000):
+                                if (_b.get("process_type") or "MATERIAL") == "MATERIAL":
+                                    _p_fac.setdefault(_b["product_id"],
+                                                      po_mat_factor(_b))
+                    except Exception:
+                        _p_fac = {}
+
+                def _need_prod(pid):
+                    return po_need_qty([(
+                        (_so_pend.get(pid) or {}).get("qty") or 0,
+                        _p_fac.get(pid, 1.0))])
+
+                def _need_hist(nm, mid):
+                    return po_need_qty([(
+                        (_h_pend.get(_pid) or {}).get("qty") or 0,
+                        _h_fac.get((mid, _pid), 1.0))
+                        for _pid in _h_pids.get(nm, ())])
                 _COLS_MAT = ("담기", "자재ID", "자재명", "구분", "규격", "주공급사",
                              "최근 단가", "최근 수량", "최근 발주", "담김")
                 _cols_use = _COLS_MAT if _mat_layout else _COLS_PROD
@@ -13039,7 +13098,8 @@ elif page == "구매 관리":
                         "최근 발주": (f"{vpo} · {str(vdt)[:10]}" if vpo else "-"),
                         "구분": "제품" if _mat_layout else "마스터",
                         "담김": "담김" if p["product_id"] in _in_cart else "",
-                        "_name": p["pn"], "_p": p, "_vp": vp, "_vq": vq})
+                        "_name": p["pn"], "_p": p, "_vp": vp, "_vq": vq,
+                        "_need": _need_prod(p["product_id"])})
                 for m in _mat_res:
                     _h9 = _vh_hist.get(m["raw_name"])
                     _l9 = _lg_last.get(m["material_id"])
@@ -13088,7 +13148,8 @@ elif page == "구매 관리":
                         "구분": ("자재 이력" if _h.get("material_id")
                                  else "직접 입력 이력"),
                         "담김": "담김" if _nm in _in_cart_names else "",
-                        "_name": _nm, "_adhoc": _h})
+                        "_name": _nm, "_adhoc": _h,
+                        "_need": _need_hist(_nm, _h.get("material_id"))})
                 with st.form("po_pick_form"):
                     _pick_ed = st.data_editor(
                         pd.DataFrame([{c: r[c] for c in _cols_use}
@@ -13118,11 +13179,12 @@ elif page == "구매 관리":
                                     "unit": _h.get("unit") or "EA",
                                     "material": _h["material"],
                                     "spec": _h["spec"],
-                                    "qty": _h["qty"],
+                                    "qty": r.get("_need") or _h["qty"],
                                     "unit_price": _h["unit_price"],
                                     "memo": ""})
                             else:
-                                _po_add(r["_p"], r["_vp"], r["_vq"])
+                                _po_add(r["_p"], r["_vp"],
+                                        r.get("_need") or r["_vq"])
                             _n_add += 1
                     if _n_add:
                         st.session_state["po_tbl_nonce"] = \
