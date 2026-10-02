@@ -1199,6 +1199,12 @@ def material_id_prefix(material_type):
 
 # 작업지시 NO 형식 — MES 발행 YYYYMMDD-NNN, 앱 자동채번(사내 생산 없음 제품)
 # YYYYMMDD-F01 (F = 완성품, 2026-09-28 사용자 결정). 배치번호는 NO-A 로 파생.
+def po_hist_pn(name):
+    """발주 이력 품명에서 품번 부분 — 'pn (사이즈)', 'pn(사이즈)', 'pn/품명'."""
+    import re as _re9
+    return _re9.split(r"\s*[(/]", str(name or "").strip())[0].strip()
+
+
 def _proc_basis_label(v):
     """BOM 공정행 단가 기준(lot_label) 표시 — '' = 개당, KG = 중량 청구."""
     return {"": "개당 (EA)", None: "개당 (EA)",
@@ -12641,7 +12647,9 @@ elif page == "구매 관리":
                                   "unit_price,qty,po_id",
                                   f"po_id=in.({po_ids})"
                                   f'&or=(item_name.eq."{_inm}",'
-                                  f'item_name.like."{_inm} (*")'
+                                  f'item_name.like."{_inm} (*",'
+                                  f'item_name.like."{_inm}(*",'
+                                  f'item_name.like."{_inm}/*")'
                                   "&order=po_id.desc", limit=1)
                     if not items:
                         return None, None, None, None
@@ -12723,12 +12731,18 @@ elif page == "구매 관리":
                     _vh_rank = {p["po_id"]: i for i, p in enumerate(_vh_pos)}
                     _vh_items = fetch("purchase_order_items",
                                       "poi_id,po_id,item_name,material,spec,"
-                                      "qty,unit_price,material_id,unit",
+                                      "qty,unit_price,material_id,unit,"
+                                      "product_id",
                                       "po_id=in.(" + ",".join(
                                           str(p["po_id"]) for p in _vh_pos)
                                       + ")", limit=2000)
                     _vh_items = [i for i in _vh_items if i.get("item_name")]
-                    _vh_pns = {i["item_name"].split(" (")[0] for i in _vh_items}
+                    # 품명 → 품번: 'pn (사이즈)' 뿐 아니라 옛 발주의 'pn/품명',
+                    # 'pn(사이즈)' 도 제품으로 잇는다 (2026-10-05: 혜성철강 이력이
+                    # 'HA80-80092/유성 핀' 형식이라 제품 행이 안 나오고 미납 수주가
+                    # 0 으로 보이던 문제)
+                    _vh_pns = ({i["item_name"].split(" (")[0] for i in _vh_items}
+                               | {po_hist_pn(i["item_name"]) for i in _vh_items})
                     # 최근 발주 순으로 훑으며 품목별 첫 라인만 보관
                     for i in sorted(_vh_items, key=lambda x: (
                             _vh_rank.get(x["po_id"], 9999),
@@ -12739,6 +12753,7 @@ elif page == "구매 관리":
                         _po9 = _vh_pmap.get(i["po_id"]) or {}
                         _vh_hist[_nm] = {
                             "material_id": i.get("material_id"),
+                            "product_id": i.get("product_id"),
                             "unit": i.get("unit") or "EA",
                             "material": i.get("material") or "",
                             "spec": i.get("spec") or "",
@@ -12840,6 +12855,7 @@ elif page == "구매 관리":
                 _res_mats = {m["raw_name"] for m in _mat_res}
                 _cand = [n for n in sorted(_vh_hist)
                          if n.split(" (")[0] not in _res_pns
+                         and po_hist_pn(n) not in _res_pns
                          and n not in _res_mats
                          and (not _q9 or _q9 in n.lower())]
                 if _cand:
@@ -12849,14 +12865,19 @@ elif page == "구매 관리":
                             for _p9 in fetch(
                                     "products", "pn,archived_at",
                                     "pn=in.({})".format(",".join(
-                                        f'"{x.split(" (")[0]}"'
-                                        for x in _cand[_i0:_i0 + 60])),
-                                    limit=100):
+                                        f'"{x}"' for x in sorted(
+                                            {c.split(" (")[0]
+                                             for c in _cand[_i0:_i0 + 60]}
+                                            | {po_hist_pn(c)
+                                               for c in _cand[_i0:_i0 + 60]}))),
+                                    limit=200):
                                 _known[_p9["pn"]] = bool(_p9.get("archived_at"))
                     except Exception:
                         pass
                     for n in _cand:
                         _pn9 = n.split(" (")[0]
+                        if _pn9 not in _known:
+                            _pn9 = po_hist_pn(n)
                         if _pn9 in _known:
                             if _known[_pn9]:
                                 _hist_arch.append(_pn9)
@@ -12910,6 +12931,45 @@ elif page == "구매 관리":
                 # 제품 행의 현재 수주 — 미납 합계·가장 이른 납기 (2026-09-22 사용자:
                 # 발주서 작성 때 수주 정보를 참고하고 싶다)
                 _so_pend = _po_pending_map([p["product_id"] for p in _res])
+                # 이력 행(제품으로 이어지지 않은 옛 발주 품목)도 미납을 보여 준다:
+                # 그 라인의 제품 + 그 자재(M###)를 BOM 으로 쓰는 제품의 미납 합계
+                # (DIC 'D917137/THRUST WASHER' 처럼 품명으로는 제품을 못 찾는 경우)
+                _h_pids = {}
+                _h_mids = sorted({str(_h.get("material_id")) for _n, _h in _hist_rows
+                                  if str(_h.get("material_id") or "").startswith("M")})
+                _h_bom = {}
+                if _h_mids:
+                    try:
+                        for _i0 in range(0, len(_h_mids), 80):
+                            for _b in fetch(
+                                    "bom", "product_id,material_id,process_type",
+                                    "material_id=in.({})".format(",".join(
+                                        f'"{x}"' for x in _h_mids[_i0:_i0 + 80])),
+                                    limit=2000):
+                                if (_b.get("process_type") or "MATERIAL") == "MATERIAL":
+                                    _h_bom.setdefault(_b["material_id"], set()).add(
+                                        _b["product_id"])
+                    except Exception:
+                        _h_bom = {}
+                for _n, _h in _hist_rows:
+                    _ps = set(_h_bom.get(_h.get("material_id")) or ())
+                    if _h.get("product_id"):
+                        _ps.add(_h["product_id"])
+                    _h_pids[_n] = _ps
+                _h_pend = (_po_pending_map(sorted({x for v in _h_pids.values()
+                                                   for x in v}))
+                           if any(_h_pids.values()) else {})
+
+                def _hist_pend(nm):
+                    _q, _d = 0, None
+                    for _pid in _h_pids.get(nm, ()):
+                        _e = _h_pend.get(_pid)
+                        if not _e:
+                            continue
+                        _q += _e["qty"]
+                        if _e.get("due") and (_d is None or _e["due"] < _d):
+                            _d = _e["due"]
+                    return _q, _d or "-"
                 _COLS_MAT = ("담기", "자재ID", "자재명", "구분", "규격", "주공급사",
                              "최근 단가", "최근 수량", "최근 발주", "담김")
                 _cols_use = _COLS_MAT if _mat_layout else _COLS_PROD
@@ -12988,7 +13048,8 @@ elif page == "구매 관리":
                         "재질": _h["material"] or "-",
                         "제품 사이즈": "-",
                         "소재 (BOM 자재명)": _h["spec"] or "-",
-                        "미납 수주": 0, "최근 납기": "-",
+                        "미납 수주": _hist_pend(_nm)[0],
+                        "최근 납기": _hist_pend(_nm)[1],
                         "최근 단가": _h["unit_price"],
                         "최근 수량": _h["qty"],
                         "최근 발주": (f"{_h['po_number']} · {_h['po_date']}"
