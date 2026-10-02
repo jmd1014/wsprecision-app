@@ -63,6 +63,10 @@ def parse_hdx_excel(file_bytes: bytes, filename: str = "") -> list[dict]:
             "customer_part_no": ws.cell(r, col("자재코드")).value if col("자재코드") else None,
             "customer_item_name": ws.cell(r, col("자재명")).value if col("자재명") else None,
             "qty": _to_num(ws.cell(r, col("수량")).value) if col("수량") else None,
+            # 입고수량 = 업로드 전에 이미 납품된 수량(기납품) — 미진·DIC 와 같은
+            # 형식으로 수주량 + 납품량을 함께 넣는다 (2026-10-02 형식 통일)
+            "received_qty": (_to_num(ws.cell(r, col("입고수량")).value) or 0)
+                            if col("입고수량") else 0,
             "unit": ws.cell(r, col("단위")).value if col("단위") else "EA",
             "unit_price": _to_num(ws.cell(r, col("단가")).value) if col("단가") else None,
             "amount": _to_num(ws.cell(r, col("금액")).value) if col("금액") else None,

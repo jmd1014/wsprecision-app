@@ -119,3 +119,33 @@ def test_dic_excel_detected_and_parsed():
              for g in group_by_so_number(items)}
     assert ("(주)디아이씨두서공장", "PO2609000000712") in heads
     assert ("(주)디아이씨두동공장", "PO2610000000060") in heads
+
+
+def test_hdx_excel_reads_received_qty_as_pre_delivered():
+    """HDX 양식도 미진·DIC 와 같은 형식 — 수량 = 수주 수량, 입고수량 = 기납품."""
+    import io as _io
+    from datetime import datetime
+    import openpyxl
+    from utils.so_parser import parse_so_auto
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    hdr = ["No", "MRP", "입고상태", "수주번호", "항번", "수주일자", "업체자재코드",
+           "납기요청일", "협력업체", "자재코드", "자재명", "수량", "단위", "단가",
+           "금액", "납품처 장소", "입고수량", "특이사항"]
+    ws.append(hdr)
+    ws.append([1, "비대상", "미입고", "G26A920021", "00001",
+               datetime(2026, 10, 1), "", datetime(2026, 10, 16), "우성정밀",
+               "HA30-80730", "허브 로크 너트", 500, "EA", 7542, 3771000,
+               "Ulsan", "", ""])
+    ws.append([2, "비대상", "부분입고", "G26A920021", "00002",
+               datetime(2026, 10, 1), "", datetime(2026, 10, 30), "우성정밀",
+               "HA80-20210", "주차 디스크", 100, "EA", 51935, 5193500,
+               "Ulsan", 40, ""])
+    buf = _io.BytesIO()
+    wb.save(buf)
+    fmt, items = parse_so_auto(buf.getvalue(), "2026.10.02_15.43.35.xlsx")
+    assert fmt == "HDX" and len(items) == 2
+    assert items[0]["customer"] == "HDX" and items[0]["line_no"] == 1
+    assert items[0]["qty"] == 500 and items[0]["received_qty"] == 0
+    assert items[1]["qty"] == 100 and items[1]["received_qty"] == 40
+    assert items[1]["unit_price"] == 51935
