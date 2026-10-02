@@ -40,7 +40,17 @@ ITEMS = [
      "material": "SCM420H", "spec": "SCM420H 55*6", "qty": 1000,
      "unit_price": 300, "material_id": "M197", "product_id": None,
      "unit": "EA"},
+    # 옛 품번(휴면 쌍둥이) 이력 — 활성 제품 4D917140-00 의 별칭
+    {"poi_id": 73, "po_id": 7, "item_name": "D917140/THRUST WASHER",
+     "material": "SCM420H", "spec": "SCM420H 55*5", "qty": 1000,
+     "unit_price": 280, "material_id": "M196", "product_id": None,
+     "unit": "EA"},
 ]
+TWIN = {"product_id": "P0854", "pn": "4D917140-00",
+        "raw_material_name": "SCM420H Ø55*5", "product_size": None,
+        "material": "SCM420H", "bom_material_name": None,
+        "material_unit_price": 280, "archived_at": None,
+        "alias_list": "D917140"}
 PRODUCT = {"product_id": "P0738", "pn": "HA80-80092",
            "raw_material_name": "SCM420 Ø28*97", "product_size": None,
            "material": "SCM420", "bom_material_name": None,
@@ -49,6 +59,8 @@ SO_LINES = [
     {"product_id": "P0738", "so_id": 90, "pending_qty": 300,
      "due_date": "2026-10-30"},
     {"product_id": "P0852", "so_id": 98, "pending_qty": 243,
+     "due_date": "2026-10-07"},
+    {"product_id": "P0854", "so_id": 98, "pending_qty": 1000,
      "due_date": "2026-10-07"},
 ]
 SOS = [{"so_id": 90, "so_number": "G269920030", "customer": "현대제뉴인(주)",
@@ -65,8 +77,17 @@ def _fetch(table, select="*", filter_query="", limit=1000):
         return POS
     if table == "purchase_order_items":
         return [dict(i) for i in ITEMS]
-    if table == "products" and "HA80-80092" in fq:
-        return [dict(PRODUCT)]
+    if table == "products" and "alias_list=not.is.null" in fq:
+        return [{"pn": TWIN["pn"], "alias_list": TWIN["alias_list"]}]
+    if table == "products" and "pn=in." in fq and "archived_at=is.null" in fq:
+        return [dict(x) for x in (PRODUCT, TWIN) if f'"{x["pn"]}"' in fq]
+    if table == "products" and "pn=in." in fq:
+        # 휴면 여부 확인 조회 — 옛 품번 D917140 은 휴면 제품으로 존재
+        out = [{"pn": x["pn"], "archived_at": None}
+               for x in (PRODUCT, TWIN) if f'"{x["pn"]}"' in fq]
+        if '"D917140"' in fq:
+            out.append({"pn": "D917140", "archived_at": "2026-05-07"})
+        return out
     if table == "bom" and "M197" in fq:
         return [{"product_id": "P0852", "material_id": "M197",
                  "process_type": "MATERIAL"}]
@@ -136,3 +157,7 @@ def test_old_format_history_shows_pending_orders(hist_db):
     # ② 품명으로 제품을 못 찾는 이력 → 자재의 BOM 제품 미납 합계
     h = rows["D917137/THRUST WASHER"]
     assert int(h["미납 수주"]) == 243 and h["최근 납기"] == "2026-10-07"
+    # ③ 옛 품번(휴면 쌍둥이) 이력 → 별칭을 가진 활성 제품 행, 휴면 경고 없음
+    assert "4D917140-00" in rows and "D917140/THRUST WASHER" not in rows
+    assert int(rows["4D917140-00"]["미납 수주"]) == 1000
+    assert not any("휴면 제품" in str(w.value) for w in at.warning)

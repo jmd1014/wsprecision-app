@@ -12628,9 +12628,10 @@ elif page == "구매 관리":
 
             # ─── 거래처별 최근 단가·수량 (반복 발주 프리필) ───
             @st.cache_data(ttl=60)
-            def _get_vendor_recent_line(vid, item_name):
+            def _get_vendor_recent_line(vid, item_name, aliases=()):
                 """이 거래처의 같은 품번 최근 발주 (단가, 수량, 발주번호, 발주일).
-                품명이 '품번 (사이즈)' 형식이어도 품번으로 찾는다."""
+                품명이 '품번 (사이즈)'·'품번/품명' 형식이어도, 옛 품번(별칭)으로
+                적혀 있어도 찾는다."""
                 try:
                     pos = fetch("purchase_orders", "po_id,po_number,po_date",
                                 f"vendor_id=eq.{_fq(vid)}&order=po_date.desc",
@@ -12642,14 +12643,19 @@ elif page == "구매 관리":
                     # or=() 안의 값은 큰따옴표로 감싸야 공백·괄호가 살아남는다
                     # (닫는 괄호 누락으로 항상 예외 → 최근 단가가 비던 문제,
                     # 2026-09-16 리뷰 A2)
-                    _inm = str(item_name).replace('"', "")
+                    _conds = []
+                    for _nm0 in [item_name, *list(aliases)][:6]:
+                        _inm = str(_nm0 or "").replace('"', "").strip()
+                        if not _inm:
+                            continue
+                        _conds += [f'item_name.eq."{_inm}"',
+                                   f'item_name.like."{_inm} (*"',
+                                   f'item_name.like."{_inm}(*"',
+                                   f'item_name.like."{_inm}/*"']
                     items = fetch("purchase_order_items",
                                   "unit_price,qty,po_id",
                                   f"po_id=in.({po_ids})"
-                                  f'&or=(item_name.eq."{_inm}",'
-                                  f'item_name.like."{_inm} (*",'
-                                  f'item_name.like."{_inm}(*",'
-                                  f'item_name.like."{_inm}/*")'
+                                  "&or=(" + ",".join(_conds) + ")"
                                   "&order=po_id.desc", limit=1)
                     if not items:
                         return None, None, None, None
@@ -12716,6 +12722,18 @@ elif page == "구매 관리":
                     "qty": vendor_qty or 0, "unit_price": upd, "memo": ""})
 
             st.markdown("##### ② 품목 담기")
+            # 별칭(옛 품번·거래처 품번) → 활성 제품 품번
+            _po_alias_pn = {}
+            try:
+                for _ap in fetch("products", "pn,alias_list",
+                                 "archived_at=is.null&alias_list=not.is.null",
+                                 limit=1500):
+                    for _a in str(_ap.get("alias_list") or "").split(","):
+                        _a = _a.strip()
+                        if _a:
+                            _po_alias_pn.setdefault(_a, _ap["pn"])
+            except Exception:
+                _po_alias_pn = {}
             # 이 거래처 발주 이력 — 품번(마스터 연결용)과, 품목별 최근 라인
             # (마스터에 없는 직접 입력 품목도 이력으로 다시 담기 위해,
             # 2026-09-22: 삼경O&T 습동유·절삭유처럼 소모품만 있는 거래처는
@@ -12743,6 +12761,11 @@ elif page == "구매 관리":
                     # 0 으로 보이던 문제)
                     _vh_pns = ({i["item_name"].split(" (")[0] for i in _vh_items}
                                | {po_hist_pn(i["item_name"]) for i in _vh_items})
+                    # 이력이 옛 품번(휴면 쌍둥이)으로 적혀 있으면 그 품번을 별칭으로
+                    # 가진 활성 제품으로 잇는다 (2026-10-05: 혜성철강 이력 'D180223'
+                    # ↔ 활성 '4D180223-00' — '휴면 제품 제외' 경고만 뜨던 문제)
+                    _vh_pns |= {_po_alias_pn[x] for x in list(_vh_pns)
+                                if x in _po_alias_pn}
                     # 최근 발주 순으로 훑으며 품목별 첫 라인만 보관
                     for i in sorted(_vh_items, key=lambda x: (
                             _vh_rank.get(x["po_id"], 9999),
@@ -12784,7 +12807,8 @@ elif page == "구매 관리":
                 try:
                     _res = fetch("products",
                                  "product_id,pn,raw_material_name,product_size,"
-                                 "material,bom_material_name,material_unit_price",
+                                 "material,bom_material_name,material_unit_price,"
+                                 "alias_list",
                                  f"archived_at=is.null&or=(pn.ilike.{_fql(_q)},"
                                  f"alias_list.ilike.{_fql(_q)},item_name.ilike.{_fql(_q)},"
                                  f"bom_material_name.ilike.{_fql(_q)})&order=pn",
@@ -12834,7 +12858,7 @@ elif page == "구매 관리":
                         _res += fetch("products",
                                       "product_id,pn,raw_material_name,"
                                       "product_size,material,bom_material_name,"
-                                      "material_unit_price",
+                                      "material_unit_price,alias_list",
                                       "archived_at=is.null&pn=in.({})&order=pn"
                                       .format(",".join(
                                           f'"{x}"' for x in _pn_list[_i0:_i0 + 60])),
@@ -12856,6 +12880,8 @@ elif page == "구매 관리":
                 _cand = [n for n in sorted(_vh_hist)
                          if n.split(" (")[0] not in _res_pns
                          and po_hist_pn(n) not in _res_pns
+                         and _po_alias_pn.get(po_hist_pn(n)) not in _res_pns
+                         and _po_alias_pn.get(n.split(" (")[0]) not in _res_pns
                          and n not in _res_mats
                          and (not _q9 or _q9 in n.lower())]
                 if _cand:
@@ -12878,6 +12904,8 @@ elif page == "구매 관리":
                         _pn9 = n.split(" (")[0]
                         if _pn9 not in _known:
                             _pn9 = po_hist_pn(n)
+                        if _po_alias_pn.get(_pn9) or _po_alias_pn.get(po_hist_pn(n)):
+                            continue   # 옛 품번 — 활성 제품의 별칭 (검색에 안 걸린 것)
                         if _pn9 in _known:
                             if _known[_pn9]:
                                 _hist_arch.append(_pn9)
@@ -12992,7 +13020,10 @@ elif page == "구매 관리":
                         pass
                 for p in _res:
                     vp, vq, vpo, vdt = _get_vendor_recent_line(
-                        vendor["vendor_id"], p["pn"])
+                        vendor["vendor_id"], p["pn"],
+                        tuple(a.strip() for a in
+                              str(p.get("alias_list") or "").split(",")
+                              if a.strip()))
                     _rows.append({
                         "담기": False, "품번": p["pn"],
                         "자재ID": p["product_id"], "자재명": p["pn"],
