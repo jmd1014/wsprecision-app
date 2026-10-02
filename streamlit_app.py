@@ -6475,6 +6475,8 @@ elif page == "수주 관리":
                         "거래처 품명": (it.get("customer_item_name") or "")[:30],
                         "우성정밀 품번": it.get("matched_pn") or "미매칭",
                         "수량": int(it.get("qty") or 0),
+                        **({"기납품": int(it.get("received_qty") or 0)}
+                           if _is_dic else {}),
                         "단가": int(it.get("unit_price") or 0),
                         "금액": int(it.get("amount") or 0),
                         "납기": it.get("due_date"),

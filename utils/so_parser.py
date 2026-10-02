@@ -156,9 +156,9 @@ def parse_dic_excel(file_bytes: bytes, filename: str = "") -> list[dict]:
     위쪽은 조회 조건(업체·납기일 범위), 머리글 행(수주일자·품목·…·수주번호·
     행번·수주량·납기일·납품량·미납품량)을 찾아 그 아래 데이터 행을 읽는다.
     단가 열이 없다 — 저장 단계에서 제품 마스터 판매단가로 채운다.
-    수량은 **미납품량** 으로 넣는다 (2026-10-02 사용자 결정): 업로드 전에 이미
-    납품된 수량(기납품)은 앱 도입 초기에만 생기는 값이라 따로 관리하지 않고,
-    원 수주량·업로드 전 납품은 비고에만 남긴다. 완납된 행은 건너뛴다.
+    미진정밀 양식과 같은 형식 (2026-10-02 사용자 결정): 수량 = 수주량(계약
+    수량 그대로), 납품량은 received_qty(기납품)로 넣어 미납만 남긴다. 기납품은
+    업로드 전에 이미 납품된 수량 — 도입 초기 세팅 때만 생긴다. 완납 행은 건너뛴다.
     한 파일에 두 공장(= 거래처 2곳)이 섞여 있을 수 있다.
     """
     wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True)
@@ -185,11 +185,9 @@ def parse_dic_excel(file_bytes: bytes, filename: str = "") -> list[dict]:
         part = str(g(r, "품목") or "").strip()
         if not so_num or not part:
             continue                      # 빈 줄·아래쪽 다른 표 머리글
-        order_qty = _to_num(g(r, "수주량")) or 0
-        rcv = _to_num(g(r, "납품량")) or 0
-        pend = _to_num(g(r, "미납품량"))
-        qty = pend if pend is not None else max(order_qty - rcv, 0)
-        if qty <= 0:
+        qty = _to_num(g(r, "수주량")) or 0
+        rcv = min(_to_num(g(r, "납품량")) or 0, qty)
+        if qty <= 0 or rcv >= qty:
             continue                      # 완납 행 — 등록할 미납이 없다
         kind = str(g(r, "구분") or "").strip()
         spec = str(g(r, "규격") or "").strip()
@@ -197,9 +195,7 @@ def parse_dic_excel(file_bytes: bytes, filename: str = "") -> list[dict]:
         note = " · ".join(x for x in (
             f"구분 {kind}" if kind and kind != "정상" else "",
             f"규격 {spec}" if spec else "",
-            f"재질 {mat}" if mat else "",
-            (f"원 수주량 {order_qty:,.0f} · 업로드 전 납품 {rcv:,.0f}"
-             if rcv > 0 else "")) if x)
+            f"재질 {mat}" if mat else "") if x)
         items.append({
             "_source": "DIC_EXCEL",
             "_raw_filename": filename,
@@ -211,7 +207,7 @@ def parse_dic_excel(file_bytes: bytes, filename: str = "") -> list[dict]:
             "customer_part_no": part,
             "customer_item_name": g(r, "품목명"),
             "qty": qty,
-            "received_qty": 0,
+            "received_qty": rcv,
             "unit": str(g(r, "단위") or "EA").strip() or "EA",
             "unit_price": None,           # 파일에 단가 없음 → 마스터 판매단가
             "amount": None,

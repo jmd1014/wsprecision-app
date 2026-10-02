@@ -108,9 +108,9 @@ def test_dic_excel_detected_and_parsed():
     assert "신공장" in c["customer"]          # 모르는 공장은 그대로 드러낸다
     assert a["so_number"] == "PO2609000000712" and a["line_no"] == 3
     assert a["customer_part_no"] == "6A433004#1"
-    # 수량 = 미납품량, 기납품은 따로 두지 않고 비고에만 (2026-10-02 사용자 결정)
-    assert a["qty"] == 18 and a["received_qty"] == 0
-    assert "원 수주량 400" in a["remark"] and "업로드 전 납품 382" in a["remark"]
+    # 미진 양식과 같은 형식 — 수량 = 수주량(계약 수량), 납품량 = 기납품 → 미납 18
+    assert a["qty"] == 400 and a["received_qty"] == 382
+    assert "원 수주량" not in (a["remark"] or "")
     assert a["so_date"] == date(2026, 9, 15) and a["due_date"] == date(2026, 10, 31)
     assert a["unit"] == "EA" and a["unit_price"] is None  # 단가 열 없음
     assert "Ø99*37" in a["remark"] and "SCM415" in a["remark"]
