@@ -182,6 +182,11 @@ def test_old_format_history_shows_pending_orders(hist_db):
     assert int(rows["HA80-80092"]["발주 필요"]) == 200
     # 봉재(1개 → 53개): 미납 1,000 → 소재 19개
     assert int(rows["4D917140-00"]["발주 필요"]) == 19
+    # ⑥ 발주 필요 근거 — 표 아래 접힌 표 (유성핀: 미납 300 · 재공 100 → 순 200)
+    ex = [e for e in at.expander if "발주 필요 근거" in (e.label or "")]
+    assert ex, "발주 필요 근거 접힘 표가 없음"
+    md = " ".join(str(m.value) for m in ex[0].markdown)
+    assert "HA80-80092" in md and "300" in md and "100" in md and "200" in md
 
 
 
