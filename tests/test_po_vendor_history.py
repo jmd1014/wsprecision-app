@@ -157,12 +157,13 @@ def test_adhoc_history_listed_without_query(mocked_db):
     assert txt, "결과 표 값이 노출되지 않음 (at.dataframe)"
     for nm in ("습동유", "절삭유", "유압작동유"):
         assert nm in txt, f"{nm} 이력 행 누락"
-    assert "자재 이력" in txt, "자재에 연결된 이력(습동유 C001)은 '자재 이력'"
-    assert "직접 입력 이력" in txt, "미연결 이력은 '직접 입력 이력'"
+    # '구분' 열은 뺐다 (2026-10-05 사용자: 데이터가 쌓인 뒤엔 필요 없음) —
+    # 소재 발주 표에는 발주 필요·다음 납기 열이 있다
+    assert "구분" not in txt and "발주 필요" in txt and "다음 납기" in txt
     assert "26-0904" in txt, "최근 발주가 최신(26-0904) 이어야 함"
     # 주공급사가 이 거래처인 마스터 자재(절삭유 C002)는 자재 행으로, 같은 이름의
     # 이력 행은 중복 없이 한 줄만
-    assert "자재 · 소모품" in txt and txt.count("절삭유") == 1
+    assert txt.count("절삭유") == 1
 
 
 def test_consumable_bucket_uses_master_columns(mocked_db):
@@ -195,7 +196,7 @@ def test_product_rows_show_current_sales_orders(mocked_db):
     assert not at.exception, [str(e.value) for e in at.exception]
     txt = _grid_texts(at)
     assert "20AHYBV-03-X1413" in txt
-    assert "미납 수주" in txt and "최근 납기" in txt
+    assert "미납 수주" in txt and "다음 납기" in txt and "발주 필요" in txt
     assert "85688" in txt.replace(",", ""), "미납 합계(85,188+500) 누락"
     assert "2026-09-11" in txt, "가장 이른 납기 누락"
 
@@ -216,7 +217,7 @@ def test_vendor_without_history_lists_its_master_materials(mocked_db):
         assert any(b.label == "체크한 품목 담기" for b in at.button), \
             "이력 없는 거래처도 주공급사 자재 목록이 나와야 함"
         txt = _grid_texts(at)
-        assert "절삭유" in txt and "자재 · 소모품" in txt
+        assert "절삭유" in txt and "20L" in txt
     finally:
         POS, ITEMS = saved
 
@@ -235,7 +236,6 @@ def test_query_finds_master_material_and_dedups_history(mocked_db):
     txt = _grid_texts(at)
     assert txt
     assert "절삭유" in txt and "습동유" not in txt
-    assert "자재 · 소모품" in txt, "자재 마스터 행은 '자재 · 소모품' 구분"
     assert txt.count("절삭유") == 1, "마스터 행과 이력 행이 중복되면 안 됨"
 
 

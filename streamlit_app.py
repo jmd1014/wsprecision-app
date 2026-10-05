@@ -11619,6 +11619,25 @@ elif page == "구매 관리":
         except Exception:
             prod_stock_left = {}
         total_prod_stock_used = 0.0
+        # ── 4.6) 재공 — 투입돼 공정에 들어가 있는 수량 (2026-10-05 사용자:
+        # 소재를 투입하면 소재 재고에서 빠지는데 완성 전까지 어디에도 안 잡혀
+        # 그 사이 발주 필요가 다시 커지던 빈틈). 열린 배치 중 완성 단계가
+        # 아닌 것의 수량을 제품 단위로 센다 — 완성 재고처럼 미납에서 먼저 뺀다
+        prod_wip_left = {}
+        try:
+            for _i0 in range(0, len(pids), 80):
+                for _b in fetch("wo_batches", "product_id,qty,step_code,status",
+                                "product_id=in.({})&status=eq.OPEN".format(
+                                    ",".join(f'"{x}"' for x in pids[_i0:_i0 + 80])),
+                                limit=2000):
+                    if (_b.get("step_code") or "") != "DONE":
+                        prod_wip_left[_b["product_id"]] = (
+                            prod_wip_left.get(_b["product_id"], 0.0)
+                            + float(_b.get("qty") or 0))
+        except Exception:
+            prod_wip_left = {}
+        total_wip_used = 0.0
+        prod_net = {}      # product_id → {pend, stock_used, wip_used, net}
 
         # ── 5) 자재 필요량 계산 (순생산필요 = 미납 − 제품 완성 재고) ──
         # material_id → {required, by_pid: {pid: req}, by_so: {so_id: req}}
@@ -11638,8 +11657,20 @@ elif page == "구매 관리":
             prod_stock_left[pid] = avail - use
             total_prod_stock_used += use
             net = pending - use
+            _wa = prod_wip_left.get(pid, 0.0)
+            _wu = min(_wa, net)
+            prod_wip_left[pid] = _wa - _wu
+            total_wip_used += _wu
+            net -= _wu
             soi["prod_stock_used"] = use
+            soi["wip_used"] = _wu
             soi["net_pending"] = net
+            _pnx = prod_net.setdefault(pid, {"pend": 0.0, "stock_used": 0.0,
+                                             "wip_used": 0.0, "net": 0.0})
+            _pnx["pend"] += pending
+            _pnx["stock_used"] += use
+            _pnx["wip_used"] += _wu
+            _pnx["net"] += net
             boms = bom_by_pid.get(pid, [])
             if not boms:
                 items_no_bom.append({
@@ -11663,10 +11694,25 @@ elif page == "구매 관리":
                 mat_req[mid]["items_count"] += 1
 
 
+        # 자재별 부족(발주 필요, 소재 단위)과 제품별 배분 — 같은 소재를 여러 제품이
+        # 쓰면 부족분을 각 제품의 필요 비율로 나눈다 (합계는 자재 부족과 같다)
+        mat_short = {}
+        prod_short = {}
+        for mid, info in mat_req.items():
+            _req = float(info["required"] or 0)
+            _sh = max(0.0, _req
+                      - float(mat_map.get(mid, {}).get("stock_qty") or 0)
+                      - float(on_order.get(mid, 0.0)))
+            mat_short[mid] = _sh
+            if _req > 0:
+                for _pid, _r in info["by_pid"].items():
+                    prod_short[_pid] = prod_short.get(_pid, 0.0) + _sh * _r / _req
         return {"sois": sois, "so_map": so_map, "bom_by_pid": bom_by_pid,
                 "mat_map": mat_map, "mat_req": mat_req, "on_order": on_order,
                 "items_no_bom": items_no_bom, "items_with_bom": items_with_bom,
-                "total_prod_stock_used": total_prod_stock_used}
+                "total_prod_stock_used": total_prod_stock_used,
+                "total_wip_used": total_wip_used, "prod_net": prod_net,
+                "mat_short": mat_short, "prod_short": prod_short}
 
     import time as _time
     _mr_c = st.session_state.get("mr_cache")
@@ -11728,7 +11774,8 @@ elif page == "구매 관리":
                            "%H:%M", _time.localtime(_mr_c[0]))
                        + " (5분 캐시). 미납 수주 × BOM(EA/PC ÷ 공용계수). "
                        "발주 필요량 = 총필요량 − 소재 실재고 − 미입고 발주"
-                       "(취소 제외). 완성 재고는 순생산필요에서 먼저 뺀다."):
+                       "(취소 제외). 완성 재고와 재공(공정 중)은 순생산필요에서 "
+                       "먼저 뺀다."):
             st.session_state["mr_refresh"] = True
             st.rerun()
         if _mr.get("msg"):
@@ -11754,8 +11801,11 @@ elif page == "구매 관리":
                 1 for mid, info in mat_req.items()
                 if info["required"] - float(mat_map.get(mid, {}).get("stock_qty") or 0)
                 - on_order.get(mid, 0.0) > 0)
-            sc1, sc2, sc3, sc4, sc5, sc6 = st.columns(6)
+            sc1, sc2, sc3, sc7, sc4, sc5, sc6 = st.columns(7)
             sc1.metric("미납 수주 품목", len(sois))
+            sc7.metric("재공 충당", f"{_mr.get('total_wip_used', 0):,.0f}",
+                       help="투입돼 공정에 들어가 있는 수량(열린 배치, 완성 "
+                            "단계 제외) — 완성 재고 다음으로 미납에서 뺀다")
             sc2.metric("미입고 발주 충당", f"{total_on_order_cover:,.0f}",
                        help="이미 발주해 입고 대기 중인 수량으로 충당되는 필요량 — "
                             "발주 필요량에서 뺀다")
@@ -12976,9 +13026,13 @@ elif page == "구매 관리":
                 # 소모성·공구 발주는 자재 마스터 기준(자재ID·자재명·구분·규격·
                 # 주공급사) — 표 내용이 마스터와 다르게 보이던 문제 (2026-09-22)
                 _mat_layout = sel_bucket != "소재"
+                # 2026-10-05 사용자: '구분'은 데이터가 쌓인 뒤엔 필요 없어 빼고,
+                # 그 자리에 '발주 필요'(미납 − 완성·재공·소재 재고·미입고 발주, 소재
+                # 단위). '최근 납기'는 지난 납기가 아니라 미납 수주의 가장 이른
+                # 납기라 '다음 납기'로 이름만 바꿈
                 _COLS_PROD = ("담기", "품번", "재질", "제품 사이즈", "소재 (BOM 자재명)",
-                              "미납 수주", "최근 납기",
-                              "최근 단가", "최근 수량", "최근 발주", "구분", "담김")
+                              "미납 수주", "발주 필요", "다음 납기",
+                              "최근 단가", "최근 수량", "최근 발주", "담김")
                 # 제품 행의 현재 수주 — 미납 합계·가장 이른 납기 (2026-09-22 사용자:
                 # 발주서 작성 때 수주 정보를 참고하고 싶다)
                 _so_pend = _po_pending_map([p["product_id"] for p in _res])
@@ -13060,6 +13114,22 @@ elif page == "구매 관리":
                 _COLS_MAT = ("담기", "자재ID", "자재명", "구분", "규격", "주공급사",
                              "최근 단가", "최근 수량", "최근 발주", "담김")
                 _cols_use = _COLS_MAT if _mat_layout else _COLS_PROD
+                # 발주 필요 — 발주 필요량 계산(_mr, 5분 캐시) 결과를 그대로 쓴다
+                _ps_short = (_mr or {}).get("prod_short") or {}
+                _ms_short = (_mr or {}).get("mat_short") or {}
+                _no_bom_pids = {x["product_id"] for x in
+                                ((_mr or {}).get("items_no_bom") or [])}
+                import math as _math8
+
+                def _short_prod(pid):
+                    if pid in _no_bom_pids:
+                        return None            # BOM 없음 — 계산 불가
+                    return int(_math8.ceil(float(_ps_short.get(pid, 0.0)) - 1e-9))
+
+                def _short_mat(mid):
+                    if not mid or mid not in _ms_short:
+                        return None
+                    return int(_math8.ceil(float(_ms_short.get(mid, 0.0)) - 1e-9))
                 # 자재 행의 최근 단가·수량: ① 이 거래처 앱 발주 이력 ② 매입 원장
                 # (matched_material_id) 최근 행 — 두리처럼 앱 발주가 없어도
                 # 원장 단가가 나오게. 행마다 REST 를 치지 않고 한 번에.
@@ -13092,7 +13162,8 @@ elif page == "구매 관리":
                         "소재 (BOM 자재명)": (p.get("raw_material_name")
                                             or p.get("bom_material_name") or "-"),
                         "미납 수주": (_so_pend.get(p["product_id"]) or {}).get("qty", 0),
-                        "최근 납기": (_so_pend.get(p["product_id"]) or {}).get("due") or "-",
+                        "발주 필요": _short_prod(p["product_id"]),
+                        "다음 납기": (_so_pend.get(p["product_id"]) or {}).get("due") or "-",
                         "최근 단가": vp or int(p.get("material_unit_price") or 0),
                         "최근 수량": vq or 0,
                         "최근 발주": (f"{vpo} · {str(vdt)[:10]}" if vpo else "-"),
@@ -13120,7 +13191,8 @@ elif page == "구매 관리":
                         "주공급사": m.get("main_supplier") or "-",
                         "재질": "-", "제품 사이즈": "-",
                         "소재 (BOM 자재명)": m.get("spec") or "-",
-                        "미납 수주": 0, "최근 납기": "-",
+                        "미납 수주": 0, "발주 필요": _short_mat(m["material_id"]),
+                        "다음 납기": "-",
                         "최근 단가": vp or 0, "최근 수량": vq or 0,
                         "최근 발주": _last,
                         "구분": ((m.get("material_type") or "자재") if _mat_layout
@@ -13140,7 +13212,8 @@ elif page == "구매 관리":
                         "제품 사이즈": "-",
                         "소재 (BOM 자재명)": _h["spec"] or "-",
                         "미납 수주": _hist_pend(_nm)[0],
-                        "최근 납기": _hist_pend(_nm)[1],
+                        "발주 필요": _short_mat(_h.get("material_id")),
+                        "다음 납기": _hist_pend(_nm)[1],
                         "최근 단가": _h["unit_price"],
                         "최근 수량": _h["qty"],
                         "최근 발주": (f"{_h['po_number']} · {_h['po_date']}"
@@ -13160,7 +13233,15 @@ elif page == "구매 관리":
                         column_config={
                             "담기": st.column_config.CheckboxColumn(),
                             **{c: st.column_config.Column(disabled=True)
-                               for c in _cols_use if c != "담기"}})
+                               for c in _cols_use if c not in ("담기", "발주 필요")},
+                            **({"발주 필요": st.column_config.NumberColumn(
+                                "발주 필요", disabled=True, format="localized",
+                                help="소재 단위. 미납 수주 − 완성 재고 − 재공 "
+                                     "− 소재 재고 − 미입고 발주 (구매 관리 › 발주 "
+                                     "필요량과 같은 계산, 5분 캐시). 같은 소재를 "
+                                     "여러 제품이 쓰면 필요 비율로 나눔. 빈칸 = "
+                                     "BOM 없음")}
+                               if "발주 필요" in _cols_use else {})})
                     _pick_go = st.form_submit_button("체크한 품목 담기",
                                                      type="primary")
                 if _pick_go:
@@ -13179,12 +13260,14 @@ elif page == "구매 관리":
                                     "unit": _h.get("unit") or "EA",
                                     "material": _h["material"],
                                     "spec": _h["spec"],
-                                    "qty": r.get("_need") or _h["qty"],
+                                    "qty": ((r.get("_need") or _h["qty"])
+                                            if sel_bucket == "소재" else _h["qty"]),
                                     "unit_price": _h["unit_price"],
                                     "memo": ""})
                             else:
                                 _po_add(r["_p"], r["_vp"],
-                                        r.get("_need") or r["_vq"])
+                                        (r.get("_need") or r["_vq"])
+                                        if sel_bucket == "소재" else r["_vq"])
                             _n_add += 1
                     if _n_add:
                         st.session_state["po_tbl_nonce"] = \

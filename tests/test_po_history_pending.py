@@ -95,11 +95,20 @@ def _fetch(table, select="*", filter_query="", limit=1000):
     if table == "bom" and "product_id=in." in fq:
         # 유성핀은 1:1, 4D917140-00 은 봉재 1개에서 53개가 나온다고 가정
         return [b for b in (
-            {"product_id": "P0738", "process_type": "MATERIAL",
+            {"product_id": "P0738", "material_id": "M191",
+             "raw_material_name": "SCM420 Ø28*97", "process_type": "MATERIAL",
              "qty_per_pc": 1, "shared_factor": 1},
-            {"product_id": "P0854", "process_type": "MATERIAL",
+            {"product_id": "P0854", "material_id": "M196",
+             "raw_material_name": "SCM420H Ø55*5", "process_type": "MATERIAL",
              "qty_per_pc": 1, "shared_factor": 53}) if b["product_id"] in fq]
+    if table == "wo_batches" and "status=eq.OPEN" in fq:
+        # 유성핀 100개가 공정 중(재공) — 발주 필요에서 빠져야 한다
+        return [{"product_id": "P0738", "qty": 100, "step_code": "PROD",
+                 "status": "OPEN"}] if "P0738" in fq else []
     if table == "sales_order_items" and "pending_qty=gt.0" in fq:
+        if "product_id=not.is.null" in fq:       # 발주 필요량 계산(전체)
+            return [dict(l, soi_id=i, due_date=l["due_date"])
+                    for i, l in enumerate(SO_LINES, 1)]
         return [l for l in SO_LINES if l["product_id"] in fq]
     if table == "sales_orders" and "so_id=in." in fq:
         return SOS
@@ -161,14 +170,18 @@ def test_old_format_history_shows_pending_orders(hist_db):
     # ① 'HA80-80092/유성 핀' → 제품 행으로 이어짐 (이력 행 중복 없음)
     assert "HA80-80092" in rows and "HA80-80092/유성 핀" not in rows
     assert int(rows["HA80-80092"]["미납 수주"]) == 300
-    assert rows["HA80-80092"]["최근 납기"] == "2026-10-30"
+    assert rows["HA80-80092"]["다음 납기"] == "2026-10-30"
     # ② 품명으로 제품을 못 찾는 이력 → 자재의 BOM 제품 미납 합계
     h = rows["D917137/THRUST WASHER"]
-    assert int(h["미납 수주"]) == 243 and h["최근 납기"] == "2026-10-07"
+    assert int(h["미납 수주"]) == 243 and h["다음 납기"] == "2026-10-07"
     # ③ 옛 품번(휴면 쌍둥이) 이력 → 별칭을 가진 활성 제품 행, 휴면 경고 없음
     assert "4D917140-00" in rows and "D917140/THRUST WASHER" not in rows
     assert int(rows["4D917140-00"]["미납 수주"]) == 1000
     assert not any("휴면 제품" in str(w.value) for w in at.warning)
+    # ⑤ 발주 필요 = 미납 − 재공 (완성·소재 재고·미입고 발주는 0) — 유성핀 300 − 100
+    assert int(rows["HA80-80092"]["발주 필요"]) == 200
+    # 봉재(1개 → 53개): 미납 1,000 → 소재 19개
+    assert int(rows["4D917140-00"]["발주 필요"]) == 19
 
 
 
