@@ -13243,63 +13243,6 @@ elif page == "구매 관리":
                                for c in _cols_use if c in _PICK_NUM}})
                     _pick_go = st.form_submit_button("체크한 품목 담기",
                                                      type="primary")
-                # 발주 필요 근거 — 셀에 마우스를 올려 보는 방식은 이 표에서 안
-                # 되므로(data_editor 는 셀 툴팁이 없다) 표 아래 접힌 표로
-                # (2026-10-05 사용자 요청). 발주 필요가 있는 줄만.
-                _bd_rows = []
-                if "발주 필요" in _cols_use and _mr and not _mr.get("msg"):
-                    _pn_net = _mr.get("prod_net") or {}
-                    _bb = _mr.get("bom_by_pid") or {}
-                    _mm = _mr.get("mat_map") or {}
-                    _oo = _mr.get("on_order") or {}
-                    _mq = _mr.get("mat_req") or {}
-                    for r in _rows:
-                        if r.get("발주 필요") is None:
-                            continue
-                        _p = r.get("_p")
-                        if _p:
-                            _pid = _p["product_id"]
-                            _n = _pn_net.get(_pid)
-                            if not _n:
-                                continue
-                            _mids = [b.get("material_id") for b in _bb.get(_pid, [])
-                                     if b.get("material_id")]
-                            _bd_rows.append({
-                                "품번": _p["pn"],
-                                "미납": _n["pend"], "완성 재고": _n["stock_used"],
-                                "재공": _n["wip_used"], "순 생산 필요": _n["net"],
-                                "소재": ", ".join(
-                                    (_mm.get(m) or {}).get("raw_name") or m
-                                    for m in _mids) or "-",
-                                "소재 재고": sum(float((_mm.get(m) or {})
-                                                   .get("stock_qty") or 0)
-                                             for m in _mids),
-                                "미입고 발주": sum(float(_oo.get(m, 0)) for m in _mids),
-                                "발주 필요(소재)": r["발주 필요"]})
-                        else:
-                            _mid = (r.get("_adhoc") or {}).get("material_id")
-                            if not _mid or _mid not in _mq:
-                                continue
-                            _bd_rows.append({
-                                "품번": r.get("품번"),
-                                "미납": r.get("미납 수주") or 0, "완성 재고": None,
-                                "재공": None,
-                                "순 생산 필요": None,
-                                "소재": (_mm.get(_mid) or {}).get("raw_name") or _mid,
-                                "소재 재고": float((_mm.get(_mid) or {})
-                                               .get("stock_qty") or 0),
-                                "미입고 발주": float(_oo.get(_mid, 0)),
-                                "발주 필요(소재)": r["발주 필요"]})
-                if _bd_rows:
-                    with st.expander(
-                            "발주 필요 근거 — 미납 − 완성 재고 − 재공 → 순 생산 "
-                            "필요 × BOM − 소재 재고 − 미입고 발주 (같은 소재를 "
-                            "여러 제품이 쓰면 필요 비율로 나눔)"):
-                        toss_table(_bd_rows, strong_cols=("품번",),
-                                   num_cols=("미납", "완성 재고", "재공",
-                                             "순 생산 필요", "소재 재고",
-                                             "미입고 발주", "발주 필요(소재)"),
-                                   scroll=len(_bd_rows) > 12)
                 if _pick_go:
                     _n_add = 0
                     for _bi, _brow in _pick_ed.iterrows():
