@@ -23,7 +23,8 @@ prods = db.fetch("products", "product_id,pn,material,customer,sale_price,product
                  "archived_at=is.null&or=(pn.ilike.*FL*,pn.ilike.*BLD*,pn.ilike.*LJF*,pn.ilike.*RFF*,pn.ilike.*PIF*)", limit=2000)
 P = []; seen = set()
 for p in prods:
-    if p["pn"] in seen or not re.match(r"^4?ST?\d+(BLD|LJF|RFF|PIF|ABV)", p["pn"]): continue
+    # ABV-FL-16/17 은 육각 소재 그랜드너트류 — 플랜지 아님 (2026-10-06 사용자)
+    if p["pn"] in seen or not re.match(r"^4?ST?\d+(BLD|LJF|RFF|PIF|ABV)", p["pn"]) or re.search(r"ABV-FL-1[67]$", p["pn"]): continue
     seen.add(p["pn"]); P.append(p)
 pids = ",".join(f'"{p["product_id"]}"' for p in P)
 bom = {b["product_id"]: b for b in db.fetch("bom", "product_id,material_id", f"product_id=in.({pids})&process_type=eq.MATERIAL", limit=1000)}
@@ -129,7 +130,7 @@ ws3 = out.create_sheet("설명")
 for line in ["플랜지류 소재 관리 시트 — 2026-10-06 생성 (앱 DB 기준 스냅샷; 최신 값은 앱 마스터/BOM 이 진실)",
              "제품 사이즈 = 도면(G:\\내 드라이브\\도면\\미진정밀\\FLANGE) 외경×두께. 소재 사이즈 = BOM 자재(표준 규격). 둘의 차이가 가공여유",
              "판매 단가 = 제품 마스터 sale_price (비어 있으면 노란색 — 수주 들어올 때 채우는 중)",
-             "소재 단가 = 명진 매입 원장(세금계산서, 2025~)의 최근 EA 단가(= 공급가액 ÷ 수량). 원장은 kg 단가×중량으로 청구되므로 kg 단가와 kg/EA 도 함께 표시. '(대체 외경)' 은 명진이 한 치수 큰 봉으로 공급한 값. 원장이 없으면 앱 발주 라인 단가(프리필 값이라 참고용)",
+             "소재 단가 = (당분간) 명진 매입 원장(세금계산서, 2025~)의 최근 EA 단가 — 앱 발주·입고 이력이 쌓이면 그쪽으로 바꿀 예정(= 공급가액 ÷ 수량). 원장은 kg 단가×중량으로 청구되므로 kg 단가와 kg/EA 도 함께 표시. '(대체 외경)' 은 명진이 한 치수 큰 봉으로 공급한 값. 원장이 없으면 앱 발주 라인 단가(프리필 값이라 참고용)",
              "소재비 비중 = 소재 단가 ÷ 판매 단가. 80% 이상은 주황색 — 단가 재협상 또는 소재 규격 재검토 대상",
              "소재 재고 = 앱 재고(입고−투입). 공급사가 다른 치수로 납품하면 그 실규격 자재 LOT 로 잡히므로 여기 숫자와 다를 수 있음",
              "시트를 갱신하려면 Claude 에게 '플랜지 소재 관리 시트 갱신' 요청 — 같은 스크립트로 다시 뽑는다"]:

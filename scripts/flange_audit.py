@@ -55,7 +55,8 @@ prods = db.fetch("products", "product_id,pn,material,customer",
 P = []
 seen = set()
 for p in prods:
-    if p["pn"] in seen or not re.match(r"^4?ST?\d+(BLD|LJF|RFF|PIF|ABV)", p["pn"]):
+    # ABV-FL-16/17 은 육각 소재 그랜드너트류 — 플랜지 아님 (2026-10-06 사용자)
+    if p["pn"] in seen or not re.match(r"^4?ST?\d+(BLD|LJF|RFF|PIF|ABV)", p["pn"]) or re.search(r"ABV-FL-1[67]$", p["pn"]):
         continue
     seen.add(p["pn"])
     P.append(p)
