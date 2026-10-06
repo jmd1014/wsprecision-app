@@ -13,7 +13,8 @@ exec(src[src.index("DRW = {"):src.index("DRW_FILE")])
 
 def base_of(pn):
     k = re.sub(r"^4", "", pn.upper()); k = re.sub(r"^S(?=T?\d)", "", k)
-    k = re.sub(r"-(APP|MP|AP|M|P)$", "", k); return re.sub(r"#S$", "", k)
+    k = re.sub(r"#S$", "", k)  # 세레이션 변형은 본품 도면과 치수 동일
+    return re.sub(r"-(APP|MP|AP|M|P)$", "", k)
 
 def dims(s):
     s = str(s); s = s[s.find("Ø") + 1:] if "Ø" in s else s

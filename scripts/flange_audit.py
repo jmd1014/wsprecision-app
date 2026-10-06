@@ -72,8 +72,8 @@ chg = {_bid2pid[c["record_id"]] for c in db.fetch("master_change_log", "record_i
 def base_of(pn):
     k = re.sub(r"^4", "", pn.upper())
     k = re.sub(r"^S(?=T?\d)", "", k)
-    k = re.sub(r"-(APP|MP|AP|M|P)$", "", k)
-    return re.sub(r"#S$", "", k)
+    k = re.sub(r"#S$", "", k)  # 세레이션 변형은 본품 도면과 치수 동일
+    return re.sub(r"-(APP|MP|AP|M|P)$", "", k)
 
 
 def dims(s):
