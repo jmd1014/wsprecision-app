@@ -1514,24 +1514,27 @@ with st.sidebar:
                     else:
                         st.error("저장 실패 — 다시 시도하세요.")
 
-    st.divider()
-    st.caption("시스템")
-    if st.button("DB 상태 확인", use_container_width=True):
-        if DB_AVAILABLE:
-            with st.spinner("확인 중..."):
-                hc = health_check()
-            if hc["status"] == "OK":
-                st.success("DB 연결 정상")
-                st.json(hc["counts"])
+    # 시스템 진단은 관리자만 — 진단 결과에 연결 정보가 들어 있어 작업자 계정에
+    # 보이면 안 된다 (2026-10-06 상용화 점검)
+    if _is_admin:
+        st.divider()
+        st.caption("시스템")
+        if st.button("DB 상태 확인", use_container_width=True):
+            if DB_AVAILABLE:
+                with st.spinner("확인 중..."):
+                    hc = health_check()
+                if hc["status"] == "OK":
+                    st.success("DB 연결 정상")
+                    st.json(hc["counts"])
+                else:
+                    st.error(f"DB 오류: {hc.get('error', 'unknown')}")
             else:
-                st.error(f"DB 오류: {hc.get('error', 'unknown')}")
-        else:
-            st.warning("Secrets 등록을 먼저 완료해주세요")
+                st.warning("Secrets 등록을 먼저 완료해주세요")
 
-    if st.button("진단 (secrets 점검)", use_container_width=True):
-        with st.spinner("..."):
-            info = debug_check()
-        st.json(info)
+        if st.button("진단 (secrets 점검)", use_container_width=True):
+            with st.spinner("..."):
+                info = debug_check()
+            st.json(info)
 
 
 # ─── 페이지 라우팅 ───

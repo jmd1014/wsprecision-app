@@ -104,7 +104,7 @@ def debug_check() -> dict:
         an_key = st.secrets["supabase"].get("anon_key", "")
         info["service_role_set"] = bool(sr_key)
         info["service_role_length"] = len(sr_key) if sr_key else 0
-        info["service_role_preview"] = (sr_key[:25] + "..." + sr_key[-10:]) if sr_key else "(없음)"
+        info["service_role_preview"] = ("설정됨 (본문은 표시하지 않음)" if sr_key else "(없음)")
         info["service_role_is_jwt"] = sr_key.startswith("eyJ") if sr_key else False
         info["service_role_role_field"] = (
             "service_role" if sr_key and "service_role" in sr_key else

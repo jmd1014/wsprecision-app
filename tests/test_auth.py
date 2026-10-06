@@ -164,6 +164,8 @@ def test_admin_login_shows_all_menus(auth_db):
     assert not at.exception, [str(e.value) for e in at.exception]
     assert len(at.sidebar.radio) == 2          # 업무 + 관리자
     assert at.session_state["auth_user"]["role"] == "admin"
+    labels = {b.label for b in at.sidebar.button}
+    assert "DB 상태 확인" in labels and "진단 (secrets 점검)" in labels
 
 
 @pytestmark_app
@@ -174,6 +176,10 @@ def test_worker_login_hides_admin_menu(auth_db):
     assert not at.exception, [str(e.value) for e in at.exception]
     assert len(at.sidebar.radio) == 1          # 업무 진행만
     assert at.session_state["auth_user"]["role"] == "worker"
+    # 시스템 진단 버튼(DB 상태 확인·secrets 점검)은 관리자만 — 진단 결과에
+    # 연결 정보가 들어 있어 작업자에게 보이면 안 된다 (2026-10-06)
+    labels = {b.label for b in at.sidebar.button}
+    assert "DB 상태 확인" not in labels and "진단 (secrets 점검)" not in labels
 
 
 @pytestmark_app
