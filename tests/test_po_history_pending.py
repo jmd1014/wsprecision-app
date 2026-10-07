@@ -132,6 +132,16 @@ def hist_db(monkeypatch):
     return db
 
 
+def _search_btn(at):
+    """② 품목 검색 폼의 [검색] 제출 버튼. 같은 페이지의 발주 필요량 필터에도 '검색'
+    버튼이 있어 라벨만으로 고르면 다른 폼을 누르게 된다 — Streamlit 1.65 부터
+    AppTest 가 폼 값을 그 폼의 제출 버튼을 눌렀을 때만 반영해(PR 16972) 검색어가
+    사라지던 문제(2026-10-07 CI)."""
+    btns = [b for b in at.button if b.label == "검색"]
+    form = [b for b in btns if getattr(b, "form_id", None) == "po_search_form"]
+    return (form or btns)[0]
+
+
 def test_hist_pn_helper():
     src = open(APP_FILE, encoding="utf-8").read()
     ns = {}
@@ -160,7 +170,7 @@ def test_old_format_history_shows_pending_orders(hist_db):
     at.sidebar.radio[1].set_value(None)
     at.run()
     assert not at.exception, [str(e.value) for e in at.exception]
-    [b for b in at.button if b.label == "검색"][0].click().run()
+    _search_btn(at).click().run()
     assert not at.exception, [str(e.value) for e in at.exception]
 
     frames = [f.value for f in at.dataframe if "미납 수주" in f.value.columns]

@@ -102,6 +102,16 @@ def mocked_db(monkeypatch):
     return db
 
 
+def _search_btn(at):
+    """② 품목 검색 폼의 [검색] 제출 버튼. 같은 페이지의 발주 필요량 필터에도 '검색'
+    버튼이 있어 라벨만으로 고르면 다른 폼을 누르게 된다 — Streamlit 1.65 부터
+    AppTest 가 폼 값을 그 폼의 제출 버튼을 눌렀을 때만 반영해(PR 16972) 검색어가
+    사라지던 문제(2026-10-07 CI)."""
+    btns = [b for b in at.button if b.label == "검색"]
+    form = [b for b in btns if getattr(b, "form_id", None) == "po_search_form"]
+    return (form or btns)[0]
+
+
 def _open_po_page():
     import streamlit as st
     from streamlit.testing.v1 import AppTest
@@ -144,9 +154,7 @@ def test_adhoc_history_listed_without_query(mocked_db):
     assert cb and cb[0].value is True, "이력 3종이 있으니 체크가 기본 켜져야 함"
     assert "3종" in cb[0].label
 
-    search = [b for b in at.button if b.label == "검색"]
-    assert search, "검색 버튼 없음"
-    search[0].click().run()
+    _search_btn(at).click().run()
     assert not at.exception, [str(e.value) for e in at.exception]
 
     assert not any("일치하는 품목 없음" in i.value for i in at.info), \
@@ -175,7 +183,7 @@ def test_consumable_bucket_uses_master_columns(mocked_db):
     b[0].set_value("소모성")
     at.run()
     [t for t in at.text_input if t.key == "po_q"][0].set_value("절삭")
-    [b for b in at.button if b.label == "검색"][0].click().run()
+    _search_btn(at).click().run()
     assert not at.exception, [str(e.value) for e in at.exception]
     txt = _grid_texts(at)
     assert txt
@@ -192,7 +200,7 @@ def test_product_rows_show_current_sales_orders(mocked_db):
     cb = [c for c in at.checkbox if str(c.key).startswith("po_vh_only")]
     cb[0].set_value(False)          # 이력 필터 끄고 전체 제품 검색
     [t for t in at.text_input if t.key == "po_q"][0].set_value("20AHYBV")
-    [b for b in at.button if b.label == "검색"][0].click().run()
+    _search_btn(at).click().run()
     assert not at.exception, [str(e.value) for e in at.exception]
     txt = _grid_texts(at)
     assert "20AHYBV-03-X1413" in txt
@@ -212,7 +220,7 @@ def test_vendor_without_history_lists_its_master_materials(mocked_db):
         at = _open_po_page()
         cb = [c for c in at.checkbox if str(c.key).startswith("po_vh_only")]
         assert cb and cb[0].value is False and "0종" in cb[0].label
-        [b for b in at.button if b.label == "검색"][0].click().run()
+        _search_btn(at).click().run()
         assert not at.exception, [str(e.value) for e in at.exception]
         assert any(b.label == "체크한 품목 담기" for b in at.button), \
             "이력 없는 거래처도 주공급사 자재 목록이 나와야 함"
@@ -229,7 +237,7 @@ def test_query_finds_master_material_and_dedups_history(mocked_db):
     q = [t for t in at.text_input if t.key == "po_q"]
     assert q
     q[0].set_value("절삭")
-    [b for b in at.button if b.label == "검색"][0].click().run()
+    _search_btn(at).click().run()
     assert not at.exception, [str(e.value) for e in at.exception]
     assert not any("일치하는 품목 없음" in i.value for i in at.info)
     assert any(b.label == "체크한 품목 담기" for b in at.button)
@@ -243,7 +251,7 @@ def test_query_with_no_match_still_says_none(mocked_db):
     """이력에도 마스터에도 없는 검색어는 기존대로 '없음' 안내."""
     at = _open_po_page()
     [t for t in at.text_input if t.key == "po_q"][0].set_value("ZZZZ")
-    [b for b in at.button if b.label == "검색"][0].click().run()
+    _search_btn(at).click().run()
     assert not at.exception, [str(e.value) for e in at.exception]
     assert any("일치하는 품목 없음" in i.value for i in at.info)
     assert not any(b.label == "체크한 품목 담기" for b in at.button)
