@@ -26,6 +26,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+          pip install pytest-github-actions-annotate-failures
       - name: Dummy secrets (tests use a mock DB; the app only needs the keys to exist)
         run: |
           mkdir -p .streamlit
@@ -61,4 +62,7 @@ jobs:
             echo '```'
             echo "</details>"
           } >> "$GITHUB_STEP_SUMMARY"
+          # 요약·로그는 GitHub 로그인해야 보여서, 실패 테스트 이름을 annotation(공개)으로도 올린다 (최대 10개)
+          grep -E "^(FAILED|ERROR) " pytest.log | head -10 | while IFS= read -r line; do echo "::error title=pytest::${line}"; done
+          echo "::notice title=pytest::$(tail -1 pytest.log)"
           exit $status
