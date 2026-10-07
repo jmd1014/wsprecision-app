@@ -44,7 +44,8 @@ jobs:
         shell: bash
         # 결과 요약을 run 요약 페이지(GITHUB_STEP_SUMMARY)에 남긴다 — 로그는 로그인해야 보이지만 요약은 공개
         run: |
-          set -o pipefail
+          # GitHub 의 bash 기본은 -e: pytest 가 실패하면 아래 요약·annotation 코드까지 못 가므로 끈다
+          set +e -o pipefail
           python -m pytest tests -q -rf -p no:cacheprovider 2>&1 | tee pytest.log
           status=${PIPESTATUS[0]}
           {
