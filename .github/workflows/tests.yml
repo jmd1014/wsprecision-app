@@ -40,4 +40,25 @@ jobs:
       - name: pytest
         env:
           PYTHONIOENCODING: utf-8
-        run: python -m pytest tests -q -p no:cacheprovider
+        shell: bash
+        # 결과 요약을 run 요약 페이지(GITHUB_STEP_SUMMARY)에 남긴다 — 로그는 로그인해야 보이지만 요약은 공개
+        run: |
+          set -o pipefail
+          python -m pytest tests -q -rf -p no:cacheprovider 2>&1 | tee pytest.log
+          status=${PIPESTATUS[0]}
+          {
+            echo "### pytest (exit $status)"
+            echo
+            echo '```'
+            grep -E "^(FAILED|ERROR) " pytest.log | head -40
+            tail -5 pytest.log
+            echo '```'
+            echo
+            echo "<details><summary>실패 상세 (마지막 150줄)</summary>"
+            echo
+            echo '```'
+            tail -150 pytest.log
+            echo '```'
+            echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit $status
