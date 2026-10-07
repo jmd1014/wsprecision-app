@@ -25,6 +25,8 @@
 2. 로컬 미리보기로 화면·기능 검증 (9개 페이지 예외 없이 렌더되는지)
 3. 사용자 확인 후 main 머지 → 자동 배포
 4. 커밋 메시지: `feat:`/`fix:`/`design:` + 한글 요약 + 본문에 변경 항목 나열
+5. 푸시마다 GitHub Actions `tests`(.github/workflows/tests.yml) 가 전체 pytest 를 다시 돌린다 — 로컬 전체 테스트 통과 후에만
+   푸시하는 게이트는 그대로, CI 는 2차 확인. 결과는 https://github.com/jmd1014/wsprecision-app/actions
 
 ## 디자인 시스템 (토스 스타일, 2026-08-12 확정)
 
@@ -481,7 +483,7 @@
 
 ## DB 작업 규칙
 
-- 스키마 변경은 Supabase MCP `apply_migration`으로 (이력 유지). 2026-09-11 기준 마이그레이션 062까지
+- 스키마 변경은 Supabase MCP `apply_migration`으로 (이력 유지). 2026-10-07 기준 마이그레이션 065(login_log)까지 — 적용 후 이 번호를 갱신할 것
 - **뷰 재정의는 항상 전체 정의를 명시** — `create or replace view v as select * from v ...`
   같은 자기 참조는 DDL 은 통과하지만 조회 시 무한 재귀로 뷰가 죽는다 (046 사고, 047 복구).
   기존 검사에 추가할 때도 전체 UNION 을 다시 쓴다
@@ -489,7 +491,12 @@
   확인할 것 — 041에서 뷰만 CLOSED를 알고 제약이 거부해 종결이 조용히 실패했던 사례(042에서 수정).
   `db.update`는 실패 시 False만 반환하므로 앱에서는 else 분기로 오류를 반드시 표출
 - **새 테이블은 반드시 `ENABLE ROW LEVEL SECURITY`**, **새 뷰는 `WITH (security_invoker = true)`** — 정책은 만들지 않음 (anon 차단이 목적, 앱은 service_role)
-- 파괴적 변경 전 백업 테이블(`*_backup_MMDD`) 생성 관례 유지
+- **야간 백업(2026-10-07)**: `scripts/backup_tables.py` 가 매일 02:30(Windows 작업 스케줄러 `wsapp-backup`, 주 개발 PC)
+  PostgREST 로 public 테이블 전체를 `G:\내 드라이브\제품관리DBackup\YYYYMMDD\<table>.jsonl` + `_manifest.json` 으로 저장,
+  30일 보존. 읽기 전용. 등록 확인 `schtasks /Query /TN wsapp-backup`, 수동 실행 `schtasks /Run /TN wsapp-backup`
+- 파괴적 변경·일괄 정정 전에는 영향 행만 JSON 스냅샷(`G:\내 드라이브\제품관리DB\_<주제>_정정전백업_YYYYMMDD.json`)으로
+  보존하고 master_change_log 에 `[일괄 정정 YYYY-MM-DD]` 사유로 기록한다. (옛 관례였던 `public.*_backup_MMDD` 백업 테이블은
+  2026-09-17 정리 이후 더 만들지 않는다)
 
 ## 읽기 캐시·조회 상한 (2026-09-17 성능 조치)
 - `db.fetch` 는 모든 조회를 `st.cache_data` 로 캐시한다 — 마스터(`db.CACHED_TABLES`:

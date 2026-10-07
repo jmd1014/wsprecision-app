@@ -22,7 +22,7 @@
 마스터 (앱이 권위):
   product_master / vendors / materials / bom / drawings
 
-매일 자정 → Google Drive 자동 백업
+매일 02:30 → 운영 테이블 전체 JSON Lines 백업 (scripts/backup_tables.py, 30일 보존)
 ```
 
 ## 🛠 기술 스택
@@ -31,7 +31,7 @@
 - **DB**: Supabase (PostgreSQL, 무료 500MB)
 - **호스팅**: Streamlit Community Cloud (무료)
 - **인증**: streamlit-authenticator (1차) → Google OAuth (추후)
-- **백업**: Google Drive API (서비스 어카운트)
+- **백업**: `scripts/backup_tables.py` — Windows 작업 스케줄러(wsapp-backup, 매일 02:30)가 PostgREST 로 public 테이블 전체를 `G:\내 드라이브\제품관리DBackup\YYYYMMDD\` 에 JSON Lines 로 저장(테이블별 `_manifest.json`, 30일 보존). 뷰는 제외
 - **외부 연동**: gspread (구글시트), Slack Webhook
 
 ## 📊 마스터 데이터 현황 (2026-05 기준)
