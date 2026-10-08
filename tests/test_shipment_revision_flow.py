@@ -301,3 +301,46 @@ def test_sales_report_period_query(rev_db):
     assert any("마감 보고서 인쇄" in l for l in labels)
     # 잠금은 달력 월 그대로
     assert [b for b in at.button if b.key == "sr_mc_close"]
+
+
+def test_draft_with_applied_effects_is_guarded(rev_db):
+    """확정의 라인 반영(재고 차감·회차 충당)은 끝났는데 전표 머리글만 DRAFT 로
+    남은 전표 (2026-10-08 SH-20261008-04 사고): 확정 버튼 잠금, 작성중 취소
+    차단, [확정 상태로 저장] 으로 머리글만 맞춘다."""
+    _seed()
+    TXNS.append({"txn_id": 9, "ref_table": "shipment_items", "ref_id": 2,
+                 "txn_type": "ISSUE", "lot_number": None, "qty": -100,
+                 "product_id": "P1"})
+    ALLOCS.append({"alloc_id": 9, "si_id": 2, "sched_id": 2, "qty": 100})
+    at = _open()
+    assert any("확정이 이미 반영된 상태" in str(e.value) for e in at.error)
+    assert at.button(key="cf_go").proto.disabled
+    # 작성중 취소는 차단
+    at.button(key="cf_cancel").click().run()
+    assert not at.exception, [str(e.value) for e in at.exception]
+    assert not any(t == "shipments" and f.get("status") == "CANCELLED"
+                   for t, _, f in UPDATED)
+    assert any("작성중 취소로는 되돌릴 수 없습니다" in str(e.value)
+               for e in at.error)
+    # 머리글만 확정으로 저장
+    at.button(key="cf_fix_header").click().run()
+    assert not at.exception, [str(e.value) for e in at.exception]
+    assert any(t == "shipments" and f.get("status") == "CONFIRMED"
+               and "shipment_id=eq.2" in fq for t, fq, f in UPDATED)
+    assert SHIPMENTS[1]["status"] == "CONFIRMED"
+    # 라인 재반영은 없어야 한다 (이중 반영 방지)
+    assert not any(t == "sales_order_items" for t, _, _ in UPDATED)
+    assert not any(t == "inventory_transactions" for t, _ in INSERTED)
+
+
+def test_clean_draft_cancel_still_works(rev_db):
+    """반영 흔적이 없는 작성중 전표는 종전대로 원클릭 취소."""
+    _seed()
+    at = _open()
+    assert not any("확정이 이미 반영된 상태" in str(e.value) for e in at.error)
+    assert not [b for b in at.button if b.key == "cf_fix_header"]
+    at.button(key="cf_cancel").click().run()
+    at.button(key="cf_cancel_cfm_ok").click().run()
+    assert not at.exception, [str(e.value) for e in at.exception]
+    assert SHIPMENTS[1]["status"] == "CANCELLED"
+    assert SHIPMENTS[1]["cancel_reason"] == "작성중 취소"
