@@ -1,6 +1,6 @@
 # 변경 계획서 템플릿 (AGENTS.md 3절)
 
-L3 변경은 아래 템플릿을 채운 뒤 Reviewer 검토 → 사용자 승인 → 실행 순으로 간다. 계획서는 이 파일을 복사해 `docs/development/plans/YYYYMMDD_<주제>.md` 로 두거나, 긴급 L3-D 는 대화에 같은 항목을 적는다(AGENTS.md 긴급 예외).
+L3 변경은 아래 템플릿을 채운 뒤 Reviewer 검토 → 사용자 승인 → 실행 순으로 간다. 계획서는 이 파일을 복사해 `docs/development/plans/YYYYMMDD_<주제>.md` 로 두거나, 긴급 L3-D 는 대화에 같은 항목을 적는다(AGENTS.md 긴급 예외 — 생략되는 것은 계획서 **파일**뿐이며, Data Reviewer 사전 검토는 유지한다. Reviewer 를 돌릴 수 없으면 7번 항목에 "미검토"와 위험을 적고 별도 승인을 받는다).
 
 ---
 
@@ -50,5 +50,5 @@ L3 변경은 아래 템플릿을 채운 뒤 Reviewer 검토 → 사용자 승인
 4. 방법: 앱의 '확정 전표 전체 취소'와 동일한 역반영 SQL(임시 테이블 `_si/_al/_li/_tx`).
 5. 복구: 역분개 거래 16행 삭제, 스냅샷으로 라인·회차·충당·전표 원복.
 6. 검증: 12라인 `received − presched = Σ delivered`, `pending = qty − received`, 전표별 ISSUE 순합 0, 충당 0건.
-7. Reviewer: 긴급이라 생략(사후 샘플 리뷰 대상).
+7. Reviewer: 미검토(Reviewer 도입 전). 지금 규칙으로는 "Data Reviewer 미검토 — 역반영 SQL 의 대상 범위·역분개 LOT 매칭이 검증되지 않음"을 명시하고 별도 승인을 받아야 하는 사례.
 8. 승인: 2026-10-08 사용자 "정정은 바로 해주세요".

@@ -36,7 +36,7 @@ Reviewer 도구는 **Read·Grep·Glob 만**이다. Bash 는 읽기 전용이 아
 | **L3-S Structural** | schema 변경, migration, transaction 구조, Source of Truth·identity 정책, 재고/LOT 핵심 구조, RLS/권한, 외부 자동 발송 활성화, 외부 시스템의 운영 DB 쓰기 연동 | `docs/development/CHANGE_PLAN.md` 의 L3-S 계획서 → Data + QA Reviewer → **사용자 승인** → 구현 |
 | **L3-D Data Correction** | 대량 master 정정, backfill, LOT 이관, 제품/자재 재연결, 원장 수정, 과거 transaction 정정 (Agent 가 SQL 로 하는 것. 사용자가 앱 화면에서 하는 일상 등록·수정은 해당 없음) | L3-D 정정 계획서 → Data Reviewer 사전 검토 → **사용자 승인** → Lead 실행 |
 
-**긴급 예외(L3-D):** 당일 출고·입고가 막혀 즉시 정정이 필요하면 계획서 파일은 생략하되, 6항목(원인·대상 행 수·백업·정정 방법·되돌리기·검증)을 대화로 보고하고 승인을 받은 뒤 실행한다. 백업 스냅샷과 변경 이력은 생략하지 않는다. (2026-10-08 SH-20261008-04 역반영이 선례)
+**긴급 예외(L3-D):** 당일 출고·입고가 막혀 즉시 정정이 필요하면 **계획서 파일 작성만** 생략할 수 있다. 6항목(원인·대상 행 수·백업·정정 방법·되돌리기·검증)을 대화로 보고하고, **Data Reviewer 사전 검토는 원칙적으로 유지**한 뒤 승인을 받아 실행한다. Reviewer 를 실행할 수 없는 상황이면 "Data Reviewer 미검토"와 그로 인한 위험(검증 누락 가능 지점)을 보고에 명시하고 그 상태로 진행해도 되는지 **별도 승인**을 받는다. 백업 스냅샷과 변경 이력은 어떤 경우에도 생략하지 않는다. (2026-10-08 SH-20261008-04 역반영은 Reviewer 도입 전 선례 — 지금 규칙으로는 미검토 명시·별도 승인 대상)
 
 **승인된 운영 수정(계획서 생략 가능):** 사용자가 대상과 값을 지정 · 10행 이하 · 단순 master 필드 · 재고·LOT·identity·FK·원장·Source of Truth 변경 없음 · 전후 값 기록 가능. 이 경우에도 실행 전 현재 값을 확인하고 변경 이력을 남긴다. 행 수가 적어도 재연결·재고·LOT 이면 L3-D.
 
@@ -68,17 +68,17 @@ CLAUDE.md "읽기 캐시·조회 상한"을 따른다. 앱 쓰기는 `db.py` 경
 | 변경 | 필수 테스트 |
 |---|---|
 | 문서만 | pytest 생략 가능, 문서 구조·Agent 형식 확인 |
-| L1 | 관련 테스트 |
-| L2 | 관련 테스트 + 전체 `C:\Python311\python.exe -m pytest tests -q`(약 11분, CI 약 15분) |
+| L1 | 작업 중 관련 테스트, **push 전 전체 pytest** |
+| L2 | 관련 테스트 + 전체 pytest |
 | L3-S | 전체 pytest + 관련 회귀 + migration 호환 검증 + 필요한 Data Integrity 검증 |
 | L3-D | 변경 전후 데이터 검증 필수, 코드 변경 없으면 pytest 생략 가능 |
 
-테스트 실패 상태에서는 push 금지. 결과 줄(`N passed`, failed 0)을 확인한 뒤에만 push 한다. 기존 실패도 "원래 실패"로 넘기지 말고 baseline 과 비교해 보고한다. 테스트는 mock DB(AppTest) 라 migration 적용 자체는 검증하지 못한다.
+**배포 게이트(CLAUDE.md 작업 흐름 4·5와 동일):** 코드가 바뀐 push 는 등급과 무관하게 **로컬 전체 `C:\Python311\python.exe -m pytest tests -q`(약 11분) 통과 후에만** 한다. 결과 줄(`N passed`, failed 0)을 확인한 뒤 push 하고, push 뒤 GitHub Actions `tests`(약 15분)가 같은 스위트를 다시 돌린다. 테스트 실패 상태에서는 push 금지. 기존 실패도 "원래 실패"로 넘기지 말고 baseline 과 비교해 보고한다. 테스트는 mock DB(AppTest) 라 migration 적용 자체는 검증하지 못한다.
 
 ## 9. 커밋·푸시·배포 게이트
 
 - **main push = Streamlit Cloud 즉시 배포.** 커밋과 푸시를 구분한다.
-- 푸시 전: 필요한 테스트 통과, 필수 Reviewer 완료, BLOCKER 해결, DB 호환 확인, 변경 범위 확인.
+- 푸시 전: 전체 pytest 통과(8절 배포 게이트), 필수 Reviewer 완료, BLOCKER 해결, DB 호환 확인, 변경 범위 확인.
 - 푸시 후: Lead 는 Streamlit Cloud 배포 완료와 앱 기동(로그인 화면 렌더), GitHub Actions `tests` 결과를 확인한다. 로그인 뒤 화면·핵심 조회·신규 오류 확인은 **사용자가 하거나 AppTest 결과로 갈음**한다 — Lead 는 운영 계정으로 로그인하지 않는다.
 - 문제 시 복구 우선: 코드는 `git revert` 후 재푸시. migration 이 섞였으면 revert 만으로 복구되지 않는다.
 - 브랜치: L1 은 main 직접, L2 는 테스트·Reviewer 게이트 충족 시 main, L3 는 별도 branch 권장. 불필요한 PR 절차는 강제하지 않는다. 외부 모델이 코드를 쓰기 시작하면 branch/PR 정책을 다시 강화한다.
