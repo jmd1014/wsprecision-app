@@ -12941,10 +12941,10 @@ elif page == "구매 관리":
 
             # ─── 거래처별 최근 단가·수량 (반복 발주 프리필) ───
             @st.cache_data(ttl=60)
-            def _get_vendor_recent_line(vid, item_name, aliases=()):
+            def _get_vendor_recent_line(vid, item_name, aliases=(), pid=None):
                 """이 거래처의 같은 품번 최근 발주 (단가, 수량, 발주번호, 발주일).
                 품명이 '품번 (사이즈)'·'품번/품명' 형식이어도, 옛 품번(별칭)으로
-                적혀 있어도 찾는다."""
+                적혀 있어도, 품명은 다르지만 라인에 제품이 연결돼 있어도 찾는다."""
                 try:
                     pos = fetch("purchase_orders", "po_id,po_number,po_date",
                                 f"vendor_id=eq.{_fq(vid)}&order=po_date.desc",
@@ -12965,6 +12965,8 @@ elif page == "구매 관리":
                                    f'item_name.like."{_inm} (*"',
                                    f'item_name.like."{_inm}(*"',
                                    f'item_name.like."{_inm}/*"']
+                    if pid:
+                        _conds.append(f'product_id.eq."{str(pid).replace(chr(34), "")}"')
                     items = fetch("purchase_order_items",
                                   "unit_price,qty,po_id",
                                   f"po_id=in.({po_ids})"
@@ -13053,6 +13055,7 @@ elif page == "구매 관리":
             # 이력 검색이 항상 비던 문제)
             _vh_pns = set()
             _vh_hist = {}   # 품명 → 최근 라인 {material, spec, qty, unit_price, po_number, po_date}
+            _vh_lpn = {}    # 라인에 연결된 product_id → 활성 품번
             try:
                 _vh_pos = fetch("purchase_orders", "po_id,po_number,po_date",
                                 f"vendor_id=eq.{_fq(vendor['vendor_id'])}"
@@ -13079,6 +13082,23 @@ elif page == "구매 관리":
                     # ↔ 활성 '4D180223-00' — '휴면 제품 제외' 경고만 뜨던 문제)
                     _vh_pns |= {_po_alias_pn[x] for x in list(_vh_pns)
                                 if x in _po_alias_pn}
+                    # 라인에 제품이 연결돼 있으면 그 품번도 이력 품번으로 — 옛 양식
+                    # 품명('40BLD-APP (Ø140 * 16L)')은 이름으로 제품을 못 찾아
+                    # 연결한 뒤에도 '이력 행'으로 따로 떴다 (2026-10-12)
+                    try:
+                        _vh_lpid = sorted({i["product_id"] for i in _vh_items
+                                           if i.get("product_id")})
+                        for _i0 in range(0, len(_vh_lpid), 80):
+                            for _p9 in fetch(
+                                    "products", "product_id,pn",
+                                    "archived_at=is.null&product_id=in.({})".format(
+                                        ",".join(f'"{x}"'
+                                                 for x in _vh_lpid[_i0:_i0 + 80])),
+                                    limit=200):
+                                _vh_lpn[_p9["product_id"]] = _p9["pn"]
+                    except Exception:
+                        _vh_lpn = {}
+                    _vh_pns |= set(_vh_lpn.values())
                     # 최근 발주 순으로 훑으며 품목별 첫 라인만 보관
                     for i in sorted(_vh_items, key=lambda x: (
                             _vh_rank.get(x["po_id"], 9999),
@@ -13195,6 +13215,7 @@ elif page == "구매 관리":
                          and po_hist_pn(n) not in _res_pns
                          and _po_alias_pn.get(po_hist_pn(n)) not in _res_pns
                          and _po_alias_pn.get(n.split(" (")[0]) not in _res_pns
+                         and _vh_lpn.get(_vh_hist[n].get("product_id")) not in _res_pns
                          and n not in _res_mats
                          and (not _q9 or _q9 in n.lower())]
                 if _cand:
@@ -13393,7 +13414,8 @@ elif page == "구매 관리":
                         vendor["vendor_id"], p["pn"],
                         tuple(a.strip() for a in
                               str(p.get("alias_list") or "").split(",")
-                              if a.strip()))
+                              if a.strip()),
+                        pid=p["product_id"])
                     _rows.append({
                         "담기": False, "품번": p["pn"],
                         "자재ID": p["product_id"], "자재명": p["pn"],

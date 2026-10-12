@@ -275,3 +275,41 @@ def test_cart_has_no_pending_order_reference(mocked_db):
     # 지불조건은 기본 공란
     pay = [t for t in at.text_input if t.label == "지불조건"]
     assert pay and pay[0].value == ""
+
+
+LINKED_PRODUCT = {"product_id": "P0160", "pn": "4S40BLD-AP", "raw_material_name": None,
+                  "product_size": "Ø140*16L", "material": "SUS304",
+                  "bom_material_name": None, "material_unit_price": 0,
+                  "alias_list": None}
+# 명진 옛 양식 품명 — 이름으로는 제품을 못 찾지만 라인에 제품이 연결돼 있다
+LINKED_ITEMS = [
+    {"poi_id": 86, "po_id": 2, "item_name": "40BLD-APP (Ø140 * 16L)",
+     "material": None, "spec": "304 Ø140 * 18L", "qty": 10, "unit_price": 0,
+     "material_id": "M313", "product_id": "P0160", "unit": "EA"},
+]
+
+
+def test_linked_legacy_line_merges_into_product_row(mocked_db, monkeypatch):
+    """품명이 옛 양식('40BLD-APP (Ø140 * 16L)')이라 이름으로는 제품을 못 찾는
+    수기 발주 라인도 product_id 가 연결돼 있으면 '이력 행'이 아니라 그 제품
+    행(4S40BLD-AP)으로 합쳐진다 (2026-10-12 사용자: 결국 4S40BLD-AP 로 합쳐져야)."""
+    from urllib.parse import unquote
+
+    def _fetch(table, select="*", filter_query="", limit=1000):
+        fq = unquote(filter_query)
+        if table == "purchase_order_items":
+            return LINKED_ITEMS
+        if table == "products" and ("P0160" in fq or "4S40BLD-AP" in fq):
+            return [LINKED_PRODUCT]
+        return _mock_fetch(table, select, filter_query, limit)
+    monkeypatch.setattr(mocked_db, "fetch", _fetch)
+
+    at = _open_po_page()
+    cb = [c for c in at.checkbox if str(c.key).startswith("po_vh_only")]
+    assert cb and cb[0].value is True
+    _search_btn(at).click().run()
+    assert not at.exception, [str(e.value) for e in at.exception]
+    txt = _grid_texts(at)
+    assert "4S40BLD-AP" in txt, "연결된 제품 행이 나와야 함"
+    assert "40BLD-APP" not in txt, "옛 양식 품명이 이력 행으로 따로 뜨면 안 됨"
+    assert "26-0904" in txt, "제품 행의 최근 발주가 연결 라인의 발주여야 함"
