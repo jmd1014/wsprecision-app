@@ -8328,11 +8328,31 @@ elif page == "출고 관리":
                                   for s in _open_drafts)
                 _d_no = {s["shipment_id"]: s["ship_no"]
                          for s in _open_drafts}
-                for x in fetch("shipment_items", "soi_id,shipment_id",
-                               f"shipment_id=in.({_d_ids})", limit=1000):
+                _d_items = fetch("shipment_items", "si_id,soi_id,shipment_id",
+                                 f"shipment_id=in.({_d_ids})", limit=1000)
+                for x in _d_items:
                     if x.get("soi_id") is not None:
                         _draft_sois.setdefault(
                             x["soi_id"], _d_no.get(x["shipment_id"], "-"))
+                # 확정 반영 흔적(재고 차감·회차 충당)이 있는 작성중 전표는
+                # 사실상 확정된 전표 — 라인을 더 붙이면 반영 없이 섞인다
+                # (2026-10-12 QA 리뷰 H2). 추가 대상에서 뺀다.
+                _d_si = ",".join(str(x["si_id"]) for x in _d_items
+                                 if x.get("si_id"))
+                if _d_si:
+                    _d_hit = set()
+                    for _a in fetch("shipment_allocations", "si_id",
+                                    f"si_id=in.({_d_si})", limit=1000):
+                        _d_hit.add(_a["si_id"])
+                    for _t in fetch("inventory_transactions", "ref_id",
+                                    "ref_table=eq.shipment_items"
+                                    f"&txn_type=eq.ISSUE&ref_id=in.({_d_si})",
+                                    limit=1000):
+                        _d_hit.add(_t["ref_id"])
+                    _d_bad = {x["shipment_id"] for x in _d_items
+                              if x.get("si_id") in _d_hit}
+                    _open_drafts = [s for s in _open_drafts
+                                    if s["shipment_id"] not in _d_bad]
         except Exception:
             _draft_sois = {}
             _open_drafts = []
@@ -8692,6 +8712,21 @@ elif page == "출고 관리":
         _cf_list = _cf_sg.delivery_list_html
         _cf_stmt = _cf_sg.transaction_statements_html
 
+        # 확정 머리글 저장 실패 — st.stop 대신 플래그로 rerun 뒤에 표시
+        # (탭 안 st.stop 금지 규칙, 2026-10-12 리뷰)
+        if st.session_state.get("cf_hdr_fail"):
+            _hf = st.session_state["cf_hdr_fail"]
+            st.error(
+                f"{_hf.get('ship_no')}: 수주 납품·회차 충당·재고 차감은 "
+                "반영됐지만 전표 상태를 '확정'으로 저장하지 못했습니다. "
+                "**전표 취소를 누르지 마세요.** 아래 목록에서 이 전표를 "
+                "선택하면 [확정 상태로 저장] 버튼이 보입니다 — 그 버튼만 "
+                "누르면 됩니다.")
+            if st.button("알림 닫기", key="cf_hdr_fail_x"):
+                st.session_state.pop("cf_hdr_fail", None)
+                st.rerun()
+        if st.session_state.get("cf_fixed_msg"):
+            st.success(st.session_state.pop("cf_fixed_msg"))
         # 확정 시 감지된 미래 회차 충당 경고 (rerun 후에도 표시)
         if st.session_state.get("cf_alloc_warn"):
             for _w9 in st.session_state["cf_alloc_warn"]:
@@ -8838,18 +8873,29 @@ elif page == "출고 관리":
                 '작성중 취소'가 덮여 수주·회차·재고가 그대로 꼬였던 사고)."""
                 _ids = [x.get("si_id") for x in (items or []) if x.get("si_id")]
                 if not _ids:
-                    return {"txn": 0, "alloc": 0}
+                    return {"txn": 0, "alloc": 0, "ok": True, "si": set()}
                 _s = ",".join(str(i) for i in _ids)
                 try:
-                    _n_txn = len(fetch("inventory_transactions", "txn_id",
-                                       "ref_table=eq.shipment_items"
-                                       f"&txn_type=eq.ISSUE&ref_id=in.({_s})",
-                                       limit=1000))
-                    _n_al = len(fetch("shipment_allocations", "alloc_id",
-                                      f"si_id=in.({_s})", limit=1000))
+                    # 라인별 ISSUE 순합 — 역분개로 0 이 된 라인은 흔적 아님
+                    # (2026-10-12 리뷰: 건수 기준이면 순합 0 전표를 오판)
+                    _net = {}
+                    for _t in fetch("inventory_transactions",
+                                    "txn_id,ref_id,qty",
+                                    "ref_table=eq.shipment_items"
+                                    f"&txn_type=eq.ISSUE&ref_id=in.({_s})",
+                                    limit=1000):
+                        _net[_t["ref_id"]] = (_net.get(_t["ref_id"], 0.0)
+                                              + float(_t.get("qty") or 0))
+                    _al = fetch("shipment_allocations", "alloc_id,si_id",
+                                f"si_id=in.({_s})", limit=1000)
                 except Exception:
-                    return {"txn": 0, "alloc": 0}
-                return {"txn": _n_txn, "alloc": _n_al}
+                    # 조회 실패 = 모름 → 호출부가 확정·취소·정정을 모두 잠근다
+                    return {"txn": None, "alloc": None, "ok": False,
+                            "si": set()}
+                _si = ({k for k, v in _net.items() if abs(v) > 1e-9}
+                       | {a["si_id"] for a in _al})
+                return {"txn": sum(1 for v in _net.values() if abs(v) > 1e-9),
+                        "alloc": len(_al), "ok": True, "si": _si}
 
             def _cf_apply_deltas(pick, items, new_qtys, reason,
                                  action="EDIT", allow_over=False,
@@ -8863,6 +8909,34 @@ elif page == "출고 관리":
                 _deltas = plan_line_deltas(items, new_qtys)
                 if not _deltas:
                     return 0, ["변경된 수량이 없습니다."]
+                if action == "CANCEL":
+                    # 1차 취소가 라인은 되돌리고 머리글만 실패하면 전표가
+                    # CONFIRMED 로 남아 다시 취소할 수 있다 → 이중 역반영
+                    # (2026-10-12 QA 리뷰 H3). 이력에 CANCEL 이 있으면 머리글만.
+                    try:
+                        _prev_cx = fetch("shipment_revisions", "rev_id",
+                                         f"shipment_id=eq.{_fq(pick['shipment_id'])}"
+                                         "&action=eq.CANCEL", limit=1)
+                    except Exception:
+                        _prev_cx = []
+                    if _prev_cx:
+                        _hdr0 = {"status": "CANCELLED",
+                                 "cancelled_at": _rv_now.now().isoformat(),
+                                 "cancel_reason": reason or None}
+                        _ok0 = False
+                        try:
+                            _ok0 = bool(_db.update(
+                                "shipments",
+                                f"shipment_id=eq.{_fq(pick['shipment_id'])}",
+                                _hdr0))
+                        except Exception:
+                            _ok0 = False
+                        return (1 if _ok0 else 0), [
+                            "이 전표는 이미 취소 역반영이 끝난 전표입니다 — "
+                            + ("전표 상태만 취소로 저장했습니다."
+                               if _ok0 else
+                               "전표 상태 저장에 실패했습니다. 잠시 후 다시 "
+                               "시도하세요.")]
                 _ship_no = pick["ship_no"]
                 _sdate = str(pick.get("ship_date"))
                 _today = _rv_dt.today().isoformat()
@@ -9148,12 +9222,25 @@ elif page == "출고 관리":
                     _hdr.update({"status": "CANCELLED",
                                  "cancelled_at": _rv_now.now().isoformat(),
                                  "cancel_reason": reason or None})
-                try:
-                    _db.update("shipments",
-                               f"shipment_id=eq.{_fq(pick['shipment_id'])}",
-                               _hdr)
-                except Exception as e:
-                    _warns.append(f"전표 헤더 갱신 실패: {e}")
+                _hdr_ok9 = False
+                for _try9 in range(3):
+                    try:
+                        _hdr_ok9 = bool(_db.update(
+                            "shipments",
+                            f"shipment_id=eq.{_fq(pick['shipment_id'])}", _hdr))
+                    except Exception as e:
+                        _hdr_ok9 = False
+                        _warns.append(f"전표 헤더 갱신 실패({_try9 + 1}회): {e}")
+                    if _hdr_ok9:
+                        break
+                    import time as _rv_time
+                    _rv_time.sleep(0.5)
+                if not _hdr_ok9:
+                    _warns.append(
+                        f"{_ship_no}: 라인 역반영은 끝났지만 전표 상태 저장에 "
+                        "3회 실패했습니다. 같은 전표를 다시 취소해도 이중 "
+                        "역반영은 되지 않으니(이력 확인) 잠시 후 다시 "
+                        "시도하세요.")
                 return _n_ok, _warns
 
             def _cf_rev_history(pick):
@@ -9405,32 +9492,79 @@ elif page == "출고 관리":
                 # ── DRAFT: 확인용 인쇄 → 정정 저장 → 확정 ──
                 import pandas as _cf_pd
                 _cf_applied = _cf_draft_applied(_cf_items)
-                _cf_was_applied = bool(_cf_applied["txn"]
-                                       or _cf_applied["alloc"])
-                if _cf_was_applied:
+                _cf_check_failed = not _cf_applied.get("ok", True)
+                # 흔적이 있거나(반영됨) 확인을 못 했으면(모름) 모두 잠근다
+                _cf_was_applied = (_cf_check_failed
+                                   or bool(_cf_applied["txn"]
+                                           or _cf_applied["alloc"]))
+                _cf_unapplied = [x for x in _cf_items
+                                 if float(x.get("qty") or 0) > 0
+                                 and x.get("si_id") not in _cf_applied["si"]]
+                if _cf_check_failed:
+                    st.error("반영 여부를 확인하지 못했습니다 (조회 실패). "
+                             "화면을 새로 고친 뒤 다시 여세요 — 확인 전에는 "
+                             "확정·정정·취소가 잠깁니다.")
+                elif _cf_was_applied:
                     st.error(
-                        "이 전표는 확정이 이미 반영된 상태입니다 (완성 재고 "
-                        f"차감 {_cf_applied['txn']}건 · 회차 충당 "
-                        f"{_cf_applied['alloc']}건). 확정 처리의 마지막 "
-                        "단계인 전표 상태 저장만 실패한 경우입니다. "
-                        "**전표 취소를 누르지 마세요** — 아래 [확정 상태로 "
-                        "저장]으로 상태만 맞춘 뒤, 취소가 필요하면 확정 "
-                        "전표의 '전표 취소 (전체 역반영)'을 쓰세요.")
-                    if st.button("확정 상태로 저장 (라인 반영은 이미 완료)",
-                                 type="primary", key="cf_fix_header") \
+                        "**전표 취소를 누르지 마세요.** 이 전표는 확정 "
+                        "반영(수주 납품·회차 충당·재고 차감)이 끝났고 전표 "
+                        "상태 저장만 실패한 상태입니다 → 아래 [확정 상태로 "
+                        "저장]을 누르세요. 취소가 필요하면 그 뒤 확정 전표의 "
+                        "'전표 취소 (전체 역반영)'를 쓰세요.")
+                    st.caption(f"반영 흔적: 완성 재고 차감 {_cf_applied['txn']}"
+                               f"라인 · 회차 충당 {_cf_applied['alloc']}건"
+                               + (f" · 반영 안 된 라인 {len(_cf_unapplied)}건"
+                                  if _cf_unapplied else ""))
+                    if _cf_unapplied:
+                        # 일부 라인만 반영된 전표 — 머리글만 확정으로 올리면
+                        # 나중 전체 역반영이 반영 안 된 라인까지 되돌린다
+                        # (2026-10-12 Data 리뷰 HIGH-2) → 사람이 봐야 한다
+                        st.error("반영되지 않은 라인이 있어 자동으로 확정 "
+                                 "상태로 저장할 수 없습니다: " + ", ".join(
+                                     f"{x.get('pn')} {float(x.get('qty') or 0):,.0f}"
+                                     for x in _cf_unapplied)
+                                 + " — 관리자에게 알리세요 (이력·재고 확인 후 "
+                                   "정정).")
+                    elif st.button("확정 상태로 저장 (라인 반영은 이미 완료)",
+                                   type="primary", key="cf_fix_header",
+                                   help="전표 상태만 '확정'으로 바꿉니다. "
+                                        "수주·회차·재고는 다시 반영하지 "
+                                        "않습니다.") \
                             and click_guard("cf_fix_header"):
                         from datetime import datetime as _cf_now0
-                        if _db.update("shipments",
-                                      "shipment_id=eq.{}".format(
-                                          _cf_pick["shipment_id"]),
-                                      {"status": "CONFIRMED",
-                                       "confirmed_at":
-                                       _cf_now0.now().isoformat()}):
-                            st.success("전표 상태를 확정으로 저장했습니다.")
+                        _fx_ok = False
+                        try:
+                            _fx_ok = bool(_db.update(
+                                "shipments",
+                                "shipment_id=eq.{}".format(
+                                    _cf_pick["shipment_id"]),
+                                {"status": "CONFIRMED",
+                                 "confirmed_at":
+                                 _cf_now0.now().isoformat()}))
+                        except Exception:
+                            _fx_ok = False
+                        if _fx_ok:
+                            st.session_state.pop("cf_hdr_fail", None)
+                            st.session_state["cf_fixed_msg"] = (
+                                f"{_cf_pick['ship_no']} 전표 상태를 확정으로 "
+                                "저장했습니다 — 상태 필터 '확정'에서 보입니다.")
+                            st.session_state["ship_open_no"] = \
+                                _cf_pick["ship_no"]
+                            try:
+                                _sk.notify(_sk.fmt_ship(
+                                    _cf_pick["ship_no"],
+                                    [x.get("customer") for x in _cf_items],
+                                    len([x for x in _cf_items
+                                         if float(x.get("qty") or 0) > 0]),
+                                    sum(float(x.get("qty") or 0)
+                                        for x in _cf_items),
+                                    current_user_name()))
+                            except Exception:
+                                pass
                             st.rerun()
                         else:
                             st.error("전표 상태 저장에 또 실패했습니다 — "
-                                     "잠시 후 다시 시도하세요.")
+                                     "5초 뒤 다시 시도하세요.")
                 _cf_df = _cf_pd.DataFrame([{
                     "선택": True, "품번": x.get("pn"),
                     "품명": _cf_names.get(x.get("si_id")) or "-",
@@ -9439,6 +9573,7 @@ elif page == "출고 관리":
                 } for x in _cf_items])
                 _cf_ed = st.data_editor(
                     _cf_df, hide_index=True, use_container_width=True,
+                    disabled=_cf_was_applied,
                     key="cf_ed_{}_{}".format(_cf_pick["shipment_id"],
                                              len(_cf_items)),
                     column_config={
@@ -9458,10 +9593,13 @@ elif page == "출고 관리":
                     mime="text/html", key="cf_dl_draft",
                     use_container_width=True)
                 if ac2.button("정정 저장", key="cf_save",
-                              help="수량을 고치고 저장합니다. 선택을 푼 줄은 "
+                              help=("확정이 반영된 전표는 정정할 수 없습니다 "
+                                    "— 위 안내를 따르세요") if _cf_was_applied
+                              else "수량을 고치고 저장합니다. 선택을 푼 줄은 "
                                    "전표에서 지워집니다(다시 넣으려면 출고 "
                                    "등록에서 다시 담기)",
-                              use_container_width=True):
+                              disabled=_cf_was_applied,
+                              use_container_width=True) and not _cf_was_applied:
                     _n_upd, _n_del = 0, 0
                     # 전 라인 제외 = 빈 전표 (2026-09-16 SH-20260916-02 사례):
                     # 비우려면 '전표 취소' 로 — 여기서는 차단
@@ -9496,6 +9634,7 @@ elif page == "출고 관리":
                         st.rerun()
                 _cf_over = ac3.checkbox("재고 없이 출고 허용",
                                         value=False, key="cf_over",
+                                        disabled=_cf_was_applied,
                                         help="ERP 이관 전 생산분 등 — "
                                              "완성 재고와 무관하게 확정")
 
@@ -9588,6 +9727,24 @@ elif page == "출고 관리":
                                   or bool(_cf_overp) or _cf_locked
                                   or _cf_was_applied)
                         ) and click_guard("cf_go"):
+                    # 다른 탭·세션에서 먼저 확정됐을 수 있다 — 화면의 잠금만
+                    # 믿지 말고 처리 직전에 다시 확인 (2026-10-12 QA 리뷰 H4)
+                    _cf_fresh_hdr = None
+                    try:
+                        _cf_fresh_hdr = _db.fetch_one(
+                            "shipments",
+                            "shipment_id=eq.{}".format(_cf_pick["shipment_id"]),
+                            "status")
+                    except Exception:
+                        _cf_fresh_hdr = None
+                    _cf_fresh_ap = _cf_draft_applied(_cf_items)
+                    if ((_cf_fresh_hdr or {}).get("status") not in (None, "DRAFT")
+                            or not _cf_fresh_ap.get("ok", True)
+                            or _cf_fresh_ap["txn"] or _cf_fresh_ap["alloc"]):
+                        st.error("이 전표는 이미 확정 처리됐거나 반영 여부를 "
+                                 "확인할 수 없습니다 — 화면을 새로 고쳐 상태를 "
+                                 "확인하세요. (중복 반영 방지로 중단)")
+                        _cf_rows = []
                     _cf_date = str(_cf_pick.get("ship_date"))
                     # 라인 단위 합산
                     _by_soi = {}
@@ -9805,14 +9962,15 @@ elif page == "출고 관리":
                                 break
                             _cf_time.sleep(0.5)
                         if not _hdr_ok:
-                            st.error(
-                                f"{_cf_pick['ship_no']}: 수주 납품·회차 "
-                                "충당·재고 차감은 반영됐지만 전표 상태를 "
-                                "'확정'으로 저장하지 못했습니다. **전표 "
-                                "취소를 누르지 마세요.** 잠시 후 이 전표를 "
-                                "다시 열면 [확정 상태로 저장] 버튼이 "
-                                "보입니다.")
-                            st.stop()
+                            # 탭 안 st.stop 금지 → 플래그를 세우고 rerun,
+                            # 상단 배너와 DRAFT 분기의 [확정 상태로 저장]이
+                            # 이어받는다 (2026-10-12 리뷰)
+                            st.session_state["cf_hdr_fail"] = {
+                                "ship_no": _cf_pick["ship_no"],
+                                "shipment_id": _cf_pick["shipment_id"]}
+                            st.session_state["ship_open_no"] = \
+                                _cf_pick["ship_no"]
+                            st.rerun()
                         st.session_state["ship_open_no"] = \
                             _cf_pick["ship_no"]
                         _sk.notify(_sk.fmt_ship(
@@ -9827,7 +9985,11 @@ elif page == "출고 관리":
                 # 작성중 전표는 원클릭 취소 (라인이 다시 풀릴 뿐 —
                 # 수주·재고는 아직 손대지 않은 상태). 확정 전표의 취소는
                 # 위 CONFIRMED 분기의 전체 역반영 취소로만
-                if st.button("전표 취소", key="cf_cancel"):
+                if st.button("전표 취소", key="cf_cancel",
+                              disabled=_cf_was_applied,
+                              help=("확정이 반영된 전표 — 위 [확정 상태로 저장] "
+                                    "뒤 확정 전표의 취소를 쓰세요")
+                              if _cf_was_applied else None):
                     st.session_state["cfm_cf_cancel"] = True
                 if st.session_state.get("cfm_cf_cancel") and _cf_was_applied:
                     st.session_state["cfm_cf_cancel"] = False

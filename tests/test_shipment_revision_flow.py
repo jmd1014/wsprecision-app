@@ -313,21 +313,23 @@ def test_draft_with_applied_effects_is_guarded(rev_db):
                  "product_id": "P1"})
     ALLOCS.append({"alloc_id": 9, "si_id": 2, "sched_id": 2, "qty": 100})
     at = _open()
-    assert any("확정이 이미 반영된 상태" in str(e.value) for e in at.error)
+    assert any("전표 취소를 누르지 마세요" in str(e.value) for e in at.error)
     assert at.button(key="cf_go").proto.disabled
-    # 작성중 취소는 차단
-    at.button(key="cf_cancel").click().run()
-    assert not at.exception, [str(e.value) for e in at.exception]
+    # 정정 저장·재고 없이 출고 허용·작성중 취소도 잠긴다 (2026-10-12 리뷰)
+    assert at.button(key="cf_save").proto.disabled
+    assert at.checkbox(key="cf_over").proto.disabled
+    assert at.button(key="cf_cancel").proto.disabled
+    # 작성중 취소는 버튼 자체가 잠긴다 (AppTest 도 잠긴 위젯 조작을 거부)
     assert not any(t == "shipments" and f.get("status") == "CANCELLED"
                    for t, _, f in UPDATED)
-    assert any("작성중 취소로는 되돌릴 수 없습니다" in str(e.value)
-               for e in at.error)
     # 머리글만 확정으로 저장
     at.button(key="cf_fix_header").click().run()
     assert not at.exception, [str(e.value) for e in at.exception]
     assert any(t == "shipments" and f.get("status") == "CONFIRMED"
                and "shipment_id=eq.2" in fq for t, fq, f in UPDATED)
     assert SHIPMENTS[1]["status"] == "CONFIRMED"
+    # 성공 안내는 rerun 뒤에도 남는다 (목록에서 전표가 '확정'으로 옮겨가므로)
+    assert any("확정으로 저장" in str(x.value) for x in at.success)
     # 라인 재반영은 없어야 한다 (이중 반영 방지)
     assert not any(t == "sales_order_items" for t, _, _ in UPDATED)
     assert not any(t == "inventory_transactions" for t, _ in INSERTED)
@@ -344,3 +346,119 @@ def test_clean_draft_cancel_still_works(rev_db):
     assert not at.exception, [str(e.value) for e in at.exception]
     assert SHIPMENTS[1]["status"] == "CANCELLED"
     assert SHIPMENTS[1]["cancel_reason"] == "작성중 취소"
+
+
+def test_applied_check_failure_locks_everything(rev_db, monkeypatch):
+    """흔적 조회가 실패하면 '모름' — 확정·정정·취소를 모두 잠그고 안내
+    (2026-10-12 리뷰: 예전엔 실패를 '흔적 없음'으로 처리해 보호가 꺼졌다)."""
+    _seed()
+    import db
+
+    def _boom(table, select="*", filter_query="", limit=1000):
+        if table == "inventory_transactions":
+            raise RuntimeError("db down")
+        return _fetch(table, select, filter_query, limit)
+    monkeypatch.setattr(db, "fetch", _boom)
+    at = _open()
+    assert any("반영 여부를 확인하지 못했습니다" in str(e.value) for e in at.error)
+    assert at.button(key="cf_go").proto.disabled
+    assert at.button(key="cf_save").proto.disabled
+    assert at.button(key="cf_cancel").proto.disabled
+    assert not [b for b in at.button if b.key == "cf_fix_header"]
+    assert SHIPMENTS[1]["status"] == "DRAFT"
+
+
+def test_net_zero_issue_is_not_a_trace(rev_db):
+    """차감 −100 과 역분개 +100 이 모두 있는 라인(순합 0)은 흔적이 아니다 —
+    건수 기준이면 역반영 끝난 전표가 영구히 잠겼다 (2026-10-12 QA M2)."""
+    _seed()
+    TXNS.append({"txn_id": 9, "ref_table": "shipment_items", "ref_id": 2,
+                 "txn_type": "ISSUE", "lot_number": None, "qty": -100,
+                 "product_id": "P1"})
+    TXNS.append({"txn_id": 10, "ref_table": "shipment_items", "ref_id": 2,
+                 "txn_type": "ISSUE", "lot_number": None, "qty": 100,
+                 "product_id": "P1"})
+    at = _open()
+    assert not any("전표 취소를 누르지 마세요" in str(e.value) for e in at.error)
+    assert not at.button(key="cf_go").proto.disabled
+    assert not at.button(key="cf_cancel").proto.disabled
+
+
+def test_confirm_header_failure_is_surfaced_and_recoverable(rev_db, monkeypatch):
+    """확정: 라인 반영 뒤 머리글 CONFIRMED 저장이 3회 실패하면 '확정 완료'가
+    아니라 오류 배너 + DRAFT 잔류, 다시 열면 [확정 상태로 저장] 이 보인다.
+    라인 반영은 정확히 1회 (2026-10-08 사고 경로 자체를 검증)."""
+    _seed()
+    import db
+
+    def _upd(table, filter_query, fields):
+        if table == "shipments" and fields.get("status") == "CONFIRMED":
+            UPDATED.append((table, filter_query, fields))
+            return False
+        return _update(table, filter_query, fields)
+    monkeypatch.setattr(db, "update", _upd)
+    at = _open()
+    at.button(key="cf_go").click().run()
+    assert not at.exception, [str(e.value) for e in at.exception]
+    hdr_tries = [f for t, _, f in UPDATED
+                 if t == "shipments" and f.get("status") == "CONFIRMED"]
+    assert len(hdr_tries) == 3
+    assert SHIPMENTS[1]["status"] == "DRAFT"
+    assert any("전표 취소를 누르지 마세요" in str(e.value) for e in at.error)
+    assert not any("출고 확정 —" in str(x.value) for x in at.success)
+    line_upd = [f for t, fq, f in UPDATED
+                if t == "sales_order_items" and "soi_id=eq.11" in fq]
+    assert len(line_upd) == 1 and float(line_upd[0]["received_qty"]) == 600
+    assert sum(len(r) for t, r in INSERTED
+               if t == "inventory_transactions") == 1
+    # 재진입: 흔적을 목에 반영한 뒤 다시 열면 복구 버튼
+    TXNS.append({"txn_id": 9, "ref_table": "shipment_items", "ref_id": 2,
+                 "txn_type": "ISSUE", "lot_number": None, "qty": -100,
+                 "product_id": "P1"})
+    ALLOCS.append({"alloc_id": 9, "si_id": 2, "sched_id": 2, "qty": 100})
+    at.run()
+    assert [b for b in at.button if b.key == "cf_fix_header"]
+    assert at.button(key="cf_go").proto.disabled
+
+
+def test_confirmed_cancel_twice_does_not_double_reverse(rev_db, monkeypatch):
+    """확정 전표 취소: 라인 역반영 뒤 머리글 저장이 실패해 CONFIRMED 로 남아도,
+    두 번째 취소는 이력(CANCEL)을 보고 라인을 다시 되돌리지 않는다 (QA H3)."""
+    _seed()
+    import db
+    calls = {"n": 0}
+
+    def _upd(table, filter_query, fields):
+        if table == "shipments" and fields.get("status") == "CANCELLED":
+            calls["n"] += 1
+            if calls["n"] <= 3:          # 1차 취소의 재시도 3회 모두 실패
+                UPDATED.append((table, filter_query, fields))
+                return False
+        return _update(table, filter_query, fields)
+    monkeypatch.setattr(db, "update", _upd)
+    at = _pick_confirmed(_open())
+    at.text_input(key="cf_cx_reason_1").set_value("납품일 오류")
+    at.run()
+    at.button(key="cf_cancel").click()
+    at.run()
+    at.button(key="cf_cancel_cfm_ok").click()
+    at.run()
+    assert not at.exception, [str(e.value) for e in at.exception]
+    assert SHIPMENTS[0]["status"] == "CONFIRMED"      # 머리글 실패
+    n_line1 = len([1 for t, fq, _ in UPDATED
+                   if t == "sales_order_items" and "soi_id=eq.11" in fq])
+    assert n_line1 == 1
+    assert REVS and REVS[0]["action"] == "CANCEL"
+    # 두 번째 취소 — 머리글만
+    at.run()
+    at.text_input(key="cf_cx_reason_1").set_value("납품일 오류")
+    at.run()
+    at.button(key="cf_cancel").click()
+    at.run()
+    at.button(key="cf_cancel_cfm_ok").click()
+    at.run()
+    assert not at.exception, [str(e.value) for e in at.exception]
+    n_line2 = len([1 for t, fq, _ in UPDATED
+                   if t == "sales_order_items" and "soi_id=eq.11" in fq])
+    assert n_line2 == 1, "두 번째 취소가 수주 라인을 다시 되돌리면 안 됨"
+    assert SHIPMENTS[0]["status"] == "CANCELLED"
