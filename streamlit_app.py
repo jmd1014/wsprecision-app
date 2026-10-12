@@ -12971,11 +12971,17 @@ elif page == "구매 관리":
                                   "unit_price,qty,po_id",
                                   f"po_id=in.({po_ids})"
                                   "&or=(" + ",".join(_conds) + ")"
-                                  "&order=po_id.desc", limit=1)
+                                  "&order=po_id.desc", limit=5)
                     if not items:
                         return None, None, None, None
                     _p = _pmap.get(items[0]["po_id"]) or {}
-                    return (int(items[0]["unit_price"] or 0) or None,
+                    # 단가는 최신 5줄 중 0 이 아닌 첫 줄 — 수기 0원 라인이
+                    # 최신이어도 실제 단가가 마스터 값에 묻히지 않게
+                    # (2026-10-12 Data 리뷰 M1)
+                    _vp0 = next((int(float(x.get("unit_price") or 0))
+                                 for x in items
+                                 if float(x.get("unit_price") or 0) > 0), None)
+                    return (_vp0,
                             int(float(items[0].get("qty") or 0)) or None,
                             _p.get("po_number"), _p.get("po_date"))
                 except Exception:
@@ -13056,6 +13062,8 @@ elif page == "구매 관리":
             _vh_pns = set()
             _vh_hist = {}   # 품명 → 최근 라인 {material, spec, qty, unit_price, po_number, po_date}
             _vh_lpn = {}    # 라인에 연결된 product_id → 활성 품번
+            _vh_lpn_arch = {}   # 연결 제품이 휴면이면 여기 (휴면 경고로)
+            _vh_lpn_fail = False
             try:
                 _vh_pos = fetch("purchase_orders", "po_id,po_number,po_date",
                                 f"vendor_id=eq.{_fq(vendor['vendor_id'])}"
@@ -13071,33 +13079,41 @@ elif page == "구매 관리":
                                           str(p["po_id"]) for p in _vh_pos)
                                       + ")", limit=2000)
                     _vh_items = [i for i in _vh_items if i.get("item_name")]
-                    # 품명 → 품번: 'pn (사이즈)' 뿐 아니라 옛 발주의 'pn/품명',
-                    # 'pn(사이즈)' 도 제품으로 잇는다 (2026-10-05: 혜성철강 이력이
-                    # 'HA80-80092/유성 핀' 형식이라 제품 행이 안 나오고 미납 수주가
-                    # 0 으로 보이던 문제)
-                    _vh_pns = ({i["item_name"].split(" (")[0] for i in _vh_items}
-                               | {po_hist_pn(i["item_name"]) for i in _vh_items})
-                    # 이력이 옛 품번(휴면 쌍둥이)으로 적혀 있으면 그 품번을 별칭으로
-                    # 가진 활성 제품으로 잇는다 (2026-10-05: 혜성철강 이력 'D180223'
-                    # ↔ 활성 '4D180223-00' — '휴면 제품 제외' 경고만 뜨던 문제)
-                    _vh_pns |= {_po_alias_pn[x] for x in list(_vh_pns)
-                                if x in _po_alias_pn}
-                    # 라인에 제품이 연결돼 있으면 그 품번도 이력 품번으로 — 옛 양식
-                    # 품명('40BLD-APP (Ø140 * 16L)')은 이름으로 제품을 못 찾아
-                    # 연결한 뒤에도 '이력 행'으로 따로 떴다 (2026-10-12)
+                    # 라인에 제품이 연결돼 있으면 그 제품이 기준 — 옛 양식 품명
+                    # ('40BLD-APP (Ø140 * 16L)')은 이름으로 제품을 못 찾아 연결한
+                    # 뒤에도 '이력 행'으로 따로 떴다 (2026-10-12). 휴면 제품은
+                    # 따로 모아 '휴면 제품 제외' 경고로 보낸다.
                     try:
                         _vh_lpid = sorted({i["product_id"] for i in _vh_items
                                            if i.get("product_id")})
                         for _i0 in range(0, len(_vh_lpid), 80):
                             for _p9 in fetch(
-                                    "products", "product_id,pn",
-                                    "archived_at=is.null&product_id=in.({})".format(
+                                    "products", "product_id,pn,archived_at",
+                                    "product_id=in.({})".format(
                                         ",".join(f'"{x}"'
                                                  for x in _vh_lpid[_i0:_i0 + 80])),
                                     limit=200):
-                                _vh_lpn[_p9["product_id"]] = _p9["pn"]
+                                if _p9.get("archived_at"):
+                                    _vh_lpn_arch[_p9["product_id"]] = _p9["pn"]
+                                else:
+                                    _vh_lpn[_p9["product_id"]] = _p9["pn"]
                     except Exception:
-                        _vh_lpn = {}
+                        _vh_lpn, _vh_lpn_arch = {}, {}
+                        _vh_lpn_fail = True
+                    # 품명 → 품번: 'pn (사이즈)' 뿐 아니라 옛 발주의 'pn/품명',
+                    # 'pn(사이즈)' 도 제품으로 잇는다 (2026-10-05: 혜성철강 이력이
+                    # 'HA80-80092/유성 핀' 형식이라 제품 행이 안 나오고 미납 수주가
+                    # 0 으로 보이던 문제). 제품이 연결된 라인은 품명 유래 품번
+                    # 대신 그 제품 품번만 센다 (같은 제품이 '2종'으로 세이던 문제).
+                    _vh_unl = [i for i in _vh_items
+                               if i.get("product_id") not in _vh_lpn]
+                    _vh_pns = ({i["item_name"].split(" (")[0] for i in _vh_unl}
+                               | {po_hist_pn(i["item_name"]) for i in _vh_unl})
+                    # 이력이 옛 품번(휴면 쌍둥이)으로 적혀 있으면 그 품번을 별칭으로
+                    # 가진 활성 제품으로 잇는다 (2026-10-05: 혜성철강 이력 'D180223'
+                    # ↔ 활성 '4D180223-00' — '휴면 제품 제외' 경고만 뜨던 문제)
+                    _vh_pns |= {_po_alias_pn[x] for x in list(_vh_pns)
+                                if x in _po_alias_pn}
                     _vh_pns |= set(_vh_lpn.values())
                     # 최근 발주 순으로 훑으며 품목별 첫 라인만 보관
                     for i in sorted(_vh_items, key=lambda x: (
@@ -13151,6 +13167,29 @@ elif page == "구매 관리":
                 _all_n = len(_res)
                 if _vh_only and _vh_pns:
                     _res = [p for p in _res if p["pn"] in _vh_pns]
+                # 검색어가 옛 품명('40BLD-APP')에만 맞고 제품 품번(4S40BLD-AP)
+                # 에는 안 맞으면 제품 행이 비어 이력 행으로 떨어졌다 — 연결된
+                # 제품을 제품 행에 보탠다 (2026-10-12 UX/QA 리뷰 H1)
+                if _vh_lpn and _vh_hist:
+                    _ql9 = _q.lower()
+                    _have9 = {p["product_id"] for p in _res}
+                    _add9 = sorted({h["product_id"] for n9, h in _vh_hist.items()
+                                    if h.get("product_id") in _vh_lpn
+                                    and h["product_id"] not in _have9
+                                    and (_ql9 in n9.lower()
+                                         or _ql9 in _vh_lpn[h["product_id"]].lower())})
+                    if _add9:
+                        try:
+                            _res += fetch(
+                                "products",
+                                "product_id,pn,raw_material_name,product_size,"
+                                "material,bom_material_name,material_unit_price,"
+                                "alias_list",
+                                "archived_at=is.null&product_id=in.({})&order=pn"
+                                .format(",".join(f'"{x}"' for x in _add9)),
+                                limit=100)
+                        except Exception:
+                            pass
                 # 비생산 자재(C### — 소모품·공구·포장재)는 자재 마스터에서
                 # 이름·규격으로 검색 (2026-09-22: 수기 입력이 매핑되는 줄
                 # 알았다는 사용자 피드백 — 마스터 자재를 고르면 연결됨)
@@ -13215,7 +13254,6 @@ elif page == "구매 관리":
                          and po_hist_pn(n) not in _res_pns
                          and _po_alias_pn.get(po_hist_pn(n)) not in _res_pns
                          and _po_alias_pn.get(n.split(" (")[0]) not in _res_pns
-                         and _vh_lpn.get(_vh_hist[n].get("product_id")) not in _res_pns
                          and n not in _res_mats
                          and (not _q9 or _q9 in n.lower())]
                 if _cand:
@@ -13235,6 +13273,12 @@ elif page == "구매 관리":
                     except Exception:
                         pass
                     for n in _cand:
+                        _lp9 = _vh_hist[n].get("product_id")
+                        if _lp9 and _lp9 in _vh_lpn:
+                            continue   # 제품이 연결된 라인 — 제품 행이 대신한다
+                        if _lp9 and _lp9 in _vh_lpn_arch:
+                            _hist_arch.append(_vh_lpn_arch[_lp9])
+                            continue   # 연결 제품이 휴면 — 경고로
                         _pn9 = n.split(" (")[0]
                         if _pn9 not in _known:
                             _pn9 = po_hist_pn(n)
@@ -13246,6 +13290,9 @@ elif page == "구매 관리":
                             continue   # 활성 제품인데 검색에 안 걸린 것 — 이력 행 아님
                         _hist_rows.append((n, _vh_hist[n]))
 
+            if _vh_lpn_fail and _searched:
+                st.warning("발주 라인에 연결된 제품 조회에 실패해 일부 이력이 "
+                           "제품 행에 합쳐지지 않았을 수 있습니다 — 다시 검색하세요.")
             if search_q and len(search_q.strip()) >= 2 and not _res \
                     and not _mat_res and not _hist_rows:
                 _q = search_q.strip()

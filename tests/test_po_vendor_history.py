@@ -279,8 +279,8 @@ def test_cart_has_no_pending_order_reference(mocked_db):
 
 LINKED_PRODUCT = {"product_id": "P0160", "pn": "4S40BLD-AP", "raw_material_name": None,
                   "product_size": "Ø140*16L", "material": "SUS304",
-                  "bom_material_name": None, "material_unit_price": 0,
-                  "alias_list": None}
+                  "bom_material_name": None, "material_unit_price": 3500,
+                  "alias_list": None, "archived_at": None}
 # 명진 옛 양식 품명 — 이름으로는 제품을 못 찾지만 라인에 제품이 연결돼 있다
 LINKED_ITEMS = [
     {"poi_id": 86, "po_id": 2, "item_name": "40BLD-APP (Ø140 * 16L)",
@@ -289,27 +289,92 @@ LINKED_ITEMS = [
 ]
 
 
-def test_linked_legacy_line_merges_into_product_row(mocked_db, monkeypatch):
-    """품명이 옛 양식('40BLD-APP (Ø140 * 16L)')이라 이름으로는 제품을 못 찾는
-    수기 발주 라인도 product_id 가 연결돼 있으면 '이력 행'이 아니라 그 제품
-    행(4S40BLD-AP)으로 합쳐진다 (2026-10-12 사용자: 결국 4S40BLD-AP 로 합쳐져야)."""
+def _linked_fetch(product=LINKED_PRODUCT, items=LINKED_ITEMS, *,
+                  pid_fail=False, search_hits=()):
+    """연결 라인 시나리오용 fetch — 필터별로 분기해 어느 조회가 라인을 돌려줬는지
+    구분한다 (2026-10-12 QA 리뷰: 필터를 무시하는 mock 은 pid 매칭을 검증 못 함).
+    - 이력 수집(po_id=in. 만): items
+    - 최근 발주(or=(…)): product_id.eq 조건이 있을 때만 items, 품명 조건만이면 []
+    - products product_id=in.: [product] (pid_fail 이면 예외)
+    - products pn=in.: pn 이 들어 있으면 [product]
+    - products ilike 검색: search_hits
+    """
     from urllib.parse import unquote
 
     def _fetch(table, select="*", filter_query="", limit=1000):
         fq = unquote(filter_query)
         if table == "purchase_order_items":
-            return LINKED_ITEMS
-        if table == "products" and ("P0160" in fq or "4S40BLD-AP" in fq):
-            return [LINKED_PRODUCT]
+            if "or=(" in fq:
+                return list(items) if 'product_id.eq."P0160"' in fq else []
+            return list(items)
+        if table == "products":
+            if "product_id=in." in fq:
+                if pid_fail:
+                    raise RuntimeError("mock: products 조회 실패")
+                return [product] if "P0160" in fq else []
+            if "pn=in." in fq:
+                return [product] if product["pn"] in fq else []
+            if "ilike" in fq:
+                return list(search_hits)
+            return []
         return _mock_fetch(table, select, filter_query, limit)
-    monkeypatch.setattr(mocked_db, "fetch", _fetch)
+    return _fetch
 
+
+def test_linked_legacy_line_merges_into_product_row(mocked_db, monkeypatch):
+    """품명이 옛 양식('40BLD-APP (Ø140 * 16L)')이라 이름으로는 제품을 못 찾는
+    수기 발주 라인도 product_id 가 연결돼 있으면 '이력 행'이 아니라 그 제품
+    행(4S40BLD-AP)으로 합쳐진다 (2026-10-12 사용자: 결국 4S40BLD-AP 로 합쳐져야).
+    최근 발주는 product_id 로 찾은 연결 라인(26-0904)이고, 라벨은 제품 1 = 1종."""
+    monkeypatch.setattr(mocked_db, "fetch", _linked_fetch())
     at = _open_po_page()
     cb = [c for c in at.checkbox if str(c.key).startswith("po_vh_only")]
     assert cb and cb[0].value is True
+    assert "1종" in cb[0].label, cb[0].label
     _search_btn(at).click().run()
     assert not at.exception, [str(e.value) for e in at.exception]
     txt = _grid_texts(at)
     assert "4S40BLD-AP" in txt, "연결된 제품 행이 나와야 함"
     assert "40BLD-APP" not in txt, "옛 양식 품명이 이력 행으로 따로 뜨면 안 됨"
-    assert "26-0904" in txt, "제품 행의 최근 발주가 연결 라인의 발주여야 함"
+    assert "26-0904" in txt, "최근 발주는 product_id 로 찾은 연결 라인의 발주"
+    assert "3500" in txt.replace(",", ""), "단가 0 라인은 마스터 소재 단가로 대체"
+
+
+def test_linked_line_found_by_old_name_query(mocked_db, monkeypatch):
+    """검색어가 옛 품명('40BLD-APP')에만 맞고 제품 품번에는 안 맞아도 제품 행
+    (4S40BLD-AP)으로 나오고, 이력 행으로 떨어지지 않는다 (2026-10-12 UX/QA H1:
+    이력 행으로 담으면 새 발주 라인이 다시 미연결이 되던 문제)."""
+    monkeypatch.setattr(mocked_db, "fetch", _linked_fetch(search_hits=[]))
+    at = _open_po_page()
+    [t for t in at.text_input if t.key == "po_q"][0].set_value("40BLD-APP")
+    _search_btn(at).click().run()
+    assert not at.exception, [str(e.value) for e in at.exception]
+    txt = _grid_texts(at)
+    assert "4S40BLD-AP" in txt
+    assert "40BLD-APP (" not in txt and "자재 이력" not in txt
+
+
+def test_linked_line_to_archived_product_warns(mocked_db, monkeypatch):
+    """연결 제품이 휴면이면 이력 행으로 조용히 담기지 않고 '휴면 제품 제외'
+    경고로 간다 (품명·별칭 경로와 같은 처리)."""
+    arch = {**LINKED_PRODUCT, "archived_at": "2026-10-01T00:00:00+00:00"}
+    monkeypatch.setattr(mocked_db, "fetch", _linked_fetch(product=arch))
+    at = _open_po_page()
+    _search_btn(at).click().run()
+    assert not at.exception, [str(e.value) for e in at.exception]
+    txt = _grid_texts(at)
+    assert "40BLD-APP" not in txt and "4S40BLD-AP" not in txt
+    assert any("휴면 제품" in w.value and "4S40BLD-AP" in w.value
+               for w in at.warning), [w.value for w in at.warning]
+
+
+def test_linked_product_lookup_failure_falls_back(mocked_db, monkeypatch):
+    """연결 제품 조회가 실패하면 예외 없이 종전처럼 이력 행으로 보이고, 합쳐지지
+    않았을 수 있다는 경고를 낸다."""
+    monkeypatch.setattr(mocked_db, "fetch", _linked_fetch(pid_fail=True))
+    at = _open_po_page()
+    _search_btn(at).click().run()
+    assert not at.exception, [str(e.value) for e in at.exception]
+    txt = _grid_texts(at)
+    assert "40BLD-APP" in txt, "폴백: 이력 행으로 표시"
+    assert any("연결된 제품 조회에 실패" in w.value for w in at.warning)
