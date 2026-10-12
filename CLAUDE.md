@@ -1,3 +1,5 @@
+@AGENTS.md
+
 # 우성정밀 업무관리 시스템 (wsprecision-app)
 
 부산 우성정밀의 수주·발주·재고·생산·출고·원가를 관리하는 사내 웹앱.
@@ -19,12 +21,12 @@
 - 테스트: `C:\Python311\python.exe -m pytest tests -q` (AppTest 기반 — st.dataframe→toss_table 전환 시 관련 테스트 확인)
 - 로컬 secrets: `.streamlit/secrets.toml` (커밋 금지, `auth.disabled=true`로 로그인 우회) — 키 원본은 Supabase 대시보드·Streamlit Cloud Secrets
 
-## 작업 흐름
+## 작업 흐름 (2026-10-12 실제 관행으로 정리 — 변경 등급·검토·게이트는 AGENTS.md)
 
-1. `design/...` 또는 `feat/...` 브랜치에서 작업
-2. 로컬 미리보기로 화면·기능 검증 (9개 페이지 예외 없이 렌더되는지)
-3. 사용자 확인 후 main 머지 → 자동 배포
-4. 커밋 메시지: `feat:`/`fix:`/`design:` + 한글 요약 + 본문에 변경 항목 나열
+1. 변경 등급(L1/L2/L3-S/L3-D)을 먼저 정하고 AGENTS.md 의 검토·승인 절차를 따른다
+2. L1·L2 는 사용자 상시 승인 아래 main 에서 직접 작업, L3 는 별도 branch 권장
+3. 로컬 미리보기로 화면 검증(읽기 화면만 — 로컬 서버는 운영 DB, 아래 "쓰기 UI 조작 금지"), 쓰기 흐름은 tests/ AppTest 로
+4. 전체 pytest 통과(결과 줄 확인) 후에만 push → 자동 배포. 커밋 메시지: 한글 요약 + 본문에 변경 항목
 5. 푸시마다 GitHub Actions `tests`(.github/workflows/tests.yml) 가 전체 pytest 를 다시 돌린다 — 로컬 전체 테스트 통과 후에만
    푸시하는 게이트는 그대로, CI 는 2차 확인. 결과는 https://github.com/jmd1014/wsprecision-app/actions
 
@@ -483,7 +485,7 @@
 
 ## DB 작업 규칙
 
-- 스키마 변경은 Supabase MCP `apply_migration`으로 (이력 유지). 2026-10-07 기준 마이그레이션 065(login_log)까지 — 적용 후 이 번호를 갱신할 것
+- 스키마 변경은 Supabase MCP `apply_migration`으로 (이력 유지). 2026-10-12 확인: `supabase_migrations.schema_migrations` 최신은 066(drop_backup_tables, 2026-09-17) — 적용 후 이 번호를 갱신하고, 새 번호는 문서가 아니라 실제 이력으로 확인할 것
 - **뷰 재정의는 항상 전체 정의를 명시** — `create or replace view v as select * from v ...`
   같은 자기 참조는 DDL 은 통과하지만 조회 시 무한 재귀로 뷰가 죽는다 (046 사고, 047 복구).
   기존 검사에 추가할 때도 전체 UNION 을 다시 쓴다
