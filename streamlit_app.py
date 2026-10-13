@@ -1360,14 +1360,18 @@ def w_lot_max_used():
     try:
         import db as _dbw
         rows = _dbw.fetch("inventory_transactions", "lot_number",
-                          "lot_number=like.W*"
-                          "&order=lot_number.desc", limit=20)
+                          "txn_type=eq.RECEIPT&lot_number=like.W*"
+                          "&order=txn_id.desc", limit=199)
+        # 'W' + 숫자만 (migration 068 next_w_lot 와 같은 규칙) — 'W2608-001'
+        # 같은 다른 형식의 숫자를 이어붙여 오판하던 것 수정. 입고 행을 최근
+        # 거래순으로 보므로 문자열 정렬(W10000 < W1001)에 흔들리지 않는다
+        # (2026-10-13)
+        import re as _re_w
         nums = []
         for r in rows:
-            _d = "".join(ch for ch in str(r.get("lot_number") or "")
-                         if ch.isdigit())
-            if _d:
-                nums.append(int(_d))
+            m = _re_w.fullmatch(r"W(\d+)", str(r.get("lot_number") or "").strip())
+            if m:
+                nums.append(int(m.group(1)))
         return max(nums) if nums else 0
     except Exception:
         return 0
@@ -1384,6 +1388,27 @@ def w_lot_next(count=1):
     """
     if count <= 0:
         return []
+    # ① DB 함수 next_w_lot (migration 068) — advisory lock 아래에서 base 계산과
+    #    카운터 갱신을 한 트랜잭션으로. 함수가 없거나(RpcUnavailable) 응답이
+    #    불명이면(None·Transport) ② 기존 로직으로 — 부작용이 카운터 갱신뿐이라
+    #    폴백해도 이중 효과가 없다(번호 공백만). RECEIPT W 번호 유니크 인덱스가
+    #    최종 방어. 테스트 목(db.rpc 없음/None)도 ② 로 간다.
+    try:
+        import db as _dbw
+        _rej = getattr(_dbw, "RpcRejected", None)
+        try:
+            _res = _dbw.rpc("next_w_lot", {"p_count": int(count)})
+        except Exception as _e:
+            if _rej is not None and isinstance(_e, _rej) \
+                    and getattr(_e, "message", "") == "w_lot_counter_unset":
+                return None            # 미설정 — 식별 번호 없이 입고 (현행 안내)
+            _res = None                # Unavailable / Transport / 그 외 거부
+        if isinstance(_res, list) and len(_res) == int(count) \
+                and all(str(x).startswith("W") for x in _res):
+            return [str(x) for x in _res]
+    except Exception:
+        pass
+    # ② 기존 로직: max(카운터, 원장 최대) + 1 → 카운터 갱신 (잠금 없음)
     try:
         import db as _dbw
         row = _dbw.fetch_one("app_settings", "key=eq.w_lot_counter", "value")
@@ -12701,7 +12726,7 @@ elif page == "구매 관리":
                                 _dupx = fetch("inventory_transactions",
                                               "txn_id",
                                               f"lot_number=eq.{_fq(_nw)}",
-                                              limit=1)
+                                              limit=1, cache=False)
                             except Exception:
                                 _dupx = [1]
                             if _nw == _ln9:
@@ -12711,15 +12736,22 @@ elif page == "구매 관리":
                                          "번호를 쓰세요")
                             else:
                                 try:
-                                    _db.update(
-                                        "inventory_transactions",
-                                        f"txn_id=eq.{_fq(_r9['txn_id'])}",
-                                        {"lot_number": _nw})
-                                    w_lot_sync_counter()
-                                    st.success(f"식별 번호 변경 → {_nw} "
-                                               "— 라벨을 재발행해 "
-                                               "부착하세요.")
-                                    st.rerun()
+                                    # update 는 실패 시 False — 유니크 인덱스
+                                    # (068)가 거부한 것을 성공으로 보이면
+                                    # 라벨과 원장이 어긋난다 (2026-10-13)
+                                    if not _db.update(
+                                            "inventory_transactions",
+                                            f"txn_id=eq.{_fq(_r9['txn_id'])}",
+                                            {"lot_number": _nw}):
+                                        st.error(f"{_nw}: 변경 저장 실패 — "
+                                                 "이미 사용 중인 번호이거나 "
+                                                 "DB 오류. 다시 조회하세요.")
+                                    else:
+                                        w_lot_sync_counter()
+                                        st.success(f"식별 번호 변경 → {_nw} "
+                                                   "— 라벨을 재발행해 "
+                                                   "부착하세요.")
+                                        st.rerun()
                                 except Exception as e:
                                     st.error(f"변경 실패: {e}")
 
