@@ -162,13 +162,26 @@ def _delete(table, filter_query):
 def rev_db(monkeypatch):
     import db
     monkeypatch.setattr(db, "fetch", _fetch)
-    monkeypatch.setattr(db, "fetch_one",
-                        lambda t, f="", s="*": (
-                            dict(MONTH_CLOSE[0])
-                            if t == "sales_month_close" and MONTH_CLOSE
-                            else None))
+    def _fetch_one(t, f="", s="*"):
+        if t == "sales_month_close" and MONTH_CLOSE:
+            return dict(MONTH_CLOSE[0])
+        if t == "shipments" and "shipment_id=eq." in f:
+            sid = int(f.split("shipment_id=eq.")[1].split("&")[0])
+            return next((dict(x) for x in SHIPMENTS if x["shipment_id"] == sid), None)
+        return None
+    monkeypatch.setattr(db, "fetch_one", _fetch_one)
     monkeypatch.setattr(db, "insert", _insert)
     monkeypatch.setattr(db, "update", _update)
+    # 조건부 머리글 갱신(status=eq.DRAFT, 2026-10-13 069) — DRAFT 가 아니면 0행
+    def _update_count(t, f, v, select="*"):
+        if t == "shipments" and "status=eq.DRAFT" in f:
+            sid = int(f.split("shipment_id=eq.")[1].split("&")[0])
+            row = next((x for x in SHIPMENTS if x["shipment_id"] == sid), None)
+            if row is None or row.get("status") != "DRAFT":
+                return 0
+        return 1 if db.update(t, f, v) else 0
+    monkeypatch.setattr(db, "update_count", _update_count)
+    monkeypatch.setattr(db, "rpc", lambda *a, **k: None)   # RPC 없음 → 기존 경로
     monkeypatch.setattr(db, "delete", _delete)
     monkeypatch.setattr(db, "health_check",
                         lambda: {"status": "OK", "counts": {}})
@@ -462,3 +475,22 @@ def test_confirmed_cancel_twice_does_not_double_reverse(rev_db, monkeypatch):
                    if t == "sales_order_items" and "soi_id=eq.11" in fq])
     assert n_line2 == 1, "두 번째 취소가 수주 라인을 다시 되돌리면 안 됨"
     assert SHIPMENTS[0]["status"] == "CANCELLED"
+
+
+def test_fix_header_zero_rows_is_reported(rev_db, monkeypatch):
+    """[확정 상태로 저장]이 0행(이미 상태가 바뀜)이면 성공으로 표시하지 않는다
+    (2026-10-13 069: status=eq.DRAFT 조건부 갱신)."""
+    _seed()
+    TXNS.append({"txn_id": 9, "ref_table": "shipment_items", "ref_id": 2,
+                 "txn_type": "ISSUE", "lot_number": None, "qty": -100,
+                 "product_id": "P1"})
+    ALLOCS.append({"alloc_id": 9, "si_id": 2, "sched_id": 2, "qty": 100})
+    import db
+    monkeypatch.setattr(db, "update_count", lambda *a, **k: 0)
+    at = _open()
+    assert [b for b in at.button if b.key == "cf_fix_header"]
+    at.button(key="cf_fix_header").click().run()
+    assert not at.exception, [str(e.value) for e in at.exception]
+    assert SHIPMENTS[1]["status"] == "DRAFT"
+    assert any("확정 상태 저장 실패" in str(e.value) for e in at.error)
+    assert not any("확정으로 저장했습니다" in str(x.value) for x in at.success)

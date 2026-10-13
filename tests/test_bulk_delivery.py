@@ -133,6 +133,11 @@ def _fetch_one(table, filter_query="", select="*"):
         for s in SHIPMENTS:
             if s["ship_no"] == no:
                 return dict(s)
+    if table == "shipments" and "shipment_id=eq." in filter_query:
+        sid = int(filter_query.split("shipment_id=eq.")[1].split("&")[0])
+        for s in SHIPMENTS:
+            if s["shipment_id"] == sid:
+                return dict(s)
     return None
 
 
@@ -157,6 +162,16 @@ def ship_db(monkeypatch):
     monkeypatch.setattr(db, "fetch_one", _fetch_one)
     monkeypatch.setattr(db, "insert", _insert)
     monkeypatch.setattr(db, "update", _update)
+    # 조건부 머리글 갱신(status=eq.DRAFT, 2026-10-13 069) — DRAFT 가 아니면 0행
+    def _update_count(t, f, v, select="*"):
+        if t == "shipments" and "status=eq.DRAFT" in f:
+            sid = int(f.split("shipment_id=eq.")[1].split("&")[0])
+            row = next((x for x in SHIPMENTS if x["shipment_id"] == sid), None)
+            if row is None or row.get("status") != "DRAFT":
+                return 0
+        return 1 if db.update(t, f, v) else 0
+    monkeypatch.setattr(db, "update_count", _update_count)
+    monkeypatch.setattr(db, "rpc", lambda *a, **k: None)   # RPC 없음 → 기존 경로
     monkeypatch.setattr(db, "delete", lambda t, f: 1)
     monkeypatch.setattr(db, "health_check",
                         lambda: {"status": "OK", "counts": {}})

@@ -454,6 +454,7 @@ def rpc(name: str, params=None, timeout=(5, 30)):
             timeout=timeout,
         )
     except Exception as e:   # Timeout, ConnectionError, …
+        clear_cache()        # 반영됐을 수 있다 — 호출부의 재검사가 캐시를 읽지 않게
         raise RpcTransportError(f"{name}: {type(e).__name__}") from e
     body = None
     try:
@@ -469,17 +470,28 @@ def rpc(name: str, params=None, timeout=(5, 30)):
         # 오버로드 모호(HTTP 300) — 함수는 실행되지 않았고 설정 오류. 거부로.
         log_error("rpc_rejected", f"{name}: {code0} {str(body.get('message'))[:200]}")
         raise RpcRejected(code0, str(body.get("message") or ""), r.status_code)
+    if code0 in ("55P03", "57014", "40P01"):
+        # 잠금 대기 초과·문장 취소·교착 — PostgREST 는 500 으로 보내지만 함수는
+        # 롤백된 것이 확실하다(미반영 확정, 재시도 가능) (2026-10-13 Data 리뷰)
+        clear_cache()
+        log_error("rpc_rejected", f"{name}: {code0} {str(body.get('message'))[:200]}")
+        raise RpcRejected(code0, str(body.get("message") or ""), r.status_code)
     if r.status_code >= 500 or r.status_code == 408 \
             or (r.status_code == 404 and not is_dict) \
             or 300 <= r.status_code < 400:
+        clear_cache()
         raise RpcTransportError(f"{name}: HTTP {r.status_code}")
     if r.status_code >= 400:
         clear_cache()
         code = str(body.get("code") or r.status_code) if is_dict else str(r.status_code)
         msg = str(body.get("message") or r.text[:200]) if is_dict else r.text[:200]
-        log_error("rpc_rejected", f"{name}: {code} {msg[:200]}")
+        extra = " | ".join(str(body.get(k)) for k in ("hint", "details")
+                           if is_dict and body.get(k))
+        log_error("rpc_rejected", f"{name}: {code} {msg[:200]}"
+                  + (f" | {extra[:200]}" if extra else ""))
         raise RpcRejected(code, msg, r.status_code)
     if body is None or not (200 <= r.status_code < 300):
+        clear_cache()
         raise RpcTransportError(f"{name}: 응답 본문 없음 (HTTP {r.status_code})")
     clear_cache()
     return body

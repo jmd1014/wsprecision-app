@@ -338,3 +338,14 @@ def test_log_error_rate_cap_per_minute(dbm, monkeypatch):
     assert len(req.calls) == dbm._ERR_RATE_MAX
     t[0] += 61
     assert dbm.log_error("db_write", "after-window") is True
+
+
+def test_rpc_lock_timeout_500_is_rejected_not_transport(dbm, monkeypatch):
+    """55P03/57014/40P01 은 PostgREST 가 500 으로 보내지만 함수는 롤백됨 — 거부(재시도 가능)."""
+    monkeypatch.setattr(dbm, "log_error", lambda *a, **k: True)
+    for code in ("55P03", "57014", "40P01"):
+        monkeypatch.setattr(dbm, "requests", _Req(_Resp(
+            500, "x", {"code": code, "message": "canceling statement"})))
+        with pytest.raises(dbm.RpcRejected) as ei:
+            dbm.rpc("confirm_shipment", {})
+        assert ei.value.code == code
