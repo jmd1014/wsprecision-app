@@ -382,6 +382,14 @@ def current_user_name() -> str:
 
 from utils import slack_notify as _sk  # 업무 분기점 슬랙 알림 (fire-and-forget)
 
+# 미처리 예외를 app_errors 에 남기는 로깅 훅 (migration 067, 2026-10-13).
+# 라우팅을 try 로 감싸지 않는다 — db.install_uncaught_hook docstring 참고.
+try:
+    import db as _dberr
+    _dberr.install_uncaught_hook()
+except Exception:
+    pass
+
 
 def click_guard(name, ttl=5.0):
     """이중 클릭 가드 — 같은 처리의 재진입을 ttl초 동안 막는다.
@@ -1461,6 +1469,11 @@ with st.sidebar:
     page = nav_admin or nav_flow or "홈"
     if not _is_admin and page in MENU_ADMIN:
         page = "홈"
+    # 오류 기록(app_errors)에 붙일 화면·사용자 — db.log_error 가 읽는다
+    try:
+        st.session_state["_err_ctx"] = {"page": page, "user": current_user_name()}
+    except Exception:
+        pass
     # 처리 중 표시 — 화면 실행 시작에 바로 그려지고 스크립트 끝에서 지운다.
     # (클릭마다 화면 전체가 다시 실행되는 동안 멈춘 듯 보이는 것 완화, 2026-09-17)
     _busy_ph = st.empty()

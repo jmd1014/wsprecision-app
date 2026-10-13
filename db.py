@@ -232,6 +232,8 @@ def insert(table: str, records: list[dict]) -> int:
         data=json.dumps(records, ensure_ascii=False, default=str),
     )
     if r.status_code not in (200, 201, 204):
+        log_error("db_write", f"{table} insert {r.status_code}: {r.text[:200]}",
+                  table_name=table)
         raise RuntimeError(f"{table} insert {r.status_code}: {r.text[:200]}")
     clear_cache()
     return len(records)
@@ -244,7 +246,35 @@ def update(table: str, filter_query: str, fields: dict) -> bool:
         data=json.dumps(fields, ensure_ascii=False, default=str),
     )
     clear_cache()
+    if r.status_code not in (200, 204):
+        log_error("db_write", f"{table} update {r.status_code}: {r.text[:200]}",
+                  table_name=table)
     return r.status_code in (200, 204)
+
+
+def update_count(table: str, filter_query: str, fields: dict,
+                 select: str = "*") -> int:
+    """UPDATE 후 실제로 바뀐 행 수. PostgREST 는 0행 매치여도 204 라 `update()` 의
+    True 만으로는 "조건에 맞는 행이 있었는지"를 알 수 없다 — 상태 조건부 갱신
+    (`status=eq.DRAFT`)처럼 행 수가 의미 있는 곳에서 쓴다. 실패는 -1.
+    필터 없는 전체 갱신 금지. select 로 돌려받을 컬럼을 줄일 수 있다."""
+    if not filter_query or not filter_query.strip():
+        raise ValueError("update_count: filter_query 필수 (전체 갱신 방지)")
+    r = requests.patch(
+        f"{_url()}/rest/v1/{table}?{filter_query}&select={select}",
+        headers={**_headers(), "Prefer": "return=representation"},
+        data=json.dumps(fields, ensure_ascii=False, default=str),
+        timeout=(5, 30),
+    )
+    clear_cache()
+    if r.status_code not in (200, 204):
+        log_error("db_write", f"{table} update {r.status_code}: {r.text[:200]}",
+                  table_name=table)
+        return -1
+    try:
+        return len(r.json()) if r.text else 0
+    except Exception:
+        return 0
 
 
 def delete(table: str, filter_query: str) -> int:
@@ -256,9 +286,200 @@ def delete(table: str, filter_query: str) -> int:
         headers={**_headers(), "Prefer": "return=representation"},
     )
     if r.status_code not in (200, 204):
+        log_error("db_write", f"{table} delete {r.status_code}: {r.text[:200]}",
+                  table_name=table)
         raise RuntimeError(f"{table} delete {r.status_code}: {r.text[:200]}")
     clear_cache()
     try:
         return len(r.json())
     except Exception:
         return 0
+
+
+# ═══════════════════════════════════════════════════════════════
+# 오류 기록 (migration 067 app_errors) — 2026-10-13, L3-S 계획서 C 항목
+# ═══════════════════════════════════════════════════════════════
+# 어떤 경우에도 예외를 내지 않는다. 내부에서 insert() 를 쓰지 않고(재귀 금지)
+# requests.post 를 직접, 짧은 timeout 으로 친다. 캐시는 건드리지 않는다.
+# 같은 내용(detail 앞 200자)은 60초에 한 번만 — 세션이 아니라 모듈 전역이라
+# 스크립트(백업·요약)에서 불러도 동작한다.
+_ERR_RECENT: dict = {}
+_ERR_DEDUP_SEC = 60.0
+_ERR_DOWN_KEY = "__down__"      # 기록 POST 자체가 실패하면 60초 동안 전부 건너뜀
+_ERR_RATE_MAX = 30              # 분당 기록 상한 (폭주 방지)
+_ERR_RATE = [0.0, 0]            # [창 시작 monotonic, 건수]
+_ERR_DETAIL_MAX = 500
+_ERR_TB_MAX = 4000
+_ERR_KINDS = ("db_write", "unhandled", "rpc_fallback", "rpc_rejected", "manual")
+
+
+def _error_context() -> dict:
+    """앱이 실행 시작 때 session_state['_err_ctx'] 에 둔 {page, user} — 없으면 빈 값."""
+    try:
+        ctx = st.session_state.get("_err_ctx") or {}
+        return {"page": ctx.get("page"), "user_name": ctx.get("user")}
+    except Exception:
+        return {"page": None, "user_name": None}
+
+
+def log_error(kind: str, detail, *, page=None, user_name=None,
+              table_name=None, tb=None) -> bool:
+    """오류 한 건을 app_errors 에 남긴다. 기록 성공이면 True, 아니면 False.
+
+    kind: db_write | unhandled | rpc_fallback | rpc_rejected | manual
+    detail 은 500자, tb 는 4000자로 자른다. 헤더·키·URL 은 넣지 않는다.
+    """
+    try:
+        d = str(detail if detail is not None else "")[:_ERR_DETAIL_MAX]
+        key = d[:200]
+        now = time.monotonic()
+        down = _ERR_RECENT.get(_ERR_DOWN_KEY)
+        if down is not None and now - down < _ERR_DEDUP_SEC:
+            return False               # 기록 서버가 안 받는 중 — 지연 증폭 방지
+        last = _ERR_RECENT.get(key)
+        if last is not None and now - last < _ERR_DEDUP_SEC:
+            return False
+        if now - _ERR_RATE[0] >= 60.0:
+            _ERR_RATE[0], _ERR_RATE[1] = now, 0
+        if _ERR_RATE[1] >= _ERR_RATE_MAX:
+            return False
+        _ERR_RATE[1] += 1
+        _ERR_RECENT[key] = now
+        if len(_ERR_RECENT) > 500:
+            for k, _ in sorted(list(_ERR_RECENT.items()),
+                               key=lambda kv: kv[1])[:250]:
+                _ERR_RECENT.pop(k, None)
+        ctx = _error_context()
+        rec = {
+            "kind": kind if kind in _ERR_KINDS else "manual",
+            "detail": d,
+            "page": page or ctx.get("page"),
+            "user_name": user_name or ctx.get("user_name"),
+            "table_name": table_name,
+            "traceback": (str(tb)[:_ERR_TB_MAX] if tb else None),
+        }
+        try:
+            r = requests.post(
+                f"{_url()}/rest/v1/app_errors",
+                headers={**_headers(), "Prefer": "return=minimal"},
+                data=json.dumps([rec], ensure_ascii=False, default=str),
+                timeout=(2, 3),
+            )
+            ok = r.status_code in (200, 201, 204)
+        except Exception:
+            ok = False
+        if not ok:
+            _ERR_RECENT[_ERR_DOWN_KEY] = now
+        return ok
+    except Exception:
+        return False
+
+
+_HOOK_INSTALLED = False
+
+
+def install_uncaught_hook() -> bool:
+    """미처리 예외 기록 — Streamlit 이 사용자 스크립트 예외를 처리할 때 남기는
+    로그('streamlit.error_util' 로거, exc_info 포함)에 핸들러를 붙인다.
+    페이지 라우팅 전체를 try 로 감싸지 않아도 되고(17,000줄 재들여쓰기 회피),
+    st.rerun/st.stop 은 예외 처리 경로를 타지 않아 기록되지 않는다.
+    logger.enableRich 가 켜져 있으면 Streamlit 이 로그 대신 rich 로 출력해 이
+    훅이 비고, logger.level 을 error 보다 높이면 기록이 꺼진다 — 이 앱은 둘 다
+    기본값이다. 로거 이름은 Streamlit 내부라 버전 업 때 CI 의
+    test_db_log_error.py 훅 테스트가 게이트다. 한 프로세스에 한 번만 붙는다."""
+    global _HOOK_INSTALLED
+    if _HOOK_INSTALLED:
+        return True
+    try:
+        import logging
+        import traceback as _tb
+
+        class _AppErrorHandler(logging.Handler):
+            def emit(self, record):
+                try:
+                    ei = record.exc_info
+                    if not ei or not ei[1]:
+                        return
+                    ex = ei[1]
+                    log_error("unhandled",
+                              f"{type(ex).__name__}: {str(ex)[:300]}",
+                              tb="".join(_tb.format_exception(*ei)))
+                except Exception:
+                    pass
+
+        h = _AppErrorHandler(level=logging.ERROR)
+        h.set_name("wsapp_app_errors")
+        lg = logging.getLogger("streamlit.error_util")
+        if not any(getattr(x, "name", "") == "wsapp_app_errors"
+                   for x in lg.handlers):
+            lg.addHandler(h)
+        _HOOK_INSTALLED = True
+        return True
+    except Exception:
+        return False
+
+
+# ═══════════════════════════════════════════════════════════════
+# RPC (PostgREST /rpc) — L3-S 계획서 공통 전제, 2026-10-13
+# ═══════════════════════════════════════════════════════════════
+class RpcUnavailable(Exception):
+    """서버가 함수를 실행하지 않았음이 확실 — HTTP 404 + PGRST202
+    (함수 없음 또는 파라미터 이름 불일치). 호출부는 기존 경로로 폴백하고,
+    여기서 log_error('rpc_fallback') 로 남긴다."""
+
+
+class RpcRejected(Exception):
+    """함수가 RAISE 로 거부 — 미반영 확정, 재시도 가능. code/message 보존."""
+
+    def __init__(self, code: str, message: str, status: int = 400):
+        super().__init__(f"{code}: {message}")
+        self.code, self.message, self.status = code, message, status
+
+
+class RpcTransportError(Exception):
+    """Timeout/ConnectionError/5xx/본문 없음 — 반영 여부 불명. 자동 재시도 금지."""
+
+
+def rpc(name: str, params=None, timeout=(5, 30)):
+    """POST /rest/v1/rpc/<name>. 성공은 JSON 본문이 있을 때만(dict/list 반환).
+
+    예외: RpcUnavailable / RpcRejected / RpcTransportError (위 docstring).
+    성공·거부 뒤에는 clear_cache() — 거부 원인이 오래된 화면인 경우가 많다.
+    """
+    try:
+        r = requests.post(
+            f"{_url()}/rest/v1/rpc/{name}",
+            headers=_headers(),
+            data=json.dumps(params or {}, ensure_ascii=False, default=str),
+            timeout=timeout,
+        )
+    except Exception as e:   # Timeout, ConnectionError, …
+        raise RpcTransportError(f"{name}: {type(e).__name__}") from e
+    body = None
+    try:
+        body = r.json() if r.text else None
+    except Exception:
+        body = None
+    is_dict = isinstance(body, dict)
+    code0 = str(body.get("code") or "") if is_dict else ""
+    if r.status_code == 404 and code0.startswith("PGRST202"):
+        log_error("rpc_fallback", f"{name}: {str(body.get('message'))[:200]}")
+        raise RpcUnavailable(f"{name}: {body.get('message')}")
+    if code0.startswith("PGRST203"):
+        # 오버로드 모호(HTTP 300) — 함수는 실행되지 않았고 설정 오류. 거부로.
+        log_error("rpc_rejected", f"{name}: {code0} {str(body.get('message'))[:200]}")
+        raise RpcRejected(code0, str(body.get("message") or ""), r.status_code)
+    if r.status_code >= 500 or r.status_code == 408 \
+            or (r.status_code == 404 and not is_dict) \
+            or 300 <= r.status_code < 400:
+        raise RpcTransportError(f"{name}: HTTP {r.status_code}")
+    if r.status_code >= 400:
+        clear_cache()
+        code = str(body.get("code") or r.status_code) if is_dict else str(r.status_code)
+        msg = str(body.get("message") or r.text[:200]) if is_dict else r.text[:200]
+        log_error("rpc_rejected", f"{name}: {code} {msg[:200]}")
+        raise RpcRejected(code, msg, r.status_code)
+    if body is None or not (200 <= r.status_code < 300):
+        raise RpcTransportError(f"{name}: 응답 본문 없음 (HTTP {r.status_code})")
+    clear_cache()
+    return body
