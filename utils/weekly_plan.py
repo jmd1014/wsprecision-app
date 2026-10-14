@@ -239,7 +239,15 @@ def expand_ops(pn, product_id, stds, machine_groups):
     singles = {st[0] for st, _ in units if len(st) == 1}
     any_stepped = any(st for st, _ in units)
     picked, covered = [], set()
-    for st, s in sorted(units, key=lambda t: (len(t[0]) != 1, t[0] or [9999])):
+    _rank = {"CONFIRMED": 0}
+    _srank = {"SHEET": 0, "LOG": 1}
+
+    def _prio(t):
+        # 같은 스텝이 여러 행(다른 품번 표기)이면 확정 > 시트 > 실적, 그다음 op_id (결정적, 2026-10-14)
+        st, s = t
+        return (len(st) != 1, st or [9999], _rank.get(s.get("std_status"), 1),
+                _srank.get(s.get("std_source"), 2), int(s.get("op_id") or 0))
+    for st, s in sorted(units, key=_prio):
         if not st:
             if any_stepped:
                 continue

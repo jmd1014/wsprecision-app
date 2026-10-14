@@ -10746,7 +10746,7 @@ elif page == "생산 계획":
             """품번의 공정 표준(참고값)."""
             try:
                 flt = (f"product_id=eq.{_fq(pid)}" if pid
-                       else f"pn=eq.{_fq(pn)}")
+                       else f"pn=eq.{_fq(pn)}") + "&order=op_id"
                 return fetch("product_op_std",
                              "op_id,pn,product_id,process,step,group_code,uph_std,"
                              "uph_auto,uph_mean,uph_sheet,std_status,setup_min,"

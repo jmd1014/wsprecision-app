@@ -187,6 +187,21 @@ def test_expand_prefers_single_steps_over_merged_and_skips_stepless():
     assert [r["steps"] for r in wp.expand_ops("X", None, only_merged, ["CNC", "MCT"])] == [[30, 40]]
 
 
+def test_expand_same_step_multiple_rows_is_deterministic():
+    """같은 제품·같은 스텝 표준이 품번 표기만 다르게 둘이면 확정 > 시트 > 실적, 그다음 op_id (M-7)."""
+    stds = [
+        {"op_id": 9, "process": "8HFDV VM 05(픽시스#10)", "step": 10, "group_code": "CNC", "uph_auto": 30, "std_status": "AUTO", "std_source": "SHEET", "active": True},
+        {"op_id": 3, "process": "8HFDV-05#10", "step": 10, "group_code": "CNC", "uph_auto": 20, "std_status": "AUTO", "std_source": "SHEET", "active": True},
+        {"op_id": 5, "process": "8HFDV-05#20", "step": 20, "group_code": "CNC", "uph_auto": 40, "std_status": "AUTO", "std_source": "LOG", "active": True},
+        {"op_id": 7, "process": "8HFDV-X#20", "step": 20, "group_code": "CNC", "uph_std": 44, "std_status": "CONFIRMED", "std_source": "LOG", "active": True},
+    ]
+    rows = wp.expand_ops("8HFDV-VM-05", "P0001", stds, ["CNC", "MCT"])
+    assert [(r["steps"], r["uph"]) for r in rows] == [([10], 20.0), ([20], 44.0)]
+    # 입력 순서를 바꿔도 같다
+    rows2 = wp.expand_ops("8HFDV-VM-05", "P0001", list(reversed(stds)), ["CNC", "MCT"])
+    assert [(r["steps"], r["uph"]) for r in rows2] == [([10], 20.0), ([20], 44.0)]
+
+
 def test_merge_and_split():
     rows = wp.expand_ops("4PDVN-03", "P0005", STDS, ["CNC", "MCT"])
     for r in rows:

@@ -54,6 +54,23 @@ def test_aggregate_median_uph_and_machines():
     assert m["runs"] == 2 and m["uph_actual"] == 40
 
 
+def test_aggregate_group_prefers_machines_over_pn_prefix():
+    """'품번#스텝' 표기는 품번 접두어(HA·T·MRG)를 장비군으로 집지 않고 실적 설비 최빈 장비군을 쓴다.
+    옛 'CNC#10' 표기는 설비가 없어도 공정 장비군 유지 (2026-10-14 정비 L2)."""
+    base = {"total_qty": 60, "work_start": "09:00", "work_end": "12:00", "log_date": "2026-09-01"}
+    rows = [
+        {**base, "pn": "HA30-80730", "process": "HA30-80730#10", "process_step": 10, "machine": "CNC01"},
+        {**base, "pn": "HA30-80730", "process": "HA30-80730#10", "process_step": 10, "machine": "CNC03"},
+        {**base, "pn": "HA30-80730", "process": "HA30-80730#10", "process_step": 10, "machine": "MCT05"},
+        {**base, "pn": "MRG6-07", "process": "MRG6-07#20#30", "process_step": 20, "machine": "MCT 02"},
+        {**base, "pn": "4PDVN-03", "process": "CNC#10", "process_step": 10, "machine": None},
+    ]
+    out = aggregate(rows)["ops"]
+    assert out[("HA30-80730", "HA30-80730#10")]["group"] == "CNC"
+    assert out[("MRG6-07", "MRG6-07#20#30")]["group"] == "MCT"
+    assert out[("4PDVN-03", "CNC#10")]["group"] == "CNC"
+
+
 def test_op_hours():
     assert op_hours(200, 25, setup_min=30) == 8.5
     assert op_hours(10, 0) is None

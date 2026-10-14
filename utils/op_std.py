@@ -13,6 +13,7 @@
 이 모듈은 DB 를 모른다 — 입력은 production_log 행, 출력은 표준 dict.
 """
 import re
+from collections import Counter
 from statistics import median
 
 _MACHINE_RE = re.compile(r"^\s*([A-Za-z]+)\s*[-_ ]?\s*(\d+)\s*$")
@@ -39,11 +40,15 @@ def machine_group(name):
     return m.group(1) if m else n
 
 
-def process_group(process):
-    """공정명 'CNC#10' → 'CNC' (공정이 지정하는 장비군)."""
+def process_group(process, pn=None):
+    """공정명 'CNC#10' → 'CNC' (옛 표기: 공정이 장비군을 지정). '품번#스텝' 표기(공정명이 품번으로
+    시작)에서는 None — 품번 접두어(T/HA/MRG…)를 장비군으로 집던 오염 원인 (2026-10-14 정비)."""
     if not process:
         return None
-    m = re.match(r"^\s*([A-Za-z]+)", str(process))
+    s = str(process).strip()
+    if pn and s.upper().startswith(str(pn).strip().upper()):
+        return None
+    m = re.match(r"^\s*([A-Za-z]+)", s)
     return m.group(1).upper() if m else None
 
 
@@ -105,7 +110,7 @@ def aggregate(rows, min_hours=0.25):
         o = per_op.setdefault(k, {
             "pn": pn, "product_id": r.get("product_id"), "process": proc,
             "step": r.get("process_step"),
-            "group": process_group(proc) or machine_group(mach),
+            "group": process_group(proc, pn),
             "uphs": [], "hours": 0.0, "qty": 0.0, "machines": set(),
             "first_date": None, "last_date": None})
         if not o["product_id"] and r.get("product_id"):
@@ -133,10 +138,12 @@ def aggregate(rows, min_hours=0.25):
 
     ops = {}
     for k, o in per_op.items():
+        # 장비군: 실적 설비의 최빈 장비군 우선, 없으면 옛 표기의 공정 장비군
+        _mg = Counter(g for g in (machine_group(m) for m in o["machines"]) if g)
         ops[k] = {
             "pn": o["pn"], "product_id": o["product_id"],
             "process": o["process"], "step": o["step"],
-            "group": o["group"],
+            "group": (_mg.most_common(1)[0][0] if _mg else o["group"]),
             "uph_auto": round(median(o["uphs"]), 1),
             "uph_mean": round(o["qty"] / o["hours"], 1) if o["hours"] else None,
             "sample_n": len(o["uphs"]),
