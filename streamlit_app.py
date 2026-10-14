@@ -11513,9 +11513,20 @@ elif page == "생산 계획":
         except Exception:
             _sb_cal = {}
 
+        _sb_stale = {"n": 0}
+
         def _sb_hours(m, d):
-            """(주간 h, 야간 h) — 근무 체계 기준."""
-            return _sbwp.machine_shift_hours(_sbwp.day_type(d, _sb_cal), _sb_prof, m)
+            """(주간 h, 야간 h) — 근무 체계 기준. 구버전 utils.weekly_plan 이 메모리에 남아
+            machine_shift_hours 가 없으면 종전 규칙(교대당 시간, 일요일 휴무)으로 — 보드가
+            통째로 사라지지 않게 (2026-10-14 Cloud 사고 후속)."""
+            try:
+                return _sbwp.machine_shift_hours(_sbwp.day_type(d, _sb_cal), _sb_prof, m)
+            except AttributeError:
+                _sb_stale["n"] += 1
+                if d.weekday() == 6:
+                    return 0.0, 0.0
+                hps = float(m.get("hours_per_shift") or 9)
+                return hps, (hps if m.get("night_active", True) else 0.0)
 
         def _sb_cell_hours(m, d_iso, shift):
             dh, nh = _sb_hours(m, _sb_date.fromisoformat(str(d_iso)[:10]))
@@ -11603,8 +11614,11 @@ elif page == "생산 계획":
             # 페이지를 죽이지 않고 종전 규칙(교대당 시간)으로 그린다 (2026-10-14 Cloud 사고)
             _sb_cells, _sb_load = _sch.build_board(
                 _sb_act, _sb_days, _sb_sched, _sb_logs, _sb_today)
-            st.warning("근무 체계가 아직 반영되지 않은 구버전 모듈입니다 — 앱이 곧 재시작되며, "
-                       "계속 보이면 관리자에게 알리세요.")
+            _sb_stale["n"] += 1
+        if _sb_stale["n"]:
+            st.warning("근무 체계가 아직 반영되지 않은 구버전 모듈로 그렸습니다(토요일도 평일 시간). "
+                       "계획 데이터는 그대로입니다 — Streamlit Cloud 에서 앱을 Reboot 하면 "
+                       "정상 반영됩니다.")
         _sb_gl = _sch.group_load(_sb_act, _sb_load)
         _sb_unassigned = [q for q in _sb_queue
                           if not q["no_std"] and q["alloc"] < q["net"] - 1e-9]

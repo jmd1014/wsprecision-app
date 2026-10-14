@@ -134,6 +134,22 @@ def test_tabs_and_summary_render(plan_db):
     assert not any(c.value for c in at.caption if "주간" in c.value), "설명은 help 로만"
 
 
+def test_board_survives_stale_modules(plan_db, monkeypatch):
+    """Cloud 재시작 전 구버전 모듈: build_board 가 hours_fn 을 모르고 weekly_plan 에
+    machine_shift_hours 가 없어도 보드 탭은 경고 1건과 함께 그려진다 (2026-10-14 사고)."""
+    import utils.schedule as sch
+    import utils.weekly_plan as wp
+    real = sch.build_board
+
+    def old_build_board(machines, days, sched, logs, today):
+        return real(machines, days, sched, logs, today)
+    monkeypatch.setattr(sch, "build_board", old_build_board)
+    monkeypatch.delattr(wp, "machine_shift_hours")
+    at = _open(plan_db)
+    assert not at.exception, [str(e.value) for e in at.exception]
+    assert sum(1 for w in at.warning if "구버전 모듈" in w.value) == 1
+
+
 def test_week_navigation_is_independent_from_board(plan_db):
     at = _open(plan_db)
     at.button(key="wp_prev").click().run()
