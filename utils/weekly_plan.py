@@ -87,6 +87,18 @@ def machine_day_hours(dt, profiles, machine):
     return hours
 
 
+def machine_shift_hours(dt, profiles, machine):
+    """설비 한 대의 그 날 (주간 h, 야간 h) — 플래그 반영. 보드 칸 시간용."""
+    if not machine or not _truthy(machine.get("active", True)):
+        return 0.0, 0.0
+    dh, nh = profile_hours(dt, profiles)
+    if dt in ("SATURDAY", "HOLIDAY") and not _truthy(machine.get("sat_active", True)):
+        return 0.0, 0.0
+    if not _truthy(machine.get("night_active", True)):
+        nh = 0.0
+    return dh, nh
+
+
 def week_capacity(week_start, machines, profiles=None, calendar=None):
     """{장비군: 가용 h} — 장비군 없는 설비는 ETC."""
     cap = {}
@@ -215,12 +227,32 @@ def expand_ops(pn, product_id, stds, machine_groups):
          qty, uph, uph_source, setup_min, hours}"""
     rows = []
     stds = [s for s in (stds or []) if _truthy(s.get("active", True))]
-    stds.sort(key=lambda s: (s.get("step") if s.get("step") is not None else 9999,
-                             str(s.get("process") or "")))
-    for i, s in enumerate(stds):
+    units = []
+    for s in stds:
         steps = steps_from_process(s.get("process"))
         if not steps and s.get("step") is not None:
             steps = [int(s["step"])]
+        units.append((steps, s))
+    # 세부 공정(단일 스텝) 표준이 기본. 합친 공정명('#20#30') 표준은 그 스텝 전부가 단일 스텝으로
+    # 없을 때만 전개하고, 있으면 사용자가 합칠 때 참고값으로만 쓴다(겹침 방지). 스텝 없는 행은
+    # 스텝 있는 행이 하나라도 있으면 건너뛴다 (2026-10-14 현장 테스트: MRG6-07·11SDF-BL-10)
+    singles = {st[0] for st, _ in units if len(st) == 1}
+    any_stepped = any(st for st, _ in units)
+    picked, covered = [], set()
+    for st, s in sorted(units, key=lambda t: (len(t[0]) != 1, t[0] or [9999])):
+        if not st:
+            if any_stepped:
+                continue
+            picked.append((st, s))
+            continue
+        if len(st) > 1 and (set(st) & singles or set(st) & covered):
+            continue
+        if set(st) & covered:
+            continue
+        picked.append((st, s))
+        covered |= set(st)
+    picked.sort(key=lambda t: (t[0] or [9999]))
+    for i, (steps, s) in enumerate(picked):
         uph, src = std_uph(s)
         g, chk = std_group(s, machine_groups)
         rows.append(_row(pn, product_id, steps, i, g, chk, 0, uph, src,

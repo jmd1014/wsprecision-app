@@ -117,12 +117,14 @@ def cell_status(plan, actual, plan_date, today):
     return "SHORT" if d < t else "RUN"
 
 
-def build_board(machines, days, sched, logs, today):
+def build_board(machines, days, sched, logs, today, hours_fn=None):
     """보드 셀 사전.
 
     machines: [{machine_id, group_code, active, night_active}]
     sched:    production_schedule 행 (해당 주)
     logs:     production_log 행 (해당 주, 설비·날짜·교대·공정·수량·가동/정지)
+    hours_fn: (machine, date) → (주간 h, 야간 h). 근무 체계(요일 유형·설비 플래그)를
+              반영한 가용시간. 없으면 종전 규칙(교대당 hours_per_shift, 기본 9h × 일수).
     returns: {(machine_id, 'YYYY-MM-DD', shift): {plan, actual, status,
               stop, ...}}, {machine_id: (plan_hours, avail_hours)}
     """
@@ -177,8 +179,14 @@ def build_board(machines, days, sched, logs, today):
     for m in machines:
         if not m.get("active", True):
             continue
-        hps = _f(m.get("hours_per_shift")) or 9.0
-        avail = ndays * hps * (2 if m.get("night_active", True) else 1)
+        if hours_fn is not None:
+            avail = 0.0
+            for d in days:
+                dh, nh = hours_fn(m, d)
+                avail += _f(dh) + _f(nh)
+        else:
+            hps = _f(m.get("hours_per_shift")) or 9.0
+            avail = ndays * hps * (2 if m.get("night_active", True) else 1)
         planned = sum(_f(c["plan"].get("plan_hours"))
                       for k, c in cells.items()
                       if k[0] == m["machine_id"] and c["plan"])

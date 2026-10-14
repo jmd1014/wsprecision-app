@@ -80,6 +80,15 @@ def test_machine_day_hours_flags():
     assert wp.machine_day_hours("WEEKDAY", None, {**m, "active": False}) == 0.0
 
 
+def test_machine_shift_hours_split():
+    m = {"active": True, "night_active": True, "sat_active": True}
+    assert wp.machine_shift_hours("WEEKDAY", None, m) == (10.0, 10.0)
+    assert wp.machine_shift_hours("SATURDAY", None, m) == (6.0, 6.0)
+    assert wp.machine_shift_hours("SATURDAY", None, {**m, "sat_active": False}) == (0.0, 0.0)
+    assert wp.machine_shift_hours("WEEKDAY", None, {**m, "night_active": False}) == (10.0, 0.0)
+    assert wp.machine_shift_hours("OFF", None, m) == (0.0, 0.0)
+
+
 def test_week_capacity_groups_and_holiday():
     machines = [
         {"machine_id": "CNC01", "group_code": "CNC", "active": True, "night_active": True, "sat_active": True},
@@ -150,6 +159,32 @@ def test_expand_ops_from_standards():
     none = wp.expand_ops("NEW-PN", None, [], ["CNC", "MCT"])
     assert len(none) == 1 and none[0]["steps"] == [] and none[0]["uph"] is None \
         and none[0]["group_code"] == "ETC" and none[0]["group_check"]
+
+
+def test_expand_prefers_single_steps_over_merged_and_skips_stepless():
+    """MRG6-07: #10, #20, #20#30, #30 표준이 함께 있으면 #10·#20·#30 만 전개(겹침 방지),
+    합친 '#20#30' 은 합칠 때 참고값. 11SDF-BL-10: 스텝 없는 행은 스텝 행이 있으면 건너뜀."""
+    stds = [
+        {"process": "MRG6-07#10", "step": 10, "group_code": "MRG", "uph_auto": 21, "machines_used": "CNC09", "active": True},
+        {"process": "MRG6-07#20", "step": 20, "group_code": "CNC", "uph_auto": 47, "active": True},
+        {"process": "MRG6-07#20#30", "step": 20, "group_code": "MRG", "uph_auto": 36, "machines_used": "CNC19", "active": True},
+        {"process": "MRG6-07#30", "step": 30, "group_code": "CNC", "uph_auto": 139, "active": True},
+        {"process": "MRG6-07", "step": None, "group_code": "MRG", "uph_auto": 5, "active": True},
+    ]
+    rows = wp.expand_ops("MRG6-07", "P0006", stds, ["CNC", "MCT"])
+    assert [r["steps"] for r in rows] == [[10], [20], [30]]
+    assert rows[0]["group_code"] == "CNC" and rows[0]["group_check"]
+    # 합칠 때는 합친 공정명 표준(36)을 그대로 참고
+    merged = wp.build_payload(
+        [{**rows[1], "plan_item_id": 2, "qty": 100}, {**rows[2], "plan_item_id": 3, "qty": 100}],
+        [{"delete": False, "steps": "#20#30", "group": "CNC", "qty": 100, "uph": 47, "setup": 0, "due": None, "note": "", "split": False},
+         {"delete": True, "steps": "#30", "group": "CNC", "qty": 100, "uph": 139, "setup": 0, "due": None, "note": "", "split": False}],
+        lambda pn, pid: stds, ["CNC", "MCT"])
+    out, dele, errors, _ = merged
+    assert not errors and dele == [3] and out[0]["uph"] == 36.0 and out[0]["uph_source"] == "AUTO"
+    # 합친 표준만 있는 스텝 묶음은 그대로 전개
+    only_merged = [{"process": "X#30#40", "step": 30, "group_code": "MCT", "uph_sheet": 15, "active": True}]
+    assert [r["steps"] for r in wp.expand_ops("X", None, only_merged, ["CNC", "MCT"])] == [[30, 40]]
 
 
 def test_merge_and_split():

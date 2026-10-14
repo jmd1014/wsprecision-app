@@ -96,3 +96,18 @@ def test_board_cells_and_load():
     assert load["CNC09"] == (9, 108) and load["CNC16"] == (0, 54)
     assert "MCT99" not in load
     assert group_load(machines, load) == {"CNC": (9, 162)}
+
+
+def test_build_board_hours_fn_uses_work_schedule():
+    """근무 체계: 평일 10/10, 토 6/6, 야간 미운영 설비는 야간 0 (2026-10-14)."""
+    from datetime import date, timedelta
+    from utils.schedule import build_board
+    days = [date(2026, 10, 12) + timedelta(days=i) for i in range(6)]
+    mcs = [{"machine_id": "CNC01", "group_code": "CNC", "active": True, "night_active": True},
+           {"machine_id": "CNC02", "group_code": "CNC", "active": True, "night_active": False}]
+
+    def hours_fn(m, d):
+        dh, nh = (6.0, 6.0) if d.weekday() == 5 else (10.0, 10.0)
+        return dh, (nh if m.get("night_active", True) else 0.0)
+    _, load = build_board(mcs, days, [], [], date(2026, 10, 14), hours_fn=hours_fn)
+    assert load["CNC01"] == (0.0, 112.0) and load["CNC02"] == (0.0, 56.0)

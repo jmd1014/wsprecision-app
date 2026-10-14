@@ -192,7 +192,9 @@ def test_add_product_expands_standard_ops(plan_db, monkeypatch):
     monkeypatch.setattr(plan_db, "fetch", lambda t, s="*", f="", limit=1000, cache=None:
                         [] if t == "production_plan_items" else _fetch(t, s, f, limit))
     at = _open(plan_db)
-    at.text_input(key="wp_q").set_value("4PDVN").run()
+    at.text_input(key="wp_q").set_value("4PDVN")
+    next(b for b in at.button
+         if b.label == "검색" and "wp_search_form" in str(getattr(b, "form_id", ""))).click().run()
     at.button(key="wp_add").click().run()
     assert not at.exception, [str(e.value) for e in at.exception]
     rows = at.session_state["wp_rows"]

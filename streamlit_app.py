@@ -10756,9 +10756,15 @@ elif page == "생산 계획":
 
         # ── 품번 검색 추가 (폼 밖 — 즉시 세션 행 추가, 저장은 아래 표에서) ──
         with st.expander("품번 추가", expanded=not _wp_rows):
-            wa1, wa2, wa3 = st.columns([2, 2.5, 1])
-            _wp_q = wa1.text_input("품번 검색", key="wp_q", placeholder="예: 4PDVN, H11SDF",
-                                   help="활성 제품 품번·별칭으로 찾습니다")
+            with st.form("wp_search_form"):
+                ws1, ws2 = st.columns([4, 1])
+                ws1.text_input("품번 검색", key="wp_q", placeholder="예: 4PDVN, H11SDF, 11SDF",
+                               help="활성 제품 품번·별칭으로 찾습니다 (옛 품번·시트 표기도 별칭이면 검색됨)")
+                ws2.write("")
+                if ws2.form_submit_button("검색", use_container_width=True):
+                    st.session_state["wp_q_go"] = st.session_state.get("wp_q", "")
+            _wp_q = st.session_state.get("wp_q_go", "")
+            wa2, wa3 = st.columns([3.5, 1])
             _wp_cands = []
             if _wp_q and len(_wp_q.strip()) >= 2:
                 try:
@@ -11481,10 +11487,39 @@ elif page == "생산 계획":
         try:
             _sb_mcs = fetch("machines",
                             "machine_id,name,group_code,active,night_active,"
-                            "hours_per_shift", "order=machine_id", limit=500)
-        except Exception as e:
-            st.error(f"설비 조회 실패: {e}")
-            _sb_mcs = []
+                            "sat_active,hours_per_shift", "order=machine_id", limit=500)
+        except Exception:
+            try:   # 070 전 DB(sat_active 없음) 호환
+                _sb_mcs = fetch("machines",
+                                "machine_id,name,group_code,active,night_active,"
+                                "hours_per_shift", "order=machine_id", limit=500)
+            except Exception as e:
+                st.error(f"설비 조회 실패: {e}")
+                _sb_mcs = []
+        # 근무 체계(요일 유형별 주/야 시간·예외일·설비 토·공휴일 플래그)를 보드 칸 시간에
+        # 적용 — 토요일 칸이 평일과 같은 교대당 시간으로 잡히던 문제 (2026-10-14 현장 테스트).
+        # 표·예외일을 못 읽으면 기본 근무 체계(평일 10/10, 토·공휴일 6/6)로 계산한다.
+        import utils.weekly_plan as _sbwp
+        try:
+            _sb_prof = {r["day_type"]: r for r in fetch(
+                "shift_profiles", "day_type,day_hours,night_hours", "", limit=10)}
+        except Exception:
+            _sb_prof = {}
+        try:
+            _sb_cal = {r["cal_date"]: r["day_type"] for r in fetch(
+                "work_calendar", "cal_date,day_type",
+                f"cal_date=gte.{_sb_ws.isoformat()}"
+                f"&cal_date=lte.{(_sb_ws + _sb_td(days=6)).isoformat()}", limit=20)}
+        except Exception:
+            _sb_cal = {}
+
+        def _sb_hours(m, d):
+            """(주간 h, 야간 h) — 근무 체계 기준."""
+            return _sbwp.machine_shift_hours(_sbwp.day_type(d, _sb_cal), _sb_prof, m)
+
+        def _sb_cell_hours(m, d_iso, shift):
+            dh, nh = _sb_hours(m, _sb_date.fromisoformat(str(d_iso)[:10]))
+            return float(nh if shift == "야간" else dh)
         _sb_act = [m for m in _sb_mcs if m.get("active")]
         try:
             _sb_sched = _sb_all(
@@ -11561,7 +11596,7 @@ elif page == "생산 계획":
         _sb_queue = _sch.build_queue(_sb_lines, _sb_rounds, _sb_stock,
                                      _sb_wip, _sb_stds, _sb_alloc, _sb_cap)
         _sb_cells, _sb_load = _sch.build_board(
-            _sb_act, _sb_days, _sb_sched, _sb_logs, _sb_today)
+            _sb_act, _sb_days, _sb_sched, _sb_logs, _sb_today, hours_fn=_sb_hours)
         _sb_gl = _sch.group_load(_sb_act, _sb_load)
         _sb_unassigned = [q for q in _sb_queue
                           if not q["no_std"] and q["alloc"] < q["net"] - 1e-9]
@@ -11571,11 +11606,25 @@ elif page == "생산 계획":
                            for c in _sb_cells.values() if c["plan"])
         _sb_act_sum = sum(c["actual"] for c in _sb_cells.values()
                           if c["plan"])
-        # 작업 사전 (표준 있는 미납 작업 + 이번 주에 이미 잡힌 작업)
+        # 작업 사전 (표준 있는 미납 작업 + 이번 주에 이미 잡힌 작업). 재공(열린 배치)이
+        # 미납보다 많아 순생산필요가 0 인 품번(11SDF 류)도 표준이 있으면 검색에 뜨게 —
+        # 보드는 계획 도구이지 필요량 판정이 아니다 (2026-10-14 현장 테스트)
         _sb_ops = {}
         for q in _sb_queue:
             if not q["no_std"]:
                 _sb_ops[(q["pn"], q["process"])] = q
+        _sb_due_by = {q["product_id"]: q.get("due") for q in _sb_queue if q.get("due")}
+        for s in _sb_stds:
+            k = (s["pn"], s["process"])
+            if k not in _sb_ops and s.get("product_id"):
+                _sb_ops[k] = {"pn": s["pn"], "process": s["process"],
+                              "product_id": s.get("product_id"),
+                              "step": s.get("step"), "group": s.get("group_code"),
+                              "due": _sb_due_by.get(s["product_id"]),
+                              "net": 0.0, "alloc": 0.0,
+                              "uph": float(s.get("uph_std") or 0) or None,
+                              "hours": None, "machines": [], "no_std": False,
+                              "wip_covered": True}
         for s in _sb_sched:
             k = (s["pn"], s["process"])
             if k not in _sb_ops:
@@ -11653,7 +11702,8 @@ elif page == "생산 계획":
                 "id": m["machine_id"], "name": m.get("name") or "",
                 "group": m.get("group_code") or "ETC",
                 "night": bool(m.get("night_active", True)),
-                "hours": float(m.get("hours_per_shift") or 9)}
+                "hours": float(_sb_hours(m, _sb_days[0])[0]
+                               or m.get("hours_per_shift") or 9)}
                 for m in _sb_rows_m]
             _c_cells = {}
             for (mid, d, sh), c in _sb_cells.items():
@@ -11729,7 +11779,10 @@ elif page == "생산 계획":
                         if sh == "야간" and not m.get("night_active", True):
                             continue
                         _std9 = _sb_std_by.get(_k2, {})
-                        _hps = float(m.get("hours_per_shift") or 9)
+                        _hps = _sb_cell_hours(m, d, sh)
+                        if _hps <= 0:
+                            _bad.append(f"{mid} {d} {sh}: 휴무(근무 체계)")
+                            continue
                         _qty9 = _sch.suggest_qty(
                             _hps, _std9.get("uph_std"),
                             _std9.get("setup_min") or 0)
@@ -11844,7 +11897,9 @@ elif page == "생산 계획":
                                 _n_skip += 1
                                 continue
                             _std9 = _sb_std_by.get(_k2, {})
-                            _hps = float(m.get("hours_per_shift") or 9)
+                            _hps = _sb_cell_hours(m, d, sh)
+                            if _hps <= 0:
+                                continue
                             _qty9 = _sch.suggest_qty(
                                 _hps, _std9.get("uph_std"),
                                 _std9.get("setup_min") or 0)
