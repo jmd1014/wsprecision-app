@@ -10631,7 +10631,7 @@ elif page == "출고 관리":
                         "등록하세요.")
 
 elif page == "생산 계획":
-    st.subheader("생산 계획 — 설비 스케줄 · 공정 표준 · 설비")
+    st.subheader("생산 계획 — 주간 계획 · 설비 스케줄 · 공정 표준 · 설비")
     if not DB_AVAILABLE: st.error("DB 연결 필요"); st.stop()
 
     import db as _db
@@ -10662,7 +10662,305 @@ elif page == "생산 계획":
     except Exception as e:
         st.error(f"미납 수주 조회 실패: {e}")
 
-    tab_sb, tab_std, tab_mc = st.tabs(["설비 스케줄", "공정 표준", "설비"])
+    tab_wp, tab_sb, tab_std, tab_mc = st.tabs(
+        ["주간 계획", "설비 스케줄", "공정 표준", "설비"])
+
+    # ═══════════ 탭: 주간 계획 (2026-10-14, migration 070) ═══════════
+    # 계획 단위 = 작업(품번 × 스텝 묶음). 한 행 = "어느 장비군에서 몇 개를 몇 UPH 로".
+    # 표준은 참고값(행에서 고치면 MANUAL, 표준엔 영향 없음). 수주·실적과 미연결(단독).
+    # 저장은 save_week_plan RPC 한 트랜잭션 + fingerprint 로 동시 편집 거부.
+    with tab_wp:
+        import utils.weekly_plan as _wp
+        from datetime import date as _wp_date, timedelta as _wp_td
+        _wp_today = _wp_date.today()
+        _wp_ws, _wp_we = _wp.week_bounds(st.session_state.get("wp_week", _wp_today))
+        _wp_nonce = st.session_state.setdefault("wp_nonce", 0)
+        wq1, wq2, wq3, wq4, wq5 = st.columns([1, 2.6, 1, 1, 1.6])
+        _wp_help = "저장하지 않은 변경은 주를 옮기면 사라집니다 — 먼저 [저장]"
+        if wq1.button("‹ 이전 주", key="wp_prev", use_container_width=True, help=_wp_help):
+            st.session_state["wp_week"] = _wp_ws - _wp_td(days=7)
+            st.session_state.pop("wp_rows", None)
+            st.rerun()
+        if wq3.button("다음 주 ›", key="wp_next", use_container_width=True, help=_wp_help):
+            st.session_state["wp_week"] = _wp_ws + _wp_td(days=7)
+            st.session_state.pop("wp_rows", None)
+            st.rerun()
+        if wq4.button("이번 주", key="wp_this", use_container_width=True, help=_wp_help):
+            st.session_state["wp_week"] = _wp_today
+            st.session_state.pop("wp_rows", None)
+            st.rerun()
+        wq2.markdown(
+            "<div style='text-align:center;font-weight:700;font-size:16px;"
+            "padding-top:6px'>{} (월) ~ {} (일) · {}주차</div>".format(
+                _wp_ws.isoformat(), _wp_we.isoformat(), _wp_ws.isocalendar()[1]),
+            unsafe_allow_html=True)
+
+        # ── 설비·근무 체계·예외일 → 장비군 능력 ──
+        try:
+            _wp_mcs = fetch("machines",
+                            "machine_id,name,group_code,active,night_active,sat_active",
+                            "order=machine_id", limit=500)
+        except Exception:
+            try:   # 070 전 DB(sat_active 없음) 호환
+                _wp_mcs = fetch("machines",
+                                "machine_id,name,group_code,active,night_active",
+                                "order=machine_id", limit=500)
+            except Exception as e:
+                st.error(f"설비 조회 실패: {e}")
+                _wp_mcs = []
+        _wp_groups = sorted({(m.get("group_code") or "").strip().upper()
+                             for m in _wp_mcs if m.get("group_code")}) or ["CNC", "MCT"]
+        try:
+            _wp_prof = {r["day_type"]: r for r in fetch(
+                "shift_profiles", "day_type,day_hours,night_hours", "", limit=10)}
+        except Exception:
+            _wp_prof = {}
+        try:
+            _wp_cal = {r["cal_date"]: r["day_type"] for r in fetch(
+                "work_calendar", "cal_date,day_type",
+                f"cal_date=gte.{(_wp_ws - _wp_td(days=28)).isoformat()}"
+                f"&cal_date=lte.{(_wp_we + _wp_td(days=35)).isoformat()}", limit=200)}
+        except Exception:
+            _wp_cal = {}
+        _wp_cap = _wp.week_capacity(_wp_ws, _wp_mcs, _wp_prof, _wp_cal)
+
+        # ── 이 주 계획 행 로드 (주가 바뀌거나 저장 뒤) ──
+        _WP_COLS = ("plan_item_id,week_start,product_id,pn,steps,op_label,op_key,seq,"
+                    "group_code,qty,uph,uph_source,setup_min,hours,due_date,note,"
+                    "updated_at")
+        if (st.session_state.get("wp_loaded") != (_wp_ws.isoformat(), _wp_nonce)
+                or "wp_rows" not in st.session_state):
+            try:
+                _db_rows = fetch("production_plan_items", _WP_COLS,
+                                 f"week_start=eq.{_wp_ws.isoformat()}"
+                                 "&order=seq,plan_item_id", limit=1000)
+            except Exception as e:
+                st.error(f"주간 계획 조회 실패: {e}")
+                _db_rows = []
+            st.session_state["wp_rows"] = [dict(r) for r in _db_rows]
+            st.session_state["wp_fp"] = _wp.fingerprint(_db_rows)
+            st.session_state["wp_loaded"] = (_wp_ws.isoformat(), _wp_nonce)
+        _wp_rows = st.session_state["wp_rows"]
+
+        def _wp_stds_for(pn, pid):
+            """품번의 공정 표준(참고값)."""
+            try:
+                flt = (f"product_id=eq.{_fq(pid)}" if pid
+                       else f"pn=eq.{_fq(pn)}")
+                return fetch("product_op_std",
+                             "op_id,pn,product_id,process,step,group_code,uph_std,"
+                             "uph_auto,uph_mean,uph_sheet,std_status,setup_min,"
+                             "machines_used,active", flt, limit=100)
+            except Exception:
+                return []
+
+        # ── 품번 검색 추가 (폼 밖 — 즉시 세션 행 추가, 저장은 아래 표에서) ──
+        with st.expander("품번 추가", expanded=not _wp_rows):
+            wa1, wa2, wa3 = st.columns([2, 2.5, 1])
+            _wp_q = wa1.text_input("품번 검색", key="wp_q", placeholder="예: 4PDVN, H11SDF",
+                                   help="활성 제품 품번·별칭으로 찾습니다")
+            _wp_cands = []
+            if _wp_q and len(_wp_q.strip()) >= 2:
+                try:
+                    _wp_cands = fetch("products", "product_id,pn",
+                                      f"archived_at=is.null&or=(pn.ilike.{_fql(_wp_q.strip())},"
+                                      f"alias_list.ilike.{_fql(_wp_q.strip())})&order=pn",
+                                      limit=30)
+                except Exception:
+                    _wp_cands = []
+            _wp_pick = wa2.selectbox(
+                "제품", [f"{c['pn']} ({c['product_id']})" for c in _wp_cands]
+                or ["(검색 결과 없음)"], key="wp_pick",
+                help="표준이 있으면 공정 단위로 행이 생깁니다(합친 공정명은 한 행). "
+                     "없으면 품번 한 행 — 장비군·UPH 를 직접 적으세요")
+            wa3.write("")
+            if wa3.button("추가", key="wp_add", use_container_width=True,
+                          disabled=not _wp_cands,
+                          help="표에 입력 중인 값이 있으면 먼저 [저장] — 추가하면 표가 "
+                               "다시 그려집니다"):
+                _c = _wp_cands[[f"{c['pn']} ({c['product_id']})"
+                                for c in _wp_cands].index(_wp_pick)]
+                _new = _wp.expand_ops(_c["pn"], _c["product_id"],
+                                      _wp_stds_for(_c["pn"], _c["product_id"]), _wp_groups)
+                _base = max([int(r.get("seq") or 0) for r in _wp_rows] + [-1]) + 1
+                for i, r in enumerate(_new):
+                    r["plan_item_id"] = None
+                    r["seq"] = _base + i
+                    r["due_date"] = None
+                    r["note"] = None
+                    r["_new"] = True
+                _wp_rows.extend(_new)
+                st.session_state["wp_nonce_ed"] = st.session_state.get("wp_nonce_ed", 0) + 1
+                st.rerun()
+
+        # ── 계획 표 ──
+        _wp_unsaved = sum(1 for r in _wp_rows if r.get("_new"))
+        if _wp_unsaved:
+            st.warning(f"저장되지 않은 행 {_wp_unsaved}개 — 주를 옮기거나 품번을 추가하면 "
+                       "표의 입력이 사라집니다. 먼저 [저장]하세요.")
+        if not _wp_rows:
+            st.info("이 주에 계획이 없습니다 — 위 '품번 추가'로 시작하세요.")
+        else:
+            _ed_nonce = st.session_state.get("wp_nonce_ed", 0)
+            _wp_df = pd.DataFrame([{
+                "삭제": False,
+                "품번": r.get("pn") or "",
+                "스텝": "".join(f"#{x}" for x in (r.get("steps") or [])),
+                "장비군": (r.get("group_code") or "ETC").upper(),
+                "수량": float(r.get("qty") or 0),
+                "UPH": (float(r["uph"]) if r.get("uph") not in (None, "") else None),
+                "출처": {"CONFIRMED": "확정", "SHEET": "시트", "AUTO": "실적",
+                         "MANUAL": "직접", "EST": "추정"}.get(r.get("uph_source") or "", "-")
+                + (" ⚠장비군 확인" if r.get("group_check") else ""),
+                "준비(분)": float(r.get("setup_min") or 0),
+                "필요 h": (float(r["hours"]) if r.get("hours") not in (None, "")
+                           else _wp.row_hours(r.get("qty"), r.get("uph"), r.get("setup_min"))),
+                "납기": (_wp_date.fromisoformat(str(r["due_date"])[:10])
+                         if r.get("due_date") else None),
+                "메모": r.get("note") or "",
+                "작업": "",
+            } for r in _wp_rows])
+            with st.form(f"wp_form_{_wp_ws.isoformat()}"):
+                _wp_ed = st.data_editor(
+                    _wp_df, hide_index=True, use_container_width=True,
+                    key=f"wp_ed_{_wp_ws.isoformat()}_{_wp_nonce}_{_ed_nonce}",
+                    column_config={
+                        "삭제": st.column_config.CheckboxColumn(
+                            help="체크한 행은 저장할 때 지웁니다"),
+                        "품번": st.column_config.Column(disabled=True),
+                        "스텝": st.column_config.TextColumn(
+                            help="한 설비에서 이어서 하는 스텝은 한 행에 '#30#40#50#60' 처럼 "
+                                 "적습니다(합치기). 흡수된 행은 '삭제'를 체크하세요. "
+                                 "스텝 없음은 비워 둡니다",
+                            validate=r"^(\s*-\s*|\s*#?\d+(\s*[#,\s]\s*\d+)*\s*)?$"),
+                        "장비군": st.column_config.SelectboxColumn(
+                            options=sorted(set(_wp_groups) | {
+                                (r.get("group_code") or "ETC").upper() for r in _wp_rows}
+                                | {"ETC"}),
+                            help="능력은 CNC·MCT 등 설비 마스터의 장비군만 셉니다. "
+                                 "ETC 는 능력과 비교하지 않습니다"),
+                        "수량": st.column_config.NumberColumn(min_value=0.0, step=1.0),
+                        "UPH": st.column_config.NumberColumn(
+                            min_value=0.0, step=0.5,
+                            help="표준 참고값(확정 > 시트 > 실적). 고치면 '직접'으로 저장되고 "
+                                 "표준에는 영향이 없습니다. 비우면 필요 h 를 셀 수 없습니다"),
+                        "출처": st.column_config.Column(disabled=True),
+                        "준비(분)": st.column_config.NumberColumn(min_value=0.0, step=5.0),
+                        "필요 h": st.column_config.NumberColumn(
+                            disabled=True, format="%.1f",
+                            help="수량 ÷ UPH + 준비시간. 저장 후 다시 계산됩니다"),
+                        "납기": st.column_config.DateColumn(help="참고용 — 수주와 연결되지 않습니다"),
+                        "작업": st.column_config.SelectboxColumn(
+                            options=["", "나누기"],
+                            help="'나누기' = 합친 스텝을 스텝별 행으로(각 행 전량)"),
+                    })
+                wb1, wb2 = st.columns(2)
+                _wp_save = wb1.form_submit_button("저장", type="primary",
+                                                  use_container_width=True)
+                _wp_cancel = wb2.form_submit_button("편집 취소", use_container_width=True)
+            if _wp_cancel:
+                st.session_state.pop("wp_rows", None)
+                st.session_state["wp_nonce"] = _wp_nonce + 1
+                st.rerun()
+            if _wp_save and click_guard("wp_save"):
+                _edits = []
+                for _bi, _brow in _wp_ed.iterrows():
+                    _edits.append({
+                        "delete": bool(_brow.get("삭제")),
+                        "steps": _brow.get("스텝"), "group": _brow.get("장비군"),
+                        "qty": _brow.get("수량"), "uph": _brow.get("UPH"),
+                        "setup": _brow.get("준비(분)"), "due": _brow.get("납기"),
+                        "note": _brow.get("메모"),
+                        "split": str(_brow.get("작업") or "") == "나누기"})
+                _out, _del, _errs, _warns = _wp.build_payload(
+                    _wp_rows, _edits, _wp_stds_for, _wp_groups, by=current_user_name())
+                if _errs:
+                    st.error("저장하지 않았습니다 — " + "; ".join(
+                        f"{i}행 {m}" for i, m in _errs))
+                else:
+                    _res = None
+                    try:
+                        _res = _db.rpc("save_week_plan", {
+                            "p_week": _wp_ws.isoformat(),
+                            "p_fingerprint": st.session_state.get("wp_fp", ""),
+                            "p_rows": [{k: v for k, v in r.items() if not k.startswith("_")}
+                                       for r in _out],
+                            "p_delete": _del})
+                    except getattr(_db, "RpcRejected", ()) as _e:
+                        _m = str(getattr(_e, "message", "") or _e)
+                        if _m.startswith("stale"):
+                            st.error("이 주의 계획이 다른 곳에서 바뀌었습니다 — "
+                                     "[편집 취소]로 새로 불러온 뒤 다시 입력하세요.")
+                        else:
+                            st.error(f"저장 거부(반영되지 않음): {_m[:120]}")
+                    except getattr(_db, "RpcUnavailable", ()) as _e:
+                        st.error("저장 기능이 DB 에 없습니다 (migration 070 필요) — "
+                                 "관리자에게 알리세요.")
+                    except getattr(_db, "RpcTransportError", ()) as _e:
+                        st.error("저장 응답을 받지 못했습니다 — 반영됐을 수 있으니 "
+                                 "[편집 취소]로 다시 불러와 확인하세요.")
+                    except Exception as _e:
+                        st.error(f"저장 실패: {str(_e)[:120]} — [편집 취소]로 다시 "
+                                 "불러와 확인하세요.")
+                    if isinstance(_res, dict) and _res.get("ok"):
+                        st.session_state["wp_flash"] = (
+                            f"저장 — {_res.get('inserted', 0) + _res.get('updated', 0)}행 "
+                            f"(새 행 {_res.get('inserted', 0)}) · 삭제 {_res.get('deleted', 0)}"
+                            + (" · 경고: " + "; ".join(f"{i}행 {m}" for i, m in _warns)
+                               if _warns else ""))
+                        st.session_state.pop("wp_rows", None)
+                        st.session_state["wp_nonce"] = _wp_nonce + 1
+                        st.rerun()
+                    elif _res is not None:
+                        st.error("저장 응답을 확인할 수 없습니다 — 화면을 새로 고쳐 확인하세요.")
+        if st.session_state.get("wp_flash"):
+            st.success(st.session_state.pop("wp_flash"))
+
+        # ── 요약: 장비군별 필요 h / 능력 h / 부하율 ──
+        _wp_sum = _wp.summarize(_wp_rows, _wp_cap)
+        if _wp_sum:
+            _sum_rows = []
+            for g in sorted(_wp_sum, key=lambda x: (x == "ETC", x)):
+                e = _wp_sum[g]
+                _sum_rows.append({
+                    "장비군": g, "필요 h": e["need"], "능력 h": round(e["cap"], 1),
+                    "부하율": (f"{e['ratio'] * 100:.0f}%" if e["ratio"] is not None
+                               else ("능력 없음" if e["need"] > 0 else "-")),
+                    "행": e["rows"], "UPH 미정": e["unknown"]})
+            st.dataframe(pd.DataFrame(_sum_rows), hide_index=True, use_container_width=True)
+            _unk = sum(e["unknown"] for e in _wp_sum.values())
+            if _unk:
+                st.warning(f"UPH 미정 {_unk}행은 부하에 포함되지 않았습니다 — "
+                           "표에서 UPH 를 적어 주세요.")
+        # 전후 4주 미니 표
+        try:
+            _w0 = _wp_ws - _wp_td(days=21)
+            _w1 = _wp_ws + _wp_td(days=28)
+            _mini = fetch("production_plan_items", "week_start,group_code,hours",
+                          f"week_start=gte.{_w0.isoformat()}&week_start=lte.{_w1.isoformat()}",
+                          limit=5000)
+        except Exception:
+            _mini = []
+        if _mini:
+            _agg = {}
+            for r in _mini:
+                _agg.setdefault(str(r["week_start"])[:10], {}).setdefault(
+                    (r.get("group_code") or "ETC").upper(), 0.0)
+                if r.get("hours") not in (None, ""):
+                    _agg[str(r["week_start"])[:10]][(r.get("group_code") or "ETC").upper()] += float(r["hours"])
+            _weeks = [(_w0 + _wp_td(days=7 * i)) for i in range(8)]
+            _mini_rows = []
+            for g in _wp_groups:
+                row = {"장비군": g}
+                for w in _weeks:
+                    cap_w = _wp.week_capacity(w, _wp_mcs, _wp_prof, _wp_cal).get(g, 0.0)
+                    need_w = _agg.get(w.isoformat(), {}).get(g, 0.0)
+                    row[w.strftime("%m/%d") + ("★" if w == _wp_ws else "")] = (
+                        f"{need_w:.0f}/{cap_w:.0f}" if cap_w else f"{need_w:.0f}/-")
+                _mini_rows.append(row)
+            with st.expander("전후 4주 (필요 h / 능력 h)"):
+                st.dataframe(pd.DataFrame(_mini_rows), hide_index=True,
+                             use_container_width=True)
 
     # ─── 탭: 공정 표준 (품번 → 세부 공정) — 생산 계획의 기초 ───
     # 2026-09-07 개편: 품번 리스트 → 그 품번의 작업(공정 스텝) 표를 편집.
@@ -11856,14 +12154,22 @@ elif page == "생산 계획":
 
     # ─── 탭 5: 설비 마스터 ───
     with tab_mc:
+        _mc_has_sat = True
         try:
             _mcs = fetch("machines",
                          "machine_id,name,group_code,shifts,hours_per_shift,"
-                         "active,night_active,note", "order=machine_id",
+                         "active,night_active,sat_active,note", "order=machine_id",
                          limit=500)
-        except Exception as e:
-            st.error(f"설비 조회 실패: {e}")
-            _mcs = []
+        except Exception:
+            _mc_has_sat = False
+            try:
+                _mcs = fetch("machines",
+                             "machine_id,name,group_code,shifts,hours_per_shift,"
+                             "active,night_active,note", "order=machine_id",
+                             limit=500)
+            except Exception as e:
+                st.error(f"설비 조회 실패: {e}")
+                _mcs = []
         if not _mcs:
             st.info("등록된 설비가 없습니다 — 공정 표준 탭에서 재산출하면 "
                     "실적의 설비가 자동 등록됩니다.")
@@ -11877,7 +12183,7 @@ elif page == "생산 계획":
                         * float(m.get("hours_per_shift") or 0))
             st.markdown(
                 '<div class="kpi-row">' + "".join(
-                    '<div class="kpi good"><div class="k">{g} 일 가용</div>'
+                    '<div class="kpi good"><div class="k">{g} 일 가용 (보드 기준)</div>'
                     '<div class="v">{h:,.0f}h</div><div class="s">가동 {n}대'
                     '</div></div>'.format(
                         g=g, h=h, n=sum(1 for m in _mcs
@@ -11893,8 +12199,11 @@ elif page == "생산 계획":
                 "교대당 시간": float(m.get("hours_per_shift") or 9),
                 "가동": bool(m.get("active")),
                 "야간 운영": bool(m.get("night_active", True)),
+                "토·공휴일 가동": bool(m.get("sat_active", True)),
                 "메모": m.get("note") or "",
             } for m in _mcs])
+            if not _mc_has_sat:
+                _mc_df = _mc_df.drop(columns=["토·공휴일 가동"])
             _mc_nonce = st.session_state.setdefault("mc_nonce", 0)
             with st.form("mc_form"):
                 _mc_ed = st.data_editor(
@@ -11909,7 +12218,10 @@ elif page == "생산 계획":
                         "가동": st.column_config.CheckboxColumn(),
                         "야간 운영": st.column_config.CheckboxColumn(
                             help="야간 교대를 돌리지 않는 설비는 해제 — "
-                                 "스케줄 보드의 야간 가용시간에서 제외")})
+                                 "스케줄 보드·주간 계획의 야간 가용시간에서 제외"),
+                        "토·공휴일 가동": st.column_config.CheckboxColumn(
+                            help="토요일·공휴일에 돌리지 않는 설비는 해제 — "
+                                 "주간 계획 능력에서 제외")})
                 mb1, mb2 = st.columns(2)
                 _mc_save = mb1.form_submit_button("변경 내용 저장",
                                                   type="primary",
@@ -11933,6 +12245,8 @@ elif page == "생산 계획":
                         "active": bool(_brow.get("가동")),
                         "night_active": bool(_brow.get("야간 운영")),
                         "note": str(_brow.get("메모") or "").strip() or None}
+                    if _mc_has_sat:
+                        _new["sat_active"] = bool(_brow.get("토·공휴일 가동"))
                     _old = {
                         "name": _m0.get("name") or None,
                         "group_code": _m0.get("group_code") or "ETC",
@@ -11942,7 +12256,14 @@ elif page == "생산 계획":
                         "active": bool(_m0.get("active")),
                         "night_active": bool(_m0.get("night_active", True)),
                         "note": _m0.get("note") or None}
+                    if _mc_has_sat:
+                        _old["sat_active"] = bool(_m0.get("sat_active", True))
                     if _new != _old:
+                        import utils.weekly_plan as _wpg2
+                        if not _wpg2.GROUP_RE.fullmatch(_new["group_code"]):
+                            st.error(f"{_m0['machine_id']}: 장비군 '{_new['group_code']}' "
+                                     "형식 오류 (영문 대문자·숫자 10자 이내)")
+                            continue
                         try:
                             if _db.update("machines",
                                           f"machine_id=eq.{_fq(_m0['machine_id'])}",
@@ -11953,6 +12274,177 @@ elif page == "생산 계획":
                 st.success(f"설비 {_n_mc}대 저장")
                 st.session_state["mc_nonce"] = _mc_nonce + 1
                 st.rerun()
+
+        # ── 설비 추가 (2026-10-14) ──
+        with st.expander("설비 추가"):
+            with st.form("mc_add_form"):
+                ma1, ma2, ma3 = st.columns([1.2, 1.5, 1])
+                _ma_id = ma1.text_input("설비 ID", placeholder="예: CNC28",
+                                        help="'cnc 28' 처럼 적어도 CNC28 로 정규화합니다")
+                _ma_name = ma2.text_input("이름", placeholder="비우면 설비 ID")
+                _ma_grp = ma3.text_input("장비군", placeholder="비우면 ID 접두어(CNC/MCT)")
+                ma4, ma5, ma6, ma7 = st.columns(4)
+                _ma_shifts = ma4.number_input("교대", 1, 3, 2, 1,
+                                              help="설비 스케줄 보드용(구기준)")
+                _ma_hps = ma5.number_input("교대당 시간", 1.0, 12.0, 9.0, 0.5,
+                                           help="설비 스케줄 보드용(구기준 9h). 주간 계획 능력은 "
+                                                "아래 근무 체계를 씁니다")
+                _ma_night = ma6.checkbox("야간 운영", True)
+                _ma_sat = ma7.checkbox("토·공휴일 가동", True)
+                _ma_note = st.text_input("메모", key="mc_add_note")
+                if st.form_submit_button("설비 등록", type="primary"):
+                    from utils.op_std import (normalize_machine as _nm,
+                                              machine_group as _mg)
+                    _mid = _nm(_ma_id)
+                    import utils.weekly_plan as _wpg
+                    _grp_in = (_ma_grp.strip().upper() or _mg(_mid or "") or "ETC")
+                    import re as _re_m
+                    if not _ma_id.strip() or not _mid:
+                        st.error("설비 ID를 입력하세요.")
+                    elif not _re_m.fullmatch(r"[A-Z]+\d{2,}", _mid):
+                        st.error(f"설비 ID '{_mid}': 영문 + 번호 형식(예: CNC28)으로 적으세요.")
+                    elif not _wpg.GROUP_RE.fullmatch(_grp_in):
+                        st.error(f"장비군 '{_grp_in}': 영문 대문자·숫자 10자 이내로 적으세요.")
+                    else:
+                        try:
+                            _dup = fetch("machines", "machine_id",
+                                         f"machine_id=eq.{_fq(_mid)}", limit=1,
+                                         cache=False)
+                        except TypeError:
+                            _dup = fetch("machines", "machine_id",
+                                         f"machine_id=eq.{_fq(_mid)}", limit=1)
+                        except Exception:
+                            _dup = []
+                        if _dup:
+                            st.error(f"{_mid}: 이미 등록된 설비입니다.")
+                        else:
+                            _rec = {"machine_id": _mid,
+                                    "name": _ma_name.strip() or _mid,
+                                    "group_code": (_ma_grp.strip().upper()
+                                                   or _mg(_mid) or "ETC"),
+                                    "shifts": int(_ma_shifts),
+                                    "hours_per_shift": float(_ma_hps),
+                                    "active": True, "night_active": bool(_ma_night),
+                                    "sat_active": bool(_ma_sat),
+                                    "note": _ma_note.strip() or None}
+                            try:
+                                _db.insert("machines", [_rec])
+                                st.success(f"{_mid} 등록 ({_rec['group_code']})")
+                                st.session_state["mc_nonce"] = st.session_state.get(
+                                    "mc_nonce", 0) + 1
+                                st.rerun()
+                            except Exception as e:
+                                _msg = str(e)
+                                if "23505" in _msg or "409" in _msg:
+                                    st.error(f"{_mid}: 이미 등록된 설비입니다.")
+                                elif "sat_active" in _msg:
+                                    st.error("설비 등록 실패: DB 에 토·공휴일 가동 컬럼이 "
+                                             "없습니다 (migration 070 필요)")
+                                else:
+                                    st.error(f"설비 등록 실패: {_msg[:160]}")
+
+        # ── 근무 체계 (요일 유형별 주/야 시간) + 예외일 (2026-10-14, migration 070) ──
+        import utils.weekly_plan as _wpm
+        from datetime import date as _mc_date, timedelta as _mc_td
+        try:
+            _prof_rows = {r["day_type"]: r for r in fetch(
+                "shift_profiles", "day_type,day_hours,night_hours", "", limit=10)}
+        except Exception:
+            _prof_rows = {}
+        with st.expander("근무 체계 (주간 계획 능력 기준)"):
+            with st.form("shift_profile_form"):
+                _lab = {"WEEKDAY": "평일", "SATURDAY": "토요일", "HOLIDAY": "공휴일"}
+                _inp = {}
+                pc = st.columns(3)
+                for i, dt in enumerate(("WEEKDAY", "SATURDAY", "HOLIDAY")):
+                    dh, nh = _wpm.profile_hours(dt, _prof_rows)
+                    with pc[i]:
+                        st.markdown(f"**{_lab[dt]}**")
+                        _inp[dt] = (
+                            st.number_input("주간 h", 0.0, 24.0, min(float(dh), 24.0), 0.5,
+                                            key=f"sp_{dt}_d"),
+                            st.number_input("야간 h", 0.0, 24.0, min(float(nh), 24.0), 0.5,
+                                            key=f"sp_{dt}_n"))
+                if st.form_submit_button("근무 체계 저장", type="primary",
+                                         help="일요일은 휴무(0h)로 고정. 바뀐 값만 저장합니다"):
+                    _n_sp = 0
+                    for dt, (dh, nh) in _inp.items():
+                        cur = _wpm.profile_hours(dt, _prof_rows)
+                        if (float(dh), float(nh)) != cur:
+                            try:
+                                if _db.update("shift_profiles", f"day_type=eq.{dt}",
+                                              {"day_hours": float(dh),
+                                               "night_hours": float(nh),
+                                               "updated_at": "now()"}):
+                                    _n_sp += 1
+                                else:
+                                    st.error(f"{_lab[dt]} 저장 실패")
+                            except Exception as e:
+                                st.error(f"{_lab[dt]} 저장 실패: {e}")
+                    if _n_sp:
+                        st.session_state["mc_flash"] = f"근무 체계 {_n_sp}건 저장 — 주간 계획 능력에 반영됩니다"
+                        st.rerun()
+                    st.success("변경 없음")
+            if st.session_state.get("mc_flash"):
+                st.success(st.session_state.pop("mc_flash"))
+        def _cal_exists(d):
+            try:
+                return bool(fetch("work_calendar", "cal_date",
+                                  f"cal_date=eq.{d.isoformat()}", limit=1))
+            except Exception:
+                return False
+
+        with st.expander("근무 예외일 (공휴일·특근·휴무)"):
+            try:
+                _cal_rows = fetch("work_calendar", "cal_date,day_type,note",
+                                  f"cal_date=gte.{(_mc_date.today() - _mc_td(days=60)).isoformat()}"
+                                  "&order=cal_date", limit=200)
+            except Exception:
+                _cal_rows = []
+            if _cal_rows:
+                st.dataframe(pd.DataFrame([{
+                    "날짜": r["cal_date"],
+                    "유형": {"WEEKDAY": "평일 근무", "SATURDAY": "토요일 근무",
+                             "HOLIDAY": "공휴일", "OFF": "휴무"}.get(r["day_type"], r["day_type"]),
+                    "메모": r.get("note") or ""} for r in _cal_rows]),
+                    hide_index=True, use_container_width=True)
+            with st.form("cal_add_form"):
+                ca1, ca2, ca3 = st.columns([1.2, 1.2, 2])
+                _ca_date = ca1.date_input("날짜", value=_mc_date.today(), key="cal_date_in")
+                def _ca_lab(x):
+                    dh, nh = _wpm.profile_hours(x, _prof_rows)
+                    return {"HOLIDAY": "공휴일", "OFF": "휴무", "SATURDAY": "토요일 근무",
+                            "WEEKDAY": "평일 근무"}[x] + f"({dh:g}/{nh:g})"
+                _ca_type = ca2.selectbox("유형", ["HOLIDAY", "OFF", "SATURDAY", "WEEKDAY"],
+                                         format_func=_ca_lab,
+                                         help="없는 날짜는 요일 규칙(월~금 평일, 토, 일 휴무)")
+                _ca_note = ca3.text_input("메모", key="cal_note_in")
+                cb1, cb2 = st.columns(2)
+                _ca_add = cb1.form_submit_button("등록", type="primary", use_container_width=True)
+                _ca_del = cb2.form_submit_button("이 날짜 삭제", use_container_width=True)
+            if _ca_add:
+                if _ca_date.weekday() == 6 and _ca_type == "HOLIDAY":
+                    st.error("일요일은 휴무로 고정입니다 — 대체공휴일은 해당 평일에 등록하세요.")
+                elif any(str(r["cal_date"])[:10] == _ca_date.isoformat() for r in _cal_rows) \
+                        or _cal_exists(_ca_date):
+                    st.error(f"{_ca_date}: 이미 등록된 날짜입니다 — 삭제 후 다시 등록하세요.")
+                else:
+                    try:
+                        _db.insert("work_calendar", [{
+                            "cal_date": _ca_date.isoformat(), "day_type": _ca_type,
+                            "note": _ca_note.strip() or None,
+                            "created_by": current_user_name()}])
+                        st.success(f"{_ca_date} 등록 — 주간 계획 능력에 바로 반영됩니다")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"등록 실패: {str(e)[:160]}")
+            if _ca_del and click_guard("cal_del"):
+                try:
+                    _n = _db.delete("work_calendar", f"cal_date=eq.{_ca_date.isoformat()}")
+                    st.success(f"{_ca_date} 삭제 ({_n}건) — 요일 규칙으로 돌아갑니다")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"삭제 실패: {str(e)[:160]}")
 
 
 elif page == "구매 관리":
