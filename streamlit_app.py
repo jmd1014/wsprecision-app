@@ -11595,8 +11595,16 @@ elif page == "생산 계획":
             _sb_alloc[k] = _sb_alloc.get(k, 0) + float(r.get("plan_qty") or 0)
         _sb_queue = _sch.build_queue(_sb_lines, _sb_rounds, _sb_stock,
                                      _sb_wip, _sb_stds, _sb_alloc, _sb_cap)
-        _sb_cells, _sb_load = _sch.build_board(
-            _sb_act, _sb_days, _sb_sched, _sb_logs, _sb_today, hours_fn=_sb_hours)
+        try:
+            _sb_cells, _sb_load = _sch.build_board(
+                _sb_act, _sb_days, _sb_sched, _sb_logs, _sb_today, hours_fn=_sb_hours)
+        except TypeError:
+            # 배포 직후 utils.schedule 구버전이 메모리에 남아 hours_fn 을 모르는 경우 —
+            # 페이지를 죽이지 않고 종전 규칙(교대당 시간)으로 그린다 (2026-10-14 Cloud 사고)
+            _sb_cells, _sb_load = _sch.build_board(
+                _sb_act, _sb_days, _sb_sched, _sb_logs, _sb_today)
+            st.warning("근무 체계가 아직 반영되지 않은 구버전 모듈입니다 — 앱이 곧 재시작되며, "
+                       "계속 보이면 관리자에게 알리세요.")
         _sb_gl = _sch.group_load(_sb_act, _sb_load)
         _sb_unassigned = [q for q in _sb_queue
                           if not q["no_std"] and q["alloc"] < q["net"] - 1e-9]
