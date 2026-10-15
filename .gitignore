@@ -216,3 +216,6 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# L3-D 스크립트 저널 (실행 흔적, 커밋 안 함)
+scripts/*_journal_*.jsonl

@@ -244,14 +244,93 @@ def merge_cutting_rows(rows):
     return out, n
 
 
+_VENDOR_STRIP_RE = re.compile(r"\(주\)|주식회사|㈜|\s+")
+_DIA_RE = re.compile("[Φφ￠Øø∅]")
+
+
+def vendor_key(vendor):
+    """매핑표 거래처 키 — '(주)명진메탈' / '주식회사유성메탈' / '혜성철강 (주)' 의 법인 표기·공백 제거, 대문자."""
+    return _VENDOR_STRIP_RE.sub("", str(vendor or "")).upper()
+
+
+def item_key(item):
+    """매핑표 품명 키 — 대문자, 공백 제거, 지름 기호 통일(Φ), ℓ→L, 숫자 사이 x/×→*.
+    'STS304육각 38￠*24ℓ' 와 'STS304육각38Φ*24L' 이 같은 키."""
+    s = str(item or "").upper()
+    s = _DIA_RE.sub("Φ", s).replace("ℓ", "L").replace("Ｌ", "L")
+    s = re.sub(r"(?<=[\dΦ])\s*[X×]\s*(?=\d)", "*", s)   # 55ΦX5 · 38X24 → *, 단어 속 X(XDBP…) 보존
+    return re.sub(r"\s+", "", s)
+
+
+def piece_price_rows(rows):
+    """KG 매입인데 수량(개)과 중량(kg)이 따로 적힌 행(명진메탈식) → 개당 기준으로.
+    조건: unit KG · weight>0 · qty>0 · qty≠weight · amount>0. 변환: kg_price=원 단가, unit_price=round(amount/qty),
+    ea_price=같음, unit='EA', 수량·중량·금액 유지. 혜성 환봉(수량=중량 kg)은 대상 아님(절단비 합산이 담당).
+    반환 (새 행 목록, 변환 건수). 입력 불변."""
+    out, n = [], 0
+    for r in rows:
+        unit = str(r.get("unit") or "").upper()
+        qty, wt, amt, up = _n(r.get("qty")), _n(r.get("weight")), _n(r.get("amount")), _n(r.get("unit_price"))
+        # 가드: 중량 × kg 단가 ≈ 금액(2%) 일 때만 — 단위 오기·건수 병기 공정비 행 차단 (Reviewer H3)
+        if (unit == "KG" and wt > 0 and qty > 0 and abs(qty - wt) > 1e-9 and amt > 0
+                and up > 0 and abs(wt * up - amt) <= amt * 0.02):
+            m = dict(r)
+            m["kg_price"] = r.get("unit_price")
+            m["unit"] = "EA"
+            m["unit_price"] = round(amt / qty)
+            m["ea_price"] = m["unit_price"]
+            out.append(m)
+            n += 1
+        else:
+            out.append(r)
+    return out, n
+
+
+def is_linked(row):
+    """행이 이미 연결(결정)됐는가 — 자재가 있거나 mapping_status 가 있음. 비고 첫 토큰에서 온 matched_pn
+    (그 소재가 들어갈 제품 품번)은 연결 판정에 넣지 않는다 (Reviewer B1)."""
+    return bool(row.get("matched_material_id") or row.get("mapping_status"))
+
+
+def apply_item_map(rows, imap):
+    """매핑표 적용. imap: {(vendor_key, item_key): {map_id, line_type, material_id, product_pn, process_type}}.
+    is_linked 가 아닌 행만. MATERIAL/SUPPLY → matched_material_id(기존 matched_pn 보존), PRODUCT → matched_pn
+    (자재가 있는 행엔 적용 안 함), PROCESS/OTHER → 상태만. 적용 행: mapping_status='MAP', map_id, category 는
+    비어 있을 때만 line_type. 반환 적용 건수. 행은 제자리 수정."""
+    n = 0
+    for r in rows:
+        if is_linked(r):
+            continue
+        m = imap.get((vendor_key(r.get("vendor")), item_key(r.get("item"))))
+        if not m:
+            continue
+        lt = m.get("line_type")
+        if lt in ("MATERIAL", "SUPPLY"):
+            if not m.get("material_id"):
+                continue
+            r["matched_material_id"] = m["material_id"]
+        elif lt == "PRODUCT":
+            if not m.get("product_pn"):
+                continue
+            r["matched_pn"] = m["product_pn"]
+        r["mapping_status"] = "MAP"
+        if m.get("map_id"):
+            r["map_id"] = m["map_id"]
+        if not r.get("category"):
+            r["category"] = lt
+        n += 1
+    return n
+
+
 def dedup_key(row):
-    """장부 중복 판정 키 — 날짜+업체+품명(공백 무시)+공급가액(반올림)"""
+    """장부 중복 판정 키 — 날짜 + 거래처 키(법인 표기·공백 무시) + 품명 키(공백·기호 정규화) + 공급가액(반올림).
+    시트 '(주)유성메탈' 와 수기 입력(마스터명 '주식회사유성메탈')이 같은 키 (Reviewer B2, 2026-10-15)."""
     try:
         amt = round(float(row.get("amount") or 0))
     except (TypeError, ValueError):
         amt = None
-    return (row.get("trade_date"), str(row.get("vendor") or "").strip(),
-            re.sub(r"\s+", "", str(row.get("item") or "")), amt)
+    return (str(row.get("trade_date") or "")[:10], vendor_key(row.get("vendor")),
+            item_key(row.get("item")), amt)
 
 
 def download_sheet_xlsx(sheet_id, timeout=30):

@@ -10,9 +10,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from utils.purchase_sync import (build_key_mats, dedup_key, match_material,
+from utils.purchase_sync import (apply_item_map, build_key_mats, dedup_key,
+                                 is_linked, item_key, match_material,
                                  merge_cutting_rows, norm_dims, norm_grade,
-                                 parse_month_tab)
+                                 parse_month_tab, piece_price_rows, vendor_key)
 
 MATS = [
     {"material_id": "M113", "raw_name": "S304 Ø40*25",
@@ -200,6 +201,68 @@ def test_grade_scm_and_carbon_variants():
     km = build_key_mats(DIC_MATS)
     assert match_material("흑환봉 SCM415H 32Φx18", "EA", 400, km) == ("M182", "OK")
     assert match_material("흑환봉 SCM415H 32Φx18", "KG", 1650, km) == (None, "KG")
+
+
+def test_keys_normalize_vendor_and_item():
+    assert vendor_key("(주)명진메탈") == vendor_key("주식회사 명진메탈") == "명진메탈"
+    assert vendor_key("혜성철강(주)") == vendor_key("혜성철강") == "혜성철강"
+    assert item_key("STS304육각 38￠*24ℓ") == item_key("STS304육각38Φ*24L") == "STS304육각38Φ*24L"
+    assert item_key("흑환봉 SCM420H 55Φx5") == "흑환봉SCM420H55Φ*5"
+    assert item_key("면취캇타 INSERT XDBP11T308-B EG9030") == "면취캇타INSERTXDBP11T308-BEG9030", "단어 속 X 는 보존"
+
+
+def test_piece_price_rows_mijin_kg_with_count():
+    """명진메탈 2026-09-16 실데이터: 수량 513개·중량 148kg·7,500원/kg·1,110,000 → 개당 2,164원, kg 단가 보존."""
+    r = _row("2026-09-16", "(주)명진메탈", "STS304육각 38￠*24ℓ", "KG", 513, 7500, 1110000, 111000, 1221000, "40ABV-TW-23", 148)
+    out, n = piece_price_rows([r])
+    assert n == 1 and out[0]["unit"] == "EA" and out[0]["unit_price"] == 2164 and out[0]["ea_price"] == 2164
+    assert out[0]["kg_price"] == 7500 and out[0]["qty"] == 513 and out[0]["weight"] == 148 and out[0]["amount"] == 1110000
+    assert r["unit"] == "KG", "입력 불변"
+    # 혜성 환봉(수량=중량 kg)·EA 행·금액 0·중량×단가≠금액(건수 병기 공정비) 은 대상 아님
+    hy = _row("2026-06-01", "혜성철강(주)", "흑환봉 SCM420H 55Φx5", "KG", 150, 1650, 247500, weight=150)
+    ea = _row("2026-06-01", "두리T.M.S", "센타드릴", "EA", 10, 4470, 44700)
+    z = _row("2026-06-01", "(주)명진메탈", "STS304환봉 45￠16ℓ", "KG", 100, 5700, 0, weight=30)
+    ht = _row("2026-05-21", "(주)대경열처리", "NUT HUB LOCK / 고주파 Φ68.5*12L", "KG", 22, 1050, 50000, weight=1)
+    out, n = piece_price_rows([hy, ea, z, ht])
+    assert n == 0 and [x["unit"] for x in out] == ["KG", "EA", "KG", "KG"]
+    # 변환 뒤 EA·단가>0 이라 치수 매칭 가능
+    km = build_key_mats([{"material_id": "M400", "raw_name": "S304 H38*24", "material_type": "SUS304", "spec": "φ38*24L", "archived_at": None}])
+    conv = piece_price_rows([r])[0][0]
+    assert match_material(conv["item"], conv["unit"], conv["unit_price"], km) == ("M400", "OK")
+
+
+def test_apply_item_map_fills_only_unlinked():
+    """연결 판정은 자재 또는 mapping_status — 비고 품번(matched_pn)만 있는 소재 행도 매핑되고 matched_pn 은 보존 (B1)."""
+    imap = {(vendor_key("(주)명진메탈"), item_key("STS304육각 38￠*24ℓ")): {"map_id": 7, "line_type": "MATERIAL", "material_id": "M400"},
+            (vendor_key("청호정밀"), item_key("A453043")): {"map_id": 8, "line_type": "PRODUCT", "product_pn": "6A453043"},
+            (vendor_key("에스피열처리"), item_key("고용화 [SUS630] 다량")): {"map_id": 9, "line_type": "PROCESS", "process_type": "HEAT"}}
+    rows = [{**_row("2026-09-16", "주식회사 명진메탈", "STS304육각38Φ*24L", "KG", 513, 7500, 1110000), "matched_pn": "40ABV-TW-23"},
+            _row("2026-06-30", "청호정밀", "A453043", "EA", 100, 700, 70000),
+            {**_row("2026-08-10", "에스피열처리", "고용화 [SUS630] 다량", "CH", None, 200000, 200000), "category": "SERVICE"},
+            {**_row("2026-09-16", "(주)명진메탈", "STS304육각 38￠*24ℓ", "KG", 1, 1, 1), "matched_material_id": "M999"},
+            {**_row("2026-06-30", "청호정밀", "A453043", "EA", 1, 1, 1), "matched_material_id": "M998"},
+            {**_row("2026-09-16", "(주)명진메탈", "STS304육각 38￠*24ℓ", "KG", 1, 1, 1), "mapping_status": "MAP"},
+            _row("2026-09-30", "두리T.M.S", "POWER SUPPLY ESF150-24", "EA", 1, 108000, 108000)]
+    n = apply_item_map(rows, imap)
+    assert n == 3
+    assert rows[0]["matched_material_id"] == "M400" and rows[0]["mapping_status"] == "MAP" and rows[0]["map_id"] == 7
+    assert rows[0]["matched_pn"] == "40ABV-TW-23" and rows[0]["category"] == "MATERIAL", "비고 품번 보존"
+    assert rows[1]["matched_pn"] == "6A453043" and rows[1]["category"] == "PRODUCT"
+    assert rows[2]["mapping_status"] == "MAP" and rows[2]["category"] == "SERVICE", "기존 category 는 덮지 않음"
+    assert not rows[2].get("matched_material_id")
+    assert "mapping_status" not in rows[3] and "mapping_status" not in rows[4], "자재가 있는 행엔 적용 안 함(PRODUCT 포함)"
+    assert rows[5]["mapping_status"] == "MAP" and "map_id" not in rows[5], "이미 결정된 행"
+    assert "mapping_status" not in rows[6]
+    assert is_linked({"matched_pn": "X"}) is False and is_linked({"mapping_status": "MANUAL"}) is True
+
+
+def test_dedup_key_normalizes_vendor_and_item():
+    """시트 표기와 수기 입력(마스터명)이 같은 키 (B2); 같은 행은 같은 키, 금액 다르면 다른 키."""
+    a = _row("2026-09-16", "(주)유성메탈", "STS R/B 304 40Φ*25L", "EA", 8000, 1700, 13600000)
+    b = _row("2026-09-16", "주식회사유성메탈", "STS R/B 304 40 Φ * 25 L", "EA", 8000, 1700, 13600000.4)
+    assert dedup_key(a) == dedup_key(b)
+    assert dedup_key(a) != dedup_key({**a, "amount": 13600001})
+    assert dedup_key({**a, "trade_date": "2026-09-16T00:00:00"}) == dedup_key(a)
 
 
 def test_grade_and_dims_edge():
