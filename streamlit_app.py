@@ -11502,6 +11502,9 @@ elif page == "생산 계획":
         # 적용 — 토요일 칸이 평일과 같은 교대당 시간으로 잡히던 문제 (2026-10-14 현장 테스트).
         # 표·예외일을 못 읽으면 기본 근무 체계(평일 10/10, 토·공휴일 6/6)로 계산한다.
         import utils.weekly_plan as _sbwp
+        if not hasattr(_sbwp, "machine_shift_hours"):
+            import importlib as _il
+            _sbwp = _il.reload(_sbwp)
         try:
             _sb_prof = {r["day_type"]: r for r in fetch(
                 "shift_profiles", "day_type,day_hours,night_hours", "", limit=10)}
@@ -20121,6 +20124,11 @@ elif page == "원가 확인":
         from db import count_rows as _cnt_rows
         from utils import purchase_sync as _psync
         import json as _json
+        if not hasattr(_psync, "vendor_key"):
+            # 배포 직후 Cloud 에 구버전 모듈이 남아 새 함수가 없는 경우 — 디스크에서 다시 읽는다
+            # (2026-10-15 원가 확인 AttributeError, 2026-10-14 보드 TypeError 와 같은 유형)
+            import importlib as _il
+            _psync = _il.reload(_psync)
 
         def _pl_item_map():
             """매핑표 전체 → {(vendor_key, item_key): {...product_pn}} (071)."""
