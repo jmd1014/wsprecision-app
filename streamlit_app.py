@@ -12552,9 +12552,10 @@ elif page == "구매 관리":
         "TOOL": "공구·소모품",
     }
 
-    tab_prod, tab_po, tab_new, tab_hist, tab_rcv_proc, tab_rstat = st.tabs(
-        ["자재 필요량", "발주 자동 제안", "새 발주서 작성", "발주 이력",
-         "입고 처리", "입고 현황"])
+    # 2026-10-15 메뉴 정리: '자재 필요량'·'발주 자동 제안'(같은 계산, 보는 축만 다름) → '발주 제안' 하나,
+    # '매입 등록' 신설(원가 확인의 동기화·수기 입력·확인 대기 이동)
+    tab_sug, tab_new, tab_hist, tab_rcv_proc, tab_rstat, tab_pur = st.tabs(
+        ["발주 제안", "새 발주서 작성", "발주 이력", "입고 처리", "입고 현황", "매입 등록"])
 
     # ══════════ 자재 필요량 계산 (2026-09-11 생산 계획에서 이동) ══════════
     # 미납 수주 × BOM → 완성 재고·소재 재고·미입고 발주를 뺀 발주 필요량.
@@ -12794,201 +12795,202 @@ elif page == "구매 관리":
         return True, "발송 완료 — " + ", ".join(_sent_to)
 
     # ════════════ TAB: 자재 필요량 (제품별) — 2026-09-11 생산 계획에서 이동 ════════════
-    with tab_prod:
-        # 설명은 ? 툴팁으로만 (2026-09-11 사용자: 화면 텍스트 과다)
-        _mh1, _mh2 = st.columns([5, 1])
-        if _mh2.button("다시 계산", key="mr_refresh_btn",
-                       use_container_width=True,
-                       help="기준 " + _time.strftime(
-                           "%H:%M", _time.localtime(_mr_c[0]))
-                       + " (5분 캐시). 미납 수주 × BOM(EA/PC ÷ 공용계수). "
-                       "발주 필요량 = 총필요량 − 소재 실재고 − 미입고 발주"
-                       "(취소 제외). 완성 재고와 재공(공정 중)은 순생산필요에서 "
-                       "먼저 뺀다."):
-            st.session_state["mr_refresh"] = True
-            st.rerun()
-        if _mr.get("msg"):
-            st.info(_mr["msg"])
-        else:
-            sois, so_map = _mr["sois"], _mr["so_map"]
-            bom_by_pid, mat_map = _mr["bom_by_pid"], _mr["mat_map"]
-            mat_req, on_order = _mr["mat_req"], _mr["on_order"]
-            items_no_bom = _mr["items_no_bom"]
-            items_with_bom = _mr["items_with_bom"]
-            total_prod_stock_used = _mr["total_prod_stock_used"]
-            # ── 6) 상단 통계 ──
-            total_mat_cover = sum(
-                min(info["required"],
-                    float(mat_map.get(mid, {}).get("stock_qty") or 0))
-                for mid, info in mat_req.items())
-            total_on_order_cover = sum(
-                min(max(info["required"]
-                        - float(mat_map.get(mid, {}).get("stock_qty") or 0), 0.0),
-                    on_order.get(mid, 0.0))
-                for mid, info in mat_req.items())
-            shortage_count = sum(
-                1 for mid, info in mat_req.items()
-                if info["required"] - float(mat_map.get(mid, {}).get("stock_qty") or 0)
-                - on_order.get(mid, 0.0) > 0)
-            sc1, sc2, sc3, sc7, sc4, sc5, sc6 = st.columns(7)
-            sc1.metric("미납 수주 품목", len(sois))
-            sc7.metric("재공 충당", f"{_mr.get('total_wip_used', 0):,.0f}",
-                       help="투입돼 공정에 들어가 있는 수량(열린 배치, 완성 "
-                            "단계 제외) — 완성 재고 다음으로 미납에서 뺀다")
-            sc2.metric("미입고 발주 충당", f"{total_on_order_cover:,.0f}",
-                       help="이미 발주해 입고 대기 중인 수량으로 충당되는 필요량 — "
-                            "발주 필요량에서 뺀다")
-            sc3.metric("완성 재고 충당",
-                       f"{total_prod_stock_used:,.0f}",
-                       help="제품 완성 재고(product_stock_v)로 생산 없이 출고 "
-                            "가능한 수량 — 자재 필요량 계산에서 제외됨")
-            sc4.metric("소재 재고 충당", f"{total_mat_cover:,.0f}",
-                       help="자재 실재고(material_stock)로 충당되는 필요량 — "
-                            "발주 필요량 = 총필요량 − 소재 재고")
-            sc5.metric("필요 자재 종류", len(mat_req))
-            sc6.metric("자재 부족", shortage_count, delta_color="inverse")
-
-            if items_no_bom:
-                with st.expander(f"BOM 미등록 품목 {len(items_no_bom)}건 — 마스터에서 BOM 등록 필요"):
-                    df_no = pd.DataFrame(items_no_bom)
-                    toss_df(df_no, use_container_width=True, hide_index=True)
-
-
-
-            _pp = {}
-            for soi in sois:
-                pid = soi.get("product_id")
-                if not pid:
-                    continue
-                e = _pp.setdefault(pid, {
-                    "pid": pid, "pn": soi.get("canonical_pn") or pid,
-                    "pending": 0.0, "used": 0.0, "net": 0.0, "lines": [],
-                    "due": None, "custs": set()})
-                e["pending"] += float(soi.get("pending_qty") or 0)
-                e["used"] += float(soi.get("prod_stock_used") or 0)
-                e["net"] += float(soi.get("net_pending")
-                                  if soi.get("net_pending") is not None
-                                  else soi.get("pending_qty") or 0)
-                e["lines"].append(soi)
-                _dd0 = str(soi.get("due_date") or "")[:10]
-                if _dd0 and (e["due"] is None or _dd0 < e["due"]):
-                    e["due"] = _dd0
-                _cu0 = so_map.get(soi["so_id"], {}).get("customer")
-                if _cu0:
-                    e["custs"].add(_cu0)
-            # 소재 재고를 납기순으로 선착 배분 → 제품별 부족
-            # 소재 재고 + 미입고 발주 잔량을 납기순으로 선착 배분
-            _mat_left = {mid: float(m.get("stock_qty") or 0) + on_order.get(mid, 0.0)
-                         for mid, m in mat_map.items()}
-            _prod_rows = []
-            for e in sorted(_pp.values(), key=lambda x: (x["due"] or "9999",
-                                                         x["pn"])):
-                boms = [b for b in bom_by_pid.get(e["pid"], [])
-                        if b.get("material_id")]
-                e["mats"] = []
-                _short_sum = 0.0
-                for b in boms:
-                    mid = b["material_id"]
-                    qpp = float(b.get("qty_per_pc") or 1)
-                    sf = float(b.get("shared_factor") or 1) or 1
-                    need = e["net"] * qpp / sf if e["net"] > 0 else 0.0
-                    take = min(max(_mat_left.get(mid, 0.0), 0.0), need)
-                    _mat_left[mid] = _mat_left.get(mid, 0.0) - take
-                    short = need - take
-                    _short_sum += short
-                    mat = mat_map.get(mid, {})
-                    e["mats"].append({
-                        "mid": mid, "name": mat.get("raw_name") or mid,
-                        "spec": mat.get("spec") or "-",
-                        "unit": mat.get("unit") or "EA", "qpp": qpp, "sf": sf,
-                        "need": need, "stock": float(mat.get("stock_qty") or 0),
-                        "on_order": on_order.get(mid, 0.0),
-                        "take": take, "short": short})
-                e["short"] = _short_sum
-                _first = e["mats"][0] if e["mats"] else None
-                _prod_rows.append({
-                    "품번": e["pn"], "_pid": e["pid"],
-                    "거래처": ", ".join(sorted(e["custs"]))[:24] or "-",
-                    "납기": e["due"] or "-",
-                    "미납": e["pending"],
-                    "완성재고 충당": e["used"],
-                    "순생산필요": e["net"],
-                    "소재": ((_first["name"] + (f" 외 {len(e['mats']) - 1}"
-                                               if len(e["mats"]) > 1 else ""))
-                            if _first else "BOM 없음"),
-                    "소재 필요량": sum(m["need"] for m in e["mats"]),
-                    "소재 부족": _short_sum,
-                    "상태": ("BOM 없음" if not boms
-                           else "충당" if e["net"] <= 0
-                           else "부족" if _short_sum > 0.5 else "가능"),
-                })
-            if not _prod_rows:
-                st.info("미납 제품이 없습니다.")
+    with tab_sug:
+        _sug_top = st.container()          # 자재별 발주 제안(아래 블록이 채움)
+        with st.expander("제품별 자재 필요량 — 제안의 근거", expanded=False):
+            # 설명은 ? 툴팁으로만 (2026-09-11 사용자: 화면 텍스트 과다)
+            _mh1, _mh2 = st.columns([5, 1])
+            if _mh2.button("다시 계산", key="mr_refresh_btn",
+                           use_container_width=True,
+                           help="기준 " + _time.strftime(
+                               "%H:%M", _time.localtime(_mr_c[0]))
+                           + " (5분 캐시). 미납 수주 × BOM(EA/PC ÷ 공용계수). "
+                           "발주 필요량 = 총필요량 − 소재 실재고 − 미입고 발주"
+                           "(취소 제외). 완성 재고와 재공(공정 중)은 순생산필요에서 "
+                           "먼저 뺀다."):
+                st.session_state["mr_refresh"] = True
+                st.rerun()
+            if _mr.get("msg"):
+                st.info(_mr["msg"])
             else:
-                with st.form("prod_req_filter"):
-                    pf1, pf2, pf3 = st.columns([2, 1, 1])
-                    _pq = pf1.text_input(
-                        "품번 · 거래처 검색", key="prod_req_q",
-                        help="납기순. 순생산필요 = 미납 − 완성 재고. 소재 재고와 "
-                             "미입고 발주는 납기 빠른 제품부터 선착 배분(뒤 제품이 "
-                             "부족으로 표시)")
-                    _pst = pf2.selectbox("상태", ["전체", "부족", "가능", "충당",
-                                                "BOM 없음"], key="prod_req_st")
-                    pf3.form_submit_button("검색", use_container_width=True)
-                _pv = [r for r in _prod_rows
-                       if (not _pq.strip() or _pq.strip().lower() in
-                           (r["품번"] + " " + r["거래처"]).lower())
-                       and (_pst == "전체" or r["상태"] == _pst)]
-                if not _pv:
-                    st.info("조건에 맞는 제품이 없습니다.")
-                else:
-                    _pi = toss_grid(_pv, key="prod_req_grid",
-                                    badge_cols=("상태",), strong_cols=("품번",),
-                                    num_cols=("미납", "완성재고 충당", "순생산필요",
-                                              "소재 필요량", "소재 부족"))
-                    _pr = _pv[_pi if _pi is not None else 0]
-                    _pe = _pp.get(_pr.get("_pid")) or next(
-                        e for e in _pp.values() if e["pn"] == _pr["품번"])
-                    st.markdown(f"##### {_pe['pn']} — 순생산필요 "
-                                f"{_pe['net']:,.0f} · 납기 {_pe['due'] or '-'}")
-                    pc1, pc2 = st.columns([1.3, 1])
-                    with pc1:
-                        st.markdown("**소재 (BOM)**")
-                        if _pe["mats"]:
-                            toss_table([{
-                                "자재": m["name"], "규격": m["spec"],
-                                "EA/PC": (f"{m['qpp']:g}" + (f" ÷ {m['sf']:g}"
-                                                             if m["sf"] != 1
-                                                             else "")),
-                                "필요량": m["need"], "재고": m["stock"],
-                                "발주 중": m["on_order"],
-                                "이 제품 배분": m["take"], "부족": m["short"],
-                                "단위": m["unit"],
-                            } for m in _pe["mats"]],
-                                num_cols=("필요량", "재고", "발주 중",
-                                          "이 제품 배분", "부족"),
-                                strong_cols=("자재",))
-                        else:
-                            st.warning("BOM 소재가 없습니다 — 마스터 관리 > BOM "
-                                       "편집에서 등록하세요.")
-                    with pc2:
-                        st.markdown("**미납 수주 라인**")
-                        toss_table([{
-                            "수주": so_map.get(l["so_id"], {}).get("so_number")
-                            or "-",
-                            "납기": str(l.get("due_date") or "-")[:10],
-                            "미납": float(l.get("pending_qty") or 0),
-                            "순생산": float(l.get("net_pending")
-                                         if l.get("net_pending") is not None
-                                         else l.get("pending_qty") or 0),
-                        } for l in sorted(_pe["lines"],
-                                          key=lambda l: str(l.get("due_date")
-                                                            or "9999"))],
-                            num_cols=("미납", "순생산"), strong_cols=("수주",))
+                sois, so_map = _mr["sois"], _mr["so_map"]
+                bom_by_pid, mat_map = _mr["bom_by_pid"], _mr["mat_map"]
+                mat_req, on_order = _mr["mat_req"], _mr["on_order"]
+                items_no_bom = _mr["items_no_bom"]
+                items_with_bom = _mr["items_with_bom"]
+                total_prod_stock_used = _mr["total_prod_stock_used"]
+                # ── 6) 상단 통계 ──
+                total_mat_cover = sum(
+                    min(info["required"],
+                        float(mat_map.get(mid, {}).get("stock_qty") or 0))
+                    for mid, info in mat_req.items())
+                total_on_order_cover = sum(
+                    min(max(info["required"]
+                            - float(mat_map.get(mid, {}).get("stock_qty") or 0), 0.0),
+                        on_order.get(mid, 0.0))
+                    for mid, info in mat_req.items())
+                shortage_count = sum(
+                    1 for mid, info in mat_req.items()
+                    if info["required"] - float(mat_map.get(mid, {}).get("stock_qty") or 0)
+                    - on_order.get(mid, 0.0) > 0)
+                sc1, sc2, sc3, sc7, sc4, sc5, sc6 = st.columns(7)
+                sc1.metric("미납 수주 품목", len(sois))
+                sc7.metric("재공 충당", f"{_mr.get('total_wip_used', 0):,.0f}",
+                           help="투입돼 공정에 들어가 있는 수량(열린 배치, 완성 "
+                                "단계 제외) — 완성 재고 다음으로 미납에서 뺀다")
+                sc2.metric("미입고 발주 충당", f"{total_on_order_cover:,.0f}",
+                           help="이미 발주해 입고 대기 중인 수량으로 충당되는 필요량 — "
+                                "발주 필요량에서 뺀다")
+                sc3.metric("완성 재고 충당",
+                           f"{total_prod_stock_used:,.0f}",
+                           help="제품 완성 재고(product_stock_v)로 생산 없이 출고 "
+                                "가능한 수량 — 자재 필요량 계산에서 제외됨")
+                sc4.metric("소재 재고 충당", f"{total_mat_cover:,.0f}",
+                           help="자재 실재고(material_stock)로 충당되는 필요량 — "
+                                "발주 필요량 = 총필요량 − 소재 재고")
+                sc5.metric("필요 자재 종류", len(mat_req))
+                sc6.metric("자재 부족", shortage_count, delta_color="inverse")
 
+                if items_no_bom:
+                    with st.expander(f"BOM 미등록 품목 {len(items_no_bom)}건 — 마스터에서 BOM 등록 필요"):
+                        df_no = pd.DataFrame(items_no_bom)
+                        toss_df(df_no, use_container_width=True, hide_index=True)
+
+
+
+                _pp = {}
+                for soi in sois:
+                    pid = soi.get("product_id")
+                    if not pid:
+                        continue
+                    e = _pp.setdefault(pid, {
+                        "pid": pid, "pn": soi.get("canonical_pn") or pid,
+                        "pending": 0.0, "used": 0.0, "net": 0.0, "lines": [],
+                        "due": None, "custs": set()})
+                    e["pending"] += float(soi.get("pending_qty") or 0)
+                    e["used"] += float(soi.get("prod_stock_used") or 0)
+                    e["net"] += float(soi.get("net_pending")
+                                      if soi.get("net_pending") is not None
+                                      else soi.get("pending_qty") or 0)
+                    e["lines"].append(soi)
+                    _dd0 = str(soi.get("due_date") or "")[:10]
+                    if _dd0 and (e["due"] is None or _dd0 < e["due"]):
+                        e["due"] = _dd0
+                    _cu0 = so_map.get(soi["so_id"], {}).get("customer")
+                    if _cu0:
+                        e["custs"].add(_cu0)
+                # 소재 재고를 납기순으로 선착 배분 → 제품별 부족
+                # 소재 재고 + 미입고 발주 잔량을 납기순으로 선착 배분
+                _mat_left = {mid: float(m.get("stock_qty") or 0) + on_order.get(mid, 0.0)
+                             for mid, m in mat_map.items()}
+                _prod_rows = []
+                for e in sorted(_pp.values(), key=lambda x: (x["due"] or "9999",
+                                                             x["pn"])):
+                    boms = [b for b in bom_by_pid.get(e["pid"], [])
+                            if b.get("material_id")]
+                    e["mats"] = []
+                    _short_sum = 0.0
+                    for b in boms:
+                        mid = b["material_id"]
+                        qpp = float(b.get("qty_per_pc") or 1)
+                        sf = float(b.get("shared_factor") or 1) or 1
+                        need = e["net"] * qpp / sf if e["net"] > 0 else 0.0
+                        take = min(max(_mat_left.get(mid, 0.0), 0.0), need)
+                        _mat_left[mid] = _mat_left.get(mid, 0.0) - take
+                        short = need - take
+                        _short_sum += short
+                        mat = mat_map.get(mid, {})
+                        e["mats"].append({
+                            "mid": mid, "name": mat.get("raw_name") or mid,
+                            "spec": mat.get("spec") or "-",
+                            "unit": mat.get("unit") or "EA", "qpp": qpp, "sf": sf,
+                            "need": need, "stock": float(mat.get("stock_qty") or 0),
+                            "on_order": on_order.get(mid, 0.0),
+                            "take": take, "short": short})
+                    e["short"] = _short_sum
+                    _first = e["mats"][0] if e["mats"] else None
+                    _prod_rows.append({
+                        "품번": e["pn"], "_pid": e["pid"],
+                        "거래처": ", ".join(sorted(e["custs"]))[:24] or "-",
+                        "납기": e["due"] or "-",
+                        "미납": e["pending"],
+                        "완성재고 충당": e["used"],
+                        "순생산필요": e["net"],
+                        "소재": ((_first["name"] + (f" 외 {len(e['mats']) - 1}"
+                                                   if len(e["mats"]) > 1 else ""))
+                                if _first else "BOM 없음"),
+                        "소재 필요량": sum(m["need"] for m in e["mats"]),
+                        "소재 부족": _short_sum,
+                        "상태": ("BOM 없음" if not boms
+                               else "충당" if e["net"] <= 0
+                               else "부족" if _short_sum > 0.5 else "가능"),
+                    })
+                if not _prod_rows:
+                    st.info("미납 제품이 없습니다.")
+                else:
+                    with st.form("prod_req_filter"):
+                        pf1, pf2, pf3 = st.columns([2, 1, 1])
+                        _pq = pf1.text_input(
+                            "품번 · 거래처 검색", key="prod_req_q",
+                            help="납기순. 순생산필요 = 미납 − 완성 재고. 소재 재고와 "
+                                 "미입고 발주는 납기 빠른 제품부터 선착 배분(뒤 제품이 "
+                                 "부족으로 표시)")
+                        _pst = pf2.selectbox("상태", ["전체", "부족", "가능", "충당",
+                                                    "BOM 없음"], key="prod_req_st")
+                        pf3.form_submit_button("검색", use_container_width=True)
+                    _pv = [r for r in _prod_rows
+                           if (not _pq.strip() or _pq.strip().lower() in
+                               (r["품번"] + " " + r["거래처"]).lower())
+                           and (_pst == "전체" or r["상태"] == _pst)]
+                    if not _pv:
+                        st.info("조건에 맞는 제품이 없습니다.")
+                    else:
+                        _pi = toss_grid(_pv, key="prod_req_grid",
+                                        badge_cols=("상태",), strong_cols=("품번",),
+                                        num_cols=("미납", "완성재고 충당", "순생산필요",
+                                                  "소재 필요량", "소재 부족"))
+                        _pr = _pv[_pi if _pi is not None else 0]
+                        _pe = _pp.get(_pr.get("_pid")) or next(
+                            e for e in _pp.values() if e["pn"] == _pr["품번"])
+                        st.markdown(f"##### {_pe['pn']} — 순생산필요 "
+                                    f"{_pe['net']:,.0f} · 납기 {_pe['due'] or '-'}")
+                        pc1, pc2 = st.columns([1.3, 1])
+                        with pc1:
+                            st.markdown("**소재 (BOM)**")
+                            if _pe["mats"]:
+                                toss_table([{
+                                    "자재": m["name"], "규격": m["spec"],
+                                    "EA/PC": (f"{m['qpp']:g}" + (f" ÷ {m['sf']:g}"
+                                                                 if m["sf"] != 1
+                                                                 else "")),
+                                    "필요량": m["need"], "재고": m["stock"],
+                                    "발주 중": m["on_order"],
+                                    "이 제품 배분": m["take"], "부족": m["short"],
+                                    "단위": m["unit"],
+                                } for m in _pe["mats"]],
+                                    num_cols=("필요량", "재고", "발주 중",
+                                              "이 제품 배분", "부족"),
+                                    strong_cols=("자재",))
+                            else:
+                                st.warning("BOM 소재가 없습니다 — 마스터 관리 > BOM "
+                                           "편집에서 등록하세요.")
+                        with pc2:
+                            st.markdown("**미납 수주 라인**")
+                            toss_table([{
+                                "수주": so_map.get(l["so_id"], {}).get("so_number")
+                                or "-",
+                                "납기": str(l.get("due_date") or "-")[:10],
+                                "미납": float(l.get("pending_qty") or 0),
+                                "순생산": float(l.get("net_pending")
+                                             if l.get("net_pending") is not None
+                                             else l.get("pending_qty") or 0),
+                            } for l in sorted(_pe["lines"],
+                                              key=lambda l: str(l.get("due_date")
+                                                                or "9999"))],
+                                num_cols=("미납", "순생산"), strong_cols=("수주",))
 
     # ════════════ TAB: 발주 자동 제안 — 2026-09-11 생산 계획에서 이동 ════════════
-    with tab_po:
+    with _sug_top:
         if _mr.get("msg"):
             st.info(_mr["msg"])
         else:
@@ -15570,6 +15572,593 @@ elif page == "구매 관리":
                     st.error(f"저장 실패: {e}")
 
 # ════════════════════════════════════════════════════════════════
+
+    # ════════════ TAB: 매입 등록 — 파일 업로드·시트 동기화 / 수기 입력 / 확인 대기 (2026-10-15 원가 확인에서 이동. 입력은 구매 관리, 결과는 원가 확인) ════════════
+    with tab_pur:
+        # ════════════════════════════════════════════════
+        # 매입내역 동기화 — 구글시트 → purchase_ledger + 자재 자동 매칭
+        # (2026-08-31 신설. 확인 → 실행 2단계, 자동 overwrite 없음)
+        # ════════════════════════════════════════════════
+        def _pl_fetch_pages(table, select, filt="", order_col="ledger_id"):
+            """PostgREST 1,000행 캡 대응 페이지네이션 (order 필수)"""
+            rows, off = [], 0
+            while True:
+                page = fetch(table, select,
+                             (filt + "&" if filt else "")
+                             + f"order={order_col}&offset={off}", limit=1000)
+                rows += page
+                if len(page) < 1000:
+                    return rows
+                off += 1000
+
+        with st.expander("파일 업로드 · 시트 동기화 (구글시트 → 장부 → 소재 단가 자동 반영)",
+                         expanded=False):
+            from collections import defaultdict
+
+            from db import count_rows as _cnt_rows
+            from utils import purchase_sync as _psync
+            import json as _json
+            if not hasattr(_psync, "vendor_key"):
+                # 배포 직후 Cloud 에 구버전 모듈이 남아 새 함수가 없는 경우 — 디스크에서 다시 읽는다
+                # (2026-10-15 원가 확인 AttributeError, 2026-10-14 보드 TypeError 와 같은 유형)
+                import importlib as _il
+                _psync = _il.reload(_psync)
+
+            def _pl_item_map():
+                """매핑표 전체 → {(vendor_key, item_key): {...product_pn}} (071)."""
+                out = {}
+                try:
+                    _pids = {}
+                    for _m in _pl_fetch_pages(
+                            "purchase_item_map",
+                            "map_id,vendor_key,item_key,line_type,material_id,"
+                            "product_id,process_type", "", order_col="map_id"):
+                        if _m.get("product_id"):
+                            _pids[_m["product_id"]] = None
+                        out[(_m["vendor_key"], _m["item_key"])] = _m   # 값에 item_key 포함 → '*' 판별
+                    if _pids:
+                        _pl = list(_pids)
+                        for _i0 in range(0, len(_pl), 100):
+                            for _p in fetch("products", "product_id,pn",
+                                            "product_id=in.(" + ",".join(
+                                                f'"{x}"' for x in _pl[_i0:_i0 + 100])
+                                            + ")", limit=200):
+                                _pids[_p["product_id"]] = _p["pn"]
+                        for _m in out.values():
+                            if _m.get("product_id"):
+                                _m["product_pn"] = _pids.get(_m["product_id"])
+                except Exception:
+                    return {}
+                return out
+
+            def _pl_reevaluate():
+                """미연결 장부 행(자재 없음·mapping_status 없음) 전체를 매핑표 → 치수 매칭으로 재평가.
+                반환 (갱신 행 수, 연결된 자재 집합, 갱신 실패 행 수). 날짜 범위 없음 (H1 독립 버튼·동기화 ② 공용)."""
+                _mrows9 = _pl_fetch_pages(
+                    "materials",
+                    "material_id,raw_name,material_type,spec,archived_at",
+                    "archived_at=is.null", order_col="material_id")
+                _km9 = _psync.build_key_mats(_mrows9)
+                _imap9 = _pl_item_map()
+                _bymat9 = defaultdict(list)   # (fields json) → ledger_ids
+                for _r9 in _pl_fetch_pages(
+                        "purchase_ledger",
+                        "ledger_id,vendor,item,unit,unit_price,category",
+                        "matched_material_id=is.null&mapping_status=is.null"):
+                    _one9 = [dict(_r9)]
+                    if _psync.apply_item_map(_one9, _imap9):
+                        _f9 = {k9: _one9[0].get(k9) for k9 in (
+                            "matched_material_id", "matched_pn", "mapping_status",
+                            "map_id", "category") if _one9[0].get(k9) is not None}
+                    else:
+                        _mid9, _why9 = _psync.match_material(
+                            _r9["item"], _r9.get("unit"), _r9.get("unit_price"), _km9)
+                        if not _mid9:
+                            continue
+                        _f9 = {"matched_material_id": _mid9, "mapping_status": "AUTO_DIMS"}
+                    _bymat9[_json.dumps(_f9, ensure_ascii=False, sort_keys=True)].append(_r9["ledger_id"])
+                _upd9, _mset9, _fail9 = 0, set(), 0
+                for _fj9, _ids9 in _bymat9.items():
+                    _f9 = _json.loads(_fj9)
+                    for _i9 in range(0, len(_ids9), 50):
+                        _chunk9 = _ids9[_i9:_i9 + 50]
+                        if _db.update("purchase_ledger",
+                                      "ledger_id=in.(" + ",".join(map(str, _chunk9)) + ")", _f9):
+                            _upd9 += len(_chunk9)
+                            if _f9.get("matched_material_id"):
+                                _mset9.add(_f9["matched_material_id"])
+                        else:
+                            _fail9 += len(_chunk9)
+                return _upd9, _mset9, _fail9
+            _sh_row = None
+            try:
+                _sh_row = _db.fetch_one("app_settings",
+                                        "key=eq.purchase_sheet_id", "value")
+            except Exception:
+                pass
+            _sheet_id = ((_sh_row or {}).get("value")
+                         or _psync.DEFAULT_SHEET_ID)
+
+            # 현황
+            try:
+                _pl_last = fetch("purchase_ledger", "trade_date,synced_at",
+                                 "order=trade_date.desc.nullslast", limit=1)
+                _pl_cnt = _cnt_rows("purchase_ledger")
+                _pl_matched = _pl_fetch_pages(
+                    "purchase_ledger", "ledger_id,matched_material_id",
+                    "matched_material_id=not.is.null")
+            except Exception as _e:
+                st.error(f"장부 현황 조회 실패: {_e}")
+                _pl_last, _pl_cnt, _pl_matched = [], "-", []
+            _sc1, _sc2, _sc3 = st.columns(3)
+            _sc1.metric("장부 총 건수",
+                        f"{_pl_cnt:,}" if isinstance(_pl_cnt, int) else "-")
+            _sc2.metric("최근 거래일",
+                        (_pl_last[0]["trade_date"] if _pl_last else "-"))
+            _sc3.metric("자재 매칭", f"{len(_pl_matched):,}건")
+            st.caption(
+                "매칭 규칙: 재질+치수+형상(환봉/육각) 완전 일치 · EA 단위 · "
+                "단가>0 인 행만 자동 연결합니다. 혜성철강 환봉(KG)+절단비 두 줄은 "
+                "한 줄(개당 단가 = (환봉+절단비)÷부품 수)로 합산해 저장합니다. "
+                "그 밖의 KG 단위 매입은 보류(행만 추가). 시트는 '링크가 있는 모든 사용자"
+                "(뷰어)' 공유가 필요합니다.")
+
+            if st.button("① 시트 확인 (변경 미리보기)", key="cost_sync_chk"):
+                try:
+                    with st.spinner("시트 읽는 중…"):
+                        _tabs9 = _psync.load_sheet_tabs(_sheet_id)
+                        _srows, _cut_n9, _pp_n9 = [], 0, 0
+                        for _t9, _v9 in _tabs9:
+                            _rows9, _m9 = _psync.merge_cutting_rows(
+                                _psync.parse_month_tab(_t9, _v9))
+                            _rows9, _p9 = _psync.piece_price_rows(_rows9)
+                            _srows += _rows9
+                            _cut_n9 += _m9
+                            _pp_n9 += _p9
+                        for _r9 in _srows:
+                            _r9.pop("_merged_from", None)
+                        _dbkeys = defaultdict(int)
+                        for _r9 in _pl_fetch_pages(
+                                "purchase_ledger",
+                                "trade_date,vendor,item,amount"):
+                            _dbkeys[_psync.dedup_key(_r9)] += 1
+                        _seen9 = defaultdict(int)
+                        _new9 = []
+                        for _r9 in _srows:
+                            _k9 = _psync.dedup_key(_r9)
+                            _seen9[_k9] += 1
+                            if _dbkeys.get(_k9, 0) < _seen9[_k9]:
+                                _new9.append(_r9)
+                        _mrows9 = _pl_fetch_pages(
+                            "materials",
+                            "material_id,raw_name,material_type,spec,"
+                            "archived_at", "archived_at=is.null",
+                            order_col="material_id")
+                        _km9 = _psync.build_key_mats(_mrows9)
+                        _imap9 = _pl_item_map()
+                        _map_n = _psync.apply_item_map(_new9, _imap9)
+                        _match_n = 0
+                        _miss9 = {}
+                        for _r9 in _new9:
+                            if _psync.is_linked(_r9):
+                                continue
+                            _mid9, _why9 = _psync.match_material(
+                                _r9["item"], _r9.get("unit"),
+                                _r9.get("unit_price"), _km9)
+                            if _mid9:
+                                _match_n += 1
+                            elif _why9 in ("NOMAT", "DUP"):
+                                _miss9[_r9["item"]] = _why9
+                        st.session_state["cost_sync_preview"] = {
+                            "new": _new9, "match_n": _match_n,
+                            "miss": _miss9, "sheet": len(_srows),
+                            "cut_n": _cut_n9, "pp_n": _pp_n9, "map_n": _map_n}
+                except Exception as _e:
+                    st.error(f"시트 확인 실패: {_e}")
+                    st.session_state.pop("cost_sync_preview", None)
+
+            _prev = st.session_state.get("cost_sync_preview")
+            if _prev:
+                st.info(f"시트 {_prev['sheet']:,}행 중 **신규 "
+                        f"{len(_prev['new']):,}건** — 자재 자동 매칭 예상 "
+                        f"{_prev['match_n']}건"
+                        + (f" · 환봉+절단비 합산 {_prev['cut_n']}건"
+                           if _prev.get("cut_n") else "")
+                        + (f" · KG→개당 변환 {_prev['pp_n']}건"
+                           if _prev.get("pp_n") else "")
+                        + (f" · 매핑표 연결 {_prev['map_n']}건"
+                           if _prev.get("map_n") else ""))
+                if _prev["miss"]:
+                    st.caption("소재로 인식됐지만 매칭 못 하는 품명 "
+                               f"{len(_prev['miss'])}종 — 자재 등록/정리 후 "
+                               "재동기화하면 자동 연결됩니다.")
+                    toss_df(pd.DataFrame(
+                        [{"매입 품명": _i, "사유": ("자재 마스터에 없음"
+                                                  if _w == "NOMAT"
+                                                  else "동일 규격 자재 중복")}
+                         for _i, _w in sorted(_prev["miss"].items())]),
+                        use_container_width=True, hide_index=True,
+                        height=min(300, 60 + len(_prev["miss"]) * 35))
+                if not _prev["new"]:
+                    st.success("추가할 신규 행이 없습니다 — 장부가 시트와 "
+                               "일치합니다.")
+                elif st.button(f"② 동기화 실행 — {len(_prev['new']):,}건 추가",
+                               type="primary", key="cost_sync_go"):
+                    try:
+                        _pnset9 = {p9["pn"] for p9 in _pl_fetch_pages(
+                            "products", "product_id,pn")}
+                    except Exception:
+                        _pnset9 = set()
+                    _payload9 = []
+                    for _r9 in _prev["new"]:
+                        _rk9 = _r9.get("remark") or ""
+                        _pn9 = _rk9.split()[0].strip() if _rk9 else ""
+                        _payload9.append({
+                            **{k9: _r9.get(k9) for k9 in (
+                                "trade_date", "vendor", "item", "unit",
+                                "qty", "weight", "unit_price", "amount",
+                                "vat", "total", "remark", "kg_price",
+                                "ea_price")},
+                            "matched_pn": (_r9.get("matched_pn")
+                                           or (_pn9 if _pn9 in _pnset9 else None)),
+                            "matched_material_id": _r9.get("matched_material_id"),
+                            "mapping_status": _r9.get("mapping_status"),
+                            "map_id": _r9.get("map_id"),
+                            "category": _r9.get("category"),
+                            "source": "SHEET",
+                        })
+                    _ins9 = 0
+                    _err9 = None
+                    try:
+                        for _i9 in range(0, len(_payload9), 200):
+                            _ins9 += _db.insert("purchase_ledger",
+                                                _payload9[_i9:_i9 + 200])
+                    except Exception as _e:
+                        _err9 = str(_e)
+                    # 자동 매칭 (기존 미매칭 행 포함 전체 재평가)
+                    try:
+                        _upd9, _mset9, _fail9 = _pl_reevaluate()
+                        if _fail9:
+                            _err9 = _err9 or f"재평가 중 {_fail9}행 갱신 실패"
+                    except Exception as _e:
+                        _upd9, _mset9 = 0, set()
+                        _err9 = _err9 or str(_e)
+                    st.session_state.pop("cost_sync_preview", None)
+                    if _err9:
+                        st.error(f"동기화 중 오류: {_err9} — 추가 {_ins9}건, "
+                                 f"매칭 {_upd9}건까지 반영됨. 다시 실행하면 "
+                                 "중복 없이 이어서 처리됩니다.")
+                    else:
+                        st.success(f"동기화 완료 — {_ins9:,}건 추가, 자재 "
+                                   f"매칭 {_upd9}건({len(_mset9)}개 자재). "
+                                   "소재 단가가 즉시 원가에 반영됩니다.")
+                        st.rerun()
+
+
+        # ════════════════════════════════════════════════
+        # ✍ 매입 수기 입력 — 거래명세서 기준 (2026-10-15). 시트·스캔과 같은 규칙으로 변환·연결.
+        # ════════════════════════════════════════════════
+        with st.expander("매입 수기 입력 (거래명세서 기준)", expanded=False):
+            from datetime import date as _mi_d0
+            try:
+                _mi_vend = fetch("vendors", "vendor_id,name", "in_use=eq.true&archived_at=is.null&order=name", limit=500)
+            except Exception:
+                _mi_vend = []
+            _mi_vn = [v["name"] for v in _mi_vend]
+            _mi_nonce = st.session_state.setdefault("mi_nonce", 0)
+            with st.form(f"mi_form_{_mi_nonce}"):
+                mi1, mi2, mi3 = st.columns([2.5, 1.2, 1.5])
+                _mi_vendor = mi1.selectbox("거래처", _mi_vn, key=f"mi_v_{_mi_nonce}") if _mi_vn else mi1.text_input("거래처", key=f"mi_vt_{_mi_nonce}")
+                _mi_date = mi2.date_input("거래일", value=_mi_d0.today(), key=f"mi_d_{_mi_nonce}")
+                _mi_no = mi3.text_input("명세서 번호(선택)", key=f"mi_no_{_mi_nonce}")
+                _mi_nan = float("nan")
+                _mi_df = pd.DataFrame([{"품명 및 규격": "", "단위": "EA", "수량": _mi_nan, "중량(kg)": _mi_nan,
+                                        "단가": _mi_nan, "공급가액": _mi_nan, "세액": _mi_nan, "비고": ""}
+                                       for _ in range(6)])
+                _mi_ed = st.data_editor(
+                    _mi_df, hide_index=True, use_container_width=True, num_rows="dynamic",
+                    key=f"mi_ed_{_mi_nonce}",
+                    column_config={
+                        "단위": st.column_config.SelectboxColumn("단위", options=["EA", "KG", "SET", "CH", "식"], width="small"),
+                        "수량": st.column_config.NumberColumn("수량", min_value=0),
+                        "중량(kg)": st.column_config.NumberColumn("중량(kg)", min_value=0, help="KG 매입이면 kg, 개수는 수량에"),
+                        "단가": st.column_config.NumberColumn("단가", min_value=0, help="KG 매입은 kg 단가"),
+                        "공급가액": st.column_config.NumberColumn("공급가액", min_value=0, help="비우면 수량×단가(KG 는 중량×단가)"),
+                        "세액": st.column_config.NumberColumn("세액", min_value=0, help="비우면 공급가액의 10%"),
+                    })
+                _mi_dupok = st.checkbox("같은 날짜·거래처·품명·금액 행이 이미 있어도 추가(의도한 중복)", key=f"mi_dup_{_mi_nonce}")
+                _mi_go = st.form_submit_button("장부에 추가", type="primary")
+            if _mi_go:
+                _mi_rows, _mi_warn = [], []
+
+                def _nz(v):
+                    try:
+                        return None if (v is None or pd.isna(v)) else float(v)
+                    except (TypeError, ValueError):
+                        return None
+
+                def _ns(v):
+                    return "" if (v is None or (isinstance(v, float) and pd.isna(v))) else str(v).strip()
+                for _, _r in _mi_ed.iterrows():
+                    _it = _ns(_r.get("품명 및 규격"))
+                    if not _it:
+                        continue
+                    _u = (_ns(_r.get("단위")) or "EA").upper()
+                    _q, _w, _p = _nz(_r.get("수량")), _nz(_r.get("중량(kg)")), _nz(_r.get("단가"))
+                    _a = _nz(_r.get("공급가액"))
+                    if _a is None and _p is not None:
+                        _base = (_w if (_u == "KG" and _w) else _q)
+                        if not _base:
+                            _mi_warn.append(_it)
+                        _a = round((_base or 0) * _p)
+                    _v = _nz(_r.get("세액"))
+                    if _v is None and _a is not None:
+                        _v = round(_a * 0.1)
+                    _mi_rows.append({"trade_date": _mi_date.isoformat(), "vendor": str(_mi_vendor).strip(),
+                                     "item": _it, "unit": _u, "qty": _q, "weight": _w, "unit_price": _p,
+                                     "amount": _a, "vat": _v, "total": ((_a or 0) + (_v or 0)) if _a is not None else None,
+                                     "remark": (_ns(_r.get("비고")) or None)})
+                if _mi_warn:
+                    st.error("단가는 있는데 수량(KG 는 중량)이 없어 금액이 0 이 되는 행: " + ", ".join(_mi_warn[:5])
+                             + " — 수량이나 공급가액을 넣으세요.")
+                    _mi_rows = []
+                if not _mi_rows:
+                    st.warning("저장할 행이 없습니다.")
+                else:
+                    _mi_rows, _mi_cut = _psync.merge_cutting_rows(_mi_rows)
+                    for _r in _mi_rows:
+                        _r.pop("_merged_from", None)
+                    _mi_rows, _mi_pp = _psync.piece_price_rows(_mi_rows)
+                    _mi_bad = [r for r in _mi_rows if r.get("amount") is None]
+                    if _mi_bad:
+                        st.error(f"금액을 계산할 수 없는 행 {len(_mi_bad)}건 — 단가나 공급가액을 입력하세요: "
+                                 + ", ".join(r["item"] for r in _mi_bad[:5]))
+                    else:
+                        try:   # 같은 날짜 전체를 정규화 키로 비교 — 시트 표기('(주)유성메탈')와 마스터명이 달라도 잡힘 (B2)
+                            _mi_ex = fetch("purchase_ledger", "trade_date,vendor,item,amount",
+                                           f"trade_date=eq.{_mi_date.isoformat()}", limit=2000)
+                        except Exception:
+                            _mi_ex = []
+                        _mi_exk = {_psync.dedup_key(x) for x in _mi_ex}
+                        _mi_dups = [r for r in _mi_rows if _psync.dedup_key(r) in _mi_exk]
+                        if _mi_dups and not _mi_dupok:
+                            st.error(f"이미 장부에 같은 행이 있습니다 {len(_mi_dups)}건: "
+                                     + ", ".join(r["item"] for r in _mi_dups[:5])
+                                     + " — 의도한 중복이면 체크박스를 켜고 다시.")
+                        else:
+                            try:
+                                _mi_map = _psync.apply_item_map(_mi_rows, _pl_item_map())
+                                _km0 = _psync.build_key_mats(_pl_fetch_pages(
+                                    "materials", "material_id,raw_name,material_type,spec,archived_at",
+                                    "archived_at=is.null", order_col="material_id"))
+                                _mi_dims = 0
+                                for _r in _mi_rows:
+                                    if _psync.is_linked(_r):
+                                        continue
+                                    _mid0, _why0 = _psync.match_material(_r["item"], _r.get("unit"), _r.get("unit_price"), _km0)
+                                    if _mid0:
+                                        _r["matched_material_id"] = _mid0
+                                        _r["mapping_status"] = "AUTO_DIMS"
+                                        _mi_dims += 1
+                                _mi_payload = [{
+                                    **{k: r.get(k) for k in ("trade_date", "vendor", "item", "unit", "qty", "weight",
+                                                             "unit_price", "amount", "vat", "total", "remark",
+                                                             "kg_price", "ea_price", "matched_material_id",
+                                                             "matched_pn", "mapping_status", "map_id", "category")},
+                                    "source": "MANUAL", "statement_no": (_mi_no.strip() or None),
+                                } for r in _mi_rows]
+                                _mi_n = _db.insert("purchase_ledger", _mi_payload)
+                                st.session_state["mi_nonce"] = _mi_nonce + 1
+                                st.success(f"장부 추가 {_mi_n}행 — 합산 {_mi_cut}·KG→개당 {_mi_pp}·매핑표 {_mi_map}·치수 매칭 {_mi_dims}. "
+                                           f"연결 안 된 행은 위 '확인 대기'에서 연결하세요.")
+                                st.rerun()
+                            except Exception as _e:
+                                st.error(f"저장 실패: {_e}")
+
+        # ════════════════════════════════════════════════
+        # 🔗 자재·제품 연결 확인 대기 — 매핑표 (071, 2026-10-15)
+        # 한 번 연결한 (거래처, 품명)은 동기화·수기·스캔 입력에서 자동 적용된다.
+        # ════════════════════════════════════════════════
+        with st.expander("자재·제품 연결 확인 대기 (거래처+품명 → 매핑표)", expanded=False):
+            from datetime import date as _uw_date, timedelta as _uw_td
+            try:
+                _uw_rows = _pl_fetch_pages(
+                    "purchase_ledger",
+                    "ledger_id,trade_date,vendor,item,unit,qty,unit_price,amount",
+                    "matched_material_id=is.null&mapping_status=is.null"
+                    "&trade_date=gte."
+                    + (_uw_date.today() - _uw_td(days=365)).isoformat())
+            except Exception as _e:
+                st.error(f"미연결 행 조회 실패: {_e}")
+                _uw_rows = []
+            _uw_grp = {}
+            for _r in _uw_rows:
+                _k = (_psync.vendor_key(_r.get("vendor")), _psync.item_key(_r.get("item")))
+                _g = _uw_grp.setdefault(_k, {"거래처": _r.get("vendor"), "품명": _r.get("item"),
+                                            "건수": 0, "최근일": "", "금액": 0.0,
+                                            "단위": _r.get("unit"), "ids": []})
+                _g["건수"] += 1
+                _g["금액"] += float(_r.get("amount") or 0)
+                _g["최근일"] = max(_g["최근일"], str(_r.get("trade_date") or ""))
+                _g["ids"].append(_r["ledger_id"])
+            _uw_list = sorted(_uw_grp.items(), key=lambda kv: (-kv[1]["건수"], -kv[1]["금액"]))
+            # ── 업체 일괄 분류 (072): 업체가 통째로 한 유형이면 품명마다 고르지 않는다 ──
+            _uv_cnt = {}
+            for _r in _uw_rows:
+                _vk0 = _psync.vendor_key(_r.get("vendor"))
+                _g0 = _uv_cnt.setdefault(_vk0, {"이름": _r.get("vendor"), "건수": 0, "ids": []})
+                _g0["건수"] += 1
+                _g0["ids"].append(_r["ledger_id"])
+            with st.container(border=True):
+                _uvc1, _uvc2, _uvc3 = st.columns([2.2, 2.6, 1.2])
+                _uv_opts = [f"{g['이름']} ({g['건수']}행)" for _, g in sorted(_uv_cnt.items(), key=lambda kv: -kv[1]["건수"])]
+                _uv_pick = _uvc1.selectbox("업체 일괄 분류 — 업체", _uv_opts, key="uv_pick",
+                                           help="업체 전체가 한 유형(예: 두리T.M.S = 공구·소모품)이면 여기서 한 번에. "
+                                                "품명별 자재 연결이 필요한 소재는 아래 묶음에서 개별로.") if _uv_opts else None
+                _uv_type = _uvc2.radio("유형", ["공구·소모품", "공정비(열처리·표면·외주)", "기타"], horizontal=True, key="uv_type")
+                _uv_proc = None
+                if _uv_type.startswith("공정비"):
+                    _uv_proc = {"열처리": "HEAT", "표면처리": "SURFACE", "외주가공": "OUTSOURCE", "운송": "TRANSPORT", "기타": "OTHER"}[
+                        _uvc2.selectbox("공정 종류", ["열처리", "표면처리", "외주가공", "운송", "기타"], key="uv_proc")]
+                _uv_lt = {"공구·소모품": "SUPPLY", "공정비(열처리·표면·외주)": "PROCESS", "기타": "OTHER"}[_uv_type]
+                _uvc3.write("")
+                if _uv_pick and _uvc3.button("업체 전체 적용", key="uv_go", type="primary", use_container_width=True) \
+                        and click_guard("uv_go"):
+                    _uv_key = sorted(_uv_cnt.items(), key=lambda kv: -kv[1]["건수"])[_uv_opts.index(_uv_pick)][0]
+                    _uv_g = _uv_cnt[_uv_key]
+                    try:
+                        _db.clear_cache()
+                        _uv_ex = fetch("purchase_item_map", "map_id", f"vendor_key=eq.{_fq(_uv_key)}&item_key=eq.*", limit=1)
+                        if _uv_ex:
+                            _uv_mapid = _uv_ex[0]["map_id"]
+                            _db.update("purchase_item_map", f"map_id=eq.{_uv_mapid}",
+                                       {"line_type": _uv_lt, "process_type": _uv_proc, "confirmed_by": current_user_name()})
+                        else:
+                            _db.insert("purchase_item_map", [{
+                                "vendor_key": _uv_key, "item_key": "*", "item_sample": f"{_uv_g['이름']} 업체 기본",
+                                "line_type": _uv_lt, "process_type": _uv_proc, "origin": "USER",
+                                "confirmed_by": current_user_name()}])
+                            _db.clear_cache()
+                            _uv_mapid = (fetch("purchase_item_map", "map_id",
+                                               f"vendor_key=eq.{_fq(_uv_key)}&item_key=eq.*", limit=1) or [{}])[0].get("map_id")
+                        _uv_f = {"mapping_status": "MAP", "map_id": _uv_mapid}
+                        _uv_n, _uv_fail = 0, 0
+                        for _i0 in range(0, len(_uv_g["ids"]), 50):
+                            _chunk = _uv_g["ids"][_i0:_i0 + 50]
+                            _flt = "ledger_id=in.(" + ",".join(map(str, _chunk)) + ")"
+                            if _db.update("purchase_ledger", _flt, _uv_f):
+                                _uv_n += len(_chunk)
+                                _db.update("purchase_ledger", _flt + "&category=is.null", {"category": _uv_lt})
+                            else:
+                                _uv_fail += len(_chunk)
+                        if _uv_fail:
+                            st.error(f"업체 규칙은 저장됐지만 장부 {_uv_fail}행 갱신 실패 — [미연결 재평가]로 다시.")
+                        else:
+                            st.success(f"{_uv_g['이름']} → {_uv_type}: {_uv_n}행 분류. 앞으로 이 업체 행은 자동 분류되고, "
+                                       "품명별 자재 연결이 있으면 그것이 우선합니다.")
+                            st.rerun()
+                    except Exception as _e:
+                        st.error(f"업체 일괄 분류 실패: {_e}")
+            _uwc1, _uwc2 = st.columns([4, 1.4])
+            _uwc1.caption(f"최근 1년 미연결 {len(_uw_rows):,}행 · {len(_uw_list):,}종 — 건수 많은 순. "
+                          "연결하면 최근 1년의 같은 품명 행이 함께 채워지고 다음 입력부터 자동입니다. "
+                          "더 오래된 행은 [미연결 재평가]가 채웁니다.")
+            if _uwc2.button("미연결 재평가", key="uw_reeval", use_container_width=True,
+                            help="매핑표·치수 규칙으로 미연결 장부 행 전체를 다시 연결 (시트 동기화와 무관)") \
+                    and click_guard("uw_reeval"):
+                try:
+                    _re_n, _re_m, _re_f = _pl_reevaluate()
+                    if _re_f:
+                        st.error(f"재평가 — {_re_n}행 연결, {_re_f}행 갱신 실패")
+                    else:
+                        st.success(f"재평가 — {_re_n}행 연결({len(_re_m)}개 자재)")
+                        st.rerun()
+                except Exception as _e:
+                    st.error(f"재평가 실패: {_e}")
+            if _uw_list:
+                toss_df(pd.DataFrame([{"거래처": g["거래처"], "품명": g["품명"], "단위": g["단위"],
+                                      "건수": g["건수"], "최근일": g["최근일"],
+                                      "금액": round(g["금액"])} for _, g in _uw_list[:200]]),
+                        use_container_width=True, hide_index=True,
+                        height=min(360, 60 + 35 * min(len(_uw_list), 200)))
+                _uw_labels = [f"{g['거래처']} · {g['품명']} ({g['건수']}건)" for _, g in _uw_list[:200]]
+                _uw_pick = st.selectbox("연결할 품명", _uw_labels, key="uw_pick")
+                _uw_key, _uw_g = _uw_list[_uw_labels.index(_uw_pick)]
+                _uw_type = st.radio("라인 유형", ["소재(자재)", "공구·소모품(자재)", "제품(외주가공·구매품)",
+                                              "공정비(열처리·표면·외주)", "기타"],
+                                    horizontal=True, key="uw_type")
+                _uw_mid = _uw_pid = _uw_proc = None
+                if _uw_type in ("소재(자재)", "공구·소모품(자재)"):
+                    _uw_q = st.text_input("자재 검색 (ID·자재명·규격)", key="uw_mq",
+                                          placeholder="예: SCM420H 55, T016, 센타드릴")
+                    _uw_c = []
+                    if _uw_q and len(_uw_q.strip()) >= 2:
+                        try:
+                            _q = _fq(_uw_q.strip())
+                            _uw_c = fetch("materials", "material_id,raw_name,spec,material_type",
+                                          f"archived_at=is.null&or=(material_id.ilike.*{_q}*,"
+                                          f"raw_name.ilike.*{_q}*,spec.ilike.*{_q}*)"
+                                          "&order=material_id", limit=50)
+                        except Exception:
+                            _uw_c = []
+                    if _uw_c:
+                        _uw_ml = [f"{m['material_id']} · {m.get('raw_name') or ''} {m.get('spec') or ''}" for m in _uw_c]
+                        _uw_mid = _uw_c[_uw_ml.index(st.selectbox(f"자재 선택 ({len(_uw_c)}건)", _uw_ml, key="uw_msel"))]["material_id"]
+                    elif _uw_q:
+                        st.caption("검색 결과 없음 — 자재 등록 뒤 다시.")
+                elif _uw_type == "제품(외주가공·구매품)":
+                    _uw_q = st.text_input("품번 검색", key="uw_pq")
+                    _uw_c = []
+                    if _uw_q and len(_uw_q.strip()) >= 2:
+                        try:
+                            _q = _fq(_uw_q.strip())
+                            _uw_c = fetch("products", "product_id,pn",
+                                          f"archived_at=is.null&or=(pn.ilike.*{_q}*,alias_list.ilike.*{_q}*)"
+                                          "&order=pn", limit=50)
+                        except Exception:
+                            _uw_c = []
+                    if _uw_c:
+                        _uw_pl = [f"{p['pn']} ({p['product_id']})" for p in _uw_c]
+                        _uw_pid = _uw_c[_uw_pl.index(st.selectbox(f"제품 선택 ({len(_uw_c)}건)", _uw_pl, key="uw_psel"))]["product_id"]
+                elif _uw_type.startswith("공정비"):
+                    _uw_proc = {"열처리": "HEAT", "표면처리": "SURFACE", "외주가공": "OUTSOURCE", "운송": "TRANSPORT", "기타": "OTHER"}[
+                        st.selectbox("공정 종류", ["열처리", "표면처리", "외주가공", "운송", "기타"], key="uw_proc")]
+                _uw_lt = {"소재(자재)": "MATERIAL", "공구·소모품(자재)": "SUPPLY", "제품(외주가공·구매품)": "PRODUCT",
+                          "공정비(열처리·표면·외주)": "PROCESS", "기타": "OTHER"}[_uw_type]
+                _uw_ready = (_uw_lt in ("PROCESS", "OTHER") or (_uw_lt in ("MATERIAL", "SUPPLY") and _uw_mid)
+                             or (_uw_lt == "PRODUCT" and _uw_pid))
+                if st.button(f"연결 — {_uw_g['건수']}행에 적용", key="uw_go", type="primary",
+                             disabled=not _uw_ready) and click_guard("uw_go"):
+                    try:
+                        _uw_pn = None
+                        if _uw_pid:
+                            _uw_pn = (fetch("products", "pn", f"product_id=eq.{_fq(_uw_pid)}", limit=1) or [{}])[0].get("pn")
+                        # 매핑표: 같은 키가 이미 있으면 재사용(재시도 가능), 없으면 추가 (Reviewer H1)
+                        _db.clear_cache()
+                        _uw_ex = fetch("purchase_item_map", "map_id,line_type,material_id,product_id",
+                                       f"vendor_key=eq.{_fq(_uw_key[0])}&item_key=eq.{_fq(_uw_key[1])}", limit=1)
+                        if _uw_ex:
+                            _uw_mapid = _uw_ex[0]["map_id"]
+                            st.info("이미 매핑표에 있는 품명입니다 — 기존 연결로 장부 행만 채웁니다.")
+                            _uw_lt = _uw_ex[0]["line_type"]
+                            _uw_mid = _uw_ex[0].get("material_id")
+                            if _uw_ex[0].get("product_id"):
+                                _uw_pn = (fetch("products", "pn", f"product_id=eq.{_fq(_uw_ex[0]['product_id'])}", limit=1) or [{}])[0].get("pn")
+                        else:
+                            _db.insert("purchase_item_map", [{
+                                "vendor_key": _uw_key[0], "item_key": _uw_key[1], "item_sample": _uw_g["품명"],
+                                "line_type": _uw_lt, "material_id": _uw_mid, "product_id": _uw_pid,
+                                "process_type": _uw_proc, "origin": "USER", "confirmed_by": current_user_name()}])
+                            _db.clear_cache()
+                            _uw_mapid = (fetch("purchase_item_map", "map_id",
+                                               f"vendor_key=eq.{_fq(_uw_key[0])}&item_key=eq.{_fq(_uw_key[1])}",
+                                               limit=1) or [{}])[0].get("map_id")
+                        # None 값은 보내지 않는다 — 기존 matched_pn(비고 품번) 을 지우지 않게 (B1)
+                        _uw_f = {k: v for k, v in {"mapping_status": "MAP", "map_id": _uw_mapid,
+                                                   "matched_material_id": _uw_mid,
+                                                   "matched_pn": (_uw_pn if _uw_lt == "PRODUCT" else None)}.items()
+                                 if v is not None}
+                        _uw_n, _uw_fail = 0, 0
+                        for _i0 in range(0, len(_uw_g["ids"]), 50):
+                            _chunk = _uw_g["ids"][_i0:_i0 + 50]
+                            _flt = "ledger_id=in.(" + ",".join(map(str, _chunk)) + ")"
+                            if _db.update("purchase_ledger", _flt, _uw_f):
+                                _uw_n += len(_chunk)
+                                _db.update("purchase_ledger", _flt + "&category=is.null", {"category": _uw_lt})
+                            else:
+                                _uw_fail += len(_chunk)
+                        if _uw_fail:
+                            st.error(f"매핑표는 저장됐지만 장부 {_uw_fail}행 갱신에 실패했습니다 — "
+                                     "[미연결 재평가]를 눌러 다시 채우세요.")
+                        else:
+                            st.success(f"매핑표 저장 · 장부 {_uw_n}행 연결 — 다음 입력부터 자동 적용")
+                            st.rerun()
+                    except Exception as _e:
+                        st.error(f"연결 실패: {_e}")
+            else:
+                st.success("최근 1년 미연결 행이 없습니다.")
+
+
 elif page == "공정 관리":
     st.subheader("공정 관리")
 
@@ -20100,532 +20689,6 @@ elif page == "원가 확인":
             "legacy `product_full` 사용 중 — BOM 변경 자동 반영 안 됨. "
             "Migration 007/008/009 적용 후 자동 활성."
         )
-
-    # ════════════════════════════════════════════════
-    # 매입내역 동기화 — 구글시트 → purchase_ledger + 자재 자동 매칭
-    # (2026-08-31 신설. 확인 → 실행 2단계, 자동 overwrite 없음)
-    # ════════════════════════════════════════════════
-    def _pl_fetch_pages(table, select, filt="", order_col="ledger_id"):
-        """PostgREST 1,000행 캡 대응 페이지네이션 (order 필수)"""
-        rows, off = [], 0
-        while True:
-            page = fetch(table, select,
-                         (filt + "&" if filt else "")
-                         + f"order={order_col}&offset={off}", limit=1000)
-            rows += page
-            if len(page) < 1000:
-                return rows
-            off += 1000
-
-    with st.expander("매입내역 동기화 (구글시트 → 장부 → 소재 단가 자동 반영)",
-                     expanded=False):
-        from collections import defaultdict
-
-        from db import count_rows as _cnt_rows
-        from utils import purchase_sync as _psync
-        import json as _json
-        if not hasattr(_psync, "vendor_key"):
-            # 배포 직후 Cloud 에 구버전 모듈이 남아 새 함수가 없는 경우 — 디스크에서 다시 읽는다
-            # (2026-10-15 원가 확인 AttributeError, 2026-10-14 보드 TypeError 와 같은 유형)
-            import importlib as _il
-            _psync = _il.reload(_psync)
-
-        def _pl_item_map():
-            """매핑표 전체 → {(vendor_key, item_key): {...product_pn}} (071)."""
-            out = {}
-            try:
-                _pids = {}
-                for _m in _pl_fetch_pages(
-                        "purchase_item_map",
-                        "map_id,vendor_key,item_key,line_type,material_id,"
-                        "product_id,process_type", "", order_col="map_id"):
-                    if _m.get("product_id"):
-                        _pids[_m["product_id"]] = None
-                    out[(_m["vendor_key"], _m["item_key"])] = _m
-                if _pids:
-                    _pl = list(_pids)
-                    for _i0 in range(0, len(_pl), 100):
-                        for _p in fetch("products", "product_id,pn",
-                                        "product_id=in.(" + ",".join(
-                                            f'"{x}"' for x in _pl[_i0:_i0 + 100])
-                                        + ")", limit=200):
-                            _pids[_p["product_id"]] = _p["pn"]
-                    for _m in out.values():
-                        if _m.get("product_id"):
-                            _m["product_pn"] = _pids.get(_m["product_id"])
-            except Exception:
-                return {}
-            return out
-
-        def _pl_reevaluate():
-            """미연결 장부 행(자재 없음·mapping_status 없음) 전체를 매핑표 → 치수 매칭으로 재평가.
-            반환 (갱신 행 수, 연결된 자재 집합, 갱신 실패 행 수). 날짜 범위 없음 (H1 독립 버튼·동기화 ② 공용)."""
-            _mrows9 = _pl_fetch_pages(
-                "materials",
-                "material_id,raw_name,material_type,spec,archived_at",
-                "archived_at=is.null", order_col="material_id")
-            _km9 = _psync.build_key_mats(_mrows9)
-            _imap9 = _pl_item_map()
-            _bymat9 = defaultdict(list)   # (fields json) → ledger_ids
-            for _r9 in _pl_fetch_pages(
-                    "purchase_ledger",
-                    "ledger_id,vendor,item,unit,unit_price,category",
-                    "matched_material_id=is.null&mapping_status=is.null"):
-                _one9 = [dict(_r9)]
-                if _psync.apply_item_map(_one9, _imap9):
-                    _f9 = {k9: _one9[0].get(k9) for k9 in (
-                        "matched_material_id", "matched_pn", "mapping_status",
-                        "map_id", "category") if _one9[0].get(k9) is not None}
-                else:
-                    _mid9, _why9 = _psync.match_material(
-                        _r9["item"], _r9.get("unit"), _r9.get("unit_price"), _km9)
-                    if not _mid9:
-                        continue
-                    _f9 = {"matched_material_id": _mid9, "mapping_status": "AUTO_DIMS"}
-                _bymat9[_json.dumps(_f9, ensure_ascii=False, sort_keys=True)].append(_r9["ledger_id"])
-            _upd9, _mset9, _fail9 = 0, set(), 0
-            for _fj9, _ids9 in _bymat9.items():
-                _f9 = _json.loads(_fj9)
-                for _i9 in range(0, len(_ids9), 50):
-                    _chunk9 = _ids9[_i9:_i9 + 50]
-                    if _db.update("purchase_ledger",
-                                  "ledger_id=in.(" + ",".join(map(str, _chunk9)) + ")", _f9):
-                        _upd9 += len(_chunk9)
-                        if _f9.get("matched_material_id"):
-                            _mset9.add(_f9["matched_material_id"])
-                    else:
-                        _fail9 += len(_chunk9)
-            return _upd9, _mset9, _fail9
-        _sh_row = None
-        try:
-            _sh_row = _db.fetch_one("app_settings",
-                                    "key=eq.purchase_sheet_id", "value")
-        except Exception:
-            pass
-        _sheet_id = ((_sh_row or {}).get("value")
-                     or _psync.DEFAULT_SHEET_ID)
-
-        # 현황
-        try:
-            _pl_last = fetch("purchase_ledger", "trade_date,synced_at",
-                             "order=trade_date.desc.nullslast", limit=1)
-            _pl_cnt = _cnt_rows("purchase_ledger")
-            _pl_matched = _pl_fetch_pages(
-                "purchase_ledger", "ledger_id,matched_material_id",
-                "matched_material_id=not.is.null")
-        except Exception as _e:
-            st.error(f"장부 현황 조회 실패: {_e}")
-            _pl_last, _pl_cnt, _pl_matched = [], "-", []
-        _sc1, _sc2, _sc3 = st.columns(3)
-        _sc1.metric("장부 총 건수",
-                    f"{_pl_cnt:,}" if isinstance(_pl_cnt, int) else "-")
-        _sc2.metric("최근 거래일",
-                    (_pl_last[0]["trade_date"] if _pl_last else "-"))
-        _sc3.metric("자재 매칭", f"{len(_pl_matched):,}건")
-        st.caption(
-            "매칭 규칙: 재질+치수+형상(환봉/육각) 완전 일치 · EA 단위 · "
-            "단가>0 인 행만 자동 연결합니다. 혜성철강 환봉(KG)+절단비 두 줄은 "
-            "한 줄(개당 단가 = (환봉+절단비)÷부품 수)로 합산해 저장합니다. "
-            "그 밖의 KG 단위 매입은 보류(행만 추가). 시트는 '링크가 있는 모든 사용자"
-            "(뷰어)' 공유가 필요합니다.")
-
-        if st.button("① 시트 확인 (변경 미리보기)", key="cost_sync_chk"):
-            try:
-                with st.spinner("시트 읽는 중…"):
-                    _tabs9 = _psync.load_sheet_tabs(_sheet_id)
-                    _srows, _cut_n9, _pp_n9 = [], 0, 0
-                    for _t9, _v9 in _tabs9:
-                        _rows9, _m9 = _psync.merge_cutting_rows(
-                            _psync.parse_month_tab(_t9, _v9))
-                        _rows9, _p9 = _psync.piece_price_rows(_rows9)
-                        _srows += _rows9
-                        _cut_n9 += _m9
-                        _pp_n9 += _p9
-                    for _r9 in _srows:
-                        _r9.pop("_merged_from", None)
-                    _dbkeys = defaultdict(int)
-                    for _r9 in _pl_fetch_pages(
-                            "purchase_ledger",
-                            "trade_date,vendor,item,amount"):
-                        _dbkeys[_psync.dedup_key(_r9)] += 1
-                    _seen9 = defaultdict(int)
-                    _new9 = []
-                    for _r9 in _srows:
-                        _k9 = _psync.dedup_key(_r9)
-                        _seen9[_k9] += 1
-                        if _dbkeys.get(_k9, 0) < _seen9[_k9]:
-                            _new9.append(_r9)
-                    _mrows9 = _pl_fetch_pages(
-                        "materials",
-                        "material_id,raw_name,material_type,spec,"
-                        "archived_at", "archived_at=is.null",
-                        order_col="material_id")
-                    _km9 = _psync.build_key_mats(_mrows9)
-                    _imap9 = _pl_item_map()
-                    _map_n = _psync.apply_item_map(_new9, _imap9)
-                    _match_n = 0
-                    _miss9 = {}
-                    for _r9 in _new9:
-                        if _psync.is_linked(_r9):
-                            continue
-                        _mid9, _why9 = _psync.match_material(
-                            _r9["item"], _r9.get("unit"),
-                            _r9.get("unit_price"), _km9)
-                        if _mid9:
-                            _match_n += 1
-                        elif _why9 in ("NOMAT", "DUP"):
-                            _miss9[_r9["item"]] = _why9
-                    st.session_state["cost_sync_preview"] = {
-                        "new": _new9, "match_n": _match_n,
-                        "miss": _miss9, "sheet": len(_srows),
-                        "cut_n": _cut_n9, "pp_n": _pp_n9, "map_n": _map_n}
-            except Exception as _e:
-                st.error(f"시트 확인 실패: {_e}")
-                st.session_state.pop("cost_sync_preview", None)
-
-        _prev = st.session_state.get("cost_sync_preview")
-        if _prev:
-            st.info(f"시트 {_prev['sheet']:,}행 중 **신규 "
-                    f"{len(_prev['new']):,}건** — 자재 자동 매칭 예상 "
-                    f"{_prev['match_n']}건"
-                    + (f" · 환봉+절단비 합산 {_prev['cut_n']}건"
-                       if _prev.get("cut_n") else "")
-                    + (f" · KG→개당 변환 {_prev['pp_n']}건"
-                       if _prev.get("pp_n") else "")
-                    + (f" · 매핑표 연결 {_prev['map_n']}건"
-                       if _prev.get("map_n") else ""))
-            if _prev["miss"]:
-                st.caption("소재로 인식됐지만 매칭 못 하는 품명 "
-                           f"{len(_prev['miss'])}종 — 자재 등록/정리 후 "
-                           "재동기화하면 자동 연결됩니다.")
-                toss_df(pd.DataFrame(
-                    [{"매입 품명": _i, "사유": ("자재 마스터에 없음"
-                                              if _w == "NOMAT"
-                                              else "동일 규격 자재 중복")}
-                     for _i, _w in sorted(_prev["miss"].items())]),
-                    use_container_width=True, hide_index=True,
-                    height=min(300, 60 + len(_prev["miss"]) * 35))
-            if not _prev["new"]:
-                st.success("추가할 신규 행이 없습니다 — 장부가 시트와 "
-                           "일치합니다.")
-            elif st.button(f"② 동기화 실행 — {len(_prev['new']):,}건 추가",
-                           type="primary", key="cost_sync_go"):
-                try:
-                    _pnset9 = {p9["pn"] for p9 in _pl_fetch_pages(
-                        "products", "product_id,pn")}
-                except Exception:
-                    _pnset9 = set()
-                _payload9 = []
-                for _r9 in _prev["new"]:
-                    _rk9 = _r9.get("remark") or ""
-                    _pn9 = _rk9.split()[0].strip() if _rk9 else ""
-                    _payload9.append({
-                        **{k9: _r9.get(k9) for k9 in (
-                            "trade_date", "vendor", "item", "unit",
-                            "qty", "weight", "unit_price", "amount",
-                            "vat", "total", "remark", "kg_price",
-                            "ea_price")},
-                        "matched_pn": (_r9.get("matched_pn")
-                                       or (_pn9 if _pn9 in _pnset9 else None)),
-                        "matched_material_id": _r9.get("matched_material_id"),
-                        "mapping_status": _r9.get("mapping_status"),
-                        "map_id": _r9.get("map_id"),
-                        "category": _r9.get("category"),
-                        "source": "SHEET",
-                    })
-                _ins9 = 0
-                _err9 = None
-                try:
-                    for _i9 in range(0, len(_payload9), 200):
-                        _ins9 += _db.insert("purchase_ledger",
-                                            _payload9[_i9:_i9 + 200])
-                except Exception as _e:
-                    _err9 = str(_e)
-                # 자동 매칭 (기존 미매칭 행 포함 전체 재평가)
-                try:
-                    _upd9, _mset9, _fail9 = _pl_reevaluate()
-                    if _fail9:
-                        _err9 = _err9 or f"재평가 중 {_fail9}행 갱신 실패"
-                except Exception as _e:
-                    _upd9, _mset9 = 0, set()
-                    _err9 = _err9 or str(_e)
-                st.session_state.pop("cost_sync_preview", None)
-                if _err9:
-                    st.error(f"동기화 중 오류: {_err9} — 추가 {_ins9}건, "
-                             f"매칭 {_upd9}건까지 반영됨. 다시 실행하면 "
-                             "중복 없이 이어서 처리됩니다.")
-                else:
-                    st.success(f"동기화 완료 — {_ins9:,}건 추가, 자재 "
-                               f"매칭 {_upd9}건({len(_mset9)}개 자재). "
-                               "소재 단가가 즉시 원가에 반영됩니다.")
-                    st.rerun()
-
-
-    # ════════════════════════════════════════════════
-    # 🔗 자재·제품 연결 확인 대기 — 매핑표 (071, 2026-10-15)
-    # 한 번 연결한 (거래처, 품명)은 동기화·수기·스캔 입력에서 자동 적용된다.
-    # ════════════════════════════════════════════════
-    with st.expander("자재·제품 연결 확인 대기 (거래처+품명 → 매핑표)", expanded=False):
-        from datetime import date as _uw_date, timedelta as _uw_td
-        try:
-            _uw_rows = _pl_fetch_pages(
-                "purchase_ledger",
-                "ledger_id,trade_date,vendor,item,unit,qty,unit_price,amount",
-                "matched_material_id=is.null&mapping_status=is.null"
-                "&trade_date=gte."
-                + (_uw_date.today() - _uw_td(days=365)).isoformat())
-        except Exception as _e:
-            st.error(f"미연결 행 조회 실패: {_e}")
-            _uw_rows = []
-        _uw_grp = {}
-        for _r in _uw_rows:
-            _k = (_psync.vendor_key(_r.get("vendor")), _psync.item_key(_r.get("item")))
-            _g = _uw_grp.setdefault(_k, {"거래처": _r.get("vendor"), "품명": _r.get("item"),
-                                        "건수": 0, "최근일": "", "금액": 0.0,
-                                        "단위": _r.get("unit"), "ids": []})
-            _g["건수"] += 1
-            _g["금액"] += float(_r.get("amount") or 0)
-            _g["최근일"] = max(_g["최근일"], str(_r.get("trade_date") or ""))
-            _g["ids"].append(_r["ledger_id"])
-        _uw_list = sorted(_uw_grp.items(), key=lambda kv: (-kv[1]["건수"], -kv[1]["금액"]))
-        _uwc1, _uwc2 = st.columns([4, 1.4])
-        _uwc1.caption(f"최근 1년 미연결 {len(_uw_rows):,}행 · {len(_uw_list):,}종 — 건수 많은 순. "
-                      "연결하면 최근 1년의 같은 품명 행이 함께 채워지고 다음 입력부터 자동입니다. "
-                      "더 오래된 행은 [미연결 재평가]가 채웁니다.")
-        if _uwc2.button("미연결 재평가", key="uw_reeval", use_container_width=True,
-                        help="매핑표·치수 규칙으로 미연결 장부 행 전체를 다시 연결 (시트 동기화와 무관)") \
-                and click_guard("uw_reeval"):
-            try:
-                _re_n, _re_m, _re_f = _pl_reevaluate()
-                if _re_f:
-                    st.error(f"재평가 — {_re_n}행 연결, {_re_f}행 갱신 실패")
-                else:
-                    st.success(f"재평가 — {_re_n}행 연결({len(_re_m)}개 자재)")
-                    st.rerun()
-            except Exception as _e:
-                st.error(f"재평가 실패: {_e}")
-        if _uw_list:
-            toss_df(pd.DataFrame([{"거래처": g["거래처"], "품명": g["품명"], "단위": g["단위"],
-                                  "건수": g["건수"], "최근일": g["최근일"],
-                                  "금액": round(g["금액"])} for _, g in _uw_list[:200]]),
-                    use_container_width=True, hide_index=True,
-                    height=min(360, 60 + 35 * min(len(_uw_list), 200)))
-            _uw_labels = [f"{g['거래처']} · {g['품명']} ({g['건수']}건)" for _, g in _uw_list[:200]]
-            _uw_pick = st.selectbox("연결할 품명", _uw_labels, key="uw_pick")
-            _uw_key, _uw_g = _uw_list[_uw_labels.index(_uw_pick)]
-            _uw_type = st.radio("라인 유형", ["소재(자재)", "공구·소모품(자재)", "제품(외주가공·구매품)",
-                                          "공정비(열처리·표면·외주)", "기타"],
-                                horizontal=True, key="uw_type")
-            _uw_mid = _uw_pid = _uw_proc = None
-            if _uw_type in ("소재(자재)", "공구·소모품(자재)"):
-                _uw_q = st.text_input("자재 검색 (ID·자재명·규격)", key="uw_mq",
-                                      placeholder="예: SCM420H 55, T016, 센타드릴")
-                _uw_c = []
-                if _uw_q and len(_uw_q.strip()) >= 2:
-                    try:
-                        _q = _fq(_uw_q.strip())
-                        _uw_c = fetch("materials", "material_id,raw_name,spec,material_type",
-                                      f"archived_at=is.null&or=(material_id.ilike.*{_q}*,"
-                                      f"raw_name.ilike.*{_q}*,spec.ilike.*{_q}*)"
-                                      "&order=material_id", limit=50)
-                    except Exception:
-                        _uw_c = []
-                if _uw_c:
-                    _uw_ml = [f"{m['material_id']} · {m.get('raw_name') or ''} {m.get('spec') or ''}" for m in _uw_c]
-                    _uw_mid = _uw_c[_uw_ml.index(st.selectbox(f"자재 선택 ({len(_uw_c)}건)", _uw_ml, key="uw_msel"))]["material_id"]
-                elif _uw_q:
-                    st.caption("검색 결과 없음 — 자재 등록 뒤 다시.")
-            elif _uw_type == "제품(외주가공·구매품)":
-                _uw_q = st.text_input("품번 검색", key="uw_pq")
-                _uw_c = []
-                if _uw_q and len(_uw_q.strip()) >= 2:
-                    try:
-                        _q = _fq(_uw_q.strip())
-                        _uw_c = fetch("products", "product_id,pn",
-                                      f"archived_at=is.null&or=(pn.ilike.*{_q}*,alias_list.ilike.*{_q}*)"
-                                      "&order=pn", limit=50)
-                    except Exception:
-                        _uw_c = []
-                if _uw_c:
-                    _uw_pl = [f"{p['pn']} ({p['product_id']})" for p in _uw_c]
-                    _uw_pid = _uw_c[_uw_pl.index(st.selectbox(f"제품 선택 ({len(_uw_c)}건)", _uw_pl, key="uw_psel"))]["product_id"]
-            elif _uw_type.startswith("공정비"):
-                _uw_proc = {"열처리": "HEAT", "표면처리": "SURFACE", "외주가공": "OUTSOURCE", "운송": "TRANSPORT", "기타": "OTHER"}[
-                    st.selectbox("공정 종류", ["열처리", "표면처리", "외주가공", "운송", "기타"], key="uw_proc")]
-            _uw_lt = {"소재(자재)": "MATERIAL", "공구·소모품(자재)": "SUPPLY", "제품(외주가공·구매품)": "PRODUCT",
-                      "공정비(열처리·표면·외주)": "PROCESS", "기타": "OTHER"}[_uw_type]
-            _uw_ready = (_uw_lt in ("PROCESS", "OTHER") or (_uw_lt in ("MATERIAL", "SUPPLY") and _uw_mid)
-                         or (_uw_lt == "PRODUCT" and _uw_pid))
-            if st.button(f"연결 — {_uw_g['건수']}행에 적용", key="uw_go", type="primary",
-                         disabled=not _uw_ready) and click_guard("uw_go"):
-                try:
-                    _uw_pn = None
-                    if _uw_pid:
-                        _uw_pn = (fetch("products", "pn", f"product_id=eq.{_fq(_uw_pid)}", limit=1) or [{}])[0].get("pn")
-                    # 매핑표: 같은 키가 이미 있으면 재사용(재시도 가능), 없으면 추가 (Reviewer H1)
-                    _db.clear_cache()
-                    _uw_ex = fetch("purchase_item_map", "map_id,line_type,material_id,product_id",
-                                   f"vendor_key=eq.{_fq(_uw_key[0])}&item_key=eq.{_fq(_uw_key[1])}", limit=1)
-                    if _uw_ex:
-                        _uw_mapid = _uw_ex[0]["map_id"]
-                        st.info("이미 매핑표에 있는 품명입니다 — 기존 연결로 장부 행만 채웁니다.")
-                        _uw_lt = _uw_ex[0]["line_type"]
-                        _uw_mid = _uw_ex[0].get("material_id")
-                        if _uw_ex[0].get("product_id"):
-                            _uw_pn = (fetch("products", "pn", f"product_id=eq.{_fq(_uw_ex[0]['product_id'])}", limit=1) or [{}])[0].get("pn")
-                    else:
-                        _db.insert("purchase_item_map", [{
-                            "vendor_key": _uw_key[0], "item_key": _uw_key[1], "item_sample": _uw_g["품명"],
-                            "line_type": _uw_lt, "material_id": _uw_mid, "product_id": _uw_pid,
-                            "process_type": _uw_proc, "origin": "USER", "confirmed_by": current_user_name()}])
-                        _db.clear_cache()
-                        _uw_mapid = (fetch("purchase_item_map", "map_id",
-                                           f"vendor_key=eq.{_fq(_uw_key[0])}&item_key=eq.{_fq(_uw_key[1])}",
-                                           limit=1) or [{}])[0].get("map_id")
-                    # None 값은 보내지 않는다 — 기존 matched_pn(비고 품번) 을 지우지 않게 (B1)
-                    _uw_f = {k: v for k, v in {"mapping_status": "MAP", "map_id": _uw_mapid,
-                                               "matched_material_id": _uw_mid,
-                                               "matched_pn": (_uw_pn if _uw_lt == "PRODUCT" else None)}.items()
-                             if v is not None}
-                    _uw_n, _uw_fail = 0, 0
-                    for _i0 in range(0, len(_uw_g["ids"]), 50):
-                        _chunk = _uw_g["ids"][_i0:_i0 + 50]
-                        _flt = "ledger_id=in.(" + ",".join(map(str, _chunk)) + ")"
-                        if _db.update("purchase_ledger", _flt, _uw_f):
-                            _uw_n += len(_chunk)
-                            _db.update("purchase_ledger", _flt + "&category=is.null", {"category": _uw_lt})
-                        else:
-                            _uw_fail += len(_chunk)
-                    if _uw_fail:
-                        st.error(f"매핑표는 저장됐지만 장부 {_uw_fail}행 갱신에 실패했습니다 — "
-                                 "[미연결 재평가]를 눌러 다시 채우세요.")
-                    else:
-                        st.success(f"매핑표 저장 · 장부 {_uw_n}행 연결 — 다음 입력부터 자동 적용")
-                        st.rerun()
-                except Exception as _e:
-                    st.error(f"연결 실패: {_e}")
-        else:
-            st.success("최근 1년 미연결 행이 없습니다.")
-
-    # ════════════════════════════════════════════════
-    # ✍ 매입 수기 입력 — 거래명세서 기준 (2026-10-15). 시트·스캔과 같은 규칙으로 변환·연결.
-    # ════════════════════════════════════════════════
-    with st.expander("매입 수기 입력 (거래명세서 기준)", expanded=False):
-        from datetime import date as _mi_d0
-        try:
-            _mi_vend = fetch("vendors", "vendor_id,name", "in_use=eq.true&archived_at=is.null&order=name", limit=500)
-        except Exception:
-            _mi_vend = []
-        _mi_vn = [v["name"] for v in _mi_vend]
-        _mi_nonce = st.session_state.setdefault("mi_nonce", 0)
-        with st.form(f"mi_form_{_mi_nonce}"):
-            mi1, mi2, mi3 = st.columns([2.5, 1.2, 1.5])
-            _mi_vendor = mi1.selectbox("거래처", _mi_vn, key=f"mi_v_{_mi_nonce}") if _mi_vn else mi1.text_input("거래처", key=f"mi_vt_{_mi_nonce}")
-            _mi_date = mi2.date_input("거래일", value=_mi_d0.today(), key=f"mi_d_{_mi_nonce}")
-            _mi_no = mi3.text_input("명세서 번호(선택)", key=f"mi_no_{_mi_nonce}")
-            _mi_nan = float("nan")
-            _mi_df = pd.DataFrame([{"품명 및 규격": "", "단위": "EA", "수량": _mi_nan, "중량(kg)": _mi_nan,
-                                    "단가": _mi_nan, "공급가액": _mi_nan, "세액": _mi_nan, "비고": ""}
-                                   for _ in range(6)])
-            _mi_ed = st.data_editor(
-                _mi_df, hide_index=True, use_container_width=True, num_rows="dynamic",
-                key=f"mi_ed_{_mi_nonce}",
-                column_config={
-                    "단위": st.column_config.SelectboxColumn("단위", options=["EA", "KG", "SET", "CH", "식"], width="small"),
-                    "수량": st.column_config.NumberColumn("수량", min_value=0),
-                    "중량(kg)": st.column_config.NumberColumn("중량(kg)", min_value=0, help="KG 매입이면 kg, 개수는 수량에"),
-                    "단가": st.column_config.NumberColumn("단가", min_value=0, help="KG 매입은 kg 단가"),
-                    "공급가액": st.column_config.NumberColumn("공급가액", min_value=0, help="비우면 수량×단가(KG 는 중량×단가)"),
-                    "세액": st.column_config.NumberColumn("세액", min_value=0, help="비우면 공급가액의 10%"),
-                })
-            _mi_dupok = st.checkbox("같은 날짜·거래처·품명·금액 행이 이미 있어도 추가(의도한 중복)", key=f"mi_dup_{_mi_nonce}")
-            _mi_go = st.form_submit_button("장부에 추가", type="primary")
-        if _mi_go:
-            _mi_rows, _mi_warn = [], []
-
-            def _nz(v):
-                try:
-                    return None if (v is None or pd.isna(v)) else float(v)
-                except (TypeError, ValueError):
-                    return None
-
-            def _ns(v):
-                return "" if (v is None or (isinstance(v, float) and pd.isna(v))) else str(v).strip()
-            for _, _r in _mi_ed.iterrows():
-                _it = _ns(_r.get("품명 및 규격"))
-                if not _it:
-                    continue
-                _u = (_ns(_r.get("단위")) or "EA").upper()
-                _q, _w, _p = _nz(_r.get("수량")), _nz(_r.get("중량(kg)")), _nz(_r.get("단가"))
-                _a = _nz(_r.get("공급가액"))
-                if _a is None and _p is not None:
-                    _base = (_w if (_u == "KG" and _w) else _q)
-                    if not _base:
-                        _mi_warn.append(_it)
-                    _a = round((_base or 0) * _p)
-                _v = _nz(_r.get("세액"))
-                if _v is None and _a is not None:
-                    _v = round(_a * 0.1)
-                _mi_rows.append({"trade_date": _mi_date.isoformat(), "vendor": str(_mi_vendor).strip(),
-                                 "item": _it, "unit": _u, "qty": _q, "weight": _w, "unit_price": _p,
-                                 "amount": _a, "vat": _v, "total": ((_a or 0) + (_v or 0)) if _a is not None else None,
-                                 "remark": (_ns(_r.get("비고")) or None)})
-            if _mi_warn:
-                st.error("단가는 있는데 수량(KG 는 중량)이 없어 금액이 0 이 되는 행: " + ", ".join(_mi_warn[:5])
-                         + " — 수량이나 공급가액을 넣으세요.")
-                _mi_rows = []
-            if not _mi_rows:
-                st.warning("저장할 행이 없습니다.")
-            else:
-                _mi_rows, _mi_cut = _psync.merge_cutting_rows(_mi_rows)
-                for _r in _mi_rows:
-                    _r.pop("_merged_from", None)
-                _mi_rows, _mi_pp = _psync.piece_price_rows(_mi_rows)
-                _mi_bad = [r for r in _mi_rows if r.get("amount") is None]
-                if _mi_bad:
-                    st.error(f"금액을 계산할 수 없는 행 {len(_mi_bad)}건 — 단가나 공급가액을 입력하세요: "
-                             + ", ".join(r["item"] for r in _mi_bad[:5]))
-                else:
-                    try:   # 같은 날짜 전체를 정규화 키로 비교 — 시트 표기('(주)유성메탈')와 마스터명이 달라도 잡힘 (B2)
-                        _mi_ex = fetch("purchase_ledger", "trade_date,vendor,item,amount",
-                                       f"trade_date=eq.{_mi_date.isoformat()}", limit=2000)
-                    except Exception:
-                        _mi_ex = []
-                    _mi_exk = {_psync.dedup_key(x) for x in _mi_ex}
-                    _mi_dups = [r for r in _mi_rows if _psync.dedup_key(r) in _mi_exk]
-                    if _mi_dups and not _mi_dupok:
-                        st.error(f"이미 장부에 같은 행이 있습니다 {len(_mi_dups)}건: "
-                                 + ", ".join(r["item"] for r in _mi_dups[:5])
-                                 + " — 의도한 중복이면 체크박스를 켜고 다시.")
-                    else:
-                        try:
-                            _mi_map = _psync.apply_item_map(_mi_rows, _pl_item_map())
-                            _km0 = _psync.build_key_mats(_pl_fetch_pages(
-                                "materials", "material_id,raw_name,material_type,spec,archived_at",
-                                "archived_at=is.null", order_col="material_id"))
-                            _mi_dims = 0
-                            for _r in _mi_rows:
-                                if _psync.is_linked(_r):
-                                    continue
-                                _mid0, _why0 = _psync.match_material(_r["item"], _r.get("unit"), _r.get("unit_price"), _km0)
-                                if _mid0:
-                                    _r["matched_material_id"] = _mid0
-                                    _r["mapping_status"] = "AUTO_DIMS"
-                                    _mi_dims += 1
-                            _mi_payload = [{
-                                **{k: r.get(k) for k in ("trade_date", "vendor", "item", "unit", "qty", "weight",
-                                                         "unit_price", "amount", "vat", "total", "remark",
-                                                         "kg_price", "ea_price", "matched_material_id",
-                                                         "matched_pn", "mapping_status", "map_id", "category")},
-                                "source": "MANUAL", "statement_no": (_mi_no.strip() or None),
-                            } for r in _mi_rows]
-                            _mi_n = _db.insert("purchase_ledger", _mi_payload)
-                            st.session_state["mi_nonce"] = _mi_nonce + 1
-                            st.success(f"장부 추가 {_mi_n}행 — 합산 {_mi_cut}·KG→개당 {_mi_pp}·매핑표 {_mi_map}·치수 매칭 {_mi_dims}. "
-                                       f"연결 안 된 행은 위 '확인 대기'에서 연결하세요.")
-                            st.rerun()
-                        except Exception as _e:
-                            st.error(f"저장 실패: {_e}")
 
     # ════════════════════════════════════════════════
     # 📊 매입 단가 조회 (페이지 공통 보조 위젯)

@@ -301,14 +301,17 @@ def apply_item_map(rows, imap):
     for r in rows:
         if is_linked(r):
             continue
-        m = imap.get((vendor_key(r.get("vendor")), item_key(r.get("item"))))
+        vk = vendor_key(r.get("vendor"))
+        m = imap.get((vk, item_key(r.get("item")))) or imap.get((vk, "*"))   # 품명 정확 일치 > 업체 기본(072)
         if not m:
             continue
         lt = m.get("line_type")
         if lt in ("MATERIAL", "SUPPLY"):
-            if not m.get("material_id"):
+            if m.get("material_id"):
+                r["matched_material_id"] = m["material_id"]
+            elif m.get("item_key") != "*":
                 continue
-            r["matched_material_id"] = m["material_id"]
+            # 업체 기본 SUPPLY: 자재 없이 분류만 (공구·소모품으로 집계, 확인 대기에서 제외)
         elif lt == "PRODUCT":
             if not m.get("product_pn"):
                 continue

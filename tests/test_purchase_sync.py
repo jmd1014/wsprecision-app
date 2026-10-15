@@ -256,6 +256,22 @@ def test_apply_item_map_fills_only_unlinked():
     assert is_linked({"matched_pn": "X"}) is False and is_linked({"mapping_status": "MANUAL"}) is True
 
 
+def test_apply_item_map_vendor_default_wildcard():
+    """(업체, '*') 행 = 업체 기본 유형(072). 품명 정확 일치가 우선, 없으면 업체 기본으로 분류만(자재 없음)."""
+    imap = {(vendor_key("두리T.M.S"), "*"): {"map_id": 50, "item_key": "*", "line_type": "SUPPLY"},
+            (vendor_key("두리T.M.S"), item_key("센타드릴 3.0*7.7*60도 DV301030")): {"map_id": 51, "item_key": "x", "line_type": "SUPPLY", "material_id": "T100"},
+            (vendor_key("에스피열처리"), "*"): {"map_id": 52, "item_key": "*", "line_type": "PROCESS", "process_type": "HEAT"}}
+    rows = [_row("2026-09-30", "두리T.M.S", "POWER SUPPLY ESF150-24", "EA", 1, 108000, 108000),
+            _row("2026-09-30", "두리T.M.S", "센타드릴 3.0*7.7*60도 DV301030", "EA", 7, 5820, 40740),
+            _row("2026-08-10", "에스피열처리", "고용화 [SUS630] 다량", "CH", None, 200000, 200000),
+            _row("2026-09-16", "(주)명진메탈", "STS304육각 38￠*24ℓ", "KG", 513, 7500, 1110000)]
+    assert apply_item_map(rows, imap) == 3
+    assert rows[0]["mapping_status"] == "MAP" and rows[0]["map_id"] == 50 and rows[0]["category"] == "SUPPLY" and not rows[0].get("matched_material_id")
+    assert rows[1]["matched_material_id"] == "T100" and rows[1]["map_id"] == 51, "품명 정확 일치 우선"
+    assert rows[2]["category"] == "PROCESS" and rows[2]["map_id"] == 52
+    assert "mapping_status" not in rows[3]
+
+
 def test_dedup_key_normalizes_vendor_and_item():
     """시트 표기와 수기 입력(마스터명)이 같은 키 (B2); 같은 행은 같은 키, 금액 다르면 다른 키."""
     a = _row("2026-09-16", "(주)유성메탈", "STS R/B 304 40Φ*25L", "EA", 8000, 1700, 13600000)

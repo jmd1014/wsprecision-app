@@ -485,7 +485,7 @@
 
 ## DB 작업 규칙
 
-- 스키마 변경은 Supabase MCP `apply_migration`으로 (이력 유지). 2026-10-15 확인: `supabase_migrations.schema_migrations` 최신은 071(purchase_item_map — 매입 품명 매핑표·장부 source/statement_no/map_id; 070 weekly_plan 은 2026-10-14, 067~069 는 2026-10-13 적용) — 적용 후 이 번호를 갱신하고, 새 번호는 문서가 아니라 실제 이력으로 확인할 것
+- 스키마 변경은 Supabase MCP `apply_migration`으로 (이력 유지). 2026-10-15 확인: `supabase_migrations.schema_migrations` 최신은 072(item_map_vendor_default — 매핑표 업체 기본 유형 '*' 허용; 071 purchase_item_map 매입 품명 매핑표·장부 source/statement_no/map_id; 070 weekly_plan 은 2026-10-14, 067~069 는 2026-10-13 적용) — 적용 후 이 번호를 갱신하고, 새 번호는 문서가 아니라 실제 이력으로 확인할 것
 - **뷰 재정의는 항상 전체 정의를 명시** — `create or replace view v as select * from v ...`
   같은 자기 참조는 DDL 은 통과하지만 조회 시 무한 재귀로 뷰가 죽는다 (046 사고, 047 복구).
   기존 검사에 추가할 때도 전체 UNION 을 다시 쓴다
