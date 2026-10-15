@@ -11,7 +11,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from utils.purchase_sync import (build_key_mats, dedup_key, match_material,
-                                 norm_dims, norm_grade, parse_month_tab)
+                                 merge_cutting_rows, norm_dims, norm_grade,
+                                 parse_month_tab)
 
 MATS = [
     {"material_id": "M113", "raw_name": "S304 Ø40*25",
@@ -104,6 +105,101 @@ def test_date_carry_forward():
     ])
     assert [r["trade_date"] for r in rows] \
         == ["2026-06-30", "2026-06-30"]
+
+
+DIC_MATS = [
+    {"material_id": "M196", "raw_name": "SCM420H Ø55*5", "material_type": "SCM420H",
+     "spec": "φ55*5L", "archived_at": None},
+    {"material_id": "M182", "raw_name": "SCM415 Ø32*18", "material_type": "SCM415",
+     "spec": "φ32*18L", "archived_at": None},
+    {"material_id": "M087", "raw_name": "S20C H38*26", "material_type": "S20C",
+     "spec": "φ38*26L", "archived_at": None},
+]
+
+
+def _row(date, vendor, item, unit, qty, price, amt, vat=None, total=None, remark=None, weight=None):
+    return {"trade_date": date, "vendor": vendor, "item": item, "unit": unit, "qty": qty,
+            "weight": weight, "unit_price": price, "amount": amt, "vat": vat, "total": total,
+            "remark": remark}
+
+
+def test_merge_cutting_rows_hyesung_pair():
+    """환봉(KG) + 절단비(EA, 부품 수) → 한 행: EA · 수량 = 부품 수 · 개당 = (환봉+절단비)÷수량 (2026-06-01 실데이터)."""
+    rows = [
+        _row("2026-06-01", "혜성철강(주)", "흑환봉 SCM420H 55Φx5", "KG", 150, 1650, 247500, 24750, 272250, None, 150),
+        _row("2026-06-01", "혜성철강(주)", "절단비", "EA", 1000, 55, 55000, 5500, 60500),
+        _row("2026-06-01", "혜성철강(주)", "흑환봉 S45C 340Φx14", "EA", 1, 90000, 90000, 9000, 99000),   # 절단비 없음
+        _row("2026-06-02", "(주)명진메탈", "STS304환봉 45￠16ℓ", "EA", 100, 1500, 150000, 15000, 165000),
+    ]
+    out, n = merge_cutting_rows(rows)
+    assert n == 1 and len(out) == 3
+    m = out[0]
+    assert (m["unit"], m["qty"], m["weight"]) == ("EA", 1000.0, 150)
+    assert m["unit_price"] == 302 and m["amount"] == 302500 and m["vat"] == 30250 and m["total"] == 332750
+    assert m["remark"] == "[+절단비 55,000원]" and m["item"] == "흑환봉 SCM420H 55Φx5"
+    assert m["kg_price"] == 1650 and m["ea_price"] == 302
+    assert m["_merged_from"]["item"] == "절단비"
+    assert rows[0]["unit"] == "KG", "입력은 바꾸지 않는다"
+    assert out[1]["item"] == "흑환봉 S45C 340Φx14" and out[1]["unit"] == "EA"
+    # 합산 행은 EA·단가>0 이라 치수 매칭이 붙는다
+    assert match_material(m["item"], m["unit"], m["unit_price"], build_key_mats(DIC_MATS)) == ("M196", "OK")
+
+
+def test_merge_cutting_rows_guards():
+    base = _row("2026-06-01", "혜성철강(주)", "흑환봉 SCM415H 32Φx18", "KG", 80, 1650, 132000, 13200, 145200)
+    # 날짜가 다르면 합치지 않음
+    out, n = merge_cutting_rows([base, _row("2026-06-02", "혜성철강(주)", "절단비", "EA", 400, 30, 12000)])
+    assert n == 0 and len(out) == 2
+    # 절단비 수량 0 이면 합치지 않음
+    out, n = merge_cutting_rows([base, _row("2026-06-01", "혜성철강(주)", "절단비", "EA", 0, 30, 12000)])
+    assert n == 0
+    # 다른 업체의 절단비는 대상 아님
+    out, n = merge_cutting_rows([base, _row("2026-06-01", "에스피열처리", "세척비 / 환봉절단한거", "EA", 1, 50000, 50000)])
+    assert n == 0
+    # 비고가 있으면 뒤에 덧붙임, 합계가 비어 있으면 공급가+세액
+    out, n = merge_cutting_rows([{**base, "remark": "4DI0622A4-5M", "total": None},
+                                 _row("2026-06-01", "혜성철강(주)", "절단비", "EA", 400, 30, 12000, 1200, None)])
+    assert n == 1 and out[0]["remark"] == "4DI0622A4-5M [+절단비 12,000원]"
+    assert out[0]["unit_price"] == 360 and out[0]["total"] == 158400
+
+
+def test_merge_cutting_rows_idempotent_and_adjacency():
+    """이미 합산된 환봉 행([+절단비 비고) 뒤에 절단비 행이 남아 있어도 다시 합치지 않는다(재실행 이중 계상 방지).
+    사이에 다른 업체 행이 끼면 인접이 아니므로 합치지 않는다. 날짜가 없으면 합치지 않는다."""
+    bar = _row("2026-06-01", "혜성철강(주)", "흑환봉 SCM420H 55Φx5", "KG", 150, 1650, 247500, 24750, 272250, None, 150)
+    cut = _row("2026-06-01", "혜성철강(주)", "절단비", "EA", 1000, 55, 55000, 5500, 60500)
+    once, n1 = merge_cutting_rows([bar, cut])
+    again, n2 = merge_cutting_rows(once + [cut])
+    assert n1 == 1 and n2 == 0 and again[0]["amount"] == 302500 and again[1] is cut
+    other = _row("2026-06-01", "(주)명진메탈", "STS304환봉 45￠16ℓ", "EA", 100, 1500, 150000)
+    out, n = merge_cutting_rows([bar, other, cut])
+    assert n == 0 and len(out) == 3
+    out, n = merge_cutting_rows([{**bar, "trade_date": None}, {**cut, "trade_date": None}])
+    assert n == 0
+    # 통봉(EA) 매입 + 절단비: 수량은 부품 수, 중량은 비어 있음, kg 단가 없음
+    out, n = merge_cutting_rows([_row("2026-06-01", "혜성철강(주)", "흑환봉 S45C 340Φx14", "EA", 1, 90000, 90000, 9000, 99000), cut])
+    assert n == 1 and out[0]["qty"] == 1000 and out[0]["unit_price"] == 145 and out[0].get("kg_price") is None
+    # 절단비 행의 matched_pn·비고 승계 (환봉 행에 없을 때)
+    out, n = merge_cutting_rows([{**bar, "matched_pn": None}, {**cut, "matched_pn": "4D917140-00", "remark": "4D917140-00"}])
+    assert n == 1 and out[0]["matched_pn"] == "4D917140-00" and out[0]["remark"].startswith("4D917140-00 [+절단비")
+    # 장부에 합산 저장된 행과 시트에서 합산한 행은 같은 중복 키
+    db_row = {**once[0], "ledger_id": 99}
+    db_row.pop("_merged_from")
+    assert dedup_key(db_row) == dedup_key(once[0])
+
+
+def test_grade_scm_and_carbon_variants():
+    """디아이씨 소재: SCM415H↔SCM415, SCM420H, S20C 를 같은 재질로 본다. SCM440 은 종전과 같다."""
+    assert norm_grade("흑환봉 SCM415H 32Φx18") == "SCM415" == norm_grade("SCM415 Ø32*18")
+    assert norm_grade("흑환봉 SCM420H 55Φx5") == "SCM420" == norm_grade("SCM420H Ø55*5")
+    assert norm_grade("마환봉 S20C 12Φx1000") == "S20C" and norm_grade("흑환봉 SCM440 22Φx28") == "SCM440"
+    assert norm_grade("STS303 환봉 20Φ") == "303" and norm_grade("SHAFT-PTO IDLE/3037") is None
+    # 종전 'in' 판정과 같아야 한다: 앞에 글자·숫자가 있어도 S45C
+    assert norm_grade("SHAFT IDLER S45C") == "S45C" and norm_grade("흑환봉 SCMS45C 60Φx10.5") == "S45C"
+    assert norm_grade("환봉 20Φx1000 S45C") == "S45C" and norm_grade("STS304 S20C") == "304"
+    km = build_key_mats(DIC_MATS)
+    assert match_material("흑환봉 SCM415H 32Φx18", "EA", 400, km) == ("M182", "OK")
+    assert match_material("흑환봉 SCM415H 32Φx18", "KG", 1650, km) == (None, "KG")
 
 
 def test_grade_and_dims_edge():

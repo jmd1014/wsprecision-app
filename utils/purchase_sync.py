@@ -8,6 +8,9 @@
   재질(grade) + 치수(Ø지름*길이 / t*w*L) + 형상(환봉/육각) 완전 일치,
   후보 자재가 정확히 1개, EA 단위, 단가 > 0 인 행만 자동 매칭.
   KG 단위 매입은 환산 로직 전까지 보류(행은 추가, 매칭만 비움).
+혜성철강 환봉(KG 매입) + 절단비(EA, 수량 = 부품 수) 두 행은 merge_cutting_rows 로
+  한 행(EA, 개당 단가 = (환봉 금액 + 절단비) ÷ 부품 수)으로 합친 뒤 매칭한다 —
+  시트 시절 Apps Script PMLib.preprocessHyesungCutting 규칙을 그대로 이식 (2026-10-15).
 """
 import re
 from collections import defaultdict
@@ -32,10 +35,14 @@ def norm_grade(t):
         return "630"
     if "6061" in s:
         return "AL6061"
-    if "SCM440" in s:
-        return "SCM440"
-    if "S45C" in s:
-        return "S45C"
+    m = re.search(r"SCM(\d{3})H?", s)
+    if m:                       # SCM440 / SCM415H → SCM415 / SCM420H → SCM420
+        return f"SCM{m.group(1)}"
+    m = re.search(r"S(\d{2})C", s)
+    if m:                       # S45C / S20C / S55C — 앞 글자 무관('SHAFT IDLER S45C', 'SCMS45C' 오기 포함, 종전 'in' 과 동일)
+        return f"S{m.group(1)}C"
+    if re.search(r"303(?!\d)", s):   # STS303 — '3037' 같은 치수·품번 숫자는 제외
+        return "303"
     if (re.search(r"(^|[^A-Z])BS([^A-Z]|$)", s) or "황동" in s
             or "BRASS" in s or "C3604" in s or "C3771" in s):
         return "BS"
@@ -171,6 +178,70 @@ def parse_month_tab(title, values):
                        else None),
         })
     return rows
+
+
+_CUT_VENDOR = "혜성"
+_CUT_MAT_RE = re.compile(r"환봉|단조|육환봉")
+
+
+def _n(v):
+    try:
+        return float(str(v).replace(",", "")) if v not in (None, "") else 0.0
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def merge_cutting_rows(rows):
+    """혜성철강 '환봉/단조/육환봉' 행 바로 다음에 같은 날짜·같은 업체의 '절단비' 행이 오면 한 행으로 합산.
+    수량 = 절단비 수량(= 부품 개수), 금액·세액·합계 = 두 행 합, 단위 EA,
+    개당 단가 = (환봉 금액 + 절단비 금액) ÷ 부품 수(반올림), 비고 += '[+절단비 N원]'.
+    중량(kg)은 환봉 행 값을 유지. 절단비 수량이 0 이면 합치지 않는다.
+    반환: (새 행 목록, 합산 건수). 입력 dict 는 바꾸지 않는다(복사). ledger_id 등 다른 키는 환봉 행 것을 유지하고,
+    합산된 절단비 행은 '_merged_from' 키로 환봉 행에 붙는다(장부 재처리용).
+    멱등: 비고에 이미 '[+절단비' 가 있는 환봉 행은 다시 합치지 않는다(재처리·재실행 이중 계상 방지).
+    환봉 kg 단가는 kg_price, 개당 단가는 ea_price 에도 둔다. 절단비 행의 matched_pn·비고는 환봉 행에 없을 때 승계.
+    Apps Script 원본과 다른 점: 날짜 둘 다 있어야 함(원본은 Date 형만), 절단 수량 0 이면 분리(원본은 금액만 합산),
+    단위 EA·중량 kg 기록(원본은 단위 불변) — 매칭·원가에 필요한 변경."""
+    out, i, n = [], 0, 0
+    while i < len(rows):
+        r = rows[i]
+        nxt = rows[i + 1] if i + 1 < len(rows) else None
+        if (nxt is not None and _CUT_VENDOR in str(r.get("vendor") or "")
+                and _CUT_MAT_RE.search(str(r.get("item") or ""))
+                and "[+절단비" not in str(r.get("remark") or "")
+                and "절단" in str(nxt.get("item") or "")
+                and _CUT_VENDOR in str(nxt.get("vendor") or "")
+                and r.get("trade_date") and r.get("trade_date") == nxt.get("trade_date")
+                and _n(nxt.get("qty")) > 0):
+            cut_qty = _n(nxt.get("qty"))
+            mat_amt, cut_amt = _n(r.get("amount")), _n(nxt.get("amount"))
+            mat_vat, cut_vat = _n(r.get("vat")), _n(nxt.get("vat"))
+            mat_tot = _n(r.get("total")) or (mat_amt + mat_vat)
+            cut_tot = _n(nxt.get("total")) or (cut_amt + cut_vat)
+            m = dict(r)
+            m["unit"] = "EA"
+            m["qty"] = cut_qty
+            if str(r.get("unit") or "").upper() == "KG":
+                if m.get("weight") in (None, ""):
+                    m["weight"] = r.get("qty")
+                m["kg_price"] = r.get("unit_price")
+            m["unit_price"] = round((mat_amt + cut_amt) / cut_qty)
+            m["ea_price"] = m["unit_price"]
+            m["amount"] = mat_amt + cut_amt
+            m["vat"] = mat_vat + cut_vat
+            m["total"] = mat_tot + cut_tot
+            rk = str(r.get("remark") or "").strip() or str(nxt.get("remark") or "").strip()
+            m["remark"] = (rk + " " if rk else "") + f"[+절단비 {int(round(cut_amt)):,}원]"
+            if not m.get("matched_pn") and nxt.get("matched_pn"):
+                m["matched_pn"] = nxt.get("matched_pn")
+            m["_merged_from"] = nxt
+            out.append(m)
+            n += 1
+            i += 2
+            continue
+        out.append(r)
+        i += 1
+    return out, n
 
 
 def dedup_key(row):

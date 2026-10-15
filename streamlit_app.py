@@ -20100,13 +20100,13 @@ elif page == "원가 확인":
     # 매입내역 동기화 — 구글시트 → purchase_ledger + 자재 자동 매칭
     # (2026-08-31 신설. 확인 → 실행 2단계, 자동 overwrite 없음)
     # ════════════════════════════════════════════════
-    def _pl_fetch_pages(table, select, filt=""):
+    def _pl_fetch_pages(table, select, filt="", order_col="ledger_id"):
         """PostgREST 1,000행 캡 대응 페이지네이션 (order 필수)"""
         rows, off = [], 0
         while True:
             page = fetch(table, select,
                          (filt + "&" if filt else "")
-                         + f"order=ledger_id&offset={off}", limit=1000)
+                         + f"order={order_col}&offset={off}", limit=1000)
             rows += page
             if len(page) < 1000:
                 return rows
@@ -20146,17 +20146,23 @@ elif page == "원가 확인":
         _sc3.metric("자재 매칭", f"{len(_pl_matched):,}건")
         st.caption(
             "매칭 규칙: 재질+치수+형상(환봉/육각) 완전 일치 · EA 단위 · "
-            "단가>0 인 행만 자동 연결합니다. KG 단위 매입은 환산 로직 "
-            "도입 전까지 보류(행만 추가). 시트는 '링크가 있는 모든 사용자"
+            "단가>0 인 행만 자동 연결합니다. 혜성철강 환봉(KG)+절단비 두 줄은 "
+            "한 줄(개당 단가 = (환봉+절단비)÷부품 수)로 합산해 저장합니다. "
+            "그 밖의 KG 단위 매입은 보류(행만 추가). 시트는 '링크가 있는 모든 사용자"
             "(뷰어)' 공유가 필요합니다.")
 
         if st.button("① 시트 확인 (변경 미리보기)", key="cost_sync_chk"):
             try:
                 with st.spinner("시트 읽는 중…"):
                     _tabs9 = _psync.load_sheet_tabs(_sheet_id)
-                    _srows = []
+                    _srows, _cut_n9 = [], 0
                     for _t9, _v9 in _tabs9:
-                        _srows += _psync.parse_month_tab(_t9, _v9)
+                        _rows9, _m9 = _psync.merge_cutting_rows(
+                            _psync.parse_month_tab(_t9, _v9))
+                        _srows += _rows9
+                        _cut_n9 += _m9
+                    for _r9 in _srows:
+                        _r9.pop("_merged_from", None)
                     _dbkeys = defaultdict(int)
                     for _r9 in _pl_fetch_pages(
                             "purchase_ledger",
@@ -20169,12 +20175,11 @@ elif page == "원가 확인":
                         _seen9[_k9] += 1
                         if _dbkeys.get(_k9, 0) < _seen9[_k9]:
                             _new9.append(_r9)
-                    _mrows9 = fetch(
+                    _mrows9 = _pl_fetch_pages(
                         "materials",
                         "material_id,raw_name,material_type,spec,"
-                        "archived_at",
-                        "order=material_id&archived_at=is.null",
-                        limit=1000)
+                        "archived_at", "archived_at=is.null",
+                        order_col="material_id")
                     _km9 = _psync.build_key_mats(_mrows9)
                     _match_n = 0
                     _miss9 = {}
@@ -20188,7 +20193,8 @@ elif page == "원가 확인":
                             _miss9[_r9["item"]] = _why9
                     st.session_state["cost_sync_preview"] = {
                         "new": _new9, "match_n": _match_n,
-                        "miss": _miss9, "sheet": len(_srows)}
+                        "miss": _miss9, "sheet": len(_srows),
+                        "cut_n": _cut_n9}
             except Exception as _e:
                 st.error(f"시트 확인 실패: {_e}")
                 st.session_state.pop("cost_sync_preview", None)
@@ -20197,7 +20203,9 @@ elif page == "원가 확인":
         if _prev:
             st.info(f"시트 {_prev['sheet']:,}행 중 **신규 "
                     f"{len(_prev['new']):,}건** — 자재 자동 매칭 예상 "
-                    f"{_prev['match_n']}건")
+                    f"{_prev['match_n']}건"
+                    + (f" · 환봉+절단비 합산 {_prev['cut_n']}건"
+                       if _prev.get("cut_n") else ""))
             if _prev["miss"]:
                 st.caption("소재로 인식됐지만 매칭 못 하는 품명 "
                            f"{len(_prev['miss'])}종 — 자재 등록/정리 후 "
@@ -20227,7 +20235,8 @@ elif page == "원가 확인":
                         **{k9: _r9.get(k9) for k9 in (
                             "trade_date", "vendor", "item", "unit",
                             "qty", "weight", "unit_price", "amount",
-                            "vat", "total", "remark")},
+                            "vat", "total", "remark", "kg_price",
+                            "ea_price")},
                         "matched_pn": _pn9 if _pn9 in _pnset9 else None,
                     })
                 _ins9 = 0
@@ -20241,12 +20250,11 @@ elif page == "원가 확인":
                 # 자동 매칭 (기존 미매칭 행 포함 전체 재평가)
                 _upd9, _mset9 = 0, set()
                 try:
-                    _mrows9 = fetch(
+                    _mrows9 = _pl_fetch_pages(
                         "materials",
                         "material_id,raw_name,material_type,spec,"
-                        "archived_at",
-                        "order=material_id&archived_at=is.null",
-                        limit=1000)
+                        "archived_at", "archived_at=is.null",
+                        order_col="material_id")
                     _km9 = _psync.build_key_mats(_mrows9)
                     _bymat9 = defaultdict(list)
                     for _r9 in _pl_fetch_pages(
