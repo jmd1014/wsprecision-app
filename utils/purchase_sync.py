@@ -38,8 +38,8 @@ def norm_grade(t):
     m = re.search(r"SCM(\d{3})H?", s)
     if m:                       # SCM440 / SCM415H → SCM415 / SCM420H → SCM420
         return f"SCM{m.group(1)}"
-    m = re.search(r"S(\d{2})C", s)
-    if m:                       # S45C / S20C / S55C — 앞 글자 무관('SHAFT IDLER S45C', 'SCMS45C' 오기 포함, 종전 'in' 과 동일)
+    m = re.search(r"SM?(\d{2})C", s)
+    if m:                       # S45C / S20C / SM20C(=S20C) — 앞 글자 무관('SHAFT IDLER S45C', 'SCMS45C' 오기 포함)
         return f"S{m.group(1)}C"
     if re.search(r"303(?!\d)", s):   # STS303 — '3037' 같은 치수·품번 숫자는 제외
         return "303"
