@@ -91,6 +91,32 @@ div[data-testid="stExpander"]{
   border-radius:16px;box-shadow:var(--shadow);
 }
 
+/* ── 사이드바 2단 메뉴 (2026-10-19): 전역 버튼 스타일을 메뉴 키(nav_m_ · nav_s_)에서만 덮어쓴다 — 주석 안에 별표+슬래시를 쓰면 주석이 끊겨 첫 규칙이 깨진다.
+   선택 항목 강조는 사이드바 코드가 선택 키로 그리는 작은 style 블록(연한 주색 배경 + 왼쪽 막대). ── */
+section[data-testid="stSidebar"] [class*="st-key-nav_m_"] button,
+section[data-testid="stSidebar"] [class*="st-key-nav_s_"] button{
+  background:transparent;border:none;border-radius:8px;
+  justify-content:flex-start;text-align:left;
+  padding:6px 10px;min-height:0;font-weight:600;color:var(--body);
+}
+section[data-testid="stSidebar"] [class*="st-key-nav_m_"] button p,
+section[data-testid="stSidebar"] [class*="st-key-nav_s_"] button p{
+  text-align:left;width:100%;
+}
+section[data-testid="stSidebar"] [class*="st-key-nav_s_"] button{
+  padding-left:26px;font-size:13px;font-weight:500;color:var(--dim);
+}
+section[data-testid="stSidebar"] [class*="st-key-nav_m_"] button:hover,
+section[data-testid="stSidebar"] [class*="st-key-nav_s_"] button:hover{
+  background:#f2f4f6;color:var(--ink);
+}
+section[data-testid="stSidebar"] [class*="st-key-nav_m_"],
+section[data-testid="stSidebar"] [class*="st-key-nav_s_"]{margin-bottom:-10px;}
+/* 본문 세부 컨트롤(nav_sc_*)은 좁은 화면에서만 — 데스크톱은 사이드바가 주 메뉴 */
+@media (min-width: 992px){
+  [class*="st-key-nav_sc_"]{display:none !important;}
+}
+
 /* ── 버튼 (보조: 테두리 없는 회색 면 — 토스 스타일) ── */
 div[data-testid="stButton"] button,
 div[data-testid="stDownloadButton"] button{
@@ -1452,54 +1478,174 @@ def w_lot_sync_counter():
         return None
 
 
+# ─── 입력 유지 (메뉴 구조 개편 2026-10-19, 계획서 §5-3) ───
+# 세부 화면 전환은 rerun 이라 그려지지 않은 위젯 값은 Streamlit 이 지운다(탭일 때는 모두
+# 그려져 남았다). '어디를 보고 있었나'(날짜·거래처·그룹·검색어·필터·보기)는 유지하고
+# '얼마를·왜'(수량·사유·행별 편집)는 유지하지 않는다 — fresh_keys 와 같은 방향.
+# 방식: 실행 끝에 값을 그림자 키 _kv_<k> 로 복사(스크립트 끝 블록). 기본값 인자
+# (value=/index=/default=)가 없는 위젯은 다음 실행 시작에 세션으로 복원하고
+# (_NAV_KEEP_RESTORE), 기본값 인자가 있는 위젯은 keep_default()/keep_index() 로 기본값을
+# 그림자에서 가져온다 — 세션 API 로 넣으면 "default value but also set via Session State"
+# 경고가 나기 때문(streamlit/elements/lib/policies.py).
+_NAV_KEEP_RESTORE = (
+    # 수주
+    "so_mode", "m_so_no", "m_cust", "m_addr", "m_pn_q", "mq_pn", "mq_mat", "mq_spec",
+    "mq_cust2", "so_view", "so_cust", "so_item_q", "so_status_radio", "sch_q",
+    # 출고
+    "ship_q", "cf_filter", "cf_search", "dstat_q", "dstat_view", "fs_q",
+    # 생산 계획
+    "sb_qf",
+    # 구매
+    "po_bucket", "po_h_status", "po_h_vendor", "rcvp_q", "dr_mq", "dr_sagup", "dr_pn",
+    "dr_src", "rcv_recv_q", "uw_mq", "uw_type", "uv_type", "uv_proc",
+    # 공정
+    "pe_closed_period", "pe_closed_q", "tr_q",
+)
+_NAV_KEEP_DEFAULT = (
+    "m_so_date", "m_due", "so_period", "so_status_pills", "gantt_cust", "gantt_hide_done",
+    "sch_open_only", "bk_date", "bk_ship_date", "bk_late", "dstat_range", "sb_grp",
+    "po_vendor", "po_h_period", "uw_pick", "uv_pick",
+)
+_NAV_KEEP = _NAV_KEEP_RESTORE + _NAV_KEEP_DEFAULT
+
+
+def keep_default(k, fallback):
+    """유지 대상 위젯의 value=/default= 기본값 — 그림자 키가 있으면 그 값."""
+    return st.session_state.get(f"_kv_{k}", fallback)
+
+
+def keep_index(k, options, fallback=0):
+    """유지 대상 selectbox/radio 의 index= 기본값 — 그림자 값이 options 에 있으면 그 위치."""
+    _v = st.session_state.get(f"_kv_{k}")
+    if _v is None:
+        return fallback
+    try:
+        return list(options).index(_v)
+    except ValueError:
+        return fallback
+
+
 # ─── 사이드바 — 업무 진행 순서(수주→출고) + 관리자 영역 분리 ───
 with st.sidebar:
     # 정비용 페이지 (TOP 정비 등 5종) 는 마스터 안정화 완료 후 코드 제거됨.
     # 필요 시 git 이력 (8421f1e 이전) 에서 복원 가능.
-    MENU_FLOW = [
-        "홈",
-        "수주 관리",
-        "구매 관리",
-        "생산 계획",
-        "공정 관리",
-        "출고 관리",
+    # ── 메뉴 정의 (사이드바 2단, 2026-10-19 계획서 §4-2) ──
+    # 위젯 키는 ASCII 고정 키(nav_m_<메인>, nav_s_<메인>_<세부>), 화면 이름은 한글.
+    # 세부 화면 본문은 `if _sub == "<세부 키>":` 로 분기한다(관리자 영역은 지금처럼 탭).
+    NAV = [
+        ("home", "홈", []),
+        ("so", "수주 관리", [("input", "새 수주 입력"), ("list", "수주 목록"),
+                            ("sched", "납품 스케줄")]),
+        ("po", "구매 관리", [("sug", "발주 제안"), ("new", "새 발주서 작성"),
+                            ("hist", "발주 이력"), ("rcv", "입고 처리"),
+                            ("rstat", "입고 현황"), ("pur", "매입 등록")]),
+        ("plan", "생산 계획", [("wp", "주간 계획"), ("sb", "설비 스케줄"),
+                              ("std", "공정 표준"), ("mc", "설비")]),
+        ("proc", "공정 관리", [("in", "투입 등록"), ("proc", "공정 처리"),
+                              ("board", "공정 현황판"), ("closed", "종결 지시서"),
+                              ("trace", "LOT 추적")]),
+        ("ship", "출고 관리", [("deliver", "출고 등록"), ("slip", "출고 전표"),
+                              ("dstat", "출고 현황"), ("fstock", "완성 재고")]),
     ]
-    MENU_ADMIN = [
-        "마스터 관리",
-        "원가 확인",
-        "생산 보고",
-        "영업 보고",
-    ]
+    NAV_ADMIN = [("master", "마스터 관리"), ("cost", "원가 확인"),
+                 ("report", "생산 보고"), ("sales", "영업 보고")]
+    NAV_MAIN = {k: (lbl, subs) for k, lbl, subs in NAV}
+    NAV_ADMIN_MAIN = dict(NAV_ADMIN)
+    NAV_LABEL = {**{k: lbl for k, lbl, _ in NAV}, **NAV_ADMIN_MAIN}
+    MENU_FLOW = [lbl for _, lbl, _ in NAV]
+    MENU_ADMIN = [lbl for _, lbl in NAV_ADMIN]
     ALL_MENU = MENU_FLOW + MENU_ADMIN
 
-    # 두 그룹 radio — 한쪽 선택 시 다른 쪽 해제 (page 는 하나만)
-    def _nav_pick_flow():
-        st.session_state["nav_admin"] = None
+    def nav_sub_of(main_key):
+        """메인의 현재 세부 키 — 없거나 NAV 에 없는 값이면 첫 세부로 보정(QA M-1)."""
+        _subs = NAV_MAIN.get(main_key, ("", []))[1]
+        if not _subs:
+            return None
+        _cur = (st.session_state.get("nav_sub") or {}).get(main_key)
+        return _cur if _cur in dict(_subs) else _subs[0][0]
 
-    def _nav_pick_admin():
-        st.session_state["nav_flow"] = None
+    def nav_go(main_key, sub_key=None, flash=None, action=None):
+        """화면 이동 — 사이드바 버튼·본문 자동 전환 모두 이 함수(콜백 안에서만 호출,
+        `if st.button(): …; st.rerun()` 금지). flash 는 다음 실행의 제목 아래 안내,
+        action=(버튼 이름, 메인 키, 세부 키) 는 안내 옆 이동 버튼."""
+        st.session_state["nav_page"] = main_key
+        if sub_key is not None:
+            _s = dict(st.session_state.get("nav_sub") or {})
+            _s[main_key] = sub_key
+            st.session_state["nav_sub"] = _s
+        if flash:
+            st.session_state["_nav_flash"] = {"msg": flash, "action": action}
+
+    def nav_flash(msg, action=None):
+        """다음 실행의 페이지 제목 아래에 한 번 보일 안내(st.rerun 뒤에도 남는다)."""
+        st.session_state["_nav_flash"] = {"msg": msg, "action": action}
+
+    def _nav_sc_change(main_key):
+        """좁은 화면 본문 세부 컨트롤(nav_sc_*) → 같은 nav_sub 로."""
+        _v = st.session_state.get(f"nav_sc_{main_key}")
+        for _k, _l in NAV_MAIN[main_key][1]:
+            if _l == _v:
+                nav_go(main_key, _k)
+                return
 
     _is_admin = current_user().get("role") == "admin"
+    if st.session_state.get("nav_page") not in NAV_LABEL:
+        st.session_state["nav_page"] = "home"
+    if not _is_admin and st.session_state["nav_page"] in NAV_ADMIN_MAIN:
+        # 작업자 계정이 관리자 메인 상태면 홈
+        st.session_state["nav_page"] = "home"
+    nav_page = st.session_state["nav_page"]
+    nav_sub = nav_sub_of(nav_page)
+    _sub = nav_sub
+    page = NAV_LABEL[nav_page]
+    page_title = page + ((" › " + dict(NAV_MAIN[nav_page][1])[nav_sub])
+                         if nav_sub else "")
 
+    # 메뉴(메인·세부)가 바뀐 실행: 확인 게이트 플래그(cfm_*)와 정정 계획을 지운다(§5-2).
+    # 메인이 바뀌면 ship_open_no 도 지운다(§4-5 — 나중에 엉뚱하게 순서를 바꾸지 않게).
+    _nav_now = (nav_page, nav_sub)
+    _nav_prev = st.session_state.get("_nav_prev")
+    if _nav_prev != _nav_now:
+        for _k in [k for k in st.session_state if str(k).startswith("cfm_")]:
+            st.session_state.pop(_k, None)
+        st.session_state.pop("cf_rv_plan", None)
+        if _nav_prev is not None and _nav_prev[0] != nav_page:
+            st.session_state.pop("ship_open_no", None)
+        st.session_state["_nav_prev"] = _nav_now
+
+    # 입력 유지: 그려지지 않은 실행에서 지워진 위젯 값을 그림자 키에서 복원(§5-3)
+    for _k in _NAV_KEEP_RESTORE:
+        if _k not in st.session_state and f"_kv_{_k}" in st.session_state:
+            st.session_state[_k] = st.session_state[f"_kv_{_k}"]
+
+    # ── 사이드바 2단 메뉴: 선택한 메인만 펼침. 버튼 + on_click 콜백(실행 1회) ──
+    # (루프 변수는 _nv_ 접두사 — 모듈 수준이라 _sk(slack_notify 별칭) 같은 이름을 덮어쓰면 안 된다)
     st.header("업무 진행")
-    nav_flow = st.radio("업무", MENU_FLOW, key="nav_flow",
-                        on_change=_nav_pick_flow,
-                        label_visibility="collapsed")
+    for _nv_mk, _nv_ml, _nv_subs in NAV:
+        st.button(_nv_ml, key=f"nav_m_{_nv_mk}", on_click=nav_go, args=(_nv_mk,),
+                  use_container_width=True)
+        if _nv_mk == nav_page and _nv_subs:
+            for _nv_sk, _nv_sl in _nv_subs:
+                st.button(_nv_sl, key=f"nav_s_{_nv_mk}_{_nv_sk}", on_click=nav_go,
+                          args=(_nv_mk, _nv_sk), use_container_width=True)
     if _is_admin:
         st.divider()
         st.caption("관리자")
-        nav_admin = st.radio("관리자", MENU_ADMIN, key="nav_admin",
-                             index=None, on_change=_nav_pick_admin,
-                             label_visibility="collapsed")
-    else:
-        # 작업자 계정 — 관리자 메뉴(마스터·원가·생산 보고) 숨김
-        nav_admin = None
-    page = nav_admin or nav_flow or "홈"
-    if not _is_admin and page in MENU_ADMIN:
-        page = "홈"
-    # 오류 기록(app_errors)에 붙일 화면·사용자 — db.log_error 가 읽는다
+        for _nv_mk, _nv_ml in NAV_ADMIN:
+            st.button(_nv_ml, key=f"nav_m_{_nv_mk}", on_click=nav_go, args=(_nv_mk,),
+                      use_container_width=True)
+    # 선택 항목 강조 — 선택 키에만 거는 작은 style(토큰은 상단 CSS 블록, 이모지 없음)
+    _nav_sel = [f"nav_m_{nav_page}"] + ([f"nav_s_{nav_page}_{nav_sub}"] if nav_sub else [])
+    st.markdown("<style>" + ",".join(
+        f'section[data-testid="stSidebar"] .st-key-{k} button' for k in _nav_sel)
+        + "{background:#e8f3ff !important;color:#1b64da !important;"
+          "box-shadow:inset 3px 0 0 #1b64da;font-weight:700 !important;}"
+        + ",".join(f'section[data-testid="stSidebar"] .st-key-{k} button p'
+                   for k in _nav_sel)
+        + "{color:#1b64da !important;}</style>", unsafe_allow_html=True)
+    # 오류 기록(app_errors)에 붙일 화면(세부 포함)·사용자 — db.log_error 가 읽는다
     try:
-        st.session_state["_err_ctx"] = {"page": page, "user": current_user_name()}
+        st.session_state["_err_ctx"] = {"page": page_title, "user": current_user_name()}
     except Exception:
         pass
     # 처리 중 표시 — 화면 실행 시작에 바로 그려지고 스크립트 끝에서 지운다.
@@ -1520,6 +1666,12 @@ with st.sidebar:
         if st.button("로그아웃", use_container_width=True, key="auth_out"):
             st.session_state.pop("auth_user", None)
             st.session_state.pop("auth_cookie_value", None)
+            # 다음 사람이 앞사람 화면·입력값으로 시작하지 않게 (2026-10-19)
+            for _k in ("nav_page", "nav_sub", "_nav_prev", "_nav_flash",
+                       "nav_notice_closed", "ship_open_no"):
+                st.session_state.pop(_k, None)
+            for _k in [k for k in st.session_state if str(k).startswith("_kv_")]:
+                st.session_state.pop(_k, None)
             # 쿠키 삭제는 다음 런(로그인 화면)에서 실행 — 같은 런에서
             # 지우고 rerun 하면 컴포넌트가 잘려 삭제되지 않는다
             st.session_state["auth_cookie_clear"] = True
@@ -1585,6 +1737,48 @@ st.session_state["_fetch_truncated"] = {}
 st.session_state["_fetch_prof"] = []
 import time as _run_time
 _run_t0 = _run_time.perf_counter()
+
+
+def nav_page_head():
+    """사용자 영역 페이지 상단 — "메인 › 세부" 제목 줄(기존 subheader 자리) + 좁은 화면
+    세부 컨트롤(nav_sc_*, 넓은 화면은 CSS 로 숨김) + 화면 전환 안내(flash)."""
+    st.subheader(page_title)
+    _subs = NAV_MAIN.get(nav_page, ("", []))[1]
+    if _subs:
+        _labels = [l for _, l in _subs]
+        _sck = f"nav_sc_{nav_page}"
+        # 위젯 생성 전에 세션 값으로 현재 세부를 맞춘다(default 인자 없음 → 경고 없음)
+        st.session_state[_sck] = dict(_subs)[nav_sub]
+        if hasattr(st, "segmented_control"):
+            st.segmented_control("세부 화면", _labels, key=_sck,
+                                 on_change=_nav_sc_change, args=(nav_page,),
+                                 label_visibility="collapsed")
+        else:
+            st.radio("세부 화면", _labels, key=_sck, horizontal=True,
+                     on_change=_nav_sc_change, args=(nav_page,),
+                     label_visibility="collapsed")
+    _fl = st.session_state.pop("_nav_flash", None)
+    if _fl:
+        if _fl.get("action"):
+            _fc1, _fc2 = st.columns([4, 1.2])
+            _fc1.success(_fl["msg"])
+            _al, _am, _as = _fl["action"]
+            _fc2.button(_al, key="nav_flash_go", on_click=nav_go, args=(_am, _as),
+                        use_container_width=True)
+        else:
+            st.success(_fl["msg"])
+
+
+def _nav_notice_close():
+    st.session_state["nav_notice_closed"] = True
+
+
+# 첫 주 안내 — 닫을 수 있는 1회성(세션 단위) 안내 (§4-5)
+if not st.session_state.get("nav_notice_closed"):
+    _nn1, _nn2 = st.columns([6, 1])
+    _nn1.info("탭이 왼쪽 메뉴로 옮겨졌습니다. 이름은 그대로입니다.")
+    _nn2.button("닫기", key="nav_notice_close", on_click=_nav_notice_close,
+                use_container_width=True)
 
 if page == "홈":
     # ── 업무 진행 대시보드 (2026-07-24 개편) — 수주→출고 전 단계 요약 ──
@@ -5589,7 +5783,7 @@ elif page == "마스터 관리":
 
 
 elif page == "수주 관리":
-    st.subheader("수주 관리")
+    nav_page_head()
     if not DB_AVAILABLE: st.error("DB 연결 필요"); st.stop()
 
     from datetime import date as _date, timedelta as _td
@@ -5649,7 +5843,7 @@ elif page == "수주 관리":
                delta_color="inverse" if _sk_late_qty else "off",
                help="납품 스케줄 기준 — 지난 회차·지난 납기의 미납 잔량. "
                     "부분 납품도 잔량이 남으면 지연으로 셉니다. "
-                    "상세는 납품 스케줄 탭의 지연 상세.")
+                    "상세는 '납품 스케줄' 화면의 지연 상세.")
     sk4.metric("이번 달 수주", f"{_sk_month:,}건")
     st.divider()
 
@@ -6187,19 +6381,18 @@ elif page == "수주 관리":
                                   tag_side="new",
                                   tag_kind=("CUSTOMER_MAT" if _kind == "사급 소재"
                                             else "PROJECT"))
-    tab_input, tab_list, tab_sched = st.tabs(
-        ["새 수주 입력", "수주 목록", "납품 스케줄"])
+    # 세부 화면(사이드바 2단): 새 수주 입력 / 수주 목록 / 납품 스케줄 — _sub 로 분기
 
     # ════════ TAB 1: 새 수주 입력 ════════
-    with tab_input:
+    if _sub == "input":
         mode = st.radio("입력 방식", ["파일 업로드 자동 파싱", "수기 입력"],
-                        horizontal=True)
+                        horizontal=True, key="so_mode")
 
         if mode == "파일 업로드 자동 파싱":
             st.caption("양식은 파일을 보고 자동으로 인식합니다 (HDX / 미진정밀 / 엠제이티 PDF)")
             uploaded = st.file_uploader("파일 선택",
                 type=['xlsx','xls','pdf'],
-                help="여러 거래처 양식 자동 인식")
+                help="여러 거래처 양식 자동 인식. 다른 화면에 다녀오면 파일을 다시 올려야 합니다")
 
             if uploaded:
                 file_bytes = uploaded.read()
@@ -6714,8 +6907,8 @@ elif page == "수주 관리":
             st.markdown("##### 수기 입력 — 단일 수주 1건")
             mc1, mc2 = st.columns(2)
             with mc1:
-                m_so_no = st.text_input("거래처 발주번호 *", placeholder="예: PO-2026-001")
-                m_cust = st.text_input("거래처명 *", placeholder="예: 신규 고객사")
+                m_so_no = st.text_input("거래처 발주번호 *", placeholder="예: PO-2026-001", key="m_so_no")
+                m_cust = st.text_input("거래처명 *", placeholder="예: 신규 고객사", key="m_cust")
                 # 마스터에 같은 거래처가 있으면 마스터 표기로 저장 — '엠제이티'
                 # 와 '(주)엠제이티' 처럼 법인 표기만 다른 이름이 섞이면 명세서·
                 # 마감 조회에서 다른 거래처로 갈린다 (2026-10-01)
@@ -6738,10 +6931,10 @@ elif page == "수주 관리":
                         st.caption(f"거래처 마스터 표기로 저장됩니다: "
                                    f"**{_mv9[0]}**")
                         m_cust = _mv9[0]
-                m_so_date = st.date_input("수주일", value=_date.today())
+                m_so_date = st.date_input("수주일", value=keep_default("m_so_date", _date.today()), key="m_so_date")
             with mc2:
-                m_due = st.date_input("납기일", value=_date.today() + _td(days=14))
-                m_addr = st.text_input("납품 주소")
+                m_due = st.date_input("납기일", value=keep_default("m_due", _date.today() + _td(days=14)), key="m_due")
+                m_addr = st.text_input("납품 주소", key="m_addr")
 
             if "m_so_items" not in st.session_state:
                 st.session_state.m_so_items = []
@@ -6896,7 +7089,7 @@ elif page == "수주 관리":
                         st.error(f"저장 실패: {e}")
 
     # ════════ TAB 2: 수주 목록 (다중 뷰) ════════
-    with tab_list:
+    if _sub == "list":
         # 대체·별건 결정 이력 — 수주 목록에서만 (2026-09-10 사용자 요청)
         if _rp_hist:
             with st.expander(f"대체·별건 결정 이력 {len(_rp_hist)}건"):
@@ -6946,19 +7139,21 @@ elif page == "수주 관리":
 
         view_mode = st.radio("뷰",
             ["수주별 (헤더)", "품목별", "거래처별", "납기 임박순", "매칭 안된 품목"],
-            horizontal=True)
+            horizontal=True, key="so_view")
 
         fc1, fc2 = st.columns(2)
         with fc1:
-            sl_period = st.selectbox("기간", ["이번달", "최근 3개월", "올해", "전체"], index=2)
+            sl_period = st.selectbox("기간", ["이번달", "최근 3개월", "올해", "전체"],
+                                     index=keep_index("so_period", ["이번달", "최근 3개월", "올해", "전체"], 2),
+                                     key="so_period")
         with fc2:
-            sl_cust = st.text_input("거래처", placeholder="예: HDX, 미진")
+            sl_cust = st.text_input("거래처", placeholder="예: HDX, 미진", key="so_cust")
         # 상태 필터 칩 (2a 시안 — pills, 구버전은 radio 폴백)
         _sl_opts = ["전체", "DRAFT", "CONFIRMED", "IN_PROD", "PARTIAL",
                     "DELIVERED", "CANCELLED"]
         _sl_fmt = lambda s: "전체" if s == "전체" else status_ko(s)
         if hasattr(st, "pills"):
-            sl_status = st.pills("상태", _sl_opts, default="전체",
+            sl_status = st.pills("상태", _sl_opts, default=keep_default("so_status_pills", "전체"),
                                  format_func=_sl_fmt,
                                  key="so_status_pills") or "전체"
         else:
@@ -7043,7 +7238,7 @@ elif page == "수주 관리":
                             st.success(f"상태 변경: {status_ko(new_st)}"); st.rerun()
             else:
                 st.info("조건에 맞는 수주가 없습니다 — 기간·상태 필터를 '전체'로 "
-                        "바꾸거나, 새 수주 입력 탭에서 업로드하세요.")
+                        "바꾸거나, '새 수주 입력' 화면에서 업로드하세요.")
 
         # ── 뷰 2: 품목별 ──
         elif view_mode == "품목별":
@@ -7055,7 +7250,7 @@ elif page == "수주 관리":
 
             if so_map:
                 ids_str = ",".join(str(x) for x in so_map.keys())
-                p_search = st.text_input("품목 검색", placeholder="품번 또는 자재명")
+                p_search = st.text_input("품목 검색", placeholder="품번 또는 자재명", key="so_item_q")
                 item_filter = f"so_id=in.({ids_str})&order=due_date.asc.nullslast"
                 if p_search:
                     item_filter += f"&or=(canonical_pn.ilike.{_fql(p_search)},customer_part_no.ilike.{_fql(p_search)},customer_item_name.ilike.{_fql(p_search)})"
@@ -7085,7 +7280,7 @@ elif page == "수주 관리":
                             "단가": st.column_config.NumberColumn("단가 (원)", format="localized"),
                             "금액": st.column_config.NumberColumn("금액 (원)", format="localized"),
                         })
-                    st.caption("납기 입력·수정은 납품 스케줄 탭에서 "
+                    st.caption("납기 입력·수정은 '납품 스케줄' 화면에서 "
                                "일괄 처리합니다.")
                 else:
                     st.info("검색 결과 없음 — 검색어를 지우거나 필터를 넓혀보세요.")
@@ -7244,7 +7439,7 @@ elif page == "수주 관리":
                 st.info("결과 없음")
 
     # ════════ TAB 3: 납품 스케줄 (7b 회차 간트, 2026-07-31) ════════
-    with tab_sched:
+    if _sub == "sched":
 
         # ── 1) 데이터 적재 ──
         try:
@@ -7435,10 +7630,11 @@ elif page == "수주 관리":
 
         if _sv == "회차 간트":
             fg1, fg2, _fg3 = st.columns([1.2, 1, 2])
+            _gc_opts = ["전체"] + sorted({c["거래처"] for c in _g} - {"-"})
             _f_cust = fg1.selectbox(
-                "거래처", ["전체"] + sorted({c["거래처"] for c in _g} - {"-"}),
+                "거래처", _gc_opts, index=keep_index("gantt_cust", _gc_opts),
                 key="gantt_cust")
-            _f_hide_done = fg2.checkbox("완료 회차 숨기기", value=True,
+            _f_hide_done = fg2.checkbox("완료 회차 숨기기", value=keep_default("gantt_hide_done", True),
                                         key="gantt_hide_done")
             _chips = [c for c in _g
                       if (_f_cust == "전체" or c["거래처"] == _f_cust)
@@ -7620,7 +7816,7 @@ elif page == "수주 관리":
             _sq = sc1.text_input("품번 · 품명 · 수주번호 · 거래처 검색",
                                  key="sch_q",
                                  placeholder="예: 4PDVN, GLAND, 202607, 미진")
-            _sc_only_open = sc2.checkbox("미납만", value=True,
+            _sc_only_open = sc2.checkbox("미납만", value=keep_default("sch_open_only", True),
                                          key="sch_open_only")
 
             # 품번 검색은 라인에서, 수주번호·거래처는 헤더에서 → so_id 합집합
@@ -8321,18 +8517,17 @@ elif page == "수주 관리":
 
 
 elif page == "출고 관리":
-    st.subheader("출고 관리")
+    nav_page_head()
     if not DB_AVAILABLE:
         st.error("DB 연결이 활성화되지 않았습니다."); st.stop()
 
     import db as _db
     import pandas as pd
 
-    tab_deliver, tab_ship, tab_dstat, tab_fstock = st.tabs(
-        ["출고 등록", "출고 전표", "출고 현황", "완성 재고"])
+    # 세부 화면(사이드바 2단): 출고 등록 / 출고 전표 / 출고 현황 / 완성 재고 — _sub 로 분기
 
     # ════════ TAB 1: 납품 등록 ════════
-    with tab_deliver:
+    if _sub == "deliver":
         # ══ ① 출고 등록 — 장바구니식 리스트 구성 → 전표 생성 ══
         # 흐름: 담기(스케줄 자동 + 품번 검색) → [출고 등록] = 전표
         # 생성(DRAFT) → 출고 전표 탭에서 확인용 리스트 인쇄·현장 확인
@@ -8344,17 +8539,18 @@ elif page == "출고 관리":
         # 명세서 날짜)을 분리 — 스케줄보다 빠른/늦은 출고 지원
         # (2026-08-28 사용자 확정)
         shc1, shc2, shc3 = st.columns([1, 1, 2])
-        _sh_d = shc1.date_input("회차 기준일", _sh_dt.today(),
+        _sh_d = shc1.date_input("회차 기준일", keep_default("bk_date", _sh_dt.today()),
                                 key="bk_date",
                                 help="이 날짜까지의 납품 회차 잔량을 "
                                      "리스트에 올립니다 — 스케줄보다 "
                                      "일찍 출고하려면 미래 날짜로")
         _sh_ship_d = shc2.date_input("납품일 (전표·명세서)",
-                                     _sh_dt.today(), key="bk_ship_date",
+                                     keep_default("bk_ship_date", _sh_dt.today()),
+                                     key="bk_ship_date",
                                      help="실제 납품하는 날짜 — 전표와 "
                                           "거래명세서에 이 날짜가 "
                                           "기록됩니다")
-        _sh_late = shc3.checkbox("지연 회차 포함", value=True, key="bk_late",
+        _sh_late = shc3.checkbox("지연 회차 포함", value=keep_default("bk_late", True), key="bk_late",
                                  help="기준일 이전에 밀린 회차 잔량도 "
                                       "리스트에 올립니다")
 
@@ -8416,7 +8612,7 @@ elif page == "출고 관리":
                         if r["soi_id"] in _draft_sois}
             if _sh_held:
                 st.info("작성중 전표에 이미 담긴 {}개 라인은 목록에서 "
-                        "제외했습니다 ({}) — 수량 수정은 출고 전표 탭에서. "
+                        "제외했습니다 ({}) — 수량 수정은 '출고 전표' 화면에서. "
                         "다른 라인을 그 전표에 더 넣으려면 아래 "
                         "'…에 추가' 버튼을 쓰세요.".format(
                             len(_sh_held),
@@ -8475,8 +8671,8 @@ elif page == "출고 관리":
                               use_container_width=True):
                     if _sh_pick2["soi_id"] in _draft_sois:
                         st.warning("작성중 전표 {} 에 이미 담긴 "
-                                   "라인입니다 — 수정은 출고 전표 "
-                                   "탭에서 하세요.".format(
+                                   "라인입니다 — 수정은 '출고 전표' "
+                                   "화면에서 하세요.".format(
                                        _draft_sois[_sh_pick2["soi_id"]]))
                     elif any(m["soi_id"] == _sh_pick2["soi_id"]
                              for m in _sh_manual):
@@ -8668,8 +8864,9 @@ elif page == "출고 관리":
                         st.session_state["ship_manual"] = []
                         st.session_state["ship_edits"] = {}
                         st.session_state["ship_open_no"] = _sh_add_no
-                        st.success(f"{_sh_add_no}에 {len(_sh_sel)}건 추가 — "
-                                   "출고 전표 탭에서 확인하세요.")
+                        nav_flash(f"{_sh_add_no}에 {len(_sh_sel)}건 추가 — "
+                                  "'출고 전표' 화면에서 확인하세요.",
+                                  action=("출고 전표 열기", "ship", "slip"))
                         st.rerun()
                     except Exception as e:
                         st.error(f"전표 추가 실패: {e}")
@@ -8704,8 +8901,8 @@ elif page == "출고 관리":
                             st.warning(
                                 "등록 중단 — 방금 만든 작성중 전표에 "
                                 "같은 라인이 이미 담겨 있습니다 "
-                                "(버튼이 두 번 눌린 경우). 출고 전표 "
-                                "탭에서 기존 전표를 확인하세요.")
+                                "(버튼이 두 번 눌린 경우). '출고 전표' "
+                                "화면에서 기존 전표를 확인하세요.")
                 except Exception:
                     pass
                 if not _dup_guard:
@@ -8730,17 +8927,19 @@ elif page == "출고 관리":
                         st.session_state["ship_manual"] = []
                         st.session_state["ship_edits"] = {}
                         st.session_state["ship_open_no"] = _ship_no
-                        st.success(f"출고 전표 {_ship_no} 등록 — 출고 "
-                                   "전표 탭에서 확인용 리스트 인쇄·정정·"
-                                   "확정을 진행하세요.")
+                        # 같은 날 연속 등록 흐름 유지 — 자동 전환 없이 안내 + 이동 버튼(§4-5)
+                        nav_flash(f"출고 전표 {_ship_no} 등록 — '출고 전표' 화면에서 "
+                                  "확인용 리스트 인쇄·정정·확정을 진행하세요.",
+                                  action=("출고 전표 열기", "ship", "slip"))
+                        st.rerun()
                     except Exception as e:
                         st.error(f"전표 등록 실패: {e}")
             _rg2.caption("등록 시점에는 아무것도 차감되지 않습니다 — "
-                         "확정(출고 전표 탭)에서 수주 반영·재고 차감·"
+                         "확정('출고 전표' 화면)에서 수주 반영·재고 차감·"
                          "거래명세서 발행이 이루어집니다.")
 
     # ════════ TAB 2: 출고 전표 (확인 → 정정 → 확정 → 재발행) ════════
-    with tab_ship:
+    if _sub == "slip":
         from datetime import date as _cf_dt
         from utils.delivery_alloc import allocate_rounds as _cf_alloc
         from utils.shipment_adjust import split_round_alloc as _cf_split
@@ -8823,7 +9022,7 @@ elif page == "출고 관리":
             _cf_ships = []
         if not _cf_ships:
             st.info("검색 결과가 없습니다." if (_cf_search or "").strip()
-                    else "전표가 없습니다 — 출고 등록 탭에서 리스트를 담아 "
+                    else "전표가 없습니다 — '출고 등록' 화면에서 리스트를 담아 "
                          "등록하세요.")
         else:
             _cf_stko = {"DRAFT": "작성중", "CONFIRMED": "확정",
@@ -9362,8 +9561,8 @@ elif page == "출고 관리":
                     # 남아 있던 문제 (SH-20260916-02). 아무것도 차감하지
                     # 않은 상태라 취소만 하면 된다.
                     st.caption("품목이 모두 빠진 작성중 전표입니다. 취소하면 "
-                               "목록에서 사라지고, 다시 담으려면 출고 등록 "
-                               "탭에서 새 전표를 만들거나 다른 작성중 "
+                               "목록에서 사라지고, 다시 담으려면 '출고 등록' "
+                               "화면에서 새 전표를 만들거나 다른 작성중 "
                                "전표에 추가하세요.")
                     if st.button("전표 취소", key="cf_cancel_empty"):
                         st.session_state[f"cfm_cf_cancel_empty_{_cf_pick['shipment_id']}"] = True
@@ -10247,14 +10446,15 @@ elif page == "출고 관리":
                         st.error(f"취소 실패: {e}")
 
     # ════════ TAB 3: 출고 현황 (확정 전표 기준 품목별 조회) ════════
-    with tab_dstat:
+    if _sub == "dstat":
 
         from datetime import date as _dv_dt, timedelta as _dv_td
         from utils.ship_lots import issued_lots as _dv_lots_fn
 
         _dv_preset = st.radio(
             "기간", ["최근 7일", "최근 30일", "이번 달", "전체"],
-            index=1, horizontal=True, key="dstat_range",
+            index=keep_index("dstat_range", ["최근 7일", "최근 30일", "이번 달", "전체"], 1),
+            horizontal=True, key="dstat_range",
             label_visibility="collapsed")
         _dv_today = _dv_dt.today()
         _dv_from = {
@@ -10276,8 +10476,8 @@ elif page == "출고 관리":
             st.error(f"출고 조회 실패: {e}"); _dv_ships = []
 
         if not _dv_ships:
-            st.info("기간 내 확정 전표 없음 — 기간을 넓히거나 출고 전표 "
-                    "탭에서 확정하세요.")
+            st.info("기간 내 확정 전표 없음 — 기간을 넓히거나 '출고 전표' "
+                    "화면에서 확정하세요.")
         else:
             _dv_smap = {s["shipment_id"]: s for s in _dv_ships}
             _dv_rows = []
@@ -10534,7 +10734,7 @@ elif page == "출고 관리":
 
     # ════════ TAB 4: 완성 재고 (2026-09-16 사용자 결정 — 출고 담기 전에 보는
     # 자리. 홈 요약과 출고 현황의 LOT 표를 여기로 모음) ════════
-    with tab_fstock:
+    if _sub == "fstock":
         def _fsf(v):
             try:
                 return float(v or 0)
@@ -10648,7 +10848,7 @@ elif page == "출고 관리":
                         "등록하세요.")
 
 elif page == "생산 계획":
-    st.subheader("생산 계획 — 주간 계획 · 설비 스케줄 · 공정 표준 · 설비")
+    nav_page_head()
     if not DB_AVAILABLE: st.error("DB 연결 필요"); st.stop()
 
     import db as _db
@@ -10661,7 +10861,8 @@ elif page == "생산 계획":
     # 가볍게 읽어 공정 표준 커버리지·스케줄 작업 큐 재료로 쓴다 — 미납이
     # 없어도 페이지는 멈추지 않는다.
     sois = []
-    try:
+    if _sub in ("std", "sb"):       # B3: 공정 표준·설비 스케줄만 쓴다 — 기본값 [] 먼저
+      try:
         sois = fetch("sales_order_items", "*",
                      "pending_qty=gt.0&product_id=not.is.null"
                      "&order=due_date.asc.nullslast", limit=1000)
@@ -10676,17 +10877,16 @@ elif page == "생산 계획":
         sois = [i for i in sois
                 if (_so_st.get(i["so_id"]) or "")
                 not in ("CANCELLED", "CANCELED")]
-    except Exception as e:
+      except Exception as e:
         st.error(f"미납 수주 조회 실패: {e}")
 
-    tab_wp, tab_sb, tab_std, tab_mc = st.tabs(
-        ["주간 계획", "설비 스케줄", "공정 표준", "설비"])
+    # 세부 화면(사이드바 2단): 주간 계획 / 설비 스케줄 / 공정 표준 / 설비 — _sub 로 분기
 
     # ═══════════ 탭: 주간 계획 (2026-10-14, migration 070) ═══════════
     # 계획 단위 = 작업(품번 × 스텝 묶음). 한 행 = "어느 장비군에서 몇 개를 몇 UPH 로".
     # 표준은 참고값(행에서 고치면 MANUAL, 표준엔 영향 없음). 수주·실적과 미연결(단독).
     # 저장은 save_week_plan RPC 한 트랜잭션 + fingerprint 로 동시 편집 거부.
-    with tab_wp:
+    if _sub == "wp":
         import utils.weekly_plan as _wp
         from datetime import date as _wp_date, timedelta as _wp_td
         _wp_today = _wp_date.today()
@@ -10990,7 +11190,7 @@ elif page == "생산 계획":
     # 표준 = 공정 설계 단계에서 정하는 작업 표준(공정 개선 때만 바뀜).
     # 시트 UPH 목표·실적 중앙값은 참고 컬럼. 저장한 행은 CONFIRMED 로 잠기고
     # 재산출은 자동값만 갱신. 변경은 product_op_std_log 에 남는다.
-    with tab_std:
+    if _sub == "std":
         import utils.op_std as _os
         from datetime import datetime as _std_now
 
@@ -11464,7 +11664,7 @@ elif page == "생산 계획":
     # [계획 입력] 모드는 시트처럼 셀에서 작업을 고르는 격자(data_editor,
     # 드롭다운 검색), 수량은 표준 UPH × 교대 시간으로 자동. [보드 보기] 는
     # 실적이 붙은 색 칩. 작업 큐·기간 일괄 입력·수량 조정은 접힌 영역.
-    with tab_sb:
+    if _sub == "sb":
         import html as _sb_h
         import utils.schedule as _sch
         from datetime import (date as _sb_date, timedelta as _sb_td,
@@ -11705,8 +11905,9 @@ elif page == "생산 계획":
         # 채우기 핸들·×·되돌리기, [저장] 시 변경 목록만 앱으로 전달.
         # 프로토콜은 index.html 이 직접 구현(streamlit:componentReady /
         # render / setComponentValue). 컴포넌트가 없으면 아래 격자로 폴백.
-        _sb_grp = st.radio("장비군", ["전체"] + sorted(
-            {m.get("group_code") or "ETC" for m in _sb_act}),
+        _sb_grp_opts = ["전체"] + sorted(
+            {m.get("group_code") or "ETC" for m in _sb_act})
+        _sb_grp = st.radio("장비군", _sb_grp_opts, index=keep_index("sb_grp", _sb_grp_opts),
             horizontal=True, key="sb_grp", label_visibility="collapsed")
         _sb_rows_m = [m for m in _sb_act
                       if _sb_grp == "전체"
@@ -12048,7 +12249,7 @@ elif page == "생산 계획":
                             '</table></div>').format(h1, h2, "".join(rows))
 
                 if not _sb_rows_m:
-                    st.info("가동 설비가 없습니다 — 설비 탭에서 확인하세요.")
+                    st.info("가동 설비가 없습니다 — '설비' 화면에서 확인하세요.")
                 else:
                     st.markdown(_sb_html(set()), unsafe_allow_html=True)
                     st.markdown(
@@ -12250,7 +12451,7 @@ elif page == "생산 계획":
                     st.rerun()
 
     # ─── 탭 5: 설비 마스터 ───
-    with tab_mc:
+    if _sub == "mc":
         _mc_has_sat = True
         try:
             _mcs = fetch("machines",
@@ -12268,7 +12469,7 @@ elif page == "생산 계획":
                 st.error(f"설비 조회 실패: {e}")
                 _mcs = []
         if not _mcs:
-            st.info("등록된 설비가 없습니다 — 공정 표준 탭에서 재산출하면 "
+            st.info("등록된 설비가 없습니다 — '공정 표준' 화면에서 재산출하면 "
                     "실적의 설비가 자동 등록됩니다.")
         else:
             _cap = {}
@@ -12545,7 +12746,7 @@ elif page == "생산 계획":
 
 
 elif page == "구매 관리":
-    st.subheader("구매 관리")
+    nav_page_head()
     if not DB_AVAILABLE:
         st.error("DB 연결 필요"); st.stop()
 
@@ -12567,10 +12768,34 @@ elif page == "구매 관리":
         "TOOL": "공구·소모품",
     }
 
+    _PO_BUCKET_OF_GROUP = {"MAT_STS": "소재", "MAT_CARBON": "소재", "MAT_FORGING": "소재",
+                           "MAT_CASTING": "소재", "MAT_OTHER": "소재",
+                           "MAT_CONSUMABLES": "소모성", "TOOL": "공구"}
+
+    def _po_bucket_of(vendor_name):
+        """거래처의 vendor_group → 새 발주서 작성의 발주 그룹(소재/소모성/공구). 모르면 None."""
+        try:
+            _v = fetch("vendors", "vendor_group",
+                       f"name=eq.{_fq(vendor_name)}&in_use=eq.true", limit=1)
+        except Exception:
+            _v = []
+        return _PO_BUCKET_OF_GROUP.get((_v[0].get("vendor_group") if _v else None))
+
+    def _po_prefill_go(vendor_name):
+        """미리 담긴 발주 데이터를 새 발주서 작성으로 — 거래처 선택은 prefill 이름으로
+        index 를 정하므로 남아 있던 선택값(po_vendor·그림자)은 지우고, 발주 그룹은 거래처의
+        그룹에 맞춘다(QA M-4: 그려진 위젯 키는 콜백에서만 바꾼다)."""
+        st.session_state.pop("po_vendor", None)
+        st.session_state.pop("_kv_po_vendor", None)
+        _bk = _po_bucket_of(vendor_name)
+        if _bk:
+            st.session_state["po_bucket"] = _bk
+            st.session_state["_kv_po_bucket"] = _bk
+        nav_go("po", "new")
+
     # 2026-10-15 메뉴 정리: '자재 필요량'·'발주 자동 제안'(같은 계산, 보는 축만 다름) → '발주 제안' 하나,
     # '매입 등록' 신설(원가 확인의 동기화·수기 입력·확인 대기 이동)
-    tab_sug, tab_new, tab_hist, tab_rcv_proc, tab_rstat, tab_pur = st.tabs(
-        ["발주 제안", "새 발주서 작성", "발주 이력", "입고 처리", "입고 현황", "매입 등록"])
+    # 세부 화면(사이드바 2단): 발주 제안 / 새 발주서 작성 / 발주 이력 / 입고 처리 / 입고 현황 / 매입 등록
 
     # ══════════ 자재 필요량 계산 (2026-09-11 생산 계획에서 이동) ══════════
     # 미납 수주 × BOM → 완성 재고·소재 재고·미입고 발주를 뺀 발주 필요량.
@@ -12760,12 +12985,14 @@ elif page == "구매 관리":
                 "mat_short": mat_short, "prod_short": prod_short}
 
     import time as _time
+    _mr = {}                        # B2: 기본값 먼저 — 다른 세부 화면은 계산하지 않는다
     _mr_c = st.session_state.get("mr_cache")
-    if (not _mr_c or _time.time() - _mr_c[0] > 300
-            or st.session_state.pop("mr_refresh", False)):
-        _mr_c = (_time.time(), _mr_compute())
-        st.session_state["mr_cache"] = _mr_c
-    _mr = _mr_c[1] or {}
+    if _sub in ("sug", "new"):      # 발주 제안·새 발주서 작성(14225~)만 쓴다
+        if (not _mr_c or _time.time() - _mr_c[0] > 300
+                or st.session_state.pop("mr_refresh", False)):
+            _mr_c = (_time.time(), _mr_compute())
+            st.session_state["mr_cache"] = _mr_c
+        _mr = _mr_c[1] or {}
 
     # ── 발주서 메일 발송 (2026-09-16) — utils/po_mail.py, secrets [mail].
     # enabled=false 면 _po_mail_cfg() 가 None → 버튼 자체가 없다 (사용자 결정:
@@ -12810,7 +13037,7 @@ elif page == "구매 관리":
         return True, "발송 완료 — " + ", ".join(_sent_to)
 
     # ════════════ TAB: 자재 필요량 (제품별) — 2026-09-11 생산 계획에서 이동 ════════════
-    with tab_sug:
+    if _sub == "sug":
         _sug_top = st.container()          # 자재별 발주 제안(아래 블록이 채움)
         with st.expander("제품별 자재 필요량 — 제안의 근거", expanded=False):
             # 설명은 ? 툴팁으로만 (2026-09-11 사용자: 화면 텍스트 과다)
@@ -13004,153 +13231,140 @@ elif page == "구매 관리":
                                                                 or "9999"))],
                                 num_cols=("미납", "순생산"), strong_cols=("수주",))
 
+        # B1(2026-10-19): 아래 블록은 발주 제안 세부에서만 실행 — 다른 세부면 _sug_top 이 없다
     # ════════════ TAB: 발주 자동 제안 — 2026-09-11 생산 계획에서 이동 ════════════
-    with _sug_top:
-        if _mr.get("msg"):
-            st.info(_mr["msg"])
-        else:
-            sois, so_map = _mr["sois"], _mr["so_map"]
-            bom_by_pid, mat_map = _mr["bom_by_pid"], _mr["mat_map"]
-            mat_req, on_order = _mr["mat_req"], _mr["on_order"]
-            items_no_bom = _mr["items_no_bom"]
-            items_with_bom = _mr["items_with_bom"]
-            total_prod_stock_used = _mr["total_prod_stock_used"]
-            # 부족분 > 0인 자재만 + 거래처별 묶음
-            shortage_list = []
-            for mid, info in mat_req.items():
-                mat = mat_map.get(mid, {})
-                req = info["required"]
-                stock = float(mat.get("stock_qty") or 0)
-                oo = on_order.get(mid, 0.0)
-                shortage = req - stock - oo
-                if shortage > 0:
-                    # 주공급사 파싱 ("(주)명진메탈(967건)" → "(주)명진메탈")
-                    sup_raw = (mat.get("main_supplier") or "").split("(")[0].strip()
-                    # 또는 "(주)명진메탈(967건)" 같은 형식 처리
-                    import re as _re3
-                    sup_match = _re3.match(r'^([^(]+(?:\([^)]+\)[^(]*)?)', mat.get("main_supplier") or "")
-                    supplier_name = sup_match.group(1).strip() if sup_match else sup_raw
-                    supplier_name = supplier_name.split(",")[0].strip() if "," in supplier_name else supplier_name
-                    # 공급사명에서 빈도수 표기 제거
-                    supplier_name = _re3.sub(r'\(\d+건?\)$', '', supplier_name).strip()
-
-                    shortage_list.append({
-                        "material_id": mid,
-                        "name": mat.get("raw_name") or "",
-                        "material_type": mat.get("material_type"),
-                        "spec": mat.get("spec"),
-                        "unit": mat.get("unit") or "EA",
-                        "required": req, "stock": stock, "on_order": oo,
-                        "shortage": shortage,
-                        "supplier": supplier_name or "(미정)",
-                    })
-
-            if not shortage_list:
-                st.success("자재 부족 없음 — 소재 재고와 미입고 발주로 충당됩니다.")
+        with _sug_top:
+            if _mr.get("msg"):
+                st.info(_mr["msg"])
             else:
-                # 최근 발주 이력에서 자재별 실제 거래처 역산 (2026-07-28)
-                # — materials.main_supplier 는 대부분 비어 있어(308중 88)
-                #   자동 제안이 전부 '(미정)' 으로 뭉치는 문제가 있었다.
-                _mid_vendor = {}
-                try:
-                    _po_hist = fetch("purchase_order_items",
-                        "material_id,po_id",
-                        "material_id=not.is.null&order=poi_id.desc", limit=1000)
-                    _po_ids = list({x["po_id"] for x in _po_hist
-                                    if x.get("po_id")})
-                    if _po_ids:
-                        _pv = {p["po_id"]: p.get("vendor_id") for p in fetch(
-                            "purchase_orders", "po_id,vendor_id",
-                            "po_id=in.(" + ",".join(str(i) for i in _po_ids)
-                            + ")", limit=500)}
-                        _vids = list({v for v in _pv.values() if v})
-                        _vn = {}
-                        if _vids:
-                            _vn = {v["vendor_id"]: v["name"] for v in fetch(
-                                "vendors", "vendor_id,name",
-                                "vendor_id=in.("
-                                + ",".join(str(i) for i in _vids) + ")",
-                                limit=500)}
-                        for x in _po_hist:   # poi_id desc → 최신이 먼저
-                            m = x["material_id"]
-                            if m not in _mid_vendor:
-                                nm = _vn.get(_pv.get(x.get("po_id")))
-                                if nm:
-                                    _mid_vendor[m] = nm
-                except Exception:
-                    pass
-                for s in shortage_list:
-                    if s["supplier"] in ("(미정)", ""):
-                        hit = _mid_vendor.get(s["material_id"])
-                        if hit:
-                            s["supplier"] = hit
-                            s["supplier_src"] = "발주 이력"
+                sois, so_map = _mr["sois"], _mr["so_map"]
+                bom_by_pid, mat_map = _mr["bom_by_pid"], _mr["mat_map"]
+                mat_req, on_order = _mr["mat_req"], _mr["on_order"]
+                items_no_bom = _mr["items_no_bom"]
+                items_with_bom = _mr["items_with_bom"]
+                total_prod_stock_used = _mr["total_prod_stock_used"]
+                # 부족분 > 0인 자재만 + 거래처별 묶음
+                shortage_list = []
+                for mid, info in mat_req.items():
+                    mat = mat_map.get(mid, {})
+                    req = info["required"]
+                    stock = float(mat.get("stock_qty") or 0)
+                    oo = on_order.get(mid, 0.0)
+                    shortage = req - stock - oo
+                    if shortage > 0:
+                        # 주공급사 파싱 ("(주)명진메탈(967건)" → "(주)명진메탈")
+                        sup_raw = (mat.get("main_supplier") or "").split("(")[0].strip()
+                        # 또는 "(주)명진메탈(967건)" 같은 형식 처리
+                        import re as _re3
+                        sup_match = _re3.match(r'^([^(]+(?:\([^)]+\)[^(]*)?)', mat.get("main_supplier") or "")
+                        supplier_name = sup_match.group(1).strip() if sup_match else sup_raw
+                        supplier_name = supplier_name.split(",")[0].strip() if "," in supplier_name else supplier_name
+                        # 공급사명에서 빈도수 표기 제거
+                        supplier_name = _re3.sub(r'\(\d+건?\)$', '', supplier_name).strip()
 
-                # 거래처별 묶음
-                by_supplier = _dd(list)
-                for s in shortage_list:
-                    by_supplier[s["supplier"]].append(s)
+                        shortage_list.append({
+                            "material_id": mid,
+                            "name": mat.get("raw_name") or "",
+                            "material_type": mat.get("material_type"),
+                            "spec": mat.get("spec"),
+                            "unit": mat.get("unit") or "EA",
+                            "required": req, "stock": stock, "on_order": oo,
+                            "shortage": shortage,
+                            "supplier": supplier_name or "(미정)",
+                        })
 
-                _n_undef = len(by_supplier.get("(미정)", []))
-                if _n_undef:
-                    st.info(
-                        f"거래처 미지정 자재 {_n_undef}건 — 마스터에 주공급사가 "
-                        "없고 발주 이력도 없는 자재입니다. 아래에서 거래처를 "
-                        "직접 고르면 그대로 발주서에 담깁니다. (자주 쓰는 "
-                        "자재는 마스터 관리 → 자재 편집에서 주공급사를 "
-                        "등록해 두세요.)")
+                if not shortage_list:
+                    st.success("자재 부족 없음 — 소재 재고와 미입고 발주로 충당됩니다.")
+                else:
+                    # 최근 발주 이력에서 자재별 실제 거래처 역산 (2026-07-28)
+                    # — materials.main_supplier 는 대부분 비어 있어(308중 88)
+                    #   자동 제안이 전부 '(미정)' 으로 뭉치는 문제가 있었다.
+                    _mid_vendor = {}
+                    try:
+                        _po_hist = fetch("purchase_order_items",
+                            "material_id,po_id",
+                            "material_id=not.is.null&order=poi_id.desc", limit=1000)
+                        _po_ids = list({x["po_id"] for x in _po_hist
+                                        if x.get("po_id")})
+                        if _po_ids:
+                            _pv = {p["po_id"]: p.get("vendor_id") for p in fetch(
+                                "purchase_orders", "po_id,vendor_id",
+                                "po_id=in.(" + ",".join(str(i) for i in _po_ids)
+                                + ")", limit=500)}
+                            _vids = list({v for v in _pv.values() if v})
+                            _vn = {}
+                            if _vids:
+                                _vn = {v["vendor_id"]: v["name"] for v in fetch(
+                                    "vendors", "vendor_id,name",
+                                    "vendor_id=in.("
+                                    + ",".join(str(i) for i in _vids) + ")",
+                                    limit=500)}
+                            for x in _po_hist:   # poi_id desc → 최신이 먼저
+                                m = x["material_id"]
+                                if m not in _mid_vendor:
+                                    nm = _vn.get(_pv.get(x.get("po_id")))
+                                    if nm:
+                                        _mid_vendor[m] = nm
+                    except Exception:
+                        pass
+                    for s in shortage_list:
+                        if s["supplier"] in ("(미정)", ""):
+                            hit = _mid_vendor.get(s["material_id"])
+                            if hit:
+                                s["supplier"] = hit
+                                s["supplier_src"] = "발주 이력"
 
-                for supplier, mats in sorted(by_supplier.items(), key=lambda x: -sum(m["shortage"] for m in x[1])):
-                    total_short = sum(m["shortage"] for m in mats)
-                    with st.expander(f"**{supplier}** — {len(mats)}개 자재 부족 (합 {total_short:.1f})",
-                                     expanded=True):
-                        pdf = pd.DataFrame([{
-                            "자재명": m["name"][:30],
-                            "재질": m["material_type"] or "-",
-                            "규격": m["spec"] or "-",
-                            "필요량": round(m["required"], 2),
-                            "재고": round(m["stock"], 2),
-                            "미입고 발주": round(m["on_order"], 2),
-                            "부족분 (발주 권장)": round(m["shortage"], 2),
-                            "단위": m["unit"],
-                        } for m in mats])
-                        toss_df(pdf, use_container_width=True, hide_index=True)
+                    # 거래처별 묶음
+                    by_supplier = _dd(list)
+                    for s in shortage_list:
+                        by_supplier[s["supplier"]].append(s)
 
-                        # 거래처 미지정이면 직접 고를 수 있게 (발주 불가 방지)
-                        _target = supplier
-                        if supplier == "(미정)":
-                            try:
-                                _vopts = [v["name"] for v in fetch(
-                                    "vendors", "name",
-                                    "in_use=eq.true&vendor_group=like.MAT*"
-                                    "&order=name", limit=300)]
-                            except Exception:
-                                _vopts = []
-                            if not _vopts:
+                    _n_undef = len(by_supplier.get("(미정)", []))
+                    if _n_undef:
+                        st.info(
+                            f"거래처 미지정 자재 {_n_undef}건 — 마스터에 주공급사가 "
+                            "없고 발주 이력도 없는 자재입니다. 아래에서 거래처를 "
+                            "직접 고르면 그대로 발주서에 담깁니다. (자주 쓰는 "
+                            "자재는 마스터 관리 → 자재 편집에서 주공급사를 "
+                            "등록해 두세요.)")
+
+                    for supplier, mats in sorted(by_supplier.items(), key=lambda x: -sum(m["shortage"] for m in x[1])):
+                        total_short = sum(m["shortage"] for m in mats)
+                        with st.expander(f"**{supplier}** — {len(mats)}개 자재 부족 (합 {total_short:.1f})",
+                                         expanded=True):
+                            pdf = pd.DataFrame([{
+                                "자재명": m["name"][:30],
+                                "재질": m["material_type"] or "-",
+                                "규격": m["spec"] or "-",
+                                "필요량": round(m["required"], 2),
+                                "재고": round(m["stock"], 2),
+                                "미입고 발주": round(m["on_order"], 2),
+                                "부족분 (발주 권장)": round(m["shortage"], 2),
+                                "단위": m["unit"],
+                            } for m in mats])
+                            toss_df(pdf, use_container_width=True, hide_index=True)
+
+                            # 거래처 미지정이면 직접 고를 수 있게 (발주 불가 방지)
+                            _target = supplier
+                            if supplier == "(미정)":
                                 try:
                                     _vopts = [v["name"] for v in fetch(
                                         "vendors", "name",
-                                        "in_use=eq.true&order=name", limit=300)]
+                                        "in_use=eq.true&vendor_group=like.MAT*"
+                                        "&order=name", limit=300)]
                                 except Exception:
                                     _vopts = []
-                            _target = st.selectbox(
-                                "발주할 거래처 선택", ["(선택하세요)"] + _vopts,
-                                key=f"po_vsel_{supplier}")
+                                if not _vopts:
+                                    try:
+                                        _vopts = [v["name"] for v in fetch(
+                                            "vendors", "name",
+                                            "in_use=eq.true&order=name", limit=300)]
+                                    except Exception:
+                                        _vopts = []
+                                _target = st.selectbox(
+                                    "발주할 거래처 선택", ["(선택하세요)"] + _vopts,
+                                    key=f"po_vsel_{supplier}")
 
-                        if st.button(f"발주서 작성 화면으로 (이 {len(mats)}건)",
-                                     key=f"go_po_{supplier}",
-                                     disabled=_target in ("(선택하세요)",
-                                                          "(미정)")):
-                            # session_state로 발주 화면에 미리 채울 데이터 전달
-                            st.session_state["po_prefill_vendor_name"] = _target
-                            st.session_state["po_prefill_items"] = [{
-                                "product_id": None,  # 자재 행이므로 product_id 없음
-                                "item_name": m["name"],
-                                "material": m["material_type"] or "",
-                                "spec": m["spec"] or "",
-                                "qty": int(m["shortage"]) if m["unit"] == "EA" else round(m["shortage"], 2),
-                                "unit_price": 0,
-                            } for m in mats]
                             # 수주 출처 추적 — 이 자재들이 어느 수주에서 필요해졌는지
                             src_so_ids = set()
                             for m in mats:
@@ -13160,15 +13374,35 @@ elif page == "구매 관리":
                                 so_map.get(sid, {}).get("so_number") or str(sid)
                                 for sid in src_so_ids
                             })
-                            st.session_state["po_prefill_source_so"] = ", ".join(src_so_numbers[:10])
-                            st.success(
-                                f"'{_target}' {len(mats)}개 품목을 담았습니다 — "
-                                "새 발주서 작성 탭에서 검토하세요.")
+
+                            def _go_po_cb(_sup=supplier, _mats=mats,
+                                          _src=", ".join(src_so_numbers[:10])):
+                                # 콜백(실행 전): 미리 채울 데이터 → 새 발주서 작성으로 전환
+                                # (안내는 그 화면의 '미리 담긴 발주 데이터' info 가 대신)
+                                _tgt = (st.session_state.get(f"po_vsel_{_sup}")
+                                        if _sup == "(미정)" else _sup)
+                                st.session_state["po_prefill_vendor_name"] = _tgt
+                                st.session_state["po_prefill_items"] = [{
+                                    "product_id": None,  # 자재 행이므로 product_id 없음
+                                    "item_name": m["name"],
+                                    "material": m["material_type"] or "",
+                                    "spec": m["spec"] or "",
+                                    "qty": int(m["shortage"]) if m["unit"] == "EA" else round(m["shortage"], 2),
+                                    "unit_price": 0,
+                                } for m in _mats]
+                                st.session_state["po_prefill_source_so"] = _src
+                                st.session_state.pop("po_prefill_note", None)
+                                _po_prefill_go(_tgt)
+
+                            st.button(f"발주서 작성 화면으로 (이 {len(mats)}건)",
+                                      key=f"go_po_{supplier}",
+                                      disabled=_target in ("(선택하세요)", "(미정)"),
+                                      on_click=_go_po_cb)
 
 
 
-    # ════════════ TAB 3: 입고 현황 (입고일 기준 보유 자재) ════════════
-    with tab_rstat:
+        # ════════════ TAB 3: 입고 현황 (입고일 기준 보유 자재) ════════════
+    if _sub == "rstat":
 
         # ── 데이터 로드 ──
         from datetime import date as _rs_dt, timedelta as _rs_td
@@ -13250,7 +13484,7 @@ elif page == "구매 관리":
         st.markdown(
             '<div class="kpi-row">'
             + _rk("입고 대기", _q_pend,
-                  f"{len(_wait_rows)}개 라인 — 입고 처리 탭", "warn")
+                  f"{len(_wait_rows)}개 라인 — '입고 처리' 화면", "warn")
             + _rk("최근 7일 입고", _wk_sum)
             + _rk("보유 소재", f"{len(_hold_pos)}종",
                   "총 {:,.0f}".format(sum(
@@ -13262,7 +13496,7 @@ elif page == "구매 관리":
         # ── 보유 자재 (입고일 기준) — 라벨 재발행·입고 취소 ──
         st.markdown("##### 보유 자재 (입고일 기준)")
         if not _rcpts:
-            st.info("입고 이력 없음 — [입고 처리] 탭에서 입고하면 "
+            st.info("입고 이력 없음 — '입고 처리' 화면에서 입고하면 "
                     "여기에 입고일 순으로 쌓입니다.")
         else:
             # 발주 라인(품명·규격)·헤더(발주번호·거래처) 역조인
@@ -13422,7 +13656,7 @@ elif page == "구매 관리":
                                     "공정 쪽 정리 먼저"
                                     if _used9 else
                                     "취소하면 발주 미입고가 되살아나 "
-                                    "입고 처리 탭에 다시 뜹니다"),
+                                    "'입고 처리' 화면에 다시 뜹니다"),
                               use_container_width=True,
                               key=_rcx_k):
                     st.session_state[f"cfm_{_rcx_k}"] = True
@@ -13583,7 +13817,7 @@ elif page == "구매 관리":
                         for c in ("현재고", "누적 입고", "누적 투입")})
 
     # ════════════ TAB 1: 새 발주서 작성 ════════════
-    with tab_new:
+    if _sub == "new":
         # 2026-09-09 개편 (사용자: 저장·로딩이 잦고 불편, 완성은 PDF):
         # ① 거래처 → ② 품목 담기(검색 폼 → 체크해서 한 번에 담기) →
         # ③ 발주서 한 장 = st.form 하나(품목 표 편집 + 발주 정보 + 만들기)
@@ -13744,6 +13978,9 @@ elif page == "구매 관리":
                     if pv_name in vn or vn in pv_name:
                         default_idx = i
                         break
+            if not pv_name:
+                # 미리 담긴 거래처가 없으면 마지막 선택 유지(세부 화면을 다녀와도)
+                default_idx = keep_index("po_vendor", option_keys, 0)
             sel = vc2.selectbox(f"거래처 선택 ({len(vendors)}개)",
                                 option_keys, index=default_idx, key="po_vendor")
             vendor = vendor_options[sel]
@@ -14498,7 +14735,7 @@ elif page == "구매 관리":
                             st.session_state["po_tbl_nonce"] = \
                                 st.session_state.get("po_tbl_nonce", 0) + 1
                             st.rerun()
-                        st.caption("발주 이력 탭에서 언제든 다시 내려받을 수 있습니다.")
+                        st.caption("'발주 이력' 화면에서 언제든 다시 내려받을 수 있습니다.")
                 elif not _items:
                     st.info("②에서 품목을 담으면 여기에 발주서 표가 나타납니다.")
                 else:
@@ -14730,14 +14967,16 @@ elif page == "구매 관리":
                                 st.rerun()
 
     # ════════════ TAB 2: 발주 이력 ════════════
-    with tab_hist:
+    if _sub == "hist":
         c1, c2, c3 = st.columns(3)
         with c1:
-            period = st.selectbox("기간", ["이번달", "최근 3개월", "올해", "전체"], index=1)
+            period = st.selectbox("기간", ["이번달", "최근 3개월", "올해", "전체"],
+                                  index=keep_index("po_h_period", ["이번달", "최근 3개월", "올해", "전체"], 1),
+                                  key="po_h_period")
         with c2:
-            status_f = st.selectbox("상태", ["전체", "DRAFT", "SENT", "PARTIAL", "RECEIVED", "CLOSED", "CANCELLED"], format_func=lambda s: s if s == "전체" else status_ko(s))
+            status_f = st.selectbox("상태", ["전체", "DRAFT", "SENT", "PARTIAL", "RECEIVED", "CLOSED", "CANCELLED"], key="po_h_status", format_func=lambda s: s if s == "전체" else status_ko(s))
         with c3:
-            v_search = st.text_input("거래처", placeholder="이름 검색")
+            v_search = st.text_input("거래처", placeholder="이름 검색", key="po_h_vendor")
 
         # 쿼리 빌드
         today = _date.today()
@@ -14882,13 +15121,9 @@ elif page == "구매 관리":
                             mime="application/pdf", type="primary",
                             use_container_width=True,
                             key=f"po_re_pdf_{po['po_id']}")
-                        if st.button("복사해서 수정 (새 발주서 작성)",
-                                     use_container_width=True,
-                                     key=f"po_copy_{po['po_id']}",
-                                     help="이 발주의 품목을 새 발주서 표에 담습니다. "
-                                          "수정 후 [발주서 만들기 (PDF)] 로 다시 "
-                                          "만들고, 원 발주는 [발주 취소]로 정리"):
-                            st.session_state["po_prefill_vendor_name"] = po["_vname"]
+                        def _po_copy_cb(_po=po, _items=items):
+                            # 콜백(실행 전): 품목을 담고 새 발주서 작성으로 전환
+                            st.session_state["po_prefill_vendor_name"] = _po["_vname"]
                             st.session_state["po_prefill_items"] = [{
                                 "product_id": i.get("product_id"),
                                 "material_id": i.get("material_id"),
@@ -14900,17 +15135,23 @@ elif page == "구매 관리":
                                 "unit_price": int(i.get("unit_price") or 0),
                                 "memo": (i.get("remark") or "")
                                 if i.get("material") else "",
-                            } for i in items]
+                            } for i in _items]
                             st.session_state["po_prefill_source_so"] = None
                             st.session_state["po_prefill_note"] = (
-                                f"{po['po_number']} 복사 — 수정 후 다시 만들기")
+                                f"{_po['po_number']} 복사 — 수정 후 다시 만들기")
                             st.session_state.po_items = []
                             st.session_state.pop("po_result", None)
                             st.session_state["po_tbl_nonce"] = \
                                 st.session_state.get("po_tbl_nonce", 0) + 1
-                            st.success("새 발주서 작성 탭에 담았습니다 — 수정 후 "
-                                       "[발주서 만들기 (PDF)]. 원 발주는 "
-                                       "[발주 취소]로 정리하세요.")
+                            _po_prefill_go(_po["_vname"])
+
+                        st.button("복사해서 수정 (새 발주서 작성)",
+                                  use_container_width=True,
+                                  key=f"po_copy_{po['po_id']}",
+                                  help="이 발주의 품목을 새 발주서 표에 담고 그 화면으로 "
+                                       "이동합니다. 수정 후 [발주서 만들기 (PDF)] 로 다시 "
+                                       "만들고, 원 발주는 [발주 취소]로 정리",
+                                  on_click=_po_copy_cb)
                     except Exception as e:
                         st.error(f"재발급 실패: {e}")
 
@@ -15027,6 +15268,7 @@ elif page == "구매 관리":
                                 _db.update("purchase_orders",
                                     f"po_id=eq.{_fq(po['po_id'])}",
                                     {"status": "SENT"})
+                            st.session_state.pop("mr_cache", None)
                             st.success("종결 해제 — 미입고가 입고 "
                                        "대기에 복구되었습니다.")
                             st.rerun()
@@ -15035,14 +15277,14 @@ elif page == "구매 관리":
                                      "주세요.")
 
                 st.divider()
-                st.caption("입고 처리는 [입고 처리] 탭에서 진행합니다 (2026-07-23 분리).")
+                st.caption("입고 처리는 '입고 처리' 화면에서 진행합니다.")
 
 
 # ════════════════════════════════════════════════════════════════
 # 공정 관리 — Phase E (투입→외주→검사→완성, 실물 라벨 연동)
 
     # ════════════ TAB: 입고 처리 (발주 기반 + 직접 입고) ════════════
-    with tab_rcv_proc:
+    if _sub == "rcv":
 
         try:
             _rw = fetch("po_item_receipt_v",
@@ -15054,7 +15296,7 @@ elif page == "구매 관리":
 
         if not _rw:
             st.success("입고 대기 라인 없음 — 발주된 소재가 모두 "
-                       "입고됐습니다. 새 발주는 [새 발주서 작성] 탭에서.")
+                       "입고됐습니다. 새 발주는 '새 발주서 작성' 화면에서.")
         else:
             # 발주 헤더 (거래처·입고 예정일)
             _po_h, _po_v = {}, {}
@@ -15346,6 +15588,7 @@ elif page == "구매 관리":
                                 "material_type,spec") or {}
                         except Exception:
                             _mrow8 = {}
+                        st.session_state.pop("mr_cache", None)   # 입고 → 미입고 발주 변동
                         st.session_state["rcv_labels"] = [{
                             "w_lot": _w or "(식별 번호 없음)",
                             "pn": _r.get("item_name") or "-",
@@ -15536,6 +15779,7 @@ elif page == "구매 관리":
                               + (f": {_dr_src}" if _dr_src else ""),
                     "created_by": current_user_name(),
                 }])
+                st.session_state.pop("mr_cache", None)   # 직접 입고 → 소재 재고 변동
                 st.session_state["rcv_labels"] = [{
                     "w_lot": _dw or "(식별 번호 없음)",
                     "pn": _dr_pn or "-",
@@ -15589,7 +15833,7 @@ elif page == "구매 관리":
 # ════════════════════════════════════════════════════════════════
 
     # ════════════ TAB: 매입 등록 — 파일 업로드·시트 동기화 / 수기 입력 / 확인 대기 (2026-10-15 원가 확인에서 이동. 입력은 구매 관리, 결과는 원가 확인) ════════════
-    with tab_pur:
+    if _sub == "pur":
         # ════════════════════════════════════════════════
         # 매입내역 동기화 — 구글시트 → purchase_ledger + 자재 자동 매칭
         # (2026-08-31 신설. 확인 → 실행 2단계, 자동 overwrite 없음)
@@ -15617,7 +15861,8 @@ elif page == "구매 관리":
                 st.info("명세서 스캔 판독은 OCR 엔진(Tesseract)이 있는 서버에서만 동작합니다. 지금은 시트 동기화·수기 입력을 쓰세요.")
             else:
                 _sc_files = st.file_uploader("거래명세서 스캔 (PDF·JPG·PNG, 여러 장 가능)", type=["pdf", "png", "jpg", "jpeg"],
-                                             accept_multiple_files=True, key="sc_files")
+                                             accept_multiple_files=True, key="sc_files",
+                                             help="다른 화면에 다녀오면 파일을 다시 올려야 합니다")
                 if _sc_files and st.button("판독", key="sc_go", type="primary") and click_guard("sc_go"):
                     try:
                         with st.spinner("판독 중… (장당 10~20초)"):
@@ -16118,7 +16363,7 @@ elif page == "구매 관리":
             with st.container(border=True):
                 _uvc1, _uvc2, _uvc3 = st.columns([2.2, 2.6, 1.2])
                 _uv_opts = [f"{g['이름']} ({g['건수']}행)" for _, g in sorted(_uv_cnt.items(), key=lambda kv: -kv[1]["건수"])]
-                _uv_pick = _uvc1.selectbox("업체 일괄 분류 — 업체", _uv_opts, key="uv_pick",
+                _uv_pick = _uvc1.selectbox("업체 일괄 분류 — 업체", _uv_opts, index=keep_index("uv_pick", _uv_opts), key="uv_pick",
                                            help="업체 전체가 한 유형(예: 두리T.M.S = 공구·소모품)이면 여기서 한 번에. "
                                                 "품명별 자재 연결이 필요한 소재는 아래 묶음에서 개별로.") if _uv_opts else None
                 _uv_type = _uvc2.radio("유형", ["공구·소모품", "공정비(열처리·표면·외주)", "기타"], horizontal=True, key="uv_type")
@@ -16188,7 +16433,7 @@ elif page == "구매 관리":
                         use_container_width=True, hide_index=True,
                         height=min(360, 60 + 35 * min(len(_uw_list), 200)))
                 _uw_labels = [f"{g['거래처']} · {g['품명']} ({g['건수']}건)" for _, g in _uw_list[:200]]
-                _uw_pick = st.selectbox("연결할 품명", _uw_labels, key="uw_pick")
+                _uw_pick = st.selectbox("연결할 품명", _uw_labels, index=keep_index("uw_pick", _uw_labels), key="uw_pick")
                 _uw_key, _uw_g = _uw_list[_uw_labels.index(_uw_pick)]
                 _uw_type = st.radio("라인 유형", ["소재(자재)", "공구·소모품(자재)", "제품(외주가공·구매품)",
                                               "공정비(열처리·표면·외주)", "기타"],
@@ -16327,7 +16572,7 @@ elif page == "구매 관리":
 
 
 elif page == "공정 관리":
-    st.subheader("공정 관리")
+    nav_page_head()
 
     if not DB_AVAILABLE:
         st.error("DB 연결이 활성화되지 않았습니다."); st.stop()
@@ -16548,11 +16793,10 @@ elif page == "공정 관리":
                         use_container_width=True,
                         key=f"{_kp}_re_dl{_ri}")
 
-    pe_tab_in, pe_tab_proc, pe_tab_board, pe_tab_closed, pe_tab_trace = st.tabs(
-        ["투입 등록", "공정 처리", "공정 현황판", "종결 지시서", "LOT 추적"])
+    # 세부 화면(사이드바 2단): 투입 등록 / 공정 처리 / 공정 현황판 / 종결 지시서 / LOT 추적
 
     # ════════ TAB 4: LOT 추적 (Phase C — 계보 조회) ════════
-    with pe_tab_trace:
+    if _sub == "trace":
         _tq = st.text_input("추적 검색", key="tr_q",
             placeholder="예: 20260812-003-B / W0996 / 20260812-003 / "
                         "MRG6-07 (품번)")
@@ -16698,7 +16942,7 @@ elif page == "공정 관리":
                 st.divider()
 
     # ════════ TAB 1: 투입 등록 ════════
-    with pe_tab_in:
+    if _sub == "in":
 
         # ── 잔여 있는 소재 식별 번호 목록 (RECEIPT − PROD_INPUT) ──
         try:
@@ -17147,7 +17391,7 @@ elif page == "공정 관리":
             st.caption("투입 등록 없음.")
 
     # ════════ TAB 2: 공정 처리 (Phase E-2) ════════
-    with pe_tab_proc:
+    if _sub == "proc":
 
         # 검사 판정 문서 즉시 다운로드 박스는 제거 (2026-08-28 사용자
         # 확정) — 라벨 출력은 처리 이력 > 라벨·의뢰서 재발행에서
@@ -18778,7 +19022,7 @@ elif page == "공정 관리":
     # 사용자 방침: 검사 판정 취소는 엄청난 예외 상황 전용. 배치 분기·합류나
     # 출고가 이미 진행된 경우는 여기서 막고 마스터 관리 › 품번별 맞추기(모든
     # 예외의 마스터)에서 정정한다. 취소 불가 사유는 화면에 그대로 보여 준다.
-    with pe_tab_closed:
+    if _sub == "closed":
         _cf1, _cf2 = st.columns([1, 2])
         _c_per = _cf1.selectbox(
             "기간", ["최근 1개월", "최근 3개월", "올해", "전체"],
@@ -18996,13 +19240,13 @@ elif page == "공정 관리":
                                        f"{_plan['out']:,.0f} EA · LOT {_plan['fin_lot']}"
                                        f" — {current_user_name()} · {_ic_reason.strip()}")
                             st.success(f"검사 판정 취소 — {_cw['wo_number']} 검사 "
-                                       "대기로 복귀. 공정 처리 탭에서 다시 판정하세요.")
+                                       "대기로 복귀. '공정 처리' 화면에서 다시 판정하세요.")
                             st.rerun()
                         except Exception as e:
                             st.error(f"취소 실패: {e} — 정합 점검에서 확인하세요.")
 
     # ════════ TAB 3: 공정 현황판 ════════
-    with pe_tab_board:
+    if _sub == "board":
         # ── 공정별 현황 — 지금 어느 공정에 얼마가 있는지 (배치 기반,
         # 2026-08-28 개편: 지시별 표와 중복되던 내용을 공정 축으로) ──
         st.markdown("##### 공정별 현황")
@@ -22491,6 +22735,11 @@ try:
     _busy_ph.empty()
 except Exception:
     pass
+# 입력 유지(§5-3): 이번 실행의 유지 대상 위젯 값을 그림자 키로 (그려지지 않은 위젯의
+# 키는 실행이 끝난 뒤 지워지므로, 다음 실행은 그림자에서 복원·기본값으로 쓴다)
+for _k in _NAV_KEEP:
+    if _k in st.session_state and st.session_state[_k] is not None:
+        st.session_state[f"_kv_{_k}"] = st.session_state[_k]
 _trunc = st.session_state.get("_fetch_truncated") or {}
 if current_user().get("role") == "admin":
     with st.sidebar:
