@@ -1536,9 +1536,9 @@ with st.sidebar:
         ("home", "홈", []),
         ("so", "수주 관리", [("input", "수주 입력"), ("list", "수주 목록"),
                             ("sched", "납품 스케줄")]),
-        ("po", "구매 관리", [("sug", "발주 제안"), ("new", "발주서 작성"),
-                            ("hist", "발주 이력"), ("rcv", "입고 처리"),
-                            ("rstat", "입고 현황"), ("pur", "매입 등록")]),
+        ("po", "구매 관리", [("new", "발주서 작성"), ("hist", "발주 이력"),
+                            ("rcv", "입고 처리"), ("rstat", "입고 현황"),
+                            ("pur", "매입 등록")]),   # D7: '발주 제안'은 발주서 작성의 모드
         ("plan", "생산 계획", [("wp", "주간 계획"), ("sb", "설비 스케줄"),
                               ("std", "공정 표준"), ("mc", "설비")]),
         ("proc", "공정 관리", [("in", "투입 등록"), ("proc", "공정 처리"),
@@ -1594,6 +1594,10 @@ with st.sidebar:
     if not _is_admin and st.session_state["nav_page"] in NAV_ADMIN_MAIN:
         # 작업자 계정이 관리자 메인 상태면 홈
         st.session_state["nav_page"] = "home"
+    # D7 보정: 옛 세부 '발주 제안'(sug) 상태가 남아 있으면 발주서 작성 + '부족 자재에서 담기' 모드
+    if (st.session_state.get("nav_sub") or {}).get("po") == "sug":
+        st.session_state["nav_sub"] = {**st.session_state["nav_sub"], "po": "new"}
+        st.session_state["po_mode"] = "pick"
     nav_page = st.session_state["nav_page"]
     nav_sub = nav_sub_of(nav_page)
     _sub = nav_sub
@@ -12791,6 +12795,7 @@ elif page == "구매 관리":
         if _bk:
             st.session_state["po_bucket"] = _bk
             st.session_state["_kv_po_bucket"] = _bk
+        st.session_state["po_mode"] = "edit"       # D7: 같은 화면의 '발주서 편집' 모드로
         nav_go("po", "new")
 
     # 2026-10-15 메뉴 정리: '자재 필요량'·'발주 자동 제안'(같은 계산, 보는 축만 다름) → '발주 제안' 하나,
@@ -12987,7 +12992,7 @@ elif page == "구매 관리":
     import time as _time
     _mr = {}                        # B2: 기본값 먼저 — 다른 세부 화면은 계산하지 않는다
     _mr_c = st.session_state.get("mr_cache")
-    if _sub in ("sug", "new"):      # 발주 제안·발주서 작성(14225~)만 쓴다
+    if _sub == "new":               # 발주서 작성만 쓴다(부족 자재 모드 = 목록, 편집 모드 = '발주 필요' 열)
         if (not _mr_c or _time.time() - _mr_c[0] > 300
                 or st.session_state.pop("mr_refresh", False)):
             _mr_c = (_time.time(), _mr_compute())
@@ -13036,8 +13041,33 @@ elif page == "구매 관리":
                            "관리자에게 알려 주세요.")
         return True, "발송 완료 — " + ", ".join(_sent_to)
 
-    # ════════════ TAB: 자재 필요량 (제품별) — 2026-09-11 생산 계획에서 이동 ════════════
-    if _sub == "sug":
+    # ── D7 (2026-10-19 §13-2): 발주서 작성 = 모드 2개, 선택한 모드 코드만 실행 ──
+    # 기본 모드: 담긴 품목(po_items)이 있으면 편집, 없으면 부족 자재. 이후 마지막 모드 기억(po_mode).
+    _PO_MODES = [("pick", "부족 자재에서 담기"), ("edit", "발주서 편집")]
+    _po_mode = None
+    if _sub == "new":
+        if st.session_state.get("po_mode") not in dict(_PO_MODES):
+            st.session_state["po_mode"] = ("edit" if (st.session_state.get("po_items")
+                                                   or st.session_state.get("po_prefill_items"))
+                                           else "pick")
+        _po_mode = st.session_state["po_mode"]
+
+        def _po_mode_change():
+            _v = st.session_state.get("po_mode_sc")
+            for _k, _l in _PO_MODES:
+                if _l == _v:
+                    st.session_state["po_mode"] = _k
+        # 위젯 생성 전에 세션 값으로 현재 모드를 맞춘다(default 인자 없음 → 경고 없음)
+        st.session_state["po_mode_sc"] = dict(_PO_MODES)[_po_mode]
+        if hasattr(st, "segmented_control"):
+            st.segmented_control("모드", [l for _, l in _PO_MODES], key="po_mode_sc",
+                                 on_change=_po_mode_change, label_visibility="collapsed")
+        else:
+            st.radio("모드", [l for _, l in _PO_MODES], key="po_mode_sc", horizontal=True,
+                     on_change=_po_mode_change, label_visibility="collapsed")
+
+    # ════════════ 발주서 작성 › 부족 자재에서 담기 (옛 '발주 제안', 2026-09-11 생산 계획에서 이동) ════════════
+    if _sub == "new" and _po_mode == "pick":
         _sug_top = st.container()          # 자재별 발주 제안(아래 블록이 채움)
         with st.expander("제품별 자재 필요량 — 제안의 근거", expanded=False):
             # 설명은 ? 툴팁으로만 (2026-09-11 사용자: 화면 텍스트 과다)
@@ -13231,7 +13261,7 @@ elif page == "구매 관리":
                                                                 or "9999"))],
                                 num_cols=("미납", "순생산"), strong_cols=("수주",))
 
-        # B1(2026-10-19): 아래 블록은 발주 제안 세부에서만 실행 — 다른 세부면 _sug_top 이 없다
+        # B1(2026-10-19): 아래 블록은 '부족 자재에서 담기' 모드에서만 실행 — 다른 모드·세부면 _sug_top 이 없다
     # ════════════ TAB: 발주 자동 제안 — 2026-09-11 생산 계획에서 이동 ════════════
         with _sug_top:
             if _mr.get("msg"):
@@ -13394,7 +13424,7 @@ elif page == "구매 관리":
                                 st.session_state.pop("po_prefill_note", None)
                                 _po_prefill_go(_tgt)
 
-                            st.button(f"발주서 작성 화면으로 (이 {len(mats)}건)",
+                            st.button(f"발주서 작성 (이 {len(mats)}건)",
                                       key=f"go_po_{supplier}",
                                       disabled=_target in ("(선택하세요)", "(미정)"),
                                       on_click=_go_po_cb)
@@ -13816,8 +13846,8 @@ elif page == "구매 관리":
                         format="localized", width="small")
                         for c in ("현재고", "누적 입고", "누적 투입")})
 
-    # ════════════ TAB 1: 발주서 작성 ════════════
-    if _sub == "new":
+    # ════════════ 발주서 작성 › 발주서 편집 ════════════
+    if _sub == "new" and _po_mode == "edit":
         # 2026-09-09 개편 (사용자: 저장·로딩이 잦고 불편, 완성은 PDF):
         # ① 거래처 → ② 품목 담기(검색 폼 → 체크해서 한 번에 담기) →
         # ③ 발주서 한 장 = st.form 하나(품목 표 편집 + 발주 정보 + 만들기)

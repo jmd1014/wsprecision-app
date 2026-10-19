@@ -95,7 +95,7 @@ def test_nav_keys_match_source_branches():
     heads.append((len(src), None))
     by_label = {}
     for (a, lbl), (b, _) in zip(heads, heads[1:]):
-        by_label[lbl] = set(re.findall(r'^    if _sub == "(\w+)":', src[a:b], re.M))
+        by_label[lbl] = set(re.findall(r'^    if _sub == "(\w+)"', src[a:b], re.M))
     for mk, (lbl, subs) in NAV_LABELS.items():
         if not subs:
             continue
@@ -158,7 +158,7 @@ def test_main_switch_keeps_last_sub_and_button_click_is_single_run(ship_db, monk
     assert _has_title(at, "ship", "fstock")
     # 메인 버튼 클릭 → 그 메인의 마지막 세부
     at.sidebar.button(key="nav_m_po").click(); at.run()
-    assert _has_title(at, "po", "sug")
+    assert _has_title(at, "po", "new")
 
 
 # ─── 4. 입력 유지 (_NAV_KEEP) — 경고 없음 ─────────────────────────────────────
@@ -202,6 +202,7 @@ def test_keep_ship_date_across_subscreens(ship_db, st_log):
 
 def test_keep_po_bucket_vendor_items_across_subscreens(hist_db, st_log):
     at = _at()
+    at.session_state["po_mode"] = "edit"
     goto(at, "po", "new")
     at.radio(key="po_bucket").set_value("소모성")
     at.run()
@@ -287,9 +288,10 @@ def test_ship_flow_register_open_slip_confirm(ship_db):
 
 # ─── 7. 자동 전환: 발주 제안 → 발주서 작성 / 복사해서 수정 ─────────────────────
 
-def test_po_suggestion_button_switches_to_new_po(hist_db):
+def test_po_suggestion_button_switches_to_edit_mode(hist_db, st_log):
     at = _at()
-    goto(at, "po", "sug")
+    goto(at, "po", "new")
+    assert at.session_state["po_mode"] == "pick", "담긴 품목이 없으면 기본 모드 = 부족 자재"
     vsel = [s for s in at.selectbox if str(s.key or "").startswith("po_vsel_")]
     if vsel:                                  # 거래처 미지정 묶음이면 먼저 고른다
         vsel[0].set_value("혜성철강(주)"); at.run()
@@ -299,12 +301,15 @@ def test_po_suggestion_button_switches_to_new_po(hist_db):
     assert not at.exception, [str(e.value) for e in at.exception]
     assert _has_title(at, "po", "new")
     assert at.session_state["nav_sub"]["po"] == "new"
+    assert at.session_state["po_mode"] == "edit", "같은 화면에서 모드 = 편집"
     assert at.session_state["po_prefill_vendor_name"] == "혜성철강(주)"
     n = len(at.session_state["po_prefill_items"])
     assert n >= 1 and len(at.session_state["po_items"]) == n
     assert at.radio(key="po_bucket").value == "소재"            # MAT_CARBON → 소재
     assert "혜성철강" in str(at.selectbox(key="po_vendor").value)
     assert any("미리 담긴 발주 데이터" in str(i.value) for i in at.info)
+    assert not [b for b in at.button if str(b.key or "").startswith("go_po_")], "편집 모드엔 제안 블록 없음"
+    assert not [m for m in st_log.msgs if "default value" in m], st_log.msgs
 
 
 def test_po_copy_switches_to_new_po(hist_db):
@@ -313,6 +318,7 @@ def test_po_copy_switches_to_new_po(hist_db):
     at.button(key="po_copy_7").click(); at.run()
     assert not at.exception, [str(e.value) for e in at.exception]
     assert _has_title(at, "po", "new")
+    assert at.session_state["po_mode"] == "edit"
     assert len(at.session_state["po_items"]) == 3
     assert "26-0901" in at.session_state["po_prefill_note"]
     assert "혜성철강" in str(at.selectbox(key="po_vendor").value)
@@ -339,10 +345,36 @@ def test_mr_compute_runs_only_where_used(hist_db, monkeypatch):
     calls.clear(); goto(at, "po", "rcv")
     assert not [t for t, _ in calls if t in ("sales_order_items", "bom", "material_stock")], \
         [t for t, _ in calls if t in ("sales_order_items", "bom", "material_stock")]
-    calls.clear(); goto(at, "po", "sug")
+    calls.clear(); goto(at, "po", "new")              # 첫 진입(부족 자재 모드) 1회
+    assert at.session_state["po_mode"] == "pick"
     assert _mr_calls() == 1
-    calls.clear(); goto(at, "po", "new")              # 5분 캐시 안 → 추가 0회
+    at.session_state["po_mode"] = "edit"              # 5분 안 모드 전환 → 추가 0회
+    calls.clear(); at.run()
+    assert not at.exception, [str(e.value) for e in at.exception]
     assert _mr_calls() == 0
+    # 편집 모드 rerun 에는 B1 블록(부족 자재 목록·거래처별 담기)이 없다 — purchase_orders 등은 편집
+    # 화면 자체(거래처 최근 단가·발주 필요 열)가 조회하므로 표 이름이 아니라 블록 요소로 판정(§10 C8)
+    calls.clear(); at.run()
+    assert not [b for b in at.button if str(b.key or "").startswith("go_po_")]
+    assert not [e for e in at.expander if "자재 부족" in str(e.label)]
+    assert _mr_calls() == 0
+
+
+def test_po_mode_default_and_legacy_sug_state(hist_db):
+    """기본 모드: 담긴 품목이 있으면 편집. 옛 nav_sub['po']='sug' 는 발주서 작성 + 부족 자재 모드."""
+    at = _at()
+    at.session_state["po_items"] = [{"item_name": "절삭유", "qty": 1, "unit_price": 0, "_uid": "x1"}]
+    goto(at, "po", "new")
+    assert at.session_state["po_mode"] == "edit"
+    assert at.selectbox(key="po_vendor") is not None
+    at2 = _at()
+    at2.session_state["nav_page"] = "po"
+    at2.session_state["nav_sub"] = {"po": "sug"}
+    at2.run()
+    assert not at2.exception, [str(e.value) for e in at2.exception]
+    assert _has_title(at2, "po", "new")
+    assert at2.session_state["nav_sub"]["po"] == "new" and at2.session_state["po_mode"] == "pick"
+    assert [b for b in at2.button if str(b.key or "").startswith("go_po_")], "부족 자재 모드 = 제안 블록"
 
 
 # ─── 9. 계정: 작업자 메뉴 / 로그인 전 / 로그아웃 뒤 ─────────────────────────────

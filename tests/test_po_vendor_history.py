@@ -129,6 +129,7 @@ def _open_po_page():
                               "service_role_key": "mock_service"}
     at.secrets["auth"] = {"disabled": True}
     at.run()
+    at.session_state["po_mode"] = "edit"        # D7: 발주서 편집 모드(기본은 담긴 품목 없으면 부족 자재)
     goto(at, "po", "new")
     assert not at.exception, [str(e.value) for e in at.exception]
     return at

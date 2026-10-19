@@ -167,6 +167,7 @@ def test_old_format_history_shows_pending_orders(hist_db):
                               "anon_key": "a", "service_role_key": "s"}
     at.secrets["auth"] = {"disabled": True}
     at.run()
+    at.session_state["po_mode"] = "edit"        # D7: 발주서 편집 모드
     goto(at, "po", "new")
     assert not at.exception, [str(e.value) for e in at.exception]
     _search_btn(at).click().run()
