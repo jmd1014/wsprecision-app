@@ -429,3 +429,21 @@ def test_sub_labels_keep_tab_order(ship_db):
     assert nav_sub_labels(at, "ship") == ["출고 등록", "출고 전표", "출고 현황", "완성 재고"]
     goto(at, "plan")
     assert nav_sub_labels(at, "plan") == ["주간 계획", "설비 스케줄", "공정 표준", "설비"]
+
+
+# ─── Codex 리뷰 반영 (2026-10-19): M1 sch_view ──
+
+def test_sch_view_kept_and_auto_switch_overrides(sched_db, st_log):
+    """M1: 납품 스케줄 보기(sch_view)는 유지 대상 — 다른 세부를 다녀와도 유지, sch_view_next 자동 전환이 우선."""
+    at = _at()
+    goto(at, "so", "sched")
+    assert at.session_state["sch_view"] == "회차 간트"
+    at.session_state["sch_view"] = "납기 입력"; at.run()
+    goto(at, "so", "list"); goto(at, "so", "sched")
+    assert at.session_state["sch_view"] == "납기 입력", "세부 화면을 다녀와도 보기 유지"
+    # 자동 전환(sch_view_next)은 그림자보다 우선
+    at.session_state["_kv_sch_view"] = "회차 간트"
+    at.session_state["sch_view_next"] = "납기 입력"; at.run()
+    assert at.session_state["sch_view"] == "납기 입력"
+    goto(at, "so", "list"); goto(at, "so", "sched")
+    assert at.session_state["sch_view"] == "납기 입력"

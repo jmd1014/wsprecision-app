@@ -1504,7 +1504,7 @@ _NAV_KEEP_RESTORE = (
 _NAV_KEEP_DEFAULT = (
     "m_so_date", "m_due", "so_period", "so_status_pills", "gantt_cust", "gantt_hide_done",
     "sch_open_only", "bk_date", "bk_ship_date", "bk_late", "dstat_range", "sb_grp",
-    "po_vendor", "po_h_period", "uw_pick", "uv_pick",
+    "po_vendor", "po_h_period", "uw_pick", "uv_pick", "sch_view",
 )
 _NAV_KEEP = _NAV_KEEP_RESTORE + _NAV_KEEP_DEFAULT
 
@@ -7623,13 +7623,17 @@ elif page == "수주 관리":
         # (생성 후 session_state 수정은 StreamlitAPIException)
         _nx = st.session_state.pop("sch_view_next", None)
         if _nx in _VIEWS:
-            st.session_state["sch_view"] = _nx
+            # 자동 전환은 유지값(그림자)보다 우선 — 그림자를 갱신하고 위젯 키를 지워 default 가
+            # 적용되게 한다(세션 API 로 넣으면 default 와 겹쳐 경고, Codex M1 / §5-3)
+            st.session_state["_kv_sch_view"] = _nx
+            st.session_state.pop("sch_view", None)
         if hasattr(st, "segmented_control"):
             _sv = st.segmented_control(
-                "보기", _VIEWS, default="회차 간트", key="sch_view",
-                label_visibility="collapsed") or "회차 간트"
+                "보기", _VIEWS, default=keep_default("sch_view", "회차 간트"),
+                key="sch_view", label_visibility="collapsed") or "회차 간트"
         else:
-            _sv = st.radio("보기", _VIEWS, horizontal=True, key="sch_view",
+            _sv = st.radio("보기", _VIEWS, index=keep_index("sch_view", _VIEWS, 0),
+                           horizontal=True, key="sch_view",
                            label_visibility="collapsed")
 
         if _sv == "회차 간트":
