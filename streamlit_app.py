@@ -1534,9 +1534,9 @@ with st.sidebar:
     # 세부 화면 본문은 `if _sub == "<세부 키>":` 로 분기한다(관리자 영역은 지금처럼 탭).
     NAV = [
         ("home", "홈", []),
-        ("so", "수주 관리", [("input", "새 수주 입력"), ("list", "수주 목록"),
+        ("so", "수주 관리", [("input", "수주 입력"), ("list", "수주 목록"),
                             ("sched", "납품 스케줄")]),
-        ("po", "구매 관리", [("sug", "발주 제안"), ("new", "새 발주서 작성"),
+        ("po", "구매 관리", [("sug", "발주 제안"), ("new", "발주서 작성"),
                             ("hist", "발주 이력"), ("rcv", "입고 처리"),
                             ("rstat", "입고 현황"), ("pur", "매입 등록")]),
         ("plan", "생산 계획", [("wp", "주간 계획"), ("sb", "설비 스케줄"),
@@ -6381,9 +6381,9 @@ elif page == "수주 관리":
                                   tag_side="new",
                                   tag_kind=("CUSTOMER_MAT" if _kind == "사급 소재"
                                             else "PROJECT"))
-    # 세부 화면(사이드바 2단): 새 수주 입력 / 수주 목록 / 납품 스케줄 — _sub 로 분기
+    # 세부 화면(사이드바 2단): 수주 입력 / 수주 목록 / 납품 스케줄 — _sub 로 분기
 
-    # ════════ TAB 1: 새 수주 입력 ════════
+    # ════════ TAB 1: 수주 입력 ════════
     if _sub == "input":
         mode = st.radio("입력 방식", ["파일 업로드 자동 파싱", "수기 입력"],
                         horizontal=True, key="so_mode")
@@ -7238,7 +7238,7 @@ elif page == "수주 관리":
                             st.success(f"상태 변경: {status_ko(new_st)}"); st.rerun()
             else:
                 st.info("조건에 맞는 수주가 없습니다 — 기간·상태 필터를 '전체'로 "
-                        "바꾸거나, '새 수주 입력' 화면에서 업로드하세요.")
+                        "바꾸거나, '수주 입력' 화면에서 업로드하세요.")
 
         # ── 뷰 2: 품목별 ──
         elif view_mode == "품목별":
@@ -12773,7 +12773,7 @@ elif page == "구매 관리":
                            "MAT_CONSUMABLES": "소모성", "TOOL": "공구"}
 
     def _po_bucket_of(vendor_name):
-        """거래처의 vendor_group → 새 발주서 작성의 발주 그룹(소재/소모성/공구). 모르면 None."""
+        """거래처의 vendor_group → 발주서 작성의 발주 그룹(소재/소모성/공구). 모르면 None."""
         try:
             _v = fetch("vendors", "vendor_group",
                        f"name=eq.{_fq(vendor_name)}&in_use=eq.true", limit=1)
@@ -12782,7 +12782,7 @@ elif page == "구매 관리":
         return _PO_BUCKET_OF_GROUP.get((_v[0].get("vendor_group") if _v else None))
 
     def _po_prefill_go(vendor_name):
-        """미리 담긴 발주 데이터를 새 발주서 작성으로 — 거래처 선택은 prefill 이름으로
+        """미리 담긴 발주 데이터를 발주서 작성으로 — 거래처 선택은 prefill 이름으로
         index 를 정하므로 남아 있던 선택값(po_vendor·그림자)은 지우고, 발주 그룹은 거래처의
         그룹에 맞춘다(QA M-4: 그려진 위젯 키는 콜백에서만 바꾼다)."""
         st.session_state.pop("po_vendor", None)
@@ -12795,7 +12795,7 @@ elif page == "구매 관리":
 
     # 2026-10-15 메뉴 정리: '자재 필요량'·'발주 자동 제안'(같은 계산, 보는 축만 다름) → '발주 제안' 하나,
     # '매입 등록' 신설(원가 확인의 동기화·수기 입력·확인 대기 이동)
-    # 세부 화면(사이드바 2단): 발주 제안 / 새 발주서 작성 / 발주 이력 / 입고 처리 / 입고 현황 / 매입 등록
+    # 세부 화면(사이드바 2단): 발주 제안 / 발주서 작성 / 발주 이력 / 입고 처리 / 입고 현황 / 매입 등록
 
     # ══════════ 자재 필요량 계산 (2026-09-11 생산 계획에서 이동) ══════════
     # 미납 수주 × BOM → 완성 재고·소재 재고·미입고 발주를 뺀 발주 필요량.
@@ -12987,7 +12987,7 @@ elif page == "구매 관리":
     import time as _time
     _mr = {}                        # B2: 기본값 먼저 — 다른 세부 화면은 계산하지 않는다
     _mr_c = st.session_state.get("mr_cache")
-    if _sub in ("sug", "new"):      # 발주 제안·새 발주서 작성(14225~)만 쓴다
+    if _sub in ("sug", "new"):      # 발주 제안·발주서 작성(14225~)만 쓴다
         if (not _mr_c or _time.time() - _mr_c[0] > 300
                 or st.session_state.pop("mr_refresh", False)):
             _mr_c = (_time.time(), _mr_compute())
@@ -13377,7 +13377,7 @@ elif page == "구매 관리":
 
                             def _go_po_cb(_sup=supplier, _mats=mats,
                                           _src=", ".join(src_so_numbers[:10])):
-                                # 콜백(실행 전): 미리 채울 데이터 → 새 발주서 작성으로 전환
+                                # 콜백(실행 전): 미리 채울 데이터 → 발주서 작성으로 전환
                                 # (안내는 그 화면의 '미리 담긴 발주 데이터' info 가 대신)
                                 _tgt = (st.session_state.get(f"po_vsel_{_sup}")
                                         if _sup == "(미정)" else _sup)
@@ -13816,7 +13816,7 @@ elif page == "구매 관리":
                         format="localized", width="small")
                         for c in ("현재고", "누적 입고", "누적 투입")})
 
-    # ════════════ TAB 1: 새 발주서 작성 ════════════
+    # ════════════ TAB 1: 발주서 작성 ════════════
     if _sub == "new":
         # 2026-09-09 개편 (사용자: 저장·로딩이 잦고 불편, 완성은 PDF):
         # ① 거래처 → ② 품목 담기(검색 폼 → 체크해서 한 번에 담기) →
@@ -15122,7 +15122,7 @@ elif page == "구매 관리":
                             use_container_width=True,
                             key=f"po_re_pdf_{po['po_id']}")
                         def _po_copy_cb(_po=po, _items=items):
-                            # 콜백(실행 전): 품목을 담고 새 발주서 작성으로 전환
+                            # 콜백(실행 전): 품목을 담고 발주서 작성으로 전환
                             st.session_state["po_prefill_vendor_name"] = _po["_vname"]
                             st.session_state["po_prefill_items"] = [{
                                 "product_id": i.get("product_id"),
@@ -15145,7 +15145,7 @@ elif page == "구매 관리":
                                 st.session_state.get("po_tbl_nonce", 0) + 1
                             _po_prefill_go(_po["_vname"])
 
-                        st.button("복사해서 수정 (새 발주서 작성)",
+                        st.button("복사해서 수정 (발주서 작성)",
                                   use_container_width=True,
                                   key=f"po_copy_{po['po_id']}",
                                   help="이 발주의 품목을 새 발주서 표에 담고 그 화면으로 "
@@ -15296,7 +15296,7 @@ elif page == "구매 관리":
 
         if not _rw:
             st.success("입고 대기 라인 없음 — 발주된 소재가 모두 "
-                       "입고됐습니다. 새 발주는 '새 발주서 작성' 화면에서.")
+                       "입고됐습니다. 새 발주는 '발주서 작성' 화면에서.")
         else:
             # 발주 헤더 (거래처·입고 예정일)
             _po_h, _po_v = {}, {}

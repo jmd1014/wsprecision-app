@@ -285,7 +285,7 @@ def test_ship_flow_register_open_slip_confirm(ship_db):
     assert new["status"] == "CONFIRMED" and SHIPMENTS[0]["status"] == "DRAFT"
 
 
-# ─── 7. 자동 전환: 발주 제안 → 새 발주서 작성 / 복사해서 수정 ─────────────────────
+# ─── 7. 자동 전환: 발주 제안 → 발주서 작성 / 복사해서 수정 ─────────────────────
 
 def test_po_suggestion_button_switches_to_new_po(hist_db):
     at = _at()

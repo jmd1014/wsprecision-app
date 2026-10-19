@@ -158,7 +158,7 @@ def test_po_prefill_flow(mocked_db):
     ]
     at.session_state["po_prefill_source_so"] = "SO-2026-001"
 
-    _goto(at, "구매 관리", "새 발주서 작성")
+    _goto(at, "구매 관리", "발주서 작성")
     assert not at.exception, (
         f"구매 관리 prefill 렌더 예외: "
         f"{[str(e.value) for e in at.exception]}"
