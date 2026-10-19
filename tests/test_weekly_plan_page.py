@@ -9,6 +9,7 @@ import sys
 from datetime import date, timedelta
 
 import pytest
+from tests.conftest import goto, nav_sub_labels
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
@@ -92,7 +93,7 @@ def plan_db(monkeypatch):
     return db
 
 
-def _open(plan_db):
+def _open(plan_db, sub="wp"):
     import streamlit as st
     from streamlit.testing.v1 import AppTest
     for _c in (st.cache_data, st.cache_resource):
@@ -105,9 +106,7 @@ def _open(plan_db):
                               "anon_key": "a", "service_role_key": "s"}
     at.secrets["auth"] = {"disabled": True}
     at.run()
-    at.sidebar.radio[0].set_value("생산 계획")
-    at.sidebar.radio[1].set_value(None)
-    at.run()
+    goto(at, "plan", sub)
     assert not at.exception, [str(e.value) for e in at.exception]
     return at
 
@@ -124,7 +123,7 @@ def _texts(at):
 
 def test_tabs_and_summary_render(plan_db):
     at = _open(plan_db)
-    labels = [t.label for t in at.tabs]
+    labels = nav_sub_labels(at, "plan")
     assert labels[:4] == ["주간 계획", "설비 스케줄", "공정 표준", "설비"]
     txt = _texts(at)
     assert "CNC" in txt and "MCT" in txt
@@ -145,7 +144,7 @@ def test_board_survives_stale_modules(plan_db, monkeypatch):
         return real(machines, days, sched, logs, today)
     monkeypatch.setattr(sch, "build_board", old_build_board)
     monkeypatch.delattr(wp, "machine_shift_hours")
-    at = _open(plan_db)
+    at = _open(plan_db, "sb")
     assert not at.exception, [str(e.value) for e in at.exception]
     assert sum(1 for w in at.warning if "구버전 모듈" in w.value) == 1
 
@@ -227,12 +226,12 @@ def test_add_product_expands_standard_ops(plan_db, monkeypatch):
 
 
 def test_machine_add_rejects_bad_id_and_group(plan_db):
-    at = _open(plan_db)
+    at = _open(plan_db, "mc")
     ti = [t for t in at.text_input if t.label == "설비 ID"][0]
     ti.set_value("28")
     next(b for b in at.button if b.label == "설비 등록").click().run()
     assert any("영문 + 번호" in e.value for e in at.error) and CALLS["insert"] == []
-    at2 = _open(plan_db)
+    at2 = _open(plan_db, "mc")
     [t for t in at2.text_input if t.label == "설비 ID"][0].set_value("CNC30")
     [t for t in at2.text_input if t.label == "장비군"][0].set_value("MCT-5")
     next(b for b in at2.button if b.label == "설비 등록").click().run()
@@ -241,13 +240,13 @@ def test_machine_add_rejects_bad_id_and_group(plan_db):
 
 
 def test_machine_editor_includes_sat_active_column(plan_db):
-    at = _open(plan_db)
+    at = _open(plan_db, "mc")
     cols = [list(f.value.columns) for f in at.dataframe]
     assert any("토·공휴일 가동" in c for c in cols)
 
 
 def test_machine_add_normalizes_and_rejects_duplicate(plan_db):
-    at = _open(plan_db)
+    at = _open(plan_db, "mc")
     ti = [t for t in at.text_input if t.label == "설비 ID"][0]
     ti.set_value("cnc 7")
     btn = next(b for b in at.button if b.label == "설비 등록")
@@ -257,7 +256,7 @@ def test_machine_add_normalizes_and_rejects_duplicate(plan_db):
     rec = CALLS["insert"][-1][1][0]
     assert rec["machine_id"] == "CNC07" and rec["group_code"] == "CNC" and rec["sat_active"] is True
     # 중복
-    at2 = _open(plan_db)
+    at2 = _open(plan_db, "mc")
     ti = [t for t in at2.text_input if t.label == "설비 ID"][0]
     ti.set_value("CNC01")
     next(b for b in at2.button if b.label == "설비 등록").click().run()
@@ -265,7 +264,7 @@ def test_machine_add_normalizes_and_rejects_duplicate(plan_db):
 
 
 def test_shift_profile_save_without_change_is_noop(plan_db):
-    at = _open(plan_db)
+    at = _open(plan_db, "mc")
     next(b for b in at.button if b.label == "근무 체계 저장").click().run()
     assert not at.exception
     assert any("변경 없음" in s.value for s in at.success)
@@ -279,7 +278,7 @@ def test_shift_profile_save_without_change_is_noop(plan_db):
 
 
 def test_calendar_rejects_sunday_holiday(plan_db):
-    at = _open(plan_db)
+    at = _open(plan_db, "mc")
     sunday = WEEK + timedelta(days=6)
     at.date_input(key="cal_date_in").set_value(sunday)
     next(b for b in at.button

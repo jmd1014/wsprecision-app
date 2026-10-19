@@ -8,6 +8,7 @@
 import sys, os
 import importlib.util
 import pytest
+from tests.conftest import goto
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
@@ -85,8 +86,7 @@ def _open_master():
                               "service_role_key": "mock_service"}
     at.secrets["auth"] = {"disabled": True}
     at.run()
-    at.sidebar.radio[1].set_value("마스터 관리")
-    at.run()
+    goto(at, "master")
     assert not at.exception, [str(e.value) for e in at.exception]
     return at
 

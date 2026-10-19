@@ -6,6 +6,7 @@ import importlib.util
 from datetime import date, timedelta
 
 import pytest
+from tests.conftest import goto
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
@@ -181,17 +182,15 @@ def ship_db(monkeypatch):
     return db
 
 
-def _open_shipping(ship_db):
+def _open_shipping(ship_db, sub="deliver"):
+    """출고 관리 › sub 화면을 연다 — 기본 출고 등록, 전표 작업은 "slip"."""
     from streamlit.testing.v1 import AppTest
     at = AppTest.from_file(APP_FILE, default_timeout=60)
     at.secrets["supabase"] = {"url": "https://mock.local",
                               "anon_key": "a", "service_role_key": "s"}
     at.secrets["auth"] = {"disabled": True}
     at.run()
-    at.sidebar.radio[0].set_value("출고 관리")
-    at.sidebar.radio[1].set_value(None)
-    at.run()
-    assert not at.exception, [str(e.value) for e in at.exception]
+    goto(at, "ship", sub)
     return at
 
 
@@ -227,7 +226,7 @@ def test_confirm_processes_lines_rounds_fifo_and_status(ship_db):
     """확정 시 수주 반영·회차 날짜 충당·LOT FIFO·전표 CONFIRMED."""
     at = _open_shipping(ship_db)
     _register(at)
-    at2 = _open_shipping(ship_db)      # 전표 탭에서 확정
+    at2 = _open_shipping(ship_db, "slip")      # 전표 탭에서 확정
     at2.button(key="cf_go").click()
     at2.run()
     assert not at2.exception, [str(e.value) for e in at2.exception]
@@ -259,10 +258,10 @@ def test_confirmed_shipment_offers_reprints(ship_db):
     """확정 전표에서 출고 리스트·거래명세서 재발행 버튼 제공."""
     at = _open_shipping(ship_db)
     _register(at)
-    at2 = _open_shipping(ship_db)
+    at2 = _open_shipping(ship_db, "slip")
     at2.button(key="cf_go").click()
     at2.run()
-    at3 = _open_shipping(ship_db)
+    at3 = _open_shipping(ship_db, "slip")
     next(r for r in at3.radio
          if r.key == "cf_filter").set_value("확정")
     at3.run()
@@ -301,7 +300,7 @@ def test_cancelled_draft_releases_items(ship_db):
     """전표를 취소하면 라인이 다시 담을 수 있게 풀린다."""
     at = _open_shipping(ship_db)
     _register(at)
-    at2 = _open_shipping(ship_db)
+    at2 = _open_shipping(ship_db, "slip")
     at2.button(key="cf_cancel").click()
     at2.run()
     # 2단계 확인 (confirm_gate) — 실행 확정까지 눌러야 반영
@@ -322,8 +321,7 @@ def _open_sales_report(ship_db):
                               "anon_key": "a", "service_role_key": "s"}
     at.secrets["auth"] = {"disabled": True}
     at.run()
-    at.sidebar.radio[1].set_value("영업 보고")
-    at.run()
+    goto(at, "sales")
     assert not at.exception, [str(e.value) for e in at.exception]
     return at
 
@@ -345,7 +343,7 @@ def test_sales_report_daily_monthly_reissue_after_confirm(ship_db):
     """확정 후 일일 결산·월 마감·재발행이 모두 제공된다."""
     at = _open_shipping(ship_db)
     _register(at)
-    at2 = _open_shipping(ship_db)
+    at2 = _open_shipping(ship_db, "slip")
     at2.button(key="cf_go").click()
     at2.run()
     at3 = _open_sales_report(ship_db)
@@ -367,7 +365,7 @@ def test_confirm_stock_guard(ship_db):
     try:
         at = _open_shipping(ship_db)
         _register(at)
-        at2 = _open_shipping(ship_db)
+        at2 = _open_shipping(ship_db, "slip")
         assert any("완성 재고 부족" in e.value for e in at2.error)
         assert at2.button(key="cf_go").disabled
     finally:
@@ -414,7 +412,7 @@ def test_empty_draft_can_be_cancelled(ship_db):
     SHIPMENTS.append({"shipment_id": 1, "ship_no": f"SH-{TODAY.replace('-', '')}-01",
                       "ship_date": TODAY, "status": "DRAFT",
                       "created_by": "테스트"})
-    at = _open_shipping(ship_db)
+    at = _open_shipping(ship_db, "slip")
     assert any("품목이 없습니다" in (i.value or "") for i in at.info)
     at.button(key="cf_cancel_empty").click()
     at.run()

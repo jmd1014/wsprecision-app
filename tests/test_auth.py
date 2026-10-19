@@ -10,6 +10,7 @@ import sys
 import importlib.util
 
 import pytest
+from tests.conftest import goto, nav_menu_labels
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
@@ -143,7 +144,7 @@ def test_gate_blocks_without_login(auth_db):
     at.run()
     assert not at.exception, [str(e.value) for e in at.exception]
     # st.stop() — 사이드바 메뉴가 렌더되지 않아야 한다
-    assert not at.sidebar.radio
+    assert nav_menu_labels(at) == ([], [])
     assert any("로그인" in (m.value or "") for m in at.markdown)
 
 
@@ -153,7 +154,7 @@ def test_wrong_password_rejected(auth_db):
     at.run()
     _login(at, "김민수", "틀린비번")
     assert any("맞지 않습니다" in e.value for e in at.error)
-    assert not at.sidebar.radio
+    assert nav_menu_labels(at) == ([], [])
 
 
 @pytestmark_app
@@ -162,7 +163,8 @@ def test_admin_login_shows_all_menus(auth_db):
     at.run()
     _login(at, "김민수", "pw-admin")
     assert not at.exception, [str(e.value) for e in at.exception]
-    assert len(at.sidebar.radio) == 2          # 업무 + 관리자
+    _flow, _admin = nav_menu_labels(at)
+    assert _flow and _admin                    # 업무 + 관리자
     assert at.session_state["auth_user"]["role"] == "admin"
     labels = {b.label for b in at.sidebar.button}
     assert "DB 상태 확인" in labels and "진단 (secrets 점검)" in labels
@@ -174,7 +176,8 @@ def test_worker_login_hides_admin_menu(auth_db):
     at.run()
     _login(at, "현장", "pw-field")
     assert not at.exception, [str(e.value) for e in at.exception]
-    assert len(at.sidebar.radio) == 1          # 업무 진행만
+    _flow, _admin = nav_menu_labels(at)
+    assert _flow and not _admin                # 업무 진행만
     assert at.session_state["auth_user"]["role"] == "worker"
     # 시스템 진단 버튼(DB 상태 확인·secrets 점검)은 관리자만 — 진단 결과에
     # 연결 정보가 들어 있어 작업자에게 보이면 안 된다 (2026-10-06)
@@ -237,8 +240,7 @@ def test_account_tab_creates_user(auth_db):
     at = _make()
     at.run()
     _login(at, "김민수", "pw-admin")
-    at.sidebar.radio[1].set_value("마스터 관리")
-    at.run()
+    goto(at, "master")
     assert not at.exception, [str(e.value) for e in at.exception]
     # 계정 관리 폼: 아이디 / 이름 / 초기 비밀번호
     acct_inputs = [t for t in at.text_input if t.key is None]
@@ -264,8 +266,7 @@ def test_account_tab_rejects_duplicate_id(auth_db):
     at = _make()
     at.run()
     _login(at, "김민수", "pw-admin")
-    at.sidebar.radio[1].set_value("마스터 관리")
-    at.run()
+    goto(at, "master")
     acct_inputs = [t for t in at.text_input if t.key is None]
     next(t for t in acct_inputs
          if "아이디" in (t.label or "")).set_value("현장")
@@ -283,8 +284,7 @@ def test_account_tab_protects_last_admin(auth_db):
     at = _make()
     at.run()
     _login(at, "김민수", "pw-admin")
-    at.sidebar.radio[1].set_value("마스터 관리")
-    at.run()
+    goto(at, "master")
     sel = next(s for s in at.selectbox if s.key == "acct_pick")
     sel.set_value("김민수")
     at.run()
@@ -329,8 +329,7 @@ def test_created_by_uses_logged_in_name(auth_db):
     at2 = _make()
     at2.run()
     _login(at2, "김민수", "pw-admin")
-    at2.sidebar.radio[1].set_value("마스터 관리")
-    at2.run()
+    goto(at2, "master")
     assert not at2.exception, [str(e.value) for e in at2.exception]
     _rq = next(n for n in at2.number_input if n.key == "ft_rqty")
     _rq.set_value(100.0)

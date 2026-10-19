@@ -12,6 +12,7 @@ import importlib.util
 from urllib.parse import unquote
 
 import pytest
+from tests.conftest import goto
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
@@ -82,8 +83,7 @@ def _open_bom(q="80092"):
                               "anon_key": "a", "service_role_key": "s"}
     at.secrets["auth"] = {"disabled": True}
     at.run()
-    at.sidebar.radio[1].set_value("마스터 관리")
-    at.run()
+    goto(at, "master")
     [t for t in at.text_input if t.key == "bom_pq"][0].set_value(q)
     at.run()
     assert not at.exception, [str(e.value) for e in at.exception]

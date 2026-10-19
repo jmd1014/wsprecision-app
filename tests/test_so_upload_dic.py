@@ -16,6 +16,7 @@ import importlib.util
 from urllib.parse import unquote
 
 import pytest
+from tests.conftest import goto
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 sys.path.insert(0, os.path.dirname(__file__))
@@ -126,9 +127,7 @@ def test_dic_upload_two_customers_append_and_price(dic_db):
                               "anon_key": "a", "service_role_key": "s"}
     at.secrets["auth"] = {"disabled": True}
     at.run()
-    at.sidebar.radio[0].set_value("수주 관리")
-    at.sidebar.radio[1].set_value(None)
-    at.run()
+    goto(at, "so", "input")
     assert not at.exception, [str(e.value) for e in at.exception]
 
     up = at.get("file_uploader")

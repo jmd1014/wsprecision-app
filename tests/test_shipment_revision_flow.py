@@ -9,6 +9,7 @@ import sys
 import importlib.util
 
 import pytest
+from tests.conftest import goto
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
@@ -191,20 +192,15 @@ def rev_db(monkeypatch):
     return db
 
 
-def _open(page="출고 관리"):
+def _open(page="출고 관리", sub="출고 전표"):
+    """기본 출고 관리 › 출고 전표. 관리자 메뉴(영업 보고)는 sub 무시."""
     from streamlit.testing.v1 import AppTest
     at = AppTest.from_file(APP_FILE, default_timeout=60)
     at.secrets["supabase"] = {"url": "https://mock.local",
                               "anon_key": "a", "service_role_key": "s"}
     at.secrets["auth"] = {"disabled": True}
     at.run()
-    if page == "영업 보고":              # 관리자 메뉴 (두 번째 radio)
-        at.sidebar.radio[1].set_value(page)
-    else:
-        at.sidebar.radio[0].set_value(page)
-        at.sidebar.radio[1].set_value(None)
-    at.run()
-    assert not at.exception, [str(e.value) for e in at.exception]
+    goto(at, page, sub if page == "출고 관리" else None)
     return at
 
 

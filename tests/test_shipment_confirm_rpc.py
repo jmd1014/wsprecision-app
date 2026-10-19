@@ -35,7 +35,7 @@ def _confirm_with_rpc(ship_db, monkeypatch, rpc_impl):
     _register(at)
     UPDATED.clear(); INSERTED.clear()
     monkeypatch.setattr(ship_db, "rpc", rpc_impl)
-    at2 = _open_shipping(ship_db)
+    at2 = _open_shipping(ship_db, "slip")
     at2.button(key="cf_go").click()
     at2.run()
     assert not at2.exception, [str(e.value) for e in at2.exception]
@@ -172,7 +172,7 @@ def test_over_pending_is_blocked_before_rpc(ship_db, monkeypatch):
                     r["received_qty"], r["pending_qty"] = 1900, 100
         return rows
     monkeypatch.setattr(ship_db, "fetch", _fetch)
-    at2 = _open_shipping(ship_db)
+    at2 = _open_shipping(ship_db, "slip")
     at2.button(key="cf_go").click()
     at2.run()
     assert not at2.exception, [str(e.value) for e in at2.exception]
@@ -258,7 +258,7 @@ def test_schedule_fetch_failure_aborts_before_rpc(ship_db, monkeypatch):
             raise RuntimeError("mock: schedule fetch failed")
         return _base_fetch(table, select, filter_query, limit)
     monkeypatch.setattr(ship_db, "fetch", _fetch)
-    at2 = _open_shipping(ship_db)
+    at2 = _open_shipping(ship_db, "slip")
     at2.button(key="cf_go").click()
     at2.run()
     assert not at2.exception, [str(e.value) for e in at2.exception]
@@ -294,7 +294,7 @@ def test_double_click_calls_rpc_once(ship_db, monkeypatch):
     at = _open_shipping(ship_db)
     _register(at)
     monkeypatch.setattr(ship_db, "rpc", _rpc)
-    at2 = _open_shipping(ship_db)
+    at2 = _open_shipping(ship_db, "slip")
     at2.button(key="cf_go").click()
     at2.run()
     assert not at2.exception
@@ -360,7 +360,7 @@ def test_unlinked_line_is_skipped_and_reported(ship_db, monkeypatch):
                        "so_number": None, "qty": 50, "unit": "EA"})
     UPDATED.clear(); INSERTED.clear()
     monkeypatch.setattr(ship_db, "rpc", _rpc)
-    at2 = _open_shipping(ship_db)
+    at2 = _open_shipping(ship_db, "slip")
     at2.button(key="cf_go").click()
     at2.run()
     assert not at2.exception, [str(e.value) for e in at2.exception]

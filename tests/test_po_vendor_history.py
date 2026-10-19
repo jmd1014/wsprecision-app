@@ -10,6 +10,7 @@ DB 는 mock — 실제 Supabase 접근 없음.
 import sys, os
 import importlib.util
 import pytest
+from tests.conftest import goto
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
@@ -128,9 +129,7 @@ def _open_po_page():
                               "service_role_key": "mock_service"}
     at.secrets["auth"] = {"disabled": True}
     at.run()
-    at.sidebar.radio[0].set_value("구매 관리")
-    at.sidebar.radio[1].set_value(None)
-    at.run()
+    goto(at, "po", "new")
     assert not at.exception, [str(e.value) for e in at.exception]
     return at
 

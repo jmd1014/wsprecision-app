@@ -5,6 +5,7 @@ import sys
 import importlib.util
 
 import pytest
+from tests.conftest import goto
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
@@ -186,9 +187,7 @@ def test_routing_editor_tab(routing_db):
     """마스터 관리 > BOM 편집 — 확정 대기 경고 + 제품 리스트 →
     공정 순서 편집기 + 저장 버튼 (2026-08-20 한 화면 통합)."""
     at = _boot(routing_db)
-    at.sidebar.radio[0].set_value(None)
-    at.sidebar.radio[1].set_value("마스터 관리")
-    at.run()
+    goto(at, "master")
     assert not at.exception, [str(e.value) for e in at.exception]
 
     # 확정 대기 경고에 시드 제품 표기
@@ -214,9 +213,7 @@ def test_process_stepper_follows_routing(routing_db):
     """공정 처리 — 스테퍼가 라우팅 순서를 따르고, 생산 전 외주(고용화)
     의 출고·회수 누계가 반영되며, 배치 외주 폼이 라우팅을 따른다."""
     at = _boot(routing_db)
-    at.sidebar.radio[0].set_value("공정 관리")
-    at.sidebar.radio[1].set_value(None)
-    at.run()
+    goto(at, "proc", "proc")
     assert not at.exception, [str(e.value) for e in at.exception]
 
     md = " ".join(m.value for m in at.markdown)
@@ -250,9 +247,7 @@ def test_input_not_blocked_without_material_outsource(routing_db):
     않는다. 생산 전 외주는 투입 후 배치 흐름에서 처리."""
     MAT_EVENTS[:] = []          # 소재 외주 이력 없음
     at = _boot(routing_db)
-    at.sidebar.radio[0].set_value("공정 관리")
-    at.sidebar.radio[1].set_value(None)
-    at.run()
+    goto(at, "proc", "in")
     assert not at.exception, [str(e.value) for e in at.exception]
 
     _errs = " ".join(e.value for e in at.error)
@@ -272,9 +267,7 @@ def test_batch_split_on_partial_outsource(routing_db):
     """부분 출고 = 자동 분기 — 새 배치 생성 + SPLIT 계보 + 이벤트에
     배치번호 기록 (수량 분기 추적의 핵심 경로)."""
     at = _boot(routing_db)
-    at.sidebar.radio[0].set_value("공정 관리")
-    at.sidebar.radio[1].set_value(None)
-    at.run()
+    goto(at, "proc", "proc")
     assert not at.exception, [str(e.value) for e in at.exception]
     at.number_input(key="bt_oq_1").set_value(20.0)
     at.run()
@@ -306,18 +299,14 @@ def test_input_cancel_action(routing_db):
                       "location": "사내", "step_status": "WAIT",
                       "status": "OPEN"}]
     at = _boot(routing_db)
-    at.sidebar.radio[0].set_value("공정 관리")
-    at.sidebar.radio[1].set_value(None)
-    at.run()
+    goto(at, "proc", "proc")
     assert not at.exception, [str(e.value) for e in at.exception]
     # 배치 경로: 생산 대기 → 공정 투입 버튼
     assert at.button(key="bt_s_btn_1"), "공정 투입 버튼이 없습니다"
     # 진행 중이면 인수 버튼
     WO_BATCHES[0]["step_status"] = "RUN"
     at2 = _boot(routing_db)
-    at2.sidebar.radio[0].set_value("공정 관리")
-    at2.sidebar.radio[1].set_value(None)
-    at2.run()
+    goto(at2, "proc", "proc")
     assert at2.button(key="bt_rq_btn_1"), "배치 인수 버튼이 없습니다"
     # 투입 취소 radio (배치 경로에서도 유지)
     _pr = next(r for r in at.radio
@@ -346,9 +335,7 @@ def test_partial_step_start_inherits_position(routing_db):
                       "location": "사내", "step_status": "WAIT",
                       "status": "OPEN"}]
     at = _boot(routing_db)
-    at.sidebar.radio[0].set_value("공정 관리")
-    at.sidebar.radio[1].set_value(None)
-    at.run()
+    goto(at, "proc", "proc")
     assert not at.exception, [str(e.value) for e in at.exception]
     at.number_input(key="bt_sq_1").set_value(100.0)
     at.run()
@@ -367,9 +354,7 @@ def test_partial_step_start_inherits_position(routing_db):
 def test_lot_trace_tab(routing_db):
     """LOT 추적 (Phase C) — 지시번호 검색 시 계보·타임라인 렌더."""
     at = _boot(routing_db)
-    at.sidebar.radio[0].set_value("공정 관리")
-    at.sidebar.radio[1].set_value(None)
-    at.run()
+    goto(at, "proc", "trace")
     at.text_input(key="tr_q").set_value("20260812-001")
     at.run()
     assert not at.exception, [str(e.value) for e in at.exception]
@@ -382,8 +367,6 @@ def test_input_cancel_hidden_after_downstream(routing_db):
     """후속 처리(인수)가 시작된 지시에는 투입 취소가 노출되지 않는다."""
     WO_LIST[:] = [dict(WO)]  # received_qty 40 — 후속 있음
     at = _boot(routing_db)
-    at.sidebar.radio[0].set_value("공정 관리")
-    at.sidebar.radio[1].set_value(None)
-    at.run()
+    goto(at, "proc", "proc")
     assert not any(r.options and "투입 취소" in r.options
                    for r in at.radio)

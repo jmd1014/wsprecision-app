@@ -13,6 +13,7 @@ import importlib.util
 from datetime import date, timedelta
 
 import pytest
+from tests.conftest import goto
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
@@ -130,9 +131,7 @@ def _open_schedule_tab(sched_db):
     at.secrets["auth"] = {"disabled": True}
     at.run()
     assert not at.exception, [str(e.value) for e in at.exception]
-    at.sidebar.radio[0].set_value("수주 관리")
-    at.sidebar.radio[1].set_value(None)
-    at.run()
+    goto(at, "so", "sched")
     assert not at.exception, [str(e.value) for e in at.exception]
     return at
 

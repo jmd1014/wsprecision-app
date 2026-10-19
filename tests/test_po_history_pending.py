@@ -13,6 +13,7 @@ import importlib.util
 from urllib.parse import unquote
 
 import pytest
+from tests.conftest import goto
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
@@ -166,9 +167,7 @@ def test_old_format_history_shows_pending_orders(hist_db):
                               "anon_key": "a", "service_role_key": "s"}
     at.secrets["auth"] = {"disabled": True}
     at.run()
-    at.sidebar.radio[0].set_value("구매 관리")
-    at.sidebar.radio[1].set_value(None)
-    at.run()
+    goto(at, "po", "new")
     assert not at.exception, [str(e.value) for e in at.exception]
     _search_btn(at).click().run()
     assert not at.exception, [str(e.value) for e in at.exception]

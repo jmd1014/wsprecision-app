@@ -10,6 +10,7 @@ streamlit 미설치 환경에서는 전체 skip.
 import sys, os
 import importlib.util
 import pytest
+from tests.conftest import goto, nav_menu_labels
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
@@ -37,14 +38,9 @@ PAGES_ADMIN = [
 PAGES = PAGES_FLOW + PAGES_ADMIN
 
 
-def _goto(at, page):
-    """2그룹 라디오 내비게이션 — 업무(0) / 관리자(1)."""
-    if page in PAGES_FLOW:
-        at.sidebar.radio[0].set_value(page)
-        at.sidebar.radio[1].set_value(None)
-    else:
-        at.sidebar.radio[1].set_value(page)
-    at.run()
+def _goto(at, page, sub=None):
+    """화면 이동 — conftest.goto (개편 전 radio / 개편 후 사이드바 2단 공용)."""
+    goto(at, page, sub)
 
 
 # ─── DB mock ───────────────────────────────────────────
@@ -140,10 +136,9 @@ def test_sidebar_menu_groups(mocked_db):
     """사이드바 2그룹 — 업무 진행 6개 + 관리자 3개 (2026-07-24 개편)."""
     at = _make_apptest()
     at.run()
-    radios = at.sidebar.radio
-    assert len(radios) >= 2, "사이드바 radio 2개(업무/관리자) 필요"
-    assert radios[0].options == PAGES_FLOW, f"업무 메뉴 불일치: {radios[0].options}"
-    assert radios[1].options == PAGES_ADMIN, f"관리자 메뉴 불일치: {radios[1].options}"
+    flow, admin = nav_menu_labels(at)
+    assert flow == PAGES_FLOW, f"업무 메뉴 불일치: {flow}"
+    assert admin == PAGES_ADMIN, f"관리자 메뉴 불일치: {admin}"
 
 
 # ─── 2. 수주→발주 prefill 흐름 테스트 ──────────────────
@@ -163,7 +158,7 @@ def test_po_prefill_flow(mocked_db):
     ]
     at.session_state["po_prefill_source_so"] = "SO-2026-001"
 
-    _goto(at, "구매 관리")
+    _goto(at, "구매 관리", "새 발주서 작성")
     assert not at.exception, (
         f"구매 관리 prefill 렌더 예외: "
         f"{[str(e.value) for e in at.exception]}"
