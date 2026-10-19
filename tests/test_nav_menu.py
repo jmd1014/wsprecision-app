@@ -431,7 +431,100 @@ def test_sub_labels_keep_tab_order(ship_db):
     assert nav_sub_labels(at, "plan") == ["주간 계획", "설비 스케줄", "공정 표준", "설비"]
 
 
-# ─── Codex 리뷰 반영 (2026-10-19): M1 sch_view ──
+# ─── Codex 리뷰 반영 (2026-10-19): H1 prefill 1회 적용 / H2 품목표 보류 교체 / M1 sch_view ──
+
+VENDOR2 = {"vendor_id": 190, "name": "테스트철강(주)", "vendor_group": "MAT_STS",
+           "category": None, "business_no": None, "ceo_name": None, "phone": None,
+           "fax": None, "address": None, "email": None, "payment_terms": None,
+           "contact_person": None, "in_use": True}
+
+
+@pytest.fixture()
+def hist_db2(hist_db, monkeypatch):
+    """hist_db + 소재 그룹 거래처 하나 더(사용자가 다른 거래처를 고를 수 있게)."""
+    real = hist_db.fetch
+
+    def _f(table, select="*", filter_query="", limit=1000, **kw):
+        if table == "vendors":
+            from tests.test_po_history_pending import VENDOR
+            fq = filter_query or ""
+            if "name=eq." in fq:
+                return [v for v in (VENDOR, VENDOR2) if v["name"] in fq]
+            return [VENDOR, VENDOR2]
+        return real(table, select, filter_query, limit)
+    monkeypatch.setattr(hist_db, "fetch", _f)
+    return hist_db
+
+
+def _vendor_value(at):
+    return str(at.selectbox(key="po_vendor").value)
+
+
+def test_prefill_vendor_applied_once_then_user_choice_wins(hist_db2, st_log):
+    """H1: prefill A 적용 뒤 사용자가 B 를 고르면 세부 화면·모드를 다녀와도 B 가 유지된다."""
+    at = _at()
+    goto(at, "po", "new")                               # 담긴 품목 없음 → 부족 자재 모드
+    btn = [b for b in at.button if str(b.key or "").startswith("go_po_")]
+    btn[0].click(); at.run()
+    assert at.session_state["po_mode"] == "edit"
+    assert "혜성철강" in _vendor_value(at)               # prefill 거래처 1회 적용
+    b_key = next(k for k in at.selectbox(key="po_vendor").options if "테스트철강" in k)
+    at.selectbox(key="po_vendor").set_value(b_key); at.run()
+    assert "테스트철강" in _vendor_value(at)
+    n_items = len(at.session_state["po_items"])
+    goto(at, "po", "hist"); goto(at, "po", "new")
+    assert "테스트철강" in _vendor_value(at), "복귀 시 사용자가 고른 B 유지"
+    assert at.session_state["po_mode"] == "edit" and len(at.session_state["po_items"]) == n_items
+    at.session_state["po_mode"] = "pick"; at.run()
+    at.session_state["po_mode"] = "edit"; at.run()
+    assert "테스트철강" in _vendor_value(at), "모드 왕복 뒤에도 B 유지"
+    assert at.radio(key="po_bucket").value == "소재"
+    assert any("미리 담긴 발주 데이터" in str(i.value) for i in at.info)   # 안내는 그대로
+    assert not [m for m in st_log.msgs if "default value" in m], st_log.msgs
+
+
+def test_prefill_pending_when_items_exist(hist_db2, st_log):
+    """H2: 품목표가 있으면 다른 거래처 prefill 은 보류 — [교체]/[취소]를 사용자가 고른다."""
+    at = _at()
+    at.session_state["po_mode"] = "edit"
+    goto(at, "po", "new")
+    b_key = next(k for k in at.selectbox(key="po_vendor").options if "테스트철강" in k)
+    at.selectbox(key="po_vendor").set_value(b_key); at.run()
+    at.session_state["po_items"] = [{"item_name": "A 품목", "qty": 1, "unit_price": 0, "_uid": "a1"}]
+    at.session_state["po_mode"] = "pick"; at.run()
+    btn = [b for b in at.button if str(b.key or "").startswith("go_po_")]
+    btn[0].click(); at.run()
+    assert not at.exception, [str(e.value) for e in at.exception]
+    # 편집 모드 + 보류 안내, 거래처·품목은 그대로
+    assert at.session_state["po_mode"] == "edit"
+    assert at.button(key="po_pending_replace") and at.button(key="po_pending_cancel")
+    assert "테스트철강" in _vendor_value(at)
+    assert [x["item_name"] for x in at.session_state["po_items"]] == ["A 품목"]
+    assert not at.session_state.get("po_prefill_vendor_name") if "po_prefill_vendor_name" in at.session_state else True
+    # [취소] → 보류 삭제, 기존 상태 유지
+    at.button(key="po_pending_cancel").click(); at.run()
+    assert not [b for b in at.button if b.key == "po_pending_replace"]
+    assert "테스트철강" in _vendor_value(at)
+    assert [x["item_name"] for x in at.session_state["po_items"]] == ["A 품목"]
+    # 다시 담기 → [교체] → B 거래처 + B 품목
+    at.session_state["po_mode"] = "pick"; at.run()
+    btn = [b for b in at.button if str(b.key or "").startswith("go_po_")]
+    btn[0].click(); at.run()
+    at.button(key="po_pending_replace").click(); at.run()
+    assert not at.exception, [str(e.value) for e in at.exception]
+    assert "혜성철강" in _vendor_value(at)
+    n = len(at.session_state["po_prefill_items"])
+    assert n >= 1 and len(at.session_state["po_items"]) == n
+    assert "A 품목" not in [x["item_name"] for x in at.session_state["po_items"]]
+    assert not [b for b in at.button if b.key == "po_pending_replace"]
+    # '복사해서 수정'도 같은 경로: 품목표가 있으면 보류
+    goto(at, "po", "hist")
+    at.button(key="po_copy_7").click(); at.run()
+    assert _has_title(at, "po", "new") and at.session_state["po_mode"] == "edit"
+    assert at.button(key="po_pending_replace")
+    assert len(at.session_state["po_items"]) == n                 # 그대로
+    assert not [m for m in st_log.msgs if "default value" in m], st_log.msgs
+
 
 def test_sch_view_kept_and_auto_switch_overrides(sched_db, st_log):
     """M1: 납품 스케줄 보기(sch_view)는 유지 대상 — 다른 세부를 다녀와도 유지, sch_view_next 자동 전환이 우선."""

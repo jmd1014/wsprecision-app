@@ -12789,18 +12789,53 @@ elif page == "구매 관리":
             _v = []
         return _PO_BUCKET_OF_GROUP.get((_v[0].get("vendor_group") if _v else None))
 
-    def _po_prefill_go(vendor_name):
-        """미리 담긴 발주 데이터를 발주서 작성으로 — 거래처 선택은 prefill 이름으로
-        index 를 정하므로 남아 있던 선택값(po_vendor·그림자)은 지우고, 발주 그룹은 거래처의
-        그룹에 맞춘다(QA M-4: 그려진 위젯 키는 콜백에서만 바꾼다)."""
+    def _po_prefill_apply(vendor_name):
+        """prefill 을 실제로 적용 — 거래처 선택은 편집 화면이 prefill 이름으로 index 를 **한 번**
+        정하므로(Codex H1) 남아 있던 선택값(po_vendor·그림자)과 '적용됨' 표시를 지우고, 발주
+        그룹은 거래처의 그룹에 맞춘다(QA M-4: 그려진 위젯 키는 콜백에서만 바꾼다)."""
         st.session_state.pop("po_vendor", None)
         st.session_state.pop("_kv_po_vendor", None)
+        st.session_state.pop("po_prefill_vendor_applied", None)
         _bk = _po_bucket_of(vendor_name)
         if _bk:
             st.session_state["po_bucket"] = _bk
             st.session_state["_kv_po_bucket"] = _bk
         st.session_state["po_mode"] = "edit"       # D7: 같은 화면의 '발주서 편집' 모드로
         nav_go("po", "new")
+
+    def _po_prefill_request(vendor_name, items, source_so=None, note=None):
+        """콜백 전용. 품목표(po_items)가 비어 있지 않으면 prefill 을 조용히 적용하지 않고
+        **보류**(po_prefill_pending)한 채 편집 모드로만 간다 — 편집 화면 맨 위에서 사용자가
+        [기존 품목 비우고 교체]/[취소]를 고른다(Codex H2). 비어 있으면 바로 적용."""
+        if st.session_state.get("po_items"):
+            st.session_state["po_prefill_pending"] = {
+                "vendor": vendor_name, "items": items,
+                "source_so": source_so, "note": note}
+            st.session_state["po_mode"] = "edit"
+            nav_go("po", "new")
+            return
+        st.session_state["po_prefill_vendor_name"] = vendor_name
+        st.session_state["po_prefill_items"] = items
+        st.session_state["po_prefill_source_so"] = source_so
+        if note:
+            st.session_state["po_prefill_note"] = note
+        else:
+            st.session_state.pop("po_prefill_note", None)
+        st.session_state.pop("po_result", None)
+        st.session_state["po_tbl_nonce"] = \
+            st.session_state.get("po_tbl_nonce", 0) + 1
+        _po_prefill_apply(vendor_name)
+
+    def _po_pending_replace():
+        """보류한 prefill 적용 — 기존 품목표를 비우고 교체(사용자 결정)."""
+        _p = st.session_state.pop("po_prefill_pending", None)
+        if not _p:
+            return
+        st.session_state["po_items"] = []
+        _po_prefill_request(_p["vendor"], _p["items"], _p.get("source_so"), _p.get("note"))
+
+    def _po_pending_cancel():
+        st.session_state.pop("po_prefill_pending", None)
 
     # 2026-10-15 메뉴 정리: '자재 필요량'·'발주 자동 제안'(같은 계산, 보는 축만 다름) → '발주 제안' 하나,
     # '매입 등록' 신설(원가 확인의 동기화·수기 입력·확인 대기 이동)
@@ -13415,18 +13450,14 @@ elif page == "구매 관리":
                                 # (안내는 그 화면의 '미리 담긴 발주 데이터' info 가 대신)
                                 _tgt = (st.session_state.get(f"po_vsel_{_sup}")
                                         if _sup == "(미정)" else _sup)
-                                st.session_state["po_prefill_vendor_name"] = _tgt
-                                st.session_state["po_prefill_items"] = [{
+                                _po_prefill_request(_tgt, [{
                                     "product_id": None,  # 자재 행이므로 product_id 없음
                                     "item_name": m["name"],
                                     "material": m["material_type"] or "",
                                     "spec": m["spec"] or "",
                                     "qty": int(m["shortage"]) if m["unit"] == "EA" else round(m["shortage"], 2),
                                     "unit_price": 0,
-                                } for m in _mats]
-                                st.session_state["po_prefill_source_so"] = _src
-                                st.session_state.pop("po_prefill_note", None)
-                                _po_prefill_go(_tgt)
+                                } for m in _mats], source_so=_src)
 
                             st.button(f"발주서 작성 (이 {len(mats)}건)",
                                       key=f"go_po_{supplier}",
@@ -13861,6 +13892,20 @@ elif page == "구매 관리":
         if "po_items" not in st.session_state:
             st.session_state.po_items = []
 
+        # 보류된 prefill(Codex H2): 품목표가 비어 있지 않을 때 다른 거래처의 담기/복사 요청
+        _pp = st.session_state.get("po_prefill_pending")
+        if _pp:
+            st.warning(
+                f"품목표에 이미 {len(st.session_state.get('po_items') or [])}줄이 있어 "
+                f"'{_pp['vendor']}' 품목 {len(_pp['items'])}개를 담지 않았습니다"
+                + (f" ({_pp['note']})" if _pp.get("note") else "")
+                + " — 기존 품목을 비우고 교체할지 정하세요.")
+            _ppc1, _ppc2 = st.columns(2)
+            _ppc1.button("기존 품목 비우고 교체", key="po_pending_replace",
+                         on_click=_po_pending_replace, use_container_width=True)
+            _ppc2.button("취소 (기존 품목 유지)", key="po_pending_cancel",
+                         on_click=_po_pending_cancel, use_container_width=True)
+
         if st.session_state.get("po_prefill_vendor_name") or \
                 st.session_state.get("po_prefill_items"):
             pv = st.session_state.get("po_prefill_vendor_name", "")
@@ -13873,6 +13918,7 @@ elif page == "구매 관리":
                    if st.session_state.get("po_prefill_note") else ""))
             if st.button("모두 초기화", help="미리 담긴 데이터와 품목표를 모두 비웁니다"):
                 st.session_state.pop("po_prefill_note", None)
+                st.session_state.pop("po_prefill_vendor_applied", None)
                 st.session_state.po_prefill_vendor_name = None
                 st.session_state.po_prefill_items = None
                 st.session_state.po_prefill_source_so = None
@@ -14006,14 +14052,19 @@ elif page == "구매 관리":
             default_idx = 0
             pv_name = (st.session_state.get("po_prefill_vendor_name")
                        or "").strip()
-            if pv_name:
+            if pv_name and not st.session_state.get("po_prefill_vendor_applied"):
+                # prefill 거래처는 **처음 적용하는 실행에서 한 번만**(Codex H1) — 매칭 결과를
+                # 그림자에 넣고 '적용됨'으로 표시한다. 이후는 사용자의 마지막 선택이 우선.
                 for i, k in enumerate(option_keys):
                     vn = vendor_options[k]["name"]
                     if pv_name in vn or vn in pv_name:
                         default_idx = i
                         break
-            if not pv_name:
-                # 미리 담긴 거래처가 없으면 마지막 선택 유지(세부 화면을 다녀와도)
+                if option_keys:
+                    st.session_state["_kv_po_vendor"] = option_keys[default_idx]
+                st.session_state["po_prefill_vendor_applied"] = True
+            else:
+                # 마지막 선택 유지(세부 화면·모드를 다녀와도)
                 default_idx = keep_index("po_vendor", option_keys, 0)
             sel = vc2.selectbox(f"거래처 선택 ({len(vendors)}개)",
                                 option_keys, index=default_idx, key="po_vendor")
@@ -15156,9 +15207,9 @@ elif page == "구매 관리":
                             use_container_width=True,
                             key=f"po_re_pdf_{po['po_id']}")
                         def _po_copy_cb(_po=po, _items=items):
-                            # 콜백(실행 전): 품목을 담고 발주서 작성으로 전환
-                            st.session_state["po_prefill_vendor_name"] = _po["_vname"]
-                            st.session_state["po_prefill_items"] = [{
+                            # 콜백(실행 전): 품목을 담고 발주서 작성(편집 모드)으로 — 품목표가
+                            # 비어 있지 않으면 보류(Codex H2)
+                            _po_prefill_request(_po["_vname"], [{
                                 "product_id": i.get("product_id"),
                                 "material_id": i.get("material_id"),
                                 "item_name": i.get("item_name"),
@@ -15169,15 +15220,7 @@ elif page == "구매 관리":
                                 "unit_price": int(i.get("unit_price") or 0),
                                 "memo": (i.get("remark") or "")
                                 if i.get("material") else "",
-                            } for i in _items]
-                            st.session_state["po_prefill_source_so"] = None
-                            st.session_state["po_prefill_note"] = (
-                                f"{_po['po_number']} 복사 — 수정 후 다시 만들기")
-                            st.session_state.po_items = []
-                            st.session_state.pop("po_result", None)
-                            st.session_state["po_tbl_nonce"] = \
-                                st.session_state.get("po_tbl_nonce", 0) + 1
-                            _po_prefill_go(_po["_vname"])
+                            } for i in _items], note=f"{_po['po_number']} 복사 — 수정 후 다시 만들기")
 
                         st.button("복사해서 수정 (발주서 작성)",
                                   use_container_width=True,
