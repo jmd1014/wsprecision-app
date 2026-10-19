@@ -417,7 +417,7 @@ def click_guard(name, ttl=5.0):
     return True
 
 
-def confirm_gate(key, message):
+def confirm_gate(key, message, scope=None):
     """되돌리기 어려운 액션의 2단계 확인 게이트 (2026-08-20).
 
     잔량 종결처럼 클릭 즉시 실행되면 위험한 버튼에 사용. 사용법:
@@ -429,8 +429,11 @@ def confirm_gate(key, message):
 
     첫 클릭은 플래그만 세우고, 경고문 + [실행 확정]/[돌아가기] 를
     띄운 뒤 [실행 확정] 클릭인 런에서만 True 를 반환한다.
+    scope: 대상 레코드 id. 주면 플래그 키가 `cfm_<key>_<scope>` 가 되어
+    다른 레코드가 선택됐을 때 확인창이 따라가지 않는다(2026-10-19 출고 전표
+    A→B 전환 결함). 버튼 키(`<key>_cfm_ok/_no`)는 그대로.
     """
-    _fk = f"cfm_{key}"
+    _fk = f"cfm_{key}" + (f"_{scope}" if scope is not None else "")
     st.warning(message)
     _c1, _c2 = st.columns(2)
     _ok = _c1.button("실행 확정", type="primary",
@@ -8845,6 +8848,12 @@ elif page == "출고 관리":
                 badge_cols=("상태",),
                 strong_cols=("전표번호",))
             _cf_pick = _cf_ships[_cf_i if _cf_i is not None else 0]
+            # 취소 확인창은 전표별 플래그(cfm_cf_cancel*_<id>) — 다른 전표의 것은 지운다
+            # (전표 A 확인창 상태에서 B 가 선택돼도 B 에 확인창이 뜨지 않게, 2026-10-19 §5-2)
+            _cf_sid_sfx = f"_{_cf_pick['shipment_id']}"
+            for _k in [k for k in st.session_state
+                       if k.startswith("cfm_cf_cancel") and not k.endswith(_cf_sid_sfx)]:
+                st.session_state.pop(_k, None)
             _cf_ym = str(_cf_pick.get("ship_date") or "")[:7]
             _cf_locked = _cf_ym in _cf_closed
             try:
@@ -9357,12 +9366,12 @@ elif page == "출고 관리":
                                "탭에서 새 전표를 만들거나 다른 작성중 "
                                "전표에 추가하세요.")
                     if st.button("전표 취소", key="cf_cancel_empty"):
-                        st.session_state["cfm_cf_cancel_empty"] = True
-                    if (st.session_state.get("cfm_cf_cancel_empty")
+                        st.session_state[f"cfm_cf_cancel_empty_{_cf_pick['shipment_id']}"] = True
+                    if (st.session_state.get(f"cfm_cf_cancel_empty_{_cf_pick['shipment_id']}")
                             and confirm_gate(
                                 "cf_cancel_empty",
                                 f"{_cf_pick['ship_no']} 빈 작성중 전표를 "
-                                "취소합니다.")):
+                                "취소합니다.", scope=_cf_pick["shipment_id"])):
                         try:
                             from datetime import datetime as _cx_now0
                             _db.update("shipments",
@@ -9539,14 +9548,18 @@ elif page == "출고 관리":
                         placeholder="예: 거래처 착오, 납품일 오류")
                     if st.button("전표 취소 (전체 역반영)", key="cf_cancel",
                                  disabled=not _cx_reason.strip()):
-                        st.session_state["cfm_cf_cancel"] = True
-                    if st.session_state.get("cfm_cf_cancel") \
+                        st.session_state[f"cfm_cf_cancel_{_cf_pick['shipment_id']}"] = True
+                    # 사유가 비면 확인창도 띄우지 않는다 — 플래그만 남은 상태(전표 전환·
+                    # 재진입)에서 사유 없이 역반영되는 일을 막는다 (§5-2 (2))
+                    if st.session_state.get(f"cfm_cf_cancel_{_cf_pick['shipment_id']}") \
+                            and _cx_reason.strip() \
                             and confirm_gate("cf_cancel",
                                 "확정된 전표 {}를 취소합니다 — 전 라인의 "
                                 "수주 납품·회차 충당·완성 재고 차감을 "
                                 "되돌립니다. 전표번호와 라인은 기록으로 "
                                 "남습니다. 실행할까요?".format(
-                                    _cf_pick.get("ship_no") or "")) \
+                                    _cf_pick.get("ship_no") or ""),
+                                scope=_cf_pick["shipment_id"]) \
                             and click_guard("cf_cancel"):
                         _n_ok, _ws = _cf_apply_deltas(
                             _cf_pick, _cf_items,
@@ -10205,16 +10218,18 @@ elif page == "출고 관리":
                               help=("확정이 반영된 전표 — 위 [확정 상태로 저장] "
                                     "뒤 확정 전표의 취소를 쓰세요")
                               if _cf_was_applied else None):
-                    st.session_state["cfm_cf_cancel"] = True
-                if st.session_state.get("cfm_cf_cancel") and _cf_was_applied:
-                    st.session_state["cfm_cf_cancel"] = False
+                    st.session_state[f"cfm_cf_cancel_{_cf_pick['shipment_id']}"] = True
+                _cf_cxflag = f"cfm_cf_cancel_{_cf_pick['shipment_id']}"
+                if st.session_state.get(_cf_cxflag) and _cf_was_applied:
+                    st.session_state.pop(_cf_cxflag, None)
                     st.error("확정이 이미 반영된 전표라 작성중 취소로는 "
                              "되돌릴 수 없습니다 — 위 [확정 상태로 저장] 뒤 "
                              "'전표 취소 (전체 역반영)'을 쓰세요.")
-                elif st.session_state.get("cfm_cf_cancel") and confirm_gate(
+                elif st.session_state.get(_cf_cxflag) and confirm_gate(
                         "cf_cancel",
                         f"{_cf_pick['ship_no']} 작성중 전표를 취소합니다 — "
-                        "담긴 라인은 출고 등록에서 다시 담을 수 있습니다."):
+                        "담긴 라인은 출고 등록에서 다시 담을 수 있습니다.",
+                        scope=_cf_pick["shipment_id"]):
                     try:
                         from datetime import datetime as _cx_now
                         if _cf_set_status_if_draft(

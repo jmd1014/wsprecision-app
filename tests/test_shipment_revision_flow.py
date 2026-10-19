@@ -494,3 +494,46 @@ def test_fix_header_zero_rows_is_reported(rev_db, monkeypatch):
     assert SHIPMENTS[1]["status"] == "DRAFT"
     assert any("확정 상태 저장 실패" in str(e.value) for e in at.error)
     assert not any("확정으로 저장했습니다" in str(x.value) for x in at.success)
+
+
+def test_cancel_gate_is_scoped_to_slip_and_needs_reason(rev_db):
+    """§5-2 (2026-10-19): 전표 A 의 취소 확인창 상태에서 B 가 선택되면(ship_open_no 로 첫 행 교체)
+    B 에 확인창이 뜨지 않고 아무것도 취소되지 않는다. A 로 돌아와도 다시 눌러야 뜬다(다른 전표 플래그 정리).
+    사유가 비어 있으면 플래그가 있어도 확인창이 뜨지 않는다. 정상 경로(사유 + 확인)는 그대로 동작.
+    ship_open_no 는 한 번 소비되므로 A 를 다룰 때마다 다시 넣는다(기본 정렬은 B 가 첫 행)."""
+    _seed()
+    at = _open()
+    next(r for r in at.radio if r.key == "cf_filter").set_value("전체")
+
+    def _show(no):
+        at.session_state["ship_open_no"] = no
+        at.run()
+        assert not at.exception, [str(e.value) for e in at.exception]
+
+    A, B = "SH-20260901-01", "SH-20260902-01"
+    _show(A)
+    at.text_input(key="cf_cx_reason_1").set_value("거래처 착오")
+    _show(A)
+    at.button(key="cf_cancel").click()
+    _show(A)
+    assert [b for b in at.button if b.key == "cf_cancel_cfm_ok"], "A 확인창"
+    # 전표 B(작성중, id 2)가 첫 행으로 — 확인창이 따라오지 않고, 아무것도 취소되지 않음
+    _show(B)
+    assert not [b for b in at.button if b.key == "cf_cancel_cfm_ok"], "B 에 확인창 없음"
+    assert not REVS and SHIPMENTS[0]["status"] == "CONFIRMED" and SHIPMENTS[1]["status"] == "DRAFT"
+    assert not [u for u in UPDATED if u[0] == "shipments" and u[2].get("status") == "CANCELLED"]
+    # A 로 돌아와도 확인창은 다시 눌러야 뜬다 (다른 전표가 선택되면서 A 플래그 정리, 사유 위젯도 비어 있음)
+    _show(A)
+    assert not [b for b in at.button if b.key == "cf_cancel_cfm_ok"]
+    # 사유 없이 플래그만 있으면 확인창 자체가 안 뜬다
+    at.session_state["cfm_cf_cancel_1"] = True
+    _show(A)
+    assert not [b for b in at.button if b.key == "cf_cancel_cfm_ok"], "사유 없음 → 확인창 없음"
+    assert not REVS
+    # 정상 경로: 사유 → (플래그 유지) 확인창 → 실행 확정 → 취소
+    at.text_input(key="cf_cx_reason_1").set_value("거래처 착오")
+    _show(A)
+    assert [b for b in at.button if b.key == "cf_cancel_cfm_ok"]
+    at.button(key="cf_cancel_cfm_ok").click()
+    _show(A)
+    assert REVS and REVS[0]["action"] == "CANCEL"
