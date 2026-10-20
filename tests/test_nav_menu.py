@@ -540,3 +540,51 @@ def test_sch_view_kept_and_auto_switch_overrides(sched_db, st_log):
     assert at.session_state["sch_view"] == "납기 입력"
     goto(at, "so", "list"); goto(at, "so", "sched")
     assert at.session_state["sch_view"] == "납기 입력"
+    assert not [m for m in st_log.msgs if "default value" in m], st_log.msgs   # Codex REQUIRED 4
+
+
+def test_pending_prefill_discarded_by_reset_and_new_apply(hist_db2, st_log):
+    """R2-M1: 보류 요청은 [모두 초기화]·새 prefill 직접 적용·발주 생성 완료 뒤 남지 않는다."""
+    at = _at()
+    goto(at, "po", "new")                               # 담긴 품목 없음 → 부족 자재 모드
+    btn = [b for b in at.button if str(b.key or "").startswith("go_po_")]
+    btn[0].click(); at.run()                            # A 적용(편집 모드, 품목 담김)
+    n_a = len(at.session_state["po_items"]); assert n_a >= 1
+    at.session_state["po_mode"] = "pick"; at.run()
+    btn = [b for b in at.button if str(b.key or "").startswith("go_po_")]
+    btn[0].click(); at.run()                            # B 요청 → 품목표가 있어 보류
+    assert at.button(key="po_pending_replace")
+    next(b for b in at.button if b.label == "모두 초기화").click(); at.run()
+    assert not [b for b in at.button if b.key == "po_pending_replace"], "초기화 뒤 보류 안내 없음"
+    assert "po_prefill_pending" not in at.session_state
+    assert not at.session_state["po_items"]
+    # 빈 품목표에 C 직접 적용 → 보류 없음, 거래처·품목 = C
+    at.session_state["po_mode"] = "pick"; at.run()
+    btn = [b for b in at.button if str(b.key or "").startswith("go_po_")]
+    btn[0].click(); at.run()
+    assert not at.exception, [str(e.value) for e in at.exception]
+    assert not [b for b in at.button if b.key == "po_pending_replace"]
+    assert "혜성철강" in _vendor_value(at) and len(at.session_state["po_items"]) == n_a
+    # 보류가 있는 상태에서 새 prefill 이 빈 품목표에 직접 적용되면 보류는 새 요청으로 대체
+    at.session_state["po_prefill_pending"] = {"vendor": "옛 요청", "items": [{"item_name": "x"}],
+                                              "source_so": None, "note": None}
+    at.session_state["po_items"] = []
+    at.session_state["po_mode"] = "pick"; at.run()
+    btn = [b for b in at.button if str(b.key or "").startswith("go_po_")]
+    btn[0].click(); at.run()
+    assert "po_prefill_pending" not in at.session_state
+    assert not [b for b in at.button if b.key == "po_pending_replace"]
+    # '새 발주서 시작'(품목표 비우기)도 보류를 폐기 — po_result 가 있을 때만 그려지는 버튼이라
+    # 완료 카드를 세션으로 흉내 낸다(발주 생성 자체는 쓰기 흐름이라 AppTest 로 만들지 않음)
+    at.session_state["po_prefill_pending"] = {"vendor": "옛 요청", "items": [{"item_name": "x"}],
+                                              "source_so": None, "note": None}
+    at.session_state["po_result"] = {"po_no": "26-TEST", "vendor": "혜성철강(주)", "vendor_email": None,
+                                     "delivery": None, "date": "2026-10-20", "n": 1, "total": 0,
+                                     "items": [{"item_name": "x", "qty": 1, "unit_price": 0}],
+                                     "pdf": b"%PDF", "xlsx": b""}
+    at.run()
+    assert at.button(key="po_new")
+    at.button(key="po_new").click(); at.run()
+    assert not at.exception, [str(e.value) for e in at.exception]
+    assert "po_prefill_pending" not in at.session_state
+    assert not [m for m in st_log.msgs if "default value" in m], st_log.msgs

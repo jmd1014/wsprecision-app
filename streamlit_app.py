@@ -12814,6 +12814,7 @@ elif page == "구매 관리":
             st.session_state["po_mode"] = "edit"
             nav_go("po", "new")
             return
+        st.session_state.pop("po_prefill_pending", None)   # 기존 보류 요청은 새 요청으로 대체 (R2-M1)
         st.session_state["po_prefill_vendor_name"] = vendor_name
         st.session_state["po_prefill_items"] = items
         st.session_state["po_prefill_source_so"] = source_so
@@ -13919,6 +13920,7 @@ elif page == "구매 관리":
             if st.button("모두 초기화", help="미리 담긴 데이터와 품목표를 모두 비웁니다"):
                 st.session_state.pop("po_prefill_note", None)
                 st.session_state.pop("po_prefill_vendor_applied", None)
+                st.session_state.pop("po_prefill_pending", None)    # 보류 요청도 폐기 (Codex R2-M1)
                 st.session_state.po_prefill_vendor_name = None
                 st.session_state.po_prefill_items = None
                 st.session_state.po_prefill_source_so = None
@@ -14817,6 +14819,7 @@ elif page == "구매 관리":
                                       key="po_new"):
                             st.session_state.po_items = []
                             st.session_state.pop("po_result", None)
+                            st.session_state.pop("po_prefill_pending", None)   # R2-M1
                             st.session_state["po_tbl_nonce"] = \
                                 st.session_state.get("po_tbl_nonce", 0) + 1
                             st.rerun()
@@ -15044,6 +15047,7 @@ elif page == "구매 관리":
                                     "items": _final,
                                     "pdf": pdf_bytes, "xlsx": xlsx_bytes}
                                 st.session_state.po_items = []
+                                st.session_state.pop("po_prefill_pending", None)   # R2-M1: 완료 뒤 보류 폐기
                                 st.session_state.po_prefill_vendor_name = None
                                 st.session_state.po_prefill_items = None
                                 st.session_state.po_prefill_source_so = None
