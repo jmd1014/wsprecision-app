@@ -32,6 +32,7 @@ TIMEOUT = 60
 
 # 2026-10-07 information_schema 스냅샷 — 테이블명: 기본키
 KNOWN_TABLES = {
+    "dash_parts": "id", "dash_routine_templates": "id", "dash_cards": "id", "dash_card_activity": "id",  # 073 (2026-10-21)
     "app_settings": "key", "app_users": "user_id", "batch_links": "link_id", "bom": "bom_id",
     "customer_part_mapping": "mapping_id", "drawings": "drawing_id",
     "inventory_transactions": "txn_id", "login_log": "log_id", "machines": "machine_id",
