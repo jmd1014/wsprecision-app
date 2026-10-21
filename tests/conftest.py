@@ -86,6 +86,8 @@ NAV_LABELS = {
                           ("trace", "LOT 추적")]),
     "ship": ("출고 관리", [("deliver", "출고 등록"), ("slip", "출고 전표"),
                           ("dstat", "출고 현황"), ("fstock", "완성 재고")]),
+    "dash": ("업무 루틴", [("today", "오늘 루틴"), ("rate", "완료율"),
+                          ("tmpl", "템플릿 관리")]),
 }
 NAV_ADMIN_LABELS = {
     "master": "마스터 관리", "cost": "원가 확인",

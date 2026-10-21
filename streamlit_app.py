@@ -1546,9 +1546,20 @@ with st.sidebar:
                               ("trace", "LOT 추적")]),
         ("ship", "출고 관리", [("deliver", "출고 등록"), ("slip", "출고 전표"),
                               ("dstat", "출고 현황"), ("fstock", "완성 재고")]),
+        ("dash", "업무 루틴", [("today", "오늘 루틴"), ("rate", "완료율"),
+                              ("tmpl", "템플릿 관리")]),   # 업무 루틴 1단계 (2026-10-21, L3-S 073)
     ]
     NAV_ADMIN = [("master", "마스터 관리"), ("cost", "원가 확인"),
                  ("report", "생산 보고"), ("sales", "영업 보고")]
+    # 관리자 전용 세부(작업자에게 숨김) — 세부 튜플은 2-튜플 그대로, 집합으로 따로 둔다(Codex H1)
+    NAV_SUB_ADMIN = {("dash", "rate"), ("dash", "tmpl")}
+
+    def _subs_for(main_key, is_admin):
+        """이 계정이 볼 수 있는 세부 목록 — nav_sub_of·사이드바·nav_page_head·_nav_sc_change·제목이 공통 사용."""
+        _all = NAV_MAIN.get(main_key, ("", []))[1]
+        if is_admin:
+            return _all
+        return [(k, l) for k, l in _all if (main_key, k) not in NAV_SUB_ADMIN]
     NAV_MAIN = {k: (lbl, subs) for k, lbl, subs in NAV}
     NAV_ADMIN_MAIN = dict(NAV_ADMIN)
     NAV_LABEL = {**{k: lbl for k, lbl, _ in NAV}, **NAV_ADMIN_MAIN}
@@ -1557,8 +1568,8 @@ with st.sidebar:
     ALL_MENU = MENU_FLOW + MENU_ADMIN
 
     def nav_sub_of(main_key):
-        """메인의 현재 세부 키 — 없거나 NAV 에 없는 값이면 첫 세부로 보정(QA M-1)."""
-        _subs = NAV_MAIN.get(main_key, ("", []))[1]
+        """메인의 현재 세부 키 — 없거나 이 계정이 볼 수 없는 값이면 첫 세부로 보정(QA M-1, 관리자 전용 세부 재검사)."""
+        _subs = _subs_for(main_key, _is_admin)
         if not _subs:
             return None
         _cur = (st.session_state.get("nav_sub") or {}).get(main_key)
@@ -1583,7 +1594,7 @@ with st.sidebar:
     def _nav_sc_change(main_key):
         """좁은 화면 본문 세부 컨트롤(nav_sc_*) → 같은 nav_sub 로."""
         _v = st.session_state.get(f"nav_sc_{main_key}")
-        for _k, _l in NAV_MAIN[main_key][1]:
+        for _k, _l in _subs_for(main_key, _is_admin):
             if _l == _v:
                 nav_go(main_key, _k)
                 return
@@ -1602,7 +1613,7 @@ with st.sidebar:
     nav_sub = nav_sub_of(nav_page)
     _sub = nav_sub
     page = NAV_LABEL[nav_page]
-    page_title = page + ((" › " + dict(NAV_MAIN[nav_page][1])[nav_sub])
+    page_title = page + ((" › " + dict(_subs_for(nav_page, _is_admin))[nav_sub])
                          if nav_sub else "")
 
     # 메뉴(메인·세부)가 바뀐 실행: 확인 게이트 플래그(cfm_*)와 정정 계획을 지운다(§5-2).
@@ -1629,7 +1640,7 @@ with st.sidebar:
         st.button(_nv_ml, key=f"nav_m_{_nv_mk}", on_click=nav_go, args=(_nv_mk,),
                   use_container_width=True)
         if _nv_mk == nav_page and _nv_subs:
-            for _nv_sk, _nv_sl in _nv_subs:
+            for _nv_sk, _nv_sl in _subs_for(_nv_mk, _is_admin):
                 st.button(_nv_sl, key=f"nav_s_{_nv_mk}_{_nv_sk}", on_click=nav_go,
                           args=(_nv_mk, _nv_sk), use_container_width=True)
     if _is_admin:
@@ -1747,8 +1758,8 @@ def nav_page_head():
     """사용자 영역 페이지 상단 — "메인 › 세부" 제목 줄(기존 subheader 자리) + 좁은 화면
     세부 컨트롤(nav_sc_*, 넓은 화면은 CSS 로 숨김) + 화면 전환 안내(flash)."""
     st.subheader(page_title)
-    _subs = NAV_MAIN.get(nav_page, ("", []))[1]
-    if _subs:
+    _subs = _subs_for(nav_page, _is_admin)
+    if len(_subs) > 1:          # 세부가 하나뿐이면(작업자의 업무 루틴) 컨트롤 생략 (D8)
         _labels = [l for _, l in _subs]
         _sck = f"nav_sc_{nav_page}"
         # 위젯 생성 전에 세션 값으로 현재 세부를 맞춘다(default 인자 없음 → 경고 없음)
@@ -1777,6 +1788,17 @@ def _nav_notice_close():
     st.session_state["nav_notice_closed"] = True
 
 
+def _dash_ctx_make(dbmod):
+    """업무 루틴 화면에 넘기는 헬퍼 묶음(app/dash_page.Ctx). 읽기 모드 = 로컬 미리보기(auth.disabled)."""
+    from app import dash_page as _dp
+    from utils import auth as _dash_auth
+    return _dp.Ctx(db=dbmod, current_user=current_user, is_admin=_is_admin,
+                   readonly=bool(globals().get("_AUTH_OFF")),
+                   click_guard=click_guard, confirm_gate=confirm_gate, nav_flash=nav_flash,
+                   nav_go=nav_go, toss_table=toss_table,
+                   load_users=lambda: _dash_auth.load_users(dbmod), log_error=dbmod.log_error)
+
+
 # 첫 주 안내 — 닫을 수 있는 1회성(세션 단위) 안내 (§4-5)
 if not st.session_state.get("nav_notice_closed"):
     _nn1, _nn2 = st.columns([6, 1])
@@ -1799,6 +1821,14 @@ if page == "홈":
     from datetime import date as _hd
 
     st.subheader("업무 진행 현황")
+
+    # 업무 루틴 홈 카드 (2026-10-21) — 테이블이 없으면 카드 생략, 어떤 실패도 홈을 막지 않는다
+    try:
+        import db as _dash_hdb
+        from app import dash_page as _dash_home
+        _dash_home.render_home_card(_dash_ctx_make(_dash_hdb))
+    except Exception as _dash_e:
+        st.caption(f"업무 루틴 카드 표시 실패: {_dash_e}")
 
     try:
         _h_so = fetch("sales_order_stats",
@@ -19535,6 +19565,27 @@ elif page == "공정 관리":
 # ════════════════════════════════════════════════════════════════
 # 생산 보고 — Phase B (production_log + BOM 자재 자동 차감)
 # ════════════════════════════════════════════════════════════════
+elif page == "업무 루틴":
+    nav_page_head()
+    if not DB_AVAILABLE:
+        st.error("DB 연결 필요"); st.stop()
+    import db as _dash_db
+    from app import dash_page as _dashp
+    _dash_ctx = _dash_ctx_make(_dash_db)
+    # 세부 화면(사이드바 2단): 오늘 루틴(전원) / 완료율·템플릿 관리(관리자 — 본문 분기 안에서 재검사)
+    if _sub == "today":
+        _dashp.render_today(_dash_ctx)
+    if _sub == "rate":
+        if _is_admin:
+            _dashp.render_rate(_dash_ctx)
+        else:
+            _dashp.render_today(_dash_ctx)
+    if _sub == "tmpl":
+        if _is_admin:
+            _dashp.render_templates(_dash_ctx)
+        else:
+            _dashp.render_today(_dash_ctx)
+
 elif page == "생산 보고":
     st.subheader("생산 보고")
     st.caption(
