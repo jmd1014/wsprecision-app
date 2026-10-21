@@ -6906,6 +6906,16 @@ elif page == "수주 관리":
                             f"수주 {saved_so}건 / 품목 {saved_items}개 저장 완료"
                             + (f" · 기존 수주에 {_appended}개 라인 추가"
                                if _appended else ""))
+                        if saved_so or _appended:
+                            # 수주 입력 슬랙 알림 (2026-10-21) — 출고·발주·입고와 같은 분기점 알림
+                            _sk.notify(_sk.fmt_so(
+                                [g["header"]["so_number"] for g in groups],
+                                [g["header"]["customer"] for g in groups]
+                                + [it.get("customer") for it in _append_items],
+                                saved_so, saved_items + _appended,
+                                sum(float(it.get("qty") or 0) for g in groups for it in g["items"])
+                                + sum(float(it.get("qty") or 0) for it in _append_items),
+                                current_user_name(), "업로드"))
 
         else:  # 수기 입력
             st.markdown("##### 수기 입력 — 단일 수주 1건")
@@ -7088,6 +7098,10 @@ elif page == "수주 관리":
                                     "status": "PENDING",
                                 }])
                         st.success(f"수주 '{m_so_no}' 저장 완료")
+                        _sk.notify(_sk.fmt_so(
+                            [m_so_no], [m_cust], 1, len(st.session_state.m_so_items),
+                            sum(float(it.get("qty") or 0) for it in st.session_state.m_so_items),
+                            current_user_name(), "수기"))
                         st.session_state.m_so_items = []
                     except Exception as e:
                         st.error(f"저장 실패: {e}")

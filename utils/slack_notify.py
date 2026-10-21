@@ -146,6 +146,15 @@ def fmt_cancel(tag, pn, qty, who, extra=None):
     return f"[{tag}] {pn or '-'} {_n(qty)} EA — {who}{tail}"
 
 
+def fmt_so(so_numbers, customers, n_so, n_items, total_qty, who, source="업로드"):
+    """수주 입력(업로드·수기) 알림 — 2026-10-21 사용자 요청(수주만 알림이 없었음)."""
+    nos = [str(x) for x in (so_numbers or []) if x]
+    no_s = ", ".join(nos[:3]) + (f" 외 {len(nos) - 3}건" if len(nos) > 3 else "")
+    cust = ", ".join(sorted({str(c) for c in (customers or []) if c})) or "-"
+    return (f"[수주] {no_s or '-'} · {cust} · 수주 {n_so}건 {n_items}품목 "
+            f"{_n(total_qty)}개 — {who} ({source})")
+
+
 def fmt_ship(ship_no, customers, n_items, total_qty, who):
     cust = ", ".join(sorted(c for c in set(customers) if c)) or "-"
     return f"[출고] {ship_no} · {cust} · {n_items}품목 {_n(total_qty)}개 — {who}"

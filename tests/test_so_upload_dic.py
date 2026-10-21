@@ -114,7 +114,10 @@ def dic_db(monkeypatch):
     return db
 
 
-def test_dic_upload_two_customers_append_and_price(dic_db):
+def test_dic_upload_two_customers_append_and_price(dic_db, monkeypatch):
+    import utils.slack_notify as _sn
+    NOTIFIED = []
+    monkeypatch.setattr(_sn, "notify", lambda text, sync=False: (NOTIFIED.append(text), True)[1])
     import streamlit as st
     from streamlit.testing.v1 import AppTest
     for _c in (st.cache_data, st.cache_resource):
@@ -146,6 +149,9 @@ def test_dic_upload_two_customers_append_and_price(dic_db):
     save = [b for b in at.button if b.label == "수주 DB 저장"]
     assert save
     save[0].click().run()
+    # 수주 입력 슬랙 알림 (2026-10-21): 업로드 저장 뒤 [수주] 한 건
+    assert [t for t in NOTIFIED if t.startswith("[수주]")], NOTIFIED
+    assert "업로드" in NOTIFIED[-1] and "수주 2건" in NOTIFIED[-1], NOTIFIED[-1]
     assert not at.exception, [str(e.value) for e in at.exception]
 
     heads = [r for t, rows in INSERTED if t == "sales_orders" for r in rows]
