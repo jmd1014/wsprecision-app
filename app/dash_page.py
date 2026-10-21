@@ -85,11 +85,16 @@ def part_id(ctx: Ctx, code=PART_CODE):
     return None
 
 
-def load_calendar(db) -> dict:
+CAL_FAIL_MSG = "휴무 달력을 읽지 못해 자동 생성을 멈췄습니다 — 새로 고침"
+
+
+def load_calendar(db):
+    """work_calendar → {cal_date: day_type}. 조회 실패는 **None**(빈 달력과 구분, Codex M1) —
+    호출부는 None 이면 생성(RPC)을 하지 않는다(휴무일에 카드를 만들 위험). 카드 조회·표시는 그대로."""
     try:
         rows = db.fetch("work_calendar", "cal_date,day_type", "", limit=1000)
     except Exception:
-        rows = []
+        return None
     return {str(r.get("cal_date"))[:10]: r.get("day_type") for r in rows if r.get("cal_date")}
 
 
@@ -118,6 +123,9 @@ def ensure_cards(ctx: Ctx, templates, slot, cal, cards) -> tuple[list, dict]:
     info = {"inserted": 0, "skipped": 0, "excluded": 0, "missing": 0, "error": None, "msg": None}
     if ctx.readonly:
         info["msg"] = "읽기 모드 — 이 교대의 카드는 배포 화면에서 생성됩니다" if not cards else None
+        return cards, info
+    if cal is None:                 # 달력 조회 실패 — 휴무 판정 불가 → 생성 중단(M1)
+        info["error"] = CAL_FAIL_MSG
         return cards, info
     ids, excluded = R.plan_template_ids(templates, d, shift, cal)
     info["excluded"] = excluded
@@ -281,7 +289,10 @@ def render_today(ctx: Ctx):
         st.error(f"루틴 카드 조회 실패: {e}")
         return
     info = None
-    if is_now and not R.is_off(slot[0], cal):
+    if is_now and cal is None:
+        st.warning(CAL_FAIL_MSG)
+        info = {"msg": None, "excluded": 0, "inserted": 0, "error": None}
+    elif is_now and not R.is_off(slot[0], cal):
         cards, info = ensure_cards(ctx, templates, slot, cal, cards)
     elif is_now:
         info = {"msg": "휴무일 — 루틴 카드를 만들지 않습니다", "excluded": 0, "inserted": 0, "error": None}
@@ -298,7 +309,7 @@ def render_today(ctx: Ctx):
         st.info("읽기 전용 — 종료됐거나 아직 시작하지 않은 교대입니다 (현재 교대: "
                 f"{now_slot[0].isoformat()} {R.SHIFT_KO[now_slot[1]]})")
     if info:
-        if info.get("error"):
+        if info.get("error") and info["error"] != CAL_FAIL_MSG:
             st.warning(f"카드 생성에 실패했습니다 — 화면을 다시 열어 보세요 ({info['error']})")
         if ctx.is_admin:
             bits = []
@@ -329,6 +340,8 @@ def render_today(ctx: Ctx):
                      help="화면 진입 때 자동 생성되지만, 템플릿·담당을 바꾼 직후 바로 만들 때"):
             if ctx.readonly:
                 ctx.nav_flash(READONLY_MSG)
+            elif cal is None:
+                ctx.nav_flash(CAL_FAIL_MSG)
             elif ctx.click_guard("dash_gen"):
                 _, info2 = ensure_cards(ctx, templates, slot, cal, load_cards(db, *slot))
                 ctx.nav_flash(f"생성 {info2.get('inserted', 0)} · 이미 있음 {info2.get('skipped', 0)}"
@@ -404,6 +417,9 @@ def render_rate(ctx: Ctx, days: int = 14):
         return
     now_slot = R.shift_slot(now_utc())
     cal = load_calendar(db)
+    if cal is None:
+        st.warning("휴무 달력을 읽지 못했습니다 — 휴무 표시('-')가 빠질 수 있습니다")
+        cal = {}
     d1 = now_slot[0]
     d0 = d1 - timedelta(days=days - 1)
     try:
@@ -456,6 +472,54 @@ def _validate_assignees(ctx: Ctx, values) -> tuple[list, str | None]:
             continue
         out.append(v)
     return out, None
+
+
+def _set_template_active(ctx: Ctx, tpl, active: bool) -> bool:
+    """활성/비활성 저장 — db.update 가 False 면 실패로 알린다(성공 안내 금지, Codex M2)."""
+    label = "다시 사용" if active else "비활성화"
+    if ctx.readonly:
+        ctx.nav_flash(READONLY_MSG)
+        return False
+    try:
+        ok = ctx.db.update("dash_routine_templates", f"id=eq.{tpl['id']}",
+                           {"active": active, "updated_at": now_utc().isoformat()})
+    except Exception as e:
+        ctx.log_error("dash_write", f"dash_routine_templates {label} 실패: {e}",
+                      table_name="dash_routine_templates")
+        ctx.nav_flash(f"저장 실패: {e}")
+        return False
+    if not ok:
+        ctx.nav_flash(f"저장되지 않았습니다 — {label} 요청이 반영되지 않았습니다. 새로 고침 후 다시 시도하세요")
+        return False
+    ctx.nav_flash(f"{label} — {tpl.get('title')}" + (" (오늘 생성된 카드는 남습니다)" if not active else ""))
+    return True
+
+
+def save_template_order(ctx: Ctx, ids_in_order) -> tuple[int, int]:
+    """순서 저장 — 행별 결과를 모아 'N/M 반영'. 부분 실패면 재조회된 현재 순서가 화면에 보인다(M2)."""
+    ok_n, total = 0, len(ids_in_order)
+    failed = []
+    if ctx.readonly:
+        ctx.nav_flash(READONLY_MSG)
+        return 0, total
+    for i, tid in enumerate(ids_in_order, 1):
+        try:
+            ok = ctx.db.update("dash_routine_templates", f"id=eq.{tid}",
+                               {"seq": i, "updated_at": now_utc().isoformat()})
+        except Exception as e:
+            ctx.log_error("dash_write", f"dash_routine_templates 순서 저장 실패(id {tid}): {e}",
+                          table_name="dash_routine_templates")
+            ok = False
+        if ok:
+            ok_n += 1
+        else:
+            failed.append(tid)
+    if ok_n == total:
+        ctx.nav_flash(f"순서 저장 — {ok_n}/{total} 반영")
+    else:
+        ctx.nav_flash(f"순서 일부만 저장됐습니다 — {ok_n}/{total} 반영 (실패 id {', '.join(map(str, failed))}). "
+                      "현재 순서를 다시 확인하세요")
+    return ok_n, total
 
 
 def render_templates(ctx: Ctx):
@@ -538,41 +602,33 @@ def render_templates(ctx: Ctx):
         if st.button("사용 안 함 (비활성화)", key=f"dash_tmpl_off_{cur['id']}", disabled=ctx.readonly,
                      help="삭제하지 않습니다. 오늘 생성된 카드는 남습니다"):
             if not ctx.readonly and ctx.click_guard(f"dash_tmpl_off_{cur['id']}"):
-                try:
-                    db.update("dash_routine_templates", f"id=eq.{cur['id']}",
-                              {"active": False, "updated_at": now_utc().isoformat()})
-                    ctx.nav_flash(f"비활성화 — {cur.get('title')} (오늘 생성된 카드는 남습니다)")
-                except Exception as e:
-                    ctx.nav_flash(f"저장 실패: {e}")
+                _set_template_active(ctx, cur, False)
             st.rerun()
     elif cur:
         if st.button("다시 사용", key=f"dash_tmpl_on_{cur['id']}", disabled=ctx.readonly):
             if not ctx.readonly and ctx.click_guard(f"dash_tmpl_on_{cur['id']}"):
-                try:
-                    db.update("dash_routine_templates", f"id=eq.{cur['id']}",
-                              {"active": True, "updated_at": now_utc().isoformat()})
-                    ctx.nav_flash(f"다시 사용 — {cur.get('title')}")
-                except Exception as e:
-                    ctx.nav_flash(f"저장 실패: {e}")
+                _set_template_active(ctx, cur, True)
             st.rerun()
-    # 순서 변경 — 드래그 컴포넌트가 있을 때만(없으면 폼의 '순서' 숫자로)
+    # 순서 변경 — 드래그 컴포넌트가 있을 때만(없으면 폼의 '순서' 숫자로). 컴포넌트 import 와 저장은 분리(M2)
     active_tpl = [t for t in tpl if t.get("active", True)]
     if len(active_tpl) >= 2:
+        sort_items = None
         try:
             from streamlit_sortables import sort_items
+        except Exception:
+            st.caption("드래그 순서 변경 컴포넌트 미탑재 — 폼의 '순서' 값으로 바꾸세요")
+        if sort_items is not None:
             labels = [f"{t['id']} · {t.get('title')}" for t in active_tpl]
-            ordered = sort_items(labels, direction="vertical", key=f"dash_tmpl_sort_{shift}")
+            try:
+                ordered = sort_items(labels, direction="vertical", key=f"dash_tmpl_sort_{shift}")
+            except Exception:
+                ordered = None
+                st.caption("드래그 순서 변경 컴포넌트 오류 — 폼의 '순서' 값으로 바꾸세요")
             if ordered and ordered != labels and sorted(ordered) == sorted(labels):
                 if st.button("이 순서로 저장", key=f"dash_tmpl_sort_save_{shift}", disabled=ctx.readonly):
                     if not ctx.readonly and ctx.click_guard("dash_tmpl_sort_save"):
-                        for i, lbl in enumerate(ordered, 1):
-                            tid = int(lbl.split(" · ", 1)[0])
-                            db.update("dash_routine_templates", f"id=eq.{tid}",
-                                      {"seq": i, "updated_at": now_utc().isoformat()})
-                        ctx.nav_flash("순서 저장")
+                        save_template_order(ctx, [int(lbl.split(" · ", 1)[0]) for lbl in ordered])
                     st.rerun()
-        except Exception:
-            st.caption("드래그 순서 변경 컴포넌트 미탑재 — 폼의 '순서' 값으로 바꾸세요")
 
 
 # ─── 홈 카드 ─────────────────────────────────────────────────────
