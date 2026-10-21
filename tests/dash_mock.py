@@ -56,6 +56,9 @@ class DashMock:
         self.rpc_calls = []
         self.fetch_calls = []
         self.update_mode = None     # None | 0 | -1 | "raise"
+        self.update_false = False   # db.update 가 False 를 돌려주는 상황(PostgREST 오류) 시뮬레이션
+        self.update_fail_ids = set()  # 이 id 의 갱신만 실패(-1)
+        self.fetch_raise_for = None   # 이 테이블 조회는 예외
         self.insert_raise_for = None
         self.rpc_raise = None
         self.log_errors = []
@@ -125,6 +128,8 @@ class DashMock:
     # ── 읽기 ──
     def fetch(self, table, select="*", filter_query="", limit=1000, cache=None):
         self.fetch_calls.append((table, filter_query or ""))
+        if self.fetch_raise_for == table:
+            raise RuntimeError(f"{table} 조회 실패 (시뮬레이션)")
         rows = self._rows(table, filter_query)
         if rows is None:
             return []
@@ -162,6 +167,9 @@ class DashMock:
         return len(records)
 
     def update(self, table, filter_query, fields):
+        if self.update_false:
+            self._assert_dash("update", table)
+            return False
         n = self.update_count(table, filter_query, fields)
         return n >= 0
 
@@ -173,6 +181,8 @@ class DashMock:
             raise RuntimeError("update 실패 (시뮬레이션)")
         if self.update_mode in (0, -1):
             return self.update_mode
+        if any(f"id=eq.{i}&" in filter_query + "&" for i in self.update_fail_ids):
+            return -1
         rows = self._rows(table, filter_query)
         for r in rows:
             r.update(fields)
@@ -199,6 +209,8 @@ class DashMock:
         for t in self.tables["dash_routine_templates"]:
             if t["id"] not in ids or not t.get("active", True) or t.get("shift") != sh:
                 continue
+            if not [u for u in (t.get("assignee_user_ids") or []) if str(u or "").strip()]:
+                continue          # 074: 담당자 빈 템플릿은 DB 에서도 제외
             if any(c.get("template_id") == t["id"] and str(c.get("work_date")) == wd and c.get("shift") == sh
                    for c in self.tables["dash_cards"]):
                 continue
