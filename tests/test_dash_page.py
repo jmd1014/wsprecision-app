@@ -405,11 +405,15 @@ def test_static_only_dash_tables_are_written():
         for op, target, ln in _write_calls(ast.parse(src)):
             assert isinstance(target, str) and (target.startswith("dash_") or target == "dash_generate_cards"), \
                 (path, op, target, ln)
-        for node in ast.walk(ast.parse(src)):        # 주석·docstring 제외, 호출만
+        tree = ast.parse(src)
+        now_defs = [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "now_utc"]
+        inside_now_utc = {id(c) for f in now_defs for c in ast.walk(f)}
+        for node in ast.walk(tree):                  # 주석·docstring 제외, 호출만
             if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
-                assert node.func.attr not in ("today", "utcnow"), (path, node.lineno)
+                assert node.func.attr not in ("today", "utcnow", "fromtimestamp"), (path, node.lineno)
                 if node.func.attr == "now":
-                    assert node.args or node.keywords, (path, node.lineno, "naive now() 금지")
+                    # 시각 생성은 now_utc() 정의 안에서만(Codex L1) — 그 밖은 now_utc() 호출만 허용
+                    assert id(node) in inside_now_utc, (path, node.lineno, "now() 는 now_utc 안에서만")
     # 본체의 업무 루틴 블록·홈 카드 호출부
     app_src = open(APP_FILE, encoding="utf-8").read()
     a = app_src.index('elif page == "업무 루틴":')
@@ -418,7 +422,16 @@ def test_static_only_dash_tables_are_written():
     block_src = block.replace('elif page == "업무 루틴":', "if True:", 1)
     for op, target, ln in _write_calls(ast.parse(block_src)):
         assert isinstance(target, str) and target.startswith("dash_"), (op, target)
-    assert "today()" not in block
+    assert "today()" not in block and ".now(" not in block
+    # 홈 카드 호출부(업무 루틴 홈 카드 try 블록)도 검사 범위
+    h0 = app_src.index("# 업무 루틴 홈 카드")
+    h1 = app_src.index("_h_so = fetch(", h0)
+    home = app_src[h0:h1]
+    assert ".insert(" not in home and ".update(" not in home and ".rpc(" not in home and ".delete(" not in home
+    assert "today()" not in home and ".now(" not in home
+    # Ctx 생성 헬퍼도 쓰기 없음
+    c0 = app_src.index("def _dash_ctx_make("); c1 = app_src.index("\n\n\n", c0)
+    assert not _write_calls(ast.parse(app_src[c0:c1]))
 
 
 def test_static_nav_and_subs_for_consumers():
@@ -433,11 +446,169 @@ def test_static_nav_and_subs_for_consumers():
 
 # ─── 11. 조회 프로파일: 오늘 루틴 진입 ≤ 6회 (목 기준 — dash_·work_calendar 조회만 센다) ─────
 
-def test_today_entry_query_budget(dash_db, monkeypatch):
+def _dash_fetches(dash_db):
+    return [t for t, _ in dash_db.fetch_calls if t.startswith("dash_") or t == "work_calendar"]
+
+
+def test_today_first_generation_query_budget(dash_db, monkeypatch):
+    """첫 생성 진입: 조회 ≤ 8 (RPC 1 + 생성 뒤 재조회 1 포함) — 계획서 §6."""
+    _fix_now(monkeypatch, WED_DAY)
+    at = _make(); at.run(); _login(at, "김준오", "pw-day")
+    dash_db.fetch_calls.clear(); dash_db.rpc_calls.clear()
+    goto(at, "dash", "today")
+    assert len(dash_db.rpc_calls) == 1
+    assert len(_dash_fetches(dash_db)) <= 8, _dash_fetches(dash_db)
+
+
+def test_today_reentry_query_budget(dash_db, monkeypatch):
+    """재진입(카드 이미 있음): 조회 ≤ 6, RPC 0."""
     _fix_now(monkeypatch, WED_DAY)
     at = _open("김준오", "pw-day")
     dash_db.fetch_calls.clear(); dash_db.rpc_calls.clear()
-    at.run()                                   # 재진입(카드 이미 있음): 조회만
-    calls = [t for t, _ in dash_db.fetch_calls if t.startswith("dash_") or t == "work_calendar"]
-    assert len(calls) <= 6, calls
+    at.run()
+    assert len(_dash_fetches(dash_db)) <= 6, _dash_fetches(dash_db)
     assert dash_db.rpc_calls == []
+
+
+# ─── Codex 재리뷰 반영 (2026-10-21): M1 달력 실패 / M2 저장 반환값 / REQ 보강 ─────────────
+
+def test_calendar_fetch_failure_stops_generation_but_keeps_cards(dash_db, monkeypatch):
+    """M1: work_calendar 조회 실패 → 자동·수동 생성 0회 + 경고, 기존 카드는 보인다."""
+    _fix_now(monkeypatch, WED_DAY)
+    at = _open("김민수", "pw-admin")                      # 카드 7개 생성
+    assert len(dash_db.cards(shift="day")) == 7
+    dash_db.fetch_raise_for = "work_calendar"
+    dash_db.rpc_calls.clear()
+    at.run()
+    assert not at.exception, [str(e.value) for e in at.exception]
+    assert any("휴무 달력을 읽지 못해" in str(w.value) for w in at.warning)
+    assert dash_db.rpc_calls == [] and len(_done_buttons(at)) == 7
+    # 수동 생성 버튼도 생성하지 않는다
+    at.button(key="dash_gen").click(); at.run()
+    assert dash_db.rpc_calls == [] and any("휴무 달력을 읽지 못해" in f for f in _flash(at))
+    # 새 템플릿을 넣어도(빠진 템플릿 있음) 달력 실패면 RPC 없음
+    dash_db.tables["dash_routine_templates"].append({"id": 99, "code": "prod_day_99", "part_id": 1, "shift": "day",
+        "seq": 9, "title": "추가", "done_criteria": "", "assignee_user_ids": ["김준오"], "active_rule": "always",
+        "active": True, "created_at": "", "updated_at": ""})
+    at.run()
+    assert dash_db.rpc_calls == []
+    import app.dash_page as dp
+    assert dp.load_calendar(dash_db) is None
+    dash_db.fetch_raise_for = None
+    assert dp.load_calendar(dash_db) == {}
+
+
+def _ctx(dash_db, username="김민수", role="admin", readonly=False, flashes=None, guard=None):
+    import app.dash_page as dp
+    return dp.Ctx(db=dash_db, current_user=lambda: {"username": username, "role": role}, is_admin=(role == "admin"),
+                  readonly=readonly, click_guard=guard or (lambda k: True), confirm_gate=lambda *a, **k: False,
+                  nav_flash=lambda m, action=None: (flashes if flashes is not None else []).append(m),
+                  nav_go=lambda *a, **k: None, toss_table=lambda *a, **k: None, load_users=lambda: USERS)
+
+
+def test_template_update_false_is_not_reported_as_success(dash_db, monkeypatch):
+    """M2: db.update 가 False → 성공 안내 없음·오류 안내. 순서 저장은 행별 결과 N/M."""
+    import app.dash_page as dp
+    tpl = dash_db.tables["dash_routine_templates"][0]
+    fl = []
+    ctx = _ctx(dash_db, flashes=fl)
+    dash_db.update_false = True
+    assert dp._set_template_active(ctx, tpl, False) is False
+    assert fl and "저장되지 않았습니다" in fl[-1] and not any("비활성화 —" in f for f in fl)
+    assert tpl["active"] is True
+    dash_db.update_false = False
+    assert dp._set_template_active(ctx, tpl, False) is True and tpl["active"] is False
+    assert any("비활성화 —" in f for f in fl)
+    # 순서 저장: 2번 행만 실패 → 2/3 반영, 부분 실패 안내
+    fl.clear()
+    dash_db.update_fail_ids = {2}
+    assert dp.save_template_order(ctx, [1, 2, 3]) == (2, 3)
+    assert "2/3 반영" in fl[-1] and "일부만" in fl[-1]
+    assert [t["seq"] for t in dash_db.tables["dash_routine_templates"][:3]] == [1, 2, 3]
+    dash_db.update_fail_ids = set()
+    assert dp.save_template_order(ctx, [3, 2, 1]) == (3, 3) and "3/3 반영" in fl[-1]
+    assert [t["seq"] for t in dash_db.tables["dash_routine_templates"][:3]] == [3, 2, 1]
+
+
+def test_cookie_login_uses_username_for_completion(dash_db, monkeypatch):
+    """REQ: 쿠키 자동 로그인 경로도 auth_user.username 으로 체크된다."""
+    import base64
+    import streamlit as st_mod
+    from tests.dash_mock import SECRET
+    from utils import auth as _auth
+    tok = base64.urlsafe_b64encode(_auth.make_token("김준오", SECRET).encode("utf-8")).decode()
+
+    class _Ctx:
+        cookies = {"ws_auth": tok}
+        headers = {}
+    monkeypatch.setattr(st_mod, "context", _Ctx())
+    _fix_now(monkeypatch, WED_DAY)
+    at = _make(); at.run()
+    assert not at.exception, [str(e.value) for e in at.exception]
+    assert at.session_state["auth_user"]["username"] == "김준오", at.session_state["auth_user"]
+    goto(at, "dash", "today")
+    cid = dash_db.cards(shift="day")[0]["id"]
+    at.button(key=f"dash_done_{cid}").click(); at.run()
+    assert dash_db.cards(id=cid)[0]["completed_by"] == "김준오"
+    assert dash_db.activity()[-1]["user_id"] == "김준오"
+
+
+def test_readonly_with_existing_cards_and_templates_writes_nothing(dash_db, monkeypatch):
+    """REQ: 읽기 모드에서 todo/done 카드·활성 템플릿이 있어도 완료·취소·활성화·순서 저장 전부 쓰기 0."""
+    _fix_now(monkeypatch, WED_DAY)
+    dash_db.rpc("dash_generate_cards", {"p_work_date": "2026-10-21", "p_shift": "day", "p_template_ids": [1, 2]})
+    done = dash_db.cards(template_id=2)[0]
+    done.update({"status": "done", "completed_by": "김준오", "completed_at": "2026-10-21T01:00:00+00:00"})
+    dash_db.writes.clear(); dash_db.rpc_calls.clear()
+    at = _open(None, None, readonly=True)
+    assert _has_title(at, "today")
+    btns = [b for b in at.button if str(b.key or "").startswith(("dash_done_", "dash_undo_"))]
+    assert btns and all(b.disabled for b in btns)
+    at.run(); goto(at, "dash", "tmpl"); goto(at, "dash", "today")
+    assert dash_db.writes == [] and dash_db.rpc_calls == []
+    import app.dash_page as dp
+    fl = []
+    ctx = _ctx(dash_db, username="test", readonly=True, flashes=fl)
+    todo = dash_db.cards(template_id=1)[0]
+    assert dp.handle_done(ctx, todo) is False
+    assert dp.handle_undo(ctx, done, done["completed_at"]) is False
+    assert dp._set_template_active(ctx, dash_db.tables["dash_routine_templates"][0], False) is False
+    assert dp.save_template_order(ctx, [1, 2]) == (0, 2)
+    assert dash_db.writes == [] and all("읽기 모드" in f for f in fl) and len(fl) == 4
+
+
+def test_handler_rejects_when_shift_boundary_passed(dash_db, monkeypatch):
+    """REQ: 화면은 19:29 주간이었는데 핸들러 실행 시점이 19:30 이면 주간 카드 체크 거부(슬롯 재계산)."""
+    import app.dash_page as dp
+    dash_db.rpc("dash_generate_cards", {"p_work_date": "2026-10-21", "p_shift": "day", "p_template_ids": [1]})
+    card = dash_db.cards(template_id=1)[0]
+    fl = []
+    ctx = _ctx(dash_db, username="김준오", role="worker", flashes=fl)
+    monkeypatch.setattr(dp, "now_utc", lambda: datetime(2026, 10, 21, 19, 29, tzinfo=KST))
+    assert dp.handle_done(ctx, card) is True and dash_db.cards(template_id=1)[0]["status"] == "done"
+    monkeypatch.setattr(dp, "now_utc", lambda: datetime(2026, 10, 21, 19, 30, tzinfo=KST))
+    c = dash_db.cards(template_id=1)[0]
+    assert dp.handle_undo(ctx, c, c["completed_at"]) is False
+    assert "현재 교대" in fl[-1] and dash_db.cards(template_id=1)[0]["status"] == "done"
+    assert len(dash_db.activity()) == 1
+
+
+def test_duplicate_call_in_same_run_logs_once(dash_db, monkeypatch):
+    """REQ: 같은 카드 중복 호출(이중 클릭)은 클릭 가드가 막아 활동 로그 1건."""
+    import app.dash_page as dp
+    dash_db.rpc("dash_generate_cards", {"p_work_date": "2026-10-21", "p_shift": "day", "p_template_ids": [1]})
+    card = dash_db.cards(template_id=1)[0]
+    seen = []
+
+    def guard(k):               # click_guard 와 같은 의미: 같은 키는 ttl 안 두 번째 거부
+        if k in seen:
+            return False
+        seen.append(k)
+        return True
+    fl = []
+    ctx = _ctx(dash_db, username="김준오", role="worker", flashes=fl, guard=guard)
+    monkeypatch.setattr(dp, "now_utc", lambda: WED_DAY)
+    assert dp.handle_done(ctx, card) is True
+    assert dp.handle_done(ctx, dict(card, status="todo")) is False
+    assert "방금 같은 처리" in fl[-1]
+    assert len([x for x in dash_db.activity() if x["card_id"] == card["id"]]) == 1
