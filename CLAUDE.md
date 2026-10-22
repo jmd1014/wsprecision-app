@@ -222,16 +222,23 @@
   옛 품번)은 별칭일 뿐** — 정확 일치라도 접두어를 뗀 활성 본품을 우선하고, 활성이
   없을 때만 그 휴면으로 (2026-09-10: '4S20AHYBV-03-X1413;PM' 별칭이 휴면 P0010 에
   걸려 새 수주가 휴면 제품에 붙던 문제). 확실한 매핑은 customer_part_mapping 에
-- **수주 상태는 파생값** (2026-10-22, 수주 상태 정리 L3-S, Migration 075, `utils/so_close.py`):
-  접수(DRAFT) → 부분 진행(PARTIAL) → 완납(DELIVERED)은 출고 확정·되돌리기가 `header_status()` 로
-  계산한다(납품 0 은 DRAFT — 옛 CONFIRMED 는 더 쓰지 않음, IN_PROD 도 수주에는 안 씀). 종결(CLOSED,
-  DIC 월 변경 이월·고객 요청 중단)과 취소(CANCELLED, 거래 무효·사유 필수)는 수주 목록 상세의
-  버튼 → `close_sales_order(db, so_id, mode, reason, who)` 한 루틴: 미확정 출고 전표가 라인을
-  참조하면 차단 → 미납 라인마다 `closed_qty=pending, pending_qty=0, status=mode, close_reason`
-  (`pending_qty=gt.0` 조건부 update_count) → 회차 qty=delivered 로 닫기 → 전 라인 pending 0 이면
-  머리글 mode. 되돌리기 `reopen_sales_order` 는 잔량 복원·상태 재계산, 회차는 복원하지 않음.
+- **수주 상태는 파생값** (2026-10-22, 수주 상태 정리 L3-S, Migration 075·076, `utils/so_close.py`):
+  접수(DRAFT) → 부분 진행(PARTIAL) → 완납(DELIVERED)은 출고 확정(069 RPC ⓔ-4)·정정·대체 되돌리기가
+  **활성 라인만**으로 계산한다(`header_status(lines, current)` / 본체는 `recompute_header(db, so_id)` 만;
+  납품 0 은 DRAFT — 옛 CONFIRMED 는 더 쓰지 않음, IN_PROD 도 수주에는 안 씀). **비활성 라인 집합 =
+  {CLOSED, CANCELLED, REPLACED}**(D11): 출고 정정은 `revise_line_fields` 로 received 만 조정하고 pending 0·
+  status 유지(CLOSED/CANCELLED 는 closed_qty = qty − received), 뷰·069·머리글 계산 모두 제외, 머리글이
+  비활성이면 재계산하지 않는다. 069 는 비활성 라인 출고를 `line_closed` 로 거부. 종결(CLOSED, DIC 월 변경
+  이월·고객 요청 중단)과 취소(CANCELLED, 거래 무효·사유 필수)는 수주 목록 상세의 버튼 →
+  **RPC `so_close_lines(so_id, mode, reason, who)` 한 트랜잭션**(076 D9): 미확정 전표 차단(`blocked`,
+  HINT=전표) → 활성 미납 라인 closed_qty 보존·pending 0·회차 보존(`closed_rounds`)·닫기 → 활성 잔량 0 이면
+  머리글. 되돌리기 **RPC `so_reopen_lines`**: 잔량 복원·상태 재계산·보존 회차 복원(납품완료 불변인 것만)·
+  머리글 활성 라인 재계산. 둘 다 멱등(반쪽 상태는 같은 버튼 재호출로 복구), 응답 불명은 1회 재호출.
+  파이썬 `so_close.py` 는 RPC 래퍼 + 메시지만(쓰기 전 조회 없음). 잔량의 진실 = 라인 status + 저장된
+  pending_qty + closed_qty(D10) — `sales_order_stats`·`sales_order_items_v` 는 qty−received 를 쓰지 않는다.
   **수동 상태 selectbox 는 없다**(취소를 고르면 잔량이 남아 자재 소요·계획률 오염). 활성 수주 집합은
   `SO_INACTIVE`/`SO_INACTIVE_FQ`(CANCELLED·CANCELED·CLOSED 제외) 상수만 쓴다 — 문자열 직접 사용 금지(정적 테스트).
+  종결·되돌리기·정정 뒤 `mr_cache` 를 비운다(자재 소요 300초 캐시).
 - **단가 변동 감지 = 수주 대체 / 별건 유지** (2026-09-10 사용자 확정, Migration 059,
   utils/so_replace.py): 같은 거래처·품번의 미납 라인 중 단가가 다른 옛 라인들을
   **품번당 카드 하나**(새 = 수주일이 가장 늦은 라인, 옛 = 나머지 전부, 체크로 포함
@@ -495,7 +502,7 @@
 
 ## DB 작업 규칙
 
-- 스키마 변경은 Supabase MCP `apply_migration`으로 (이력 유지). 2026-10-15 확인: `supabase_migrations.schema_migrations` 최신은 **075(so_status_closed — 수주 머리글·라인 상태 CLOSED(종결) + 라인 closed_qty·close_reason, chk_soi_status 전문 재선언(REPLACED 드리프트 해소), 2026-10-22)**; 074(dash_generate_cards_assignee — 생성 RPC 가 담당자 빈 템플릿 제외, 2026-10-21); 073(dash_routine — 업무 루틴 dash_ 테이블 4개·멱등 생성 RPC·시드, 2026-10-21); 072(item_map_vendor_default — 매핑표 업체 기본 유형 '*' 허용; 071 purchase_item_map 매입 품명 매핑표·장부 source/statement_no/map_id; 070 weekly_plan 은 2026-10-14, 067~069 는 2026-10-13 적용) — 적용 후 이 번호를 갱신하고, 새 번호는 문서가 아니라 실제 이력으로 확인할 것
+- 스키마 변경은 Supabase MCP `apply_migration`으로 (이력 유지). 2026-10-15 확인: `supabase_migrations.schema_migrations` 최신은 **076(so_close_rpc — 수주 종결·되돌리기 RPC so_close_lines/so_reopen_lines 원자화, closed_rounds·CHECK closed_qty≥0·status NOT NULL, sales_order_stats/sales_order_items_v 재정의(비활성 라인 pending 0·total_closed_qty·종결/취소 납품상태), 069 confirm_shipment 재선언(line_closed 거부·머리글 활성 라인만·폴백 DRAFT), 2026-10-22)**; 075(so_status_closed — 수주 머리글·라인 상태 CLOSED(종결) + 라인 closed_qty·close_reason, chk_soi_status 전문 재선언(REPLACED 드리프트 해소), 2026-10-22); 074(dash_generate_cards_assignee — 생성 RPC 가 담당자 빈 템플릿 제외, 2026-10-21); 073(dash_routine — 업무 루틴 dash_ 테이블 4개·멱등 생성 RPC·시드, 2026-10-21); 072(item_map_vendor_default — 매핑표 업체 기본 유형 '*' 허용; 071 purchase_item_map 매입 품명 매핑표·장부 source/statement_no/map_id; 070 weekly_plan 은 2026-10-14, 067~069 는 2026-10-13 적용) — 적용 후 이 번호를 갱신하고, 새 번호는 문서가 아니라 실제 이력으로 확인할 것
 - **뷰 재정의는 항상 전체 정의를 명시** — `create or replace view v as select * from v ...`
   같은 자기 참조는 DDL 은 통과하지만 조회 시 무한 재귀로 뷰가 죽는다 (046 사고, 047 복구).
   기존 검사에 추가할 때도 전체 UNION 을 다시 쓴다
