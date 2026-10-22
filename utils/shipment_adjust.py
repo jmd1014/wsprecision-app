@@ -147,7 +147,11 @@ def split_round_alloc(lines, deltas, prefer=None):
     return out
 
 
-def line_status(qty, received):
+def line_status(qty, received, current_status=None):
+    """수주 라인 상태. 비활성 라인(CLOSED·CANCELLED·REPLACED, 076 D11)은 수량과 무관하게 현 상태 유지."""
+    cur = str(current_status or "").upper()
+    if cur in ("CLOSED", "CANCELLED", "REPLACED"):
+        return cur
     q, r = float(qty or 0), float(received or 0)
     return "DELIVERED" if r >= q - 1e-9 else "PARTIAL" if r > 0 else "PENDING"
 

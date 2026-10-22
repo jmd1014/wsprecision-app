@@ -6299,6 +6299,14 @@ elif page == "수주 관리":
                                    f"soi_id=eq.{_fq(r['old_soi_id'])}",
                                    "soi_id,so_id,qty,received_qty,status")
                 if _o:
+                    # 종결 루틴이 만든 상태(머리글 CLOSED·보존 잔량 라인)면 먼저 수주 [되돌리기] (QA B-1·M-6)
+                    _oh = _db.fetch_one("sales_orders", f"so_id=eq.{_fq(_o['so_id'])}", "so_id,status") or {}
+                    _ol = fetch("sales_order_items", "soi_id,status,closed_qty",
+                                f"so_id=eq.{_fq(_o['so_id'])}", limit=500)
+                    _blk = _soc.replacement_revert_block(_oh.get("status"), _ol)
+                    if _blk:
+                        st.warning(_blk)
+                        return
                     _pend = max(float(_o.get("qty") or 0)
                                 - float(_o.get("received_qty") or 0), 0)
                     _db.update("sales_order_items",
@@ -6308,9 +6316,9 @@ elif page == "수주 관리":
                                     "PARTIAL" if float(_o.get("received_qty")
                                                        or 0) > 0 else "PENDING"),
                                 "replaced_by_soi": None})
-                    if r.get("old_so_status"):
-                        _db.update("sales_orders", f"so_id=eq.{_fq(_o['so_id'])}",
-                                   {"status": r["old_so_status"]})
+                    # 머리글은 과거 상태로 덮지 않고 활성 라인으로 재계산 (F5, QA L2).
+                    # 대체 루틴이 만든 CANCELLED 머리글은 force 로 다시 계산한다 (QA B-1)
+                    _soc.recompute_header(_db, _o["so_id"], force=True)
                 for c in (r.get("closed_rounds") or []):
                     _db.update("so_delivery_schedule",
                                f"sched_id=eq.{_fq(c['sched_id'])}",
@@ -7243,6 +7251,8 @@ elif page == "수주 관리":
                     "총수량": int(s.get("total_qty") or 0),
                     "납품": int(s.get("total_received_qty") or 0),
                     "미납": int(s.get("total_pending_qty") or 0),
+                    "보존": (int(s.get("total_closed_qty") or 0)
+                            if _soc.is_inactive(s.get("status")) else "-"),
                     "납품상태": status_ko(s.get("delivery_status")),
                     "총액 (원)": int(s.get("total_amount") or 0),
                     "매칭률": f"{s.get('match_rate_pct') or 0:.0f}%",
@@ -7250,7 +7260,7 @@ elif page == "수주 관리":
                 } for s in sos],
                     key="so_grid",
                     badge_cols=("납품상태", "상태"),
-                    num_cols=("품목수", "총수량", "납품", "미납",
+                    num_cols=("품목수", "총수량", "납품", "미납", "보존",
                               "총액 (원)", "매칭률"),
                     strong_cols=("수주번호",))
 
@@ -7269,13 +7279,14 @@ elif page == "수주 관리":
                             "수량": int(i.get("qty") or 0),
                             "납품": int(i.get("received_qty") or 0),
                             "미납": int(i.get("pending_qty") or 0),
+                            "보존": int(i.get("closed_qty") or 0),
                             "단가 (원)": int(i.get("unit_price") or 0),
                             "금액 (원)": int(i.get("amount") or 0),
                             "납기": i.get("due_date"),
                             "상태": status_ko(i.get("status")),
                         } for i in sitems],
                             badge_cols=("상태",),
-                            num_cols=("수량", "납품", "미납",
+                            num_cols=("수량", "납품", "미납", "보존",
                                       "단가 (원)", "금액 (원)"),
                             strong_cols=("우성 품번",))
                     # 상태는 파생값 — 접수→부분 진행→완납은 출고 확정이 바꾸고,
@@ -7283,45 +7294,80 @@ elif page == "수주 관리":
                     _soid = so["so_id"]
                     if st.session_state.get("so_close_flash"):
                         st.info(st.session_state.pop("so_close_flash"))
-                    if _soc.is_inactive(so.get("status")):
-                        st.caption(f"{status_ko(so.get('status'))} 상태 — 잔량은 라인의 보존 수량(closed_qty)에 있습니다")
-                        if st.button("되돌리기 (잔량 복원)", key=f"so_reopen_{_soid}"):
+                    _hdr_inactive = _soc.is_inactive(so.get("status"))
+                    _pend_n = sum(1 for i in sitems if float(i.get("pending_qty") or 0) > 0)
+                    _kept_n = sum(1 for i in sitems if float(i.get("closed_qty") or 0) > 0)
+                    _active_open = sum(1 for i in sitems
+                                       if str(i.get("status") or "").upper() not in _soc.LINE_INACTIVE
+                                       and float(i.get("pending_qty") or 0) > 0)
+                    _kept_mode = _soc.kept_mode(sitems)
+                    # 되돌리기 대상 = 보존 잔량 라인 있음, 또는 머리글 비활성인데 활성 미납 라인이 남은 비정상(거울상 복구).
+                    # 그 외 비활성 머리글(대체·옛 취소·전 라인 완납)은 되돌릴 것이 없다 (QA H-1)
+                    _reopenable = _kept_n > 0 or (_hdr_inactive and _active_open > 0)
+                    _repl_only = (_hdr_inactive and not _reopenable
+                                  and any(str(i.get("status") or "").upper() == "REPLACED" for i in sitems))
+
+                    def _so_flash_rerun(_r):
+                        st.session_state["so_close_flash"] = _r["msg"]
+                        if _r.get("closed") or _r.get("reopened") or _r.get("header") \
+                                or _r.get("retried") or "응답 불명" in str(_r.get("msg") or ""):
+                            st.session_state.pop("mr_cache", None)      # 미납 변동 (F9, 재호출·불명 포함)
+                        st.rerun()
+
+                    if _repl_only:
+                        # F12: 단가 변경 재발주 대체분 — 보존 잔량이 없어 되돌릴 것이 없다
+                        st.caption("단가 변경 재발주 대체분 — 되돌리기는 수주 관리 상단 '대체·별건 결정 이력'에서")
+                    elif _hdr_inactive and not _reopenable:
+                        st.caption(f"{status_ko(so.get('status'))} 상태 — 보존 잔량 라인이 없어 되돌릴 것이 없습니다")
+                    if _hdr_inactive or _kept_n:
+                        # 되돌리기 = 보존 잔량 라인 존재, 또는 비활성 머리글 아래 활성 미납 라인(거울상 복구) (F4·H-1)
+                        if _reopenable:
+                            st.caption(f"{status_ko(so.get('status'))} 상태 — 보존 잔량 라인 {_kept_n}줄"
+                                       + (f" · 활성 미납 라인 {_active_open}줄(머리글만 비활성 — 복구 필요)" if _hdr_inactive and _active_open and not _kept_n else ""))
+                        if st.button("되돌리기 (잔량 복원)", key=f"so_reopen_{_soid}",
+                                     disabled=not _reopenable):
                             st.session_state[f"cfm_so_reopen_{_soid}"] = True
                         if st.session_state.get(f"cfm_so_reopen_{_soid}") and confirm_gate(
                                 "so_reopen", "보존한 잔량을 미납으로 복원하고 수주 상태를 다시 계산합니다. "
-                                "닫힌 납품 회차는 복원되지 않습니다.", scope=_soid):
+                                "닫힌 납품 회차는 납품완료가 그대로인 것만 복원됩니다.", scope=_soid):
                             if click_guard("so_reopen"):
-                                _r = _soc.reopen_sales_order(_db, _soid, current_user_name())
-                                st.session_state["so_close_flash"] = _r["msg"]
+                                _so_flash_rerun(_soc.reopen_sales_order(_db, _soid, current_user_name()))
                             st.rerun()
-                    else:
-                        _pend_n = sum(1 for i in sitems if float(i.get("pending_qty") or 0) > 0)
+                    if not _hdr_inactive:
+                        # 종결·취소 = 머리글 활성 ∧ (미납 있음 또는 닫힌 라인만 남음 → 마무리) (F4)
+                        _finish = _pend_n == 0 and _kept_n > 0
                         rc1, rc2 = st.columns(2)
                         with rc1:
                             _cr = st.selectbox("발주 중단 사유", list(_soc.CLOSE_REASONS),
                                                key=f"so_close_reason_{_soid}")
                             if _cr == "기타":
                                 _cr = st.text_input("사유 입력", key=f"so_close_reason_txt_{_soid}").strip()
-                            if st.button(f"발주 중단(종결) — 미납 {_pend_n}줄", key=f"so_close_{_soid}",
-                                         disabled=_pend_n == 0 or not _cr):
+                            _lbl = ("종결 마무리(머리글)" if _finish
+                                    else f"발주 중단(종결) — 미납 {_pend_n}줄")
+                            if st.button(_lbl, key=f"so_close_{_soid}",
+                                         disabled=(_pend_n == 0 and not _finish) or not _cr
+                                         or (_finish and _kept_mode != "CLOSED")):   # 마무리는 라인 mode 와 같은 버튼만 (QA M-2)
                                 st.session_state[f"cfm_so_close_{_soid}"] = True
                             if st.session_state.get(f"cfm_so_close_{_soid}") and confirm_gate(
-                                    "so_close", f"미납 {_pend_n}줄의 잔량을 보존하고 0 으로 내립니다 — 계획·자재·현황에서 "
-                                    f"빠지며, 되돌리기로 복원할 수 있습니다. 사유: {_cr}", scope=_soid):
+                                    "so_close", (f"닫힌 라인만 남아 있습니다 — 머리글을 종결로 맞춥니다. 사유: {_cr}"
+                                                 if _finish else
+                                                 f"미납 {_pend_n}줄의 잔량을 보존하고 0 으로 내립니다 — 계획·자재·현황에서 "
+                                                 f"빠지며, 되돌리기로 복원할 수 있습니다. 사유: {_cr}"), scope=_soid):
                                 if click_guard("so_close"):
-                                    _r = _soc.close_sales_order(_db, _soid, "CLOSED", _cr, current_user_name())
-                                    st.session_state["so_close_flash"] = _r["msg"]
+                                    _so_flash_rerun(_soc.close_sales_order(_db, _soid, "CLOSED", _cr, current_user_name()))
                                 st.rerun()
                         with rc2:
                             _xr = st.text_input("취소 사유 (필수)", key=f"so_cancel_reason_{_soid}").strip()
-                            if st.button("수주 취소 (거래 무효)", key=f"so_cancel_{_soid}", disabled=not _xr):
+                            if st.button("수주 취소 (거래 무효)" if not _finish else "취소 마무리(머리글)",
+                                         key=f"so_cancel_{_soid}",
+                                         disabled=not _xr or (_pend_n == 0 and not _finish)
+                                         or (_finish and _kept_mode != "CANCELLED")):
                                 st.session_state[f"cfm_so_cancel_{_soid}"] = True
                             if st.session_state.get(f"cfm_so_cancel_{_soid}") and confirm_gate(
                                     "so_cancel", f"수주를 취소합니다 — 미납 {_pend_n}줄 잔량 보존 후 0, 상태 취소. "
                                     f"사유: {_xr}", scope=_soid):
                                 if click_guard("so_cancel"):
-                                    _r = _soc.close_sales_order(_db, _soid, "CANCELLED", _xr, current_user_name())
-                                    st.session_state["so_close_flash"] = _r["msg"]
+                                    _so_flash_rerun(_soc.close_sales_order(_db, _soid, "CANCELLED", _xr, current_user_name()))
                                 st.rerun()
             else:
                 st.info("조건에 맞는 수주가 없습니다 — 기간·상태 필터를 '전체'로 "
@@ -9264,6 +9310,10 @@ elif page == "출고 관리":
                 if m.startswith("stock:"):
                     return (f"완성 재고 부족 — {m[6:]}. 수량을 정정하거나 "
                             "'재고 없이 출고 허용'을 체크하세요.")
+                if m == "line_closed":
+                    return ("종결·취소·대체된 수주 라인이 전표에 있습니다 — 수주 목록에서 "
+                            "되돌리거나 전표에서 그 라인을 빼세요. "
+                            f"({getattr(e, 'hint', '') or '-'})")
                 if code in ("55P03", "57014", "40P01"):
                     return ("다른 처리와 겹쳐 확정이 취소됐습니다(아무것도 반영되지 "
                             "않음) — 잠시 후 다시 확정하세요.")
@@ -9339,7 +9389,7 @@ elif page == "출고 관리":
                         _li_by = {l["soi_id"]: l for l in fetch(
                             "sales_order_items",
                             "soi_id,so_id,qty,received_qty,pending_qty,"
-                            "unit", "soi_id=in.({})".format(
+                            "unit,status,closed_qty", "soi_id=in.({})".format(
                                 ",".join(str(s) for s in _soi_ids)),
                             limit=200)}
                 except Exception as e:
@@ -9379,6 +9429,11 @@ elif page == "출고 관리":
                             _need_stk.get(x["product_id"], 0) + d)
                 for _soi9, _n9 in _need_pend.items():
                     _l9 = _li_by.get(_soi9)
+                    if _l9 and str(_l9.get("status") or "").upper() in _soc.LINE_INACTIVE:
+                        _errs.append(
+                            "종결·취소·대체된 수주 라인 — 수주 목록에서 되돌리거나 "
+                            "전표에서 그 라인을 빼세요 (soi {})".format(_soi9))
+                        continue
                     if _l9 and _n9 > float(_l9.get("pending_qty") or 0) \
                             + 1e-9:
                         _errs.append(
@@ -9462,27 +9517,36 @@ elif page == "출고 관리":
                             # ③ 수주 라인
                             _nr = max(float(_li.get("received_qty") or 0)
                                       - _q, 0.0)
-                            _nq = float(_li.get("qty") or 0)
+                            # 비활성 라인(종결·취소·대체)은 received 만 조정 — 잔량을
+                            # 되살리지 않는다 (076 D11, r1 리뷰 H1)
+                            _lf9 = _soc.revise_line_fields(_li, _nr)
                             _db.update("sales_order_items",
-                                       f"soi_id=eq.{_fq(_soi)}",
-                                       {"received_qty": _nr,
-                                        "pending_qty": max(_nq - _nr, 0),
-                                        "status": line_status(_nq, _nr)})
-                            _li["received_qty"] = _nr
-                            _li["pending_qty"] = max(_nq - _nr, 0)
+                                       f"soi_id=eq.{_fq(_soi)}", _lf9)
+                            _li.update(_lf9)
+                            if _lf9.get("status") in _soc.LINE_INACTIVE:
+                                # 닫힌 회차는 닫힌 채로: delivered 가 줄어든 만큼 qty 도
+                                # 내려 "열린 회차"가 생기지 않게 (QA H-2 — 되돌리기가
+                                # qty = delivered 인 회차만 복원)
+                                try:
+                                    for _rc9 in fetch("so_delivery_schedule",
+                                                      "sched_id,qty,delivered_qty",
+                                                      f"soi_id=eq.{_fq(_soi)}", limit=200):
+                                        if float(_rc9.get("qty") or 0) > \
+                                                float(_rc9.get("delivered_qty") or 0) + 1e-9:
+                                            _db.update("so_delivery_schedule",
+                                                       f"sched_id=eq.{_fq(_rc9['sched_id'])}",
+                                                       {"qty": float(_rc9.get("delivered_qty") or 0)})
+                                except Exception as e:
+                                    _warns.append(f"{x.get('pn')} 닫힌 회차 정리 실패: {e}")
                     else:
                         # 증가: 수주 반영 → 회차 충당(지정 회차 우선) →
                         # LOT FIFO 차감 — 확정과 같은 규칙
                         if _li:
                             _nr = float(_li.get("received_qty") or 0) + d
-                            _nq = float(_li.get("qty") or 0)
+                            _lf9 = _soc.revise_line_fields(_li, _nr)
                             _db.update("sales_order_items",
-                                       f"soi_id=eq.{_fq(_soi)}",
-                                       {"received_qty": _nr,
-                                        "pending_qty": max(_nq - _nr, 0),
-                                        "status": line_status(_nq, _nr)})
-                            _li["received_qty"] = _nr
-                            _li["pending_qty"] = max(_nq - _nr, 0)
+                                       f"soi_id=eq.{_fq(_soi)}", _lf9)
+                            _li.update(_lf9)
                             try:
                                 _rr9 = fetch("so_delivery_schedule",
                                     "sched_id,due_date,qty,delivered_qty",
@@ -9580,12 +9644,11 @@ elif page == "출고 관리":
                     _warns.append(f"정정 이력 기록 실패: {e}")
                 for _sid7 in _so_ids9:
                     try:
-                        _fr = fetch("sales_order_items", "qty,received_qty",
-                                    f"so_id=eq.{_fq(_sid7)}", limit=100)
-                        _db.update("sales_orders", f"so_id=eq.{_fq(_sid7)}",
-                                   {"status": _soc.header_status(_fr)})
+                        _soc.recompute_header(_db, _sid7)
                     except Exception:
                         pass
+                if _n_ok:
+                    st.session_state.pop("mr_cache", None)   # 정정 → 미납 변동 (F9)
                 _hdr = {"rev_no": _rev,
                         "revised_at": _rv_now.now().isoformat()}
                 if action == "CANCEL":
@@ -10154,7 +10217,7 @@ elif page == "출고 관리":
                         _sois_str = ",".join(str(s) for s in _by_soi)
                         _fresh = {l["soi_id"]: l for l in fetch(
                             "sales_order_items",
-                            "soi_id,so_id,qty,received_qty,pending_qty,unit",
+                            "soi_id,so_id,qty,received_qty,pending_qty,unit,status",
                             f"soi_id=in.({_sois_str})", limit=200)}
                     _plan = {}        # soi → {so, sched_abs, scheds, allocs, txns}
                     _plan_err = []
@@ -10164,6 +10227,12 @@ elif page == "출고 관리":
                         _li5 = _fresh.get(_soi5)
                         if not _li5:
                             _plan_err.append(f"{_x5.get('pn')}: 수주 라인 없음")
+                            continue
+                        if str(_li5.get("status") or "").upper() in _soc.LINE_INACTIVE:
+                            # 076 line_closed 와 같은 보호를 폴백 경로에도 (QA M-3)
+                            _plan_err.append(
+                                f"{_x5.get('pn')}: 종결·취소·대체된 수주 라인 — 수주 목록에서 "
+                                "되돌리거나 전표에서 빼세요")
                             continue
                         _qty5 = float(_li5.get("qty") or 0)
                         _recv5 = float(_li5.get("received_qty") or 0)
@@ -10417,12 +10486,7 @@ elif page == "출고 관리":
                         for _sid7 in {_pl["so_id"] for _pl in _plan.values()
                                       if _pl.get("so_id")}:
                             try:
-                                _fr = fetch("sales_order_items",
-                                            "qty,received_qty",
-                                            f"so_id=eq.{_fq(_sid7)}", limit=100)
-                                _db.update("sales_orders",
-                                           f"so_id=eq.{_fq(_sid7)}",
-                                           {"status": _soc.header_status(_fr)})
+                                _soc.recompute_header(_db, _sid7)
                             except Exception:
                                 pass
                         if _cf_ok:

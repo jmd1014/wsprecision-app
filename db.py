@@ -431,9 +431,10 @@ class RpcUnavailable(Exception):
 class RpcRejected(Exception):
     """함수가 RAISE 로 거부 — 미반영 확정, 재시도 가능. code/message 보존."""
 
-    def __init__(self, code: str, message: str, status: int = 400):
+    def __init__(self, code: str, message: str, status: int = 400, hint: str = ""):
         super().__init__(f"{code}: {message}")
         self.code, self.message, self.status = code, message, status
+        self.hint = hint or ""     # RAISE … USING HINT (예: 076 blocked → 전표 번호 목록)
 
 
 class RpcTransportError(Exception):
@@ -489,7 +490,8 @@ def rpc(name: str, params=None, timeout=(5, 30)):
                            if is_dict and body.get(k))
         log_error("rpc_rejected", f"{name}: {code} {msg[:200]}"
                   + (f" | {extra[:200]}" if extra else ""))
-        raise RpcRejected(code, msg, r.status_code)
+        raise RpcRejected(code, msg, r.status_code,
+                          hint=str(body.get("hint") or "") if is_dict else "")
     if body is None or not (200 <= r.status_code < 300):
         clear_cache()
         raise RpcTransportError(f"{name}: 응답 본문 없음 (HTTP {r.status_code})")

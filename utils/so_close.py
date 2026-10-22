@@ -1,23 +1,26 @@
 # -*- coding: utf-8 -*-
-"""수주 종결·취소·되돌리기 루틴 (2026-10-22, 수주 상태 정리 L3-S).
+"""수주 종결·취소·되돌리기 — RPC 래퍼 + 상태 규칙 (2026-10-22, 수주 상태 정리 r2 / 마이그레이션 076).
 
-기준: _수주상태_검토의견_20261022.md §2 D1~D8 / 마이그레이션 075.
+기준: _수주상태_검토의견_20261022.md D1~D8 + _수주상태_r1리뷰_분류_및_수정지시문_20261022.md D9~D14.
 
-- 수주 머리글 상태는 **파생값**이다: 접수(DRAFT) → 부분 진행(PARTIAL) → 완납(DELIVERED)은 출고 확정이
-  `header_status()` 로 바꾸고, 종결(CLOSED)·취소(CANCELLED)는 `close_sales_order()` 버튼 루틴만 쓴다.
-  수동 selectbox 로 상태를 고르는 경로는 없다(취소를 고르면 잔량이 남아 자재 소요·계획률을 오염시켰다).
-- 종결과 취소는 **같은 루틴**(mode 만 다름): 미확정 출고 전표 검사 → 미납 라인마다 잔량 보존(closed_qty)·
-  pending_qty 0·상태 mode → 납품 회차 qty=delivered_qty(재발주 대체와 같은 방식) → 전 라인 pending 0 이면 머리글 mode.
-- 되돌리기는 예외 경로: 잔량 복원·라인 상태 재계산·머리글 재계산. 닫힌 회차는 복원하지 않고 안내만.
-- 이 모듈은 Streamlit 을 모른다. db 는 fetch/update_count/update 를 가진 모듈(또는 목).
+- 수주 머리글 상태는 **파생값**: 접수(DRAFT) → 부분 진행(PARTIAL) → 완납(DELIVERED)은 출고 확정·정정·되돌리기가
+  `header_status()`(활성 라인만, 납품 0 = DRAFT)로 계산한다. 종결(CLOSED)·취소(CANCELLED)는 RPC 버튼 루틴만 쓴다.
+- D9 원자화: 종결·취소 = `so_close_lines`, 되돌리기 = `so_reopen_lines` (076, 한 트랜잭션·서버 값·멱등).
+  이 모듈은 RPC 호출 + 거부 사유 → 메시지만 담당한다. 쓰기 전 조회는 하지 않는다(TOCTOU 없음).
+- D11 비활성 라인 집합 = {CLOSED, CANCELLED, REPLACED}: 출고 정정(`revise_line_fields`)·머리글 계산·뷰·069 모두 제외.
+- 응답 불명(RpcTransportError)은 멱등이므로 **1회 재호출**, 그래도 실패면 "화면을 다시 열어 확인".
+- 이 모듈은 Streamlit 을 모른다. db 는 rpc/fetch/update 를 가진 모듈(또는 목).
 """
-from datetime import date as _date
+from utils.shipment_adjust import line_status
 
-SO_INACTIVE = ("CANCELLED", "CANCELED", "CLOSED")
+SO_INACTIVE = ("CANCELLED", "CANCELED", "CLOSED")                 # 머리글 비활성 (활성 수주 집합 = 이것을 뺀 것)
 SO_INACTIVE_FQ = 'status=not.in.("CANCELLED","CANCELED","CLOSED")'
+LINE_INACTIVE = ("CLOSED", "CANCELLED", "REPLACED")              # 라인 비활성 (D11)
 CLOSE_REASONS = ("월 변경 이월", "고객 요청 중단", "기타")
 MODES = ("CLOSED", "CANCELLED")
 MODE_KO = {"CLOSED": "종결", "CANCELLED": "취소"}
+RPC_CLOSE = "so_close_lines"
+RPC_REOPEN = "so_reopen_lines"
 
 
 def _f(v):
@@ -31,15 +34,19 @@ def is_inactive(status) -> bool:
     return str(status or "").upper() in SO_INACTIVE
 
 
-def header_status(lines) -> str:
-    """출고 확정·되돌리기 뒤 수주 머리글 상태(파생값, D1).
+def is_line_inactive(status) -> bool:
+    return str(status or "").upper() in LINE_INACTIVE
+
+
+def header_status(lines, current=None) -> str:
+    """수주 머리글 상태(파생값, D1·D11): 비활성 라인(CLOSED·CANCELLED·REPLACED)을 뺀 활성 라인으로 계산.
 
     전 라인 납품 ≥ 수량 → DELIVERED, 하나라도 납품 > 0 → PARTIAL, 아니면 DRAFT(접수).
-    라인이 없으면 DRAFT. (이전에는 납품 0 을 CONFIRMED 로 썼다 — 작성과 구분 안 됨)
+    활성 라인이 없으면 `current`(없으면 DRAFT) — 대체·종결로만 이뤄진 수주의 상태를 덮지 않는다.
     """
-    rows = list(lines or [])
+    rows = [r for r in (lines or []) if not is_line_inactive(r.get("status"))]
     if not rows:
-        return "DRAFT"
+        return current or "DRAFT"
     if all(_f(r.get("received_qty")) >= _f(r.get("qty")) - 1e-9 for r in rows):
         return "DELIVERED"
     if any(_f(r.get("received_qty")) > 0 for r in rows):
@@ -47,173 +54,175 @@ def header_status(lines) -> str:
     return "DRAFT"
 
 
+def kept_mode(lines):
+    """보존 잔량(closed_qty>0) 라인들의 상태 — CLOSED / CANCELLED / None(없음) / 'MIXED'(혼재)."""
+    modes = {str(l.get("status") or "").upper() for l in (lines or []) if _f(l.get("closed_qty")) > 0}
+    modes &= {"CLOSED", "CANCELLED"}
+    if not modes:
+        return None
+    return modes.pop() if len(modes) == 1 else "MIXED"
+
+
 def line_reopen_status(line) -> str:
     """되돌린 라인의 상태: 납품 > 0 → PARTIAL, 아니면 PENDING."""
     return "PARTIAL" if _f(line.get("received_qty")) > 0 else "PENDING"
 
 
-def _append_remark(old, text):
-    old = (old or "").strip()
-    return (old + " · " if old else "") + text
+def revise_line_fields(line, new_received) -> dict:
+    """출고 정정·취소가 수주 라인에 쓸 값 (F3). 활성 라인은 기존 규칙(received·pending·status),
+    비활성 라인은 received 만 조정하고 pending 0·status 는 유지, CLOSED/CANCELLED 는
+    closed_qty = qty − received(received + pending + closed = qty 불변식), REPLACED 는 closed_qty 0 유지."""
+    qty = _f(line.get("qty"))
+    nr = max(_f(new_received), 0.0)
+    st = str(line.get("status") or "").upper()
+    if st in LINE_INACTIVE:
+        out = {"received_qty": nr, "pending_qty": 0, "status": st}
+        if st in ("CLOSED", "CANCELLED"):
+            out["closed_qty"] = max(qty - nr, 0.0)
+        return out
+    return {"received_qty": nr, "pending_qty": max(qty - nr, 0.0), "status": line_status(qty, nr)}
 
 
-def open_shipments_for(db, soi_ids):
-    """이 라인들을 참조하는 **미확정(DRAFT)** 출고 전표 번호 목록. 종결 전 차단 검사(검토 ⑨)."""
-    ids = [int(i) for i in soi_ids if i is not None]
-    if not ids:
-        return []
-    items = []
-    for i0 in range(0, len(ids), 100):
-        items += db.fetch("shipment_items", "shipment_id,soi_id",
-                          "soi_id=in.({})".format(",".join(str(i) for i in ids[i0:i0 + 100])),
-                          limit=1000)
-    sids = sorted({int(x["shipment_id"]) for x in items if x.get("shipment_id") is not None})
-    if not sids:
-        return []
-    drafts = []
-    for i0 in range(0, len(sids), 100):
-        drafts += db.fetch("shipments", "shipment_id,ship_no,status",
-                           "status=eq.DRAFT&shipment_id=in.({})".format(
-                               ",".join(str(s) for s in sids[i0:i0 + 100])), limit=200)
-    return sorted({str(d.get("ship_no") or d.get("shipment_id")) for d in drafts})
+def recompute_header(db, so_id, force=False):
+    """출고 확정·정정·대체 되돌리기 뒤 머리글 재계산 (F5). 머리글이 비활성이면 건드리지 않는다(D11).
+    force=True 는 대체 되돌리기(머리글 CANCELLED 가 대체 루틴이 만든 것)에서만 — 비활성 머리글도 활성 라인으로 다시 계산.
+    반환: 새 상태(str) 또는 None(비활성·조회 실패·변화 없음)."""
+    hdr = db.fetch("sales_orders", "so_id,status", f"so_id=eq.{int(so_id)}", limit=1)
+    cur = (hdr[0].get("status") if hdr else None) or "DRAFT"
+    if is_inactive(cur) and not force:
+        return None
+    lines = db.fetch("sales_order_items", "qty,received_qty,status", f"so_id=eq.{int(so_id)}", limit=500)
+    new = header_status(lines, cur)
+    if new == cur:
+        return None
+    return new if db.update("sales_orders", f"so_id=eq.{int(so_id)}", {"status": new}) else None
 
 
-def _lines(db, so_id):
-    return db.fetch("sales_order_items",
-                    "soi_id,so_id,qty,received_qty,pending_qty,status,remark,closed_qty,close_reason",
-                    f"so_id=eq.{int(so_id)}&order=soi_id", limit=500)
+def replacement_revert_block(header_status_value, lines):
+    """단가 변경 재발주 대체의 [되돌리기] 를 막아야 하는지 (QA B-1·M-6).
+    머리글이 CLOSED(종결 루틴이 만든 것)이거나 보존 잔량(closed_qty>0) 라인이 있으면 먼저 수주 [되돌리기] 가 필요하다.
+    반환: 차단 메시지(str) 또는 None. 머리글 CANCELLED + 보존 라인 없음 = 대체 루틴이 만든 취소 → 허용(되돌린 뒤 force 재계산)."""
+    st = str(header_status_value or "").upper()
+    kept = [l for l in (lines or []) if _f(l.get("closed_qty")) > 0]
+    if st == "CLOSED" or kept:
+        return ("이 수주는 종결(또는 잔량 보존) 상태입니다 — 수주 목록에서 먼저 [되돌리기] 를 한 뒤 "
+                "대체를 되돌리세요")
+    return None
+
+
+# ── RPC 래퍼 ──
+def _exc(db, name):
+    """RPC 예외 클래스 — 실제 db 모듈 것을 우선(목 db 가 들어와도 같은 클래스를 던진다)."""
+    try:
+        import db as _real
+        cls = getattr(_real, name, None)
+        if cls is not None:
+            return cls
+    except Exception:
+        pass
+    return getattr(db, name, None) or type(name, (Exception,), {})
+
+
+def _call(db, name, params):
+    """RPC 호출. 응답 불명(RpcTransportError)은 멱등이므로 1회 재호출. 반환 (body|None, kind, err)."""
+    Rej, Unav, Trans = _exc(db, "RpcRejected"), _exc(db, "RpcUnavailable"), _exc(db, "RpcTransportError")
+    retried = False
+    for attempt in (1, 2):
+        try:
+            return db.rpc(name, params), "ok", None, retried
+        except Rej as e:
+            return None, "rejected", e, retried
+        except Unav as e:
+            return None, "unavailable", e, retried
+        except Trans as e:
+            if attempt == 1:
+                retried = True
+                continue
+            return None, "unknown", e, retried
+    return None, "unknown", None, retried      # pragma: no cover
+
+
+def _rej_text(e, ko):
+    m = str(getattr(e, "message", "") or str(e))
+    hint = str(getattr(e, "hint", "") or "")
+    if m == "blocked":
+        return (f"미확정 출고 전표가 이 수주 라인을 참조합니다 — 먼저 확정하거나 삭제하세요: {hint or '-'}"), [h.strip() for h in hint.split(",") if h.strip()]
+    if m == "not_found":
+        return "수주를 찾을 수 없습니다 — 화면을 새로 고치세요", []
+    if m == "bad_args":
+        return "사유를 입력하세요", []
+    code = str(getattr(e, "code", "") or "")
+    if code in ("55P03", "57014", "40P01"):
+        return f"다른 처리와 겹쳐 {ko}이 취소됐습니다(아무것도 반영되지 않음) — 잠시 후 다시 시도하세요", []
+    return f"{ko} 거부 ({code}: {m[:80]}) — 관리자에게 확인하세요", []
 
 
 def close_sales_order(db, so_id, mode, reason, who, today=None):
-    """수주 종결(CLOSED) 또는 취소(CANCELLED). 반환 dict:
-    ok, blocked(list[ship_no]), closed(n), failed(list[soi_id]), rounds(n), header(bool|None), msg.
-
-    - 미확정 출고 전표가 라인을 참조하면 아무것도 쓰지 않고 blocked 로 돌려준다.
-    - 라인 갱신은 `pending_qty=gt.0` 조건부 update_count — 두 번 실행돼도 두 번째는 0행.
-    - 전 라인 pending 0 이 됐을 때만 머리글 상태를 바꾼다. 일부 실패면 header=None 으로 명시.
-    """
+    """수주 종결(CLOSED) 또는 취소(CANCELLED) — RPC so_close_lines 한 번. 반환 dict:
+    ok, blocked(list[ship_no]), closed(n), rounds(n), header(bool|None), header_status, retried, msg."""
     mode = str(mode or "").upper()
     if mode not in MODES:
         raise ValueError(f"close_sales_order: mode 는 {MODES} 중 하나 ({mode})")
+    ko = MODE_KO[mode]
+    base = {"ok": False, "blocked": [], "closed": 0, "rounds": 0, "header": None, "header_status": None,
+            "retried": False, "msg": ""}
     reason = (reason or "").strip()
     if not reason:
-        return {"ok": False, "blocked": [], "closed": 0, "failed": [], "rounds": 0,
-                "header": None, "msg": "사유를 입력하세요"}
-    d = (today or _date.today()).isoformat() if not isinstance(today, str) else today
-    who = who or "-"
-    ko = MODE_KO[mode]
-    lines = _lines(db, so_id)
-    open_lines = [l for l in lines if _f(l.get("pending_qty")) > 0]
-    blocked = open_shipments_for(db, [l["soi_id"] for l in open_lines])
-    if blocked:
-        return {"ok": False, "blocked": blocked, "closed": 0, "failed": [], "rounds": 0,
-                "header": None,
-                "msg": f"미확정 출고 전표가 이 수주 라인을 참조합니다 — 먼저 확정하거나 삭제하세요: {', '.join(blocked)}"}
-    tag = f"{ko}({reason}) {d} {who}"
-    closed, failed, rounds = 0, [], 0
-    for l in open_lines:
-        pend = _f(l.get("pending_qty"))
-        try:
-            n = db.update_count(
-                "sales_order_items", f"soi_id=eq.{int(l['soi_id'])}&pending_qty=gt.0",
-                {"closed_qty": pend, "pending_qty": 0, "status": mode, "close_reason": reason,
-                 "remark": _append_remark(l.get("remark"), tag)})
-        except Exception as e:
-            _log(db, f"sales_order_items {ko} 실패(soi {l['soi_id']}): {e}")
-            n = -1
-        if n != 1:
-            failed.append(l["soi_id"])
-            continue
-        closed += 1
-        # 납품 회차: 미충당분 닫기 (qty = delivered_qty) — 재발주 대체와 동일
-        try:
-            for r in db.fetch("so_delivery_schedule", "sched_id,qty,delivered_qty",
-                              f"soi_id=eq.{int(l['soi_id'])}", limit=200):
-                if _f(r.get("qty")) - _f(r.get("delivered_qty")) > 1e-9:
-                    if db.update("so_delivery_schedule", f"sched_id=eq.{int(r['sched_id'])}",
-                                 {"qty": _f(r.get("delivered_qty"))}):
-                        rounds += 1
-        except Exception as e:
-            _log(db, f"so_delivery_schedule 회차 닫기 실패(soi {l['soi_id']}): {e}")
-    header = None
-    after = _lines(db, so_id)
-    if closed and not failed and after and all(_f(l.get("pending_qty")) <= 0 for l in after):
-        hdr = db.fetch("sales_orders", "so_id,status,remark", f"so_id=eq.{int(so_id)}", limit=1)
-        hdr = hdr[0] if hdr else {}
-        try:
-            header = bool(db.update("sales_orders", f"so_id=eq.{int(so_id)}",
-                                    {"status": mode,
-                                     "remark": _append_remark(hdr.get("remark"), tag)}))
-        except Exception as e:
-            _log(db, f"sales_orders {ko} 머리글 갱신 실패(so {so_id}): {e}")
-            header = False
-    if failed:
-        msg = (f"{ko} 일부만 반영 — 라인 {closed}/{len(open_lines)} (실패 soi {', '.join(map(str, failed))}). "
-               "머리글은 바꾸지 않았습니다. 화면을 다시 열어 확인하세요")
-    elif header is False:
-        msg = f"{ko} — 라인 {closed}줄은 반영됐으나 머리글 상태 저장에 실패했습니다. 다시 시도하세요"
-    elif not open_lines:
-        msg = f"미납 라인이 없어 {ko}할 잔량이 없습니다"
+        return {**base, "msg": "사유를 입력하세요"}
+    body, kind, err, retried = _call(db, RPC_CLOSE, {"p_so_id": int(so_id), "p_mode": mode,
+                                                     "p_reason": reason, "p_who": who or "-"})
+    base["retried"] = retried
+    if kind == "rejected":
+        msg, ships = _rej_text(err, ko)
+        if str(getattr(err, "message", "") or "") == "bad_args" and "mode mismatch" in str(getattr(err, "hint", "") or ""):
+            msg = f"닫힌 라인의 상태와 다른 방식으로 마무리할 수 없습니다 — 라인이 종결이면 [종결 마무리], 취소면 [수주 취소]로"
+        return {**base, "blocked": ships, "msg": msg}
+    if kind == "unavailable":
+        return {**base, "msg": f"{ko} 기능(076)이 서버에 없습니다 — 관리자에게 확인하세요"}
+    if kind == "unknown":
+        return {**base, "msg": f"{ko} 응답 불명 — 반영됐을 수 있습니다. 화면을 다시 열어 확인하세요"}
+    b = body if isinstance(body, dict) else {}
+    closed, rounds, header = int(b.get("closed") or 0), int(b.get("rounds") or 0), bool(b.get("header"))
+    hst = b.get("header_status")
+    if retried and closed == 0 and not header:
+        msg = f"응답 지연으로 재호출 — 첫 호출이 반영된 것으로 보입니다. 현재 머리글 {hst or '-'} — 화면을 확인하세요"
+    elif closed == 0 and not header:
+        msg = f"미납 라인이 없어 {ko}할 잔량이 없습니다" + (f" (현재 {hst})" if hst else "")
+    elif closed == 0 and header:
+        msg = f"{ko} 마무리 — 닫힌 라인만 남아 있어 머리글을 {ko} 상태로 맞췄습니다"
     else:
-        msg = f"{ko} — 라인 {closed}줄 잔량 보존, 회차 {rounds}건 닫음" + ("" if header else " (머리글 유지)")
-    return {"ok": not failed and header is not False, "blocked": [], "closed": closed,
-            "failed": failed, "rounds": rounds, "header": header, "msg": msg}
+        msg = f"{ko} — 라인 {closed}줄 잔량 보존, 회차 {rounds}건 닫음"
+        if retried:
+            msg += " · 응답 지연으로 1회 재호출"
+    return {**base, "ok": True, "closed": closed, "rounds": rounds, "header": header, "header_status": hst, "msg": msg}
 
 
 def reopen_sales_order(db, so_id, who, today=None):
-    """종결·취소 되돌리기: closed_qty → pending_qty, 라인 상태 재계산, 머리글 재계산.
-    닫힌 회차는 복원하지 않는다(안내만). 반환 dict: ok, reopened(n), failed(list), header(str|None), msg."""
-    d = (today or _date.today()).isoformat() if not isinstance(today, str) else today
-    who = who or "-"
-    lines = _lines(db, so_id)
-    targets = [l for l in lines if _f(l.get("closed_qty")) > 0 and str(l.get("status") or "").upper() in SO_INACTIVE]
-    reopened, failed = 0, []
-    for l in targets:
-        cq = _f(l.get("closed_qty"))
-        try:
-            n = db.update_count(
-                "sales_order_items", f"soi_id=eq.{int(l['soi_id'])}&closed_qty=gt.0",
-                {"pending_qty": cq, "closed_qty": 0, "status": line_reopen_status(l),
-                 "close_reason": None,
-                 "remark": _append_remark(l.get("remark"), f"되돌림 {d} {who}")})
-        except Exception as e:
-            _log(db, f"sales_order_items 되돌리기 실패(soi {l['soi_id']}): {e}")
-            n = -1
-        if n == 1:
-            reopened += 1
-        else:
-            failed.append(l["soi_id"])
-    header = None
-    if targets and not failed:
-        after = _lines(db, so_id)
-        new_st = header_status(after)
-        hdr = db.fetch("sales_orders", "so_id,status,remark", f"so_id=eq.{int(so_id)}", limit=1)
-        hdr = hdr[0] if hdr else {}
-        try:
-            if db.update("sales_orders", f"so_id=eq.{int(so_id)}",
-                         {"status": new_st,
-                          "remark": _append_remark(hdr.get("remark"), f"되돌림 {d} {who}")}):
-                header = new_st
-        except Exception as e:
-            _log(db, f"sales_orders 되돌리기 머리글 갱신 실패(so {so_id}): {e}")
-    if not targets:
+    """종결·취소 되돌리기 — RPC so_reopen_lines 한 번. 반환 dict:
+    ok, reopened(n), rounds_restored, rounds_skipped, header(str|None), header_status, retried, msg."""
+    base = {"ok": False, "reopened": 0, "rounds_restored": 0, "rounds_skipped": 0, "header": None,
+            "header_status": None, "retried": False, "msg": ""}
+    body, kind, err, retried = _call(db, RPC_REOPEN, {"p_so_id": int(so_id), "p_who": who or "-"})
+    base["retried"] = retried
+    if kind == "rejected":
+        msg, _ = _rej_text(err, "되돌리기")
+        return {**base, "msg": msg}
+    if kind == "unavailable":
+        return {**base, "msg": "되돌리기 기능(076)이 서버에 없습니다 — 관리자에게 확인하세요"}
+    if kind == "unknown":
+        return {**base, "msg": "되돌리기 응답 불명 — 반영됐을 수 있습니다. 화면을 다시 열어 확인하세요"}
+    b = body if isinstance(body, dict) else {}
+    n, rr, rs = int(b.get("reopened") or 0), int(b.get("rounds_restored") or 0), int(b.get("rounds_skipped") or 0)
+    header, hst = b.get("header"), b.get("header_status")
+    if retried and n == 0 and header is None:
+        msg = f"응답 지연으로 재호출 — 첫 호출이 반영된 것으로 보입니다. 현재 머리글 {hst or '-'} — 화면을 확인하세요"
+    elif n == 0 and header is None:
         msg = "되돌릴 잔량이 없습니다(종결·취소된 라인 없음)"
-    elif failed:
-        msg = (f"되돌리기 일부만 반영 — 라인 {reopened}/{len(targets)} (실패 soi {', '.join(map(str, failed))}). "
-               "머리글은 바꾸지 않았습니다")
-    elif header is None:
-        msg = f"라인 {reopened}줄 잔량 복원됐으나 머리글 상태 저장에 실패했습니다"
+    elif n == 0:
+        msg = f"보존 잔량 라인이 없어 머리글만 다시 계산했습니다 — {header}"
     else:
-        msg = (f"되돌리기 — 라인 {reopened}줄 잔량 복원, 머리글 {header}. "
-               "닫힌 납품 회차는 복원하지 않았습니다 — 필요하면 납품 스케줄에서 다시 잡으세요")
-    return {"ok": bool(targets) and not failed and header is not None,
-            "reopened": reopened, "failed": failed, "header": header, "msg": msg}
-
-
-def _log(db, detail):
-    fn = getattr(db, "log_error", None)
-    if fn:
-        try:
-            fn("db_write", detail, table_name="sales_orders")
-        except Exception:
-            pass
+        msg = f"되돌리기 — 라인 {n}줄 잔량 복원, 회차 {rr}건 복원" + (f" · {rs}건 미복원(회차가 이미 열려 있음 — 납품 스케줄에서 확인)" if rs else "") + f", 머리글 {header}"
+        if retried:
+            msg += " · 응답 지연으로 1회 재호출"
+    return {**base, "ok": n > 0 or header is not None or retried, "reopened": n, "rounds_restored": rr, "rounds_skipped": rs,
+            "header": header, "header_status": hst, "retried": retried, "msg": msg}
