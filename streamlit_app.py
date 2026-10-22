@@ -407,6 +407,9 @@ def current_user_name() -> str:
 
 
 from utils import slack_notify as _sk  # 업무 분기점 슬랙 알림 (fire-and-forget)
+from utils import so_close as _soc  # 수주 종결·취소·되돌리기 + 활성 수주 필터 상수 (2026-10-22)
+SO_INACTIVE = _soc.SO_INACTIVE          # 활성 수주 집합 = 이 상태들을 뺀 것 (D6, 한 곳)
+SO_INACTIVE_FQ = _soc.SO_INACTIVE_FQ
 
 # 미처리 예외를 app_errors 에 남기는 로깅 훅 (migration 067, 2026-10-13).
 # 라우팅을 try 로 감싸지 않는다 — db.install_uncaught_hook docstring 참고.
@@ -678,7 +681,7 @@ if (st.session_state.get("auth_user")
 # ─── 상태 표기 (영문 코드 → 한글 배지) ───
 STATUS_KO = {
     "PENDING": "대기", "PARTIAL": "부분 진행", "DELIVERED": "완납",
-    "DRAFT": "작성", "CONFIRMED": "확정", "IN_PROD": "생산중",
+    "DRAFT": "접수", "CONFIRMED": "확정", "IN_PROD": "생산중",
     "SENT": "발송", "RECEIVED": "입고완료",
     "CANCELED": "취소", "CANCELLED": "취소", "CLOSED": "종결",
     "REPLACED": "대체됨",
@@ -1834,7 +1837,7 @@ if page == "홈":
         _h_so = fetch("sales_order_stats",
             "so_id,so_number,customer,so_date,due_date,total_qty,"
             "total_received_qty,total_pending_qty,delivery_status",
-            'status=not.in.("CANCELLED","CANCELED")&order=so_date.desc',
+            SO_INACTIVE_FQ + "&order=so_date.desc",
             limit=500)
     except Exception:
         _h_so = []
@@ -2474,8 +2477,7 @@ elif page == "마스터 관리":
                             "sales_orders", "so_id,status",
                             "so_id=in.({})".format(
                                 ",".join(map(str, _sids))), limit=300)
-                            if (s.get("status") or "") in
-                            ("CANCELLED", "CANCELED")}
+                            if (s.get("status") or "") in SO_INACTIVE}
                     _lis = [l for l in _lis if l["so_id"] not in _dead]
                     out["pend"] = sum(float(l.get("pending_qty") or 0)
                                       for l in _lis)
@@ -5832,7 +5834,7 @@ elif page == "수주 관리":
     try:
         _so_kpi = fetch("sales_order_stats",
             "so_id,total_pending_qty,due_date,so_date",
-            'status=not.in.("CANCELLED","CANCELED")', limit=500)
+            SO_INACTIVE_FQ, limit=500)
     except Exception:
         _so_kpi = []
     _sk_pend = sum(float(s.get("total_pending_qty") or 0) for s in _so_kpi)
@@ -5924,7 +5926,7 @@ elif page == "수주 관리":
             "pending_qty=gt.0&order=soi_id", limit=2000)
         _ck_so = {s["so_id"]: s for s in fetch("sales_orders",
             "so_id,so_number,customer,status,so_date",
-            'status=not.in.("CANCELLED","CANCELED")', limit=1000)}
+            SO_INACTIVE_FQ, limit=1000)}
         _ck_prod = {p["product_id"]: p for p in fetch("products",
             "product_id,pn,archived_at,archive_reason,sale_price,"
             "customer,item_name,material", "order=product_id", limit=1000)}
@@ -7197,8 +7199,8 @@ elif page == "수주 관리":
         with fc2:
             sl_cust = st.text_input("거래처", placeholder="예: HDX, 미진", key="so_cust")
         # 상태 필터 칩 (2a 시안 — pills, 구버전은 radio 폴백)
-        _sl_opts = ["전체", "DRAFT", "CONFIRMED", "IN_PROD", "PARTIAL",
-                    "DELIVERED", "CANCELLED"]
+        _sl_opts = ["전체", "DRAFT", "PARTIAL", "DELIVERED", "CLOSED",
+                    "CANCELLED"]          # 접수·부분 진행·완납·종결·취소 (D1·D2)
         _sl_fmt = lambda s: "전체" if s == "전체" else status_ko(s)
         if hasattr(st, "pills"):
             sl_status = st.pills("상태", _sl_opts, default=keep_default("so_status_pills", "전체"),
@@ -7276,14 +7278,51 @@ elif page == "수주 관리":
                             num_cols=("수량", "납품", "미납",
                                       "단가 (원)", "금액 (원)"),
                             strong_cols=("우성 품번",))
-                    rc1, rc2 = st.columns(2)
-                    statuses = ["DRAFT","CONFIRMED","IN_PROD","PARTIAL","DELIVERED","CANCELLED"]
-                    new_st = rc1.selectbox("상태 변경", statuses,
-                        format_func=status_ko,
-                        index=statuses.index(so["status"]) if so["status"] in statuses else 0)
-                    if rc2.button("상태 저장"):
-                        if _db.update("sales_orders", f"so_id=eq.{_fq(so['so_id'])}", {"status": new_st}):
-                            st.success(f"상태 변경: {status_ko(new_st)}"); st.rerun()
+                    # 상태는 파생값 — 접수→부분 진행→완납은 출고 확정이 바꾸고,
+                    # 종결·취소는 아래 버튼(잔량 보존 + pending 0 + 회차 닫기)만 쓴다 (D3·D4).
+                    _soid = so["so_id"]
+                    if st.session_state.get("so_close_flash"):
+                        st.info(st.session_state.pop("so_close_flash"))
+                    if _soc.is_inactive(so.get("status")):
+                        st.caption(f"{status_ko(so.get('status'))} 상태 — 잔량은 라인의 보존 수량(closed_qty)에 있습니다")
+                        if st.button("되돌리기 (잔량 복원)", key=f"so_reopen_{_soid}"):
+                            st.session_state[f"cfm_so_reopen_{_soid}"] = True
+                        if st.session_state.get(f"cfm_so_reopen_{_soid}") and confirm_gate(
+                                "so_reopen", "보존한 잔량을 미납으로 복원하고 수주 상태를 다시 계산합니다. "
+                                "닫힌 납품 회차는 복원되지 않습니다.", scope=_soid):
+                            if click_guard("so_reopen"):
+                                _r = _soc.reopen_sales_order(_db, _soid, current_user_name())
+                                st.session_state["so_close_flash"] = _r["msg"]
+                            st.rerun()
+                    else:
+                        _pend_n = sum(1 for i in sitems if float(i.get("pending_qty") or 0) > 0)
+                        rc1, rc2 = st.columns(2)
+                        with rc1:
+                            _cr = st.selectbox("발주 중단 사유", list(_soc.CLOSE_REASONS),
+                                               key=f"so_close_reason_{_soid}")
+                            if _cr == "기타":
+                                _cr = st.text_input("사유 입력", key=f"so_close_reason_txt_{_soid}").strip()
+                            if st.button(f"발주 중단(종결) — 미납 {_pend_n}줄", key=f"so_close_{_soid}",
+                                         disabled=_pend_n == 0 or not _cr):
+                                st.session_state[f"cfm_so_close_{_soid}"] = True
+                            if st.session_state.get(f"cfm_so_close_{_soid}") and confirm_gate(
+                                    "so_close", f"미납 {_pend_n}줄의 잔량을 보존하고 0 으로 내립니다 — 계획·자재·현황에서 "
+                                    f"빠지며, 되돌리기로 복원할 수 있습니다. 사유: {_cr}", scope=_soid):
+                                if click_guard("so_close"):
+                                    _r = _soc.close_sales_order(_db, _soid, "CLOSED", _cr, current_user_name())
+                                    st.session_state["so_close_flash"] = _r["msg"]
+                                st.rerun()
+                        with rc2:
+                            _xr = st.text_input("취소 사유 (필수)", key=f"so_cancel_reason_{_soid}").strip()
+                            if st.button("수주 취소 (거래 무효)", key=f"so_cancel_{_soid}", disabled=not _xr):
+                                st.session_state[f"cfm_so_cancel_{_soid}"] = True
+                            if st.session_state.get(f"cfm_so_cancel_{_soid}") and confirm_gate(
+                                    "so_cancel", f"수주를 취소합니다 — 미납 {_pend_n}줄 잔량 보존 후 0, 상태 취소. "
+                                    f"사유: {_xr}", scope=_soid):
+                                if click_guard("so_cancel"):
+                                    _r = _soc.close_sales_order(_db, _soid, "CANCELLED", _xr, current_user_name())
+                                    st.session_state["so_close_flash"] = _r["msg"]
+                                st.rerun()
             else:
                 st.info("조건에 맞는 수주가 없습니다 — 기간·상태 필터를 '전체'로 "
                         "바꾸거나, '수주 입력' 화면에서 업로드하세요.")
@@ -7529,7 +7568,7 @@ elif page == "수주 관리":
                 pass
 
         _dead = {k for k, v in _sc_som.items()
-                 if (v.get("status") or "") in ("CANCELLED", "CANCELED")}
+                 if (v.get("status") or "") in SO_INACTIVE}
         _today_s = _date.today()
         _wk0 = _today_s - _td(days=_today_s.weekday())
         _wk1, _wk2 = _wk0 + _td(days=7), _wk0 + _td(days=14)
@@ -7892,7 +7931,7 @@ elif page == "수주 관리":
                 except Exception:
                     pass
 
-            _sf = ['status=not.in.("CANCELLED","CANCELED")',
+            _sf = [SO_INACTIVE_FQ,
                    "order=so_date.desc"]
             if _sq:
                 if not _hit_so:
@@ -8709,7 +8748,7 @@ elif page == "출고 관리":
                 limit=100)}
             _sh_cand = [c for c in _sh_cand
                         if (_cand_so.get(c["so_id"], {}).get("status")
-                            or "") not in ("CANCELLED", "CANCELED")]
+                            or "") not in SO_INACTIVE]
             if _sh_cand:
                 _sh_pick2 = sq1.selectbox(
                     "추가할 수주 라인", _sh_cand,
@@ -8751,8 +8790,7 @@ elif page == "출고 관리":
                     "so_id,so_number,customer,status",
                     "so_id=in.({})".format(
                         ",".join(map(str, _sh_soids))), limit=300)
-                    if (s.get("status") or "") not in
-                    ("CANCELLED", "CANCELED")}
+                    if (s.get("status") or "") not in SO_INACTIVE}
                 _sh_lim = {l["soi_id"]: l for l in fetch(
                     "sales_order_items",
                     "soi_id,so_id,canonical_pn,customer_part_no,"
@@ -9544,15 +9582,8 @@ elif page == "출고 관리":
                     try:
                         _fr = fetch("sales_order_items", "qty,received_qty",
                                     f"so_id=eq.{_fq(_sid7)}", limit=100)
-                        _all7 = all(float(r.get("received_qty") or 0)
-                                    >= float(r.get("qty") or 0)
-                                    for r in _fr) if _fr else False
-                        _any7 = any(float(r.get("received_qty") or 0) > 0
-                                    for r in _fr) if _fr else False
                         _db.update("sales_orders", f"so_id=eq.{_fq(_sid7)}",
-                                   {"status": "DELIVERED" if _all7
-                                    else "PARTIAL" if _any7
-                                    else "CONFIRMED"})
+                                   {"status": _soc.header_status(_fr)})
                     except Exception:
                         pass
                 _hdr = {"rev_no": _rev,
@@ -10389,18 +10420,9 @@ elif page == "출고 관리":
                                 _fr = fetch("sales_order_items",
                                             "qty,received_qty",
                                             f"so_id=eq.{_fq(_sid7)}", limit=100)
-                                _all7 = all(
-                                    float(x.get("received_qty") or 0)
-                                    >= float(x.get("qty") or 0)
-                                    for x in _fr) if _fr else False
-                                _any7 = any(
-                                    float(x.get("received_qty") or 0) > 0
-                                    for x in _fr) if _fr else False
                                 _db.update("sales_orders",
                                            f"so_id=eq.{_fq(_sid7)}",
-                                           {"status": "DELIVERED" if _all7
-                                            else "PARTIAL" if _any7
-                                            else "CONFIRMED"})
+                                           {"status": _soc.header_status(_fr)})
                             except Exception:
                                 pass
                         if _cf_ok:
@@ -10928,7 +10950,7 @@ elif page == "생산 계획":
                 limit=500)})
         sois = [i for i in sois
                 if (_so_st.get(i["so_id"]) or "")
-                not in ("CANCELLED", "CANCELED")]
+                not in SO_INACTIVE]
       except Exception as e:
         st.error(f"미납 수주 조회 실패: {e}")
 
@@ -12912,7 +12934,7 @@ elif page == "구매 관리":
                     str(x) for x in so_ids[_i0:_i0 + 100]) + ")", limit=500)})
         sois = [i for i in sois
                 if (so_map.get(i["so_id"], {}).get("status") or "")
-                not in ("CANCELLED", "CANCELED")]
+                not in SO_INACTIVE]
         if not sois:
             return {"msg": "미납 수주 품목이 없습니다 (취소 수주 제외)."}
         # ── 3) BOM 조회 (제품별 자재 매핑) ──
@@ -14196,7 +14218,7 @@ elif page == "구매 관리":
                             _som[s["so_id"]] = s
                     for l in _ln:
                         s = _som.get(l.get("so_id")) or {}
-                        if s.get("status") == "CANCELLED":
+                        if (s.get("status") or "") in SO_INACTIVE:
                             continue
                         e = out.setdefault(l["product_id"],
                                            {"qty": 0, "due": None, "lines": []})
