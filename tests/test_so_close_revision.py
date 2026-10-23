@@ -24,7 +24,8 @@ pytestmark = pytest.mark.skipif(not streamlit_available, reason="streamlit 미�
 
 
 def _patch_header(monkeypatch, status, stale_line=None, current_line=None, status_refetch=None, stale_lines=None,
-                  refetch_raise=False, refetch_empty=False, snapshot_raise=False, hist_raise=False):
+                  refetch_raise=False, refetch_empty=False, snapshot_raise=False, hist_raise=False,
+                  hist_raise_routine=False):
     """sales_orders 머리글 상태를 덮고, 선택적으로 정정이 읽는 라인(stale)과 조건부 갱신이 보는 라인(current)을 가른다.
     status_refetch: PATCH 직전 재조회(so_id=eq., cache=False)가 돌려줄 머리글 상태(H-2 창 재현)."""
     # 같은 테스트에서 두 번 부르면 래퍼가 겹쳐 조건을 두 번 검사(두 번째는 이미 바뀐 라인) → 0행 오판. 원본(rev_db)을 기억해 그 위에만 씌운다
@@ -48,6 +49,10 @@ def _patch_header(monkeypatch, status, stale_line=None, current_line=None, statu
             raise RuntimeError("회차 스냅샷 조회 실패(시뮬레이션)")
         if table == "shipment_revisions" and hist_raise and "action=eq.CANCEL" in (filter_query or ""):
             raise RuntimeError("취소 이력 조회 실패(시뮬레이션)")
+        # 루틴 안의 조회만 실패(select rev_id,si_id) — 화면의 D19 조회(select si_id)는 성공 (A6, Codex r4 M1)
+        if table == "shipment_revisions" and hist_raise_routine and select == "rev_id,si_id" \
+                and "action=eq.CANCEL" in (filter_query or ""):
+            raise RuntimeError("취소 이력 조회 실패(루틴 시뮬레이션)")
         if table == "sales_orders":
             st_ = status_refetch if (status_refetch and "so_id=eq." in (filter_query or "")) else status
             return [{"so_id": 100, "so_number": "SO-100", "customer": "㈜엠제이티", "status": st_,
@@ -308,6 +313,28 @@ def test_cancel_failclosed_on_history_failure(rev_db, monkeypatch):
     at.run()
     assert "cf_cancel_cfm_ok" not in {b.key for b in at.button}      # 게이트 자체가 열리지 않는다
     _no_writes()
+
+
+def test_cancel_routine_failclosed_when_only_routine_lookup_fails(rev_db, monkeypatch):
+    """A6(Codex r4 M1 이월): 화면의 D19 이력 조회(select si_id)는 성공해 취소 게이트가 열리고,
+    루틴 안의 이력 조회(select rev_id,si_id)만 실패 → 루틴의 D18 분기에 실제로 도달한다:
+    쓰기 0·전표 CONFIRMED 유지·'정정 중단 … 취소 이력 조회 실패 … 쓰기 없음'·db_read 오류 기록 1건."""
+    RV._seed()
+    RV.LINES[11]["status"] = "PARTIAL"
+    _patch_header(monkeypatch, "PARTIAL", hist_raise_routine=True)
+    logged = []
+    monkeypatch.setattr(_dbmod, "log_error", lambda *a, **k: logged.append((a, k)) or False)
+    at = RV._pick_confirmed(RV._open())
+    at.text_input(key="cf_cx_reason_1").set_value("정정 테스트")
+    at.run()
+    assert not at.button(key="cf_cancel").disabled                   # 화면 조회는 성공 → D19 잠금 없음(사유 입력 뒤)
+    at.button(key="cf_cancel").click(); at.run()
+    at.button(key="cf_cancel_cfm_ok").click(); at.run()              # 확인 게이트까지 통과해 루틴 호출
+    assert not at.exception, [str(e.value) for e in at.exception]
+    _no_writes()
+    e = _errs(at)
+    assert "정정 중단" in e and "취소 이력 조회 실패" in e and "쓰기 없음" in e
+    assert [a for a, _ in logged if a and a[0] == "db_read" and "취소 이력 조회 실패" in str(a[1])], logged
 
 
 def _seed_two_lines():

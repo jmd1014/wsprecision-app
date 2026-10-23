@@ -399,6 +399,32 @@ def _write_calls(tree):
     return out
 
 
+_HOME_WRITE_TOKENS = (".insert(", ".update(", ".update_count(", ".upsert(", ".rpc(", ".delete(")
+
+
+def _home_block(app_src):
+    h0 = app_src.index("# 업무 루틴 홈 카드")
+    h1 = app_src.index("_h_so = fetch(", h0)
+    return app_src[h0:h1]
+
+
+def _assert_home_block_readonly(home):
+    """홈 카드 호출부는 읽기 전용(C12): 쓰기 메서드 문자열·시각 생성 호출이 없어야 한다."""
+    for tok in _HOME_WRITE_TOKENS:
+        assert tok not in home, tok
+    assert "today()" not in home and ".now(" not in home
+
+
+def test_home_block_readonly_check_detects_injection():
+    """역검사(C12): 검사 자체가 살아있는지 — 홈 카드 블록에 쓰기 호출 문자열을 주입하면 실패해야 한다."""
+    home = _home_block(open(APP_FILE, encoding="utf-8").read())
+    _assert_home_block_readonly(home)                                   # 원본은 통과
+    for inj in ("_db.update_count('dash_cards', 'card_id=eq.1', {})", "db.upsert('dash_cards', [])",
+                "fetch_one('x').insert('dash_cards', [])", "datetime.now()"):
+        with pytest.raises(AssertionError):
+            _assert_home_block_readonly(home + "\n" + inj)
+
+
 def test_static_only_dash_tables_are_written():
     for path in ("app/dash_page.py", "utils/dash_routine.py"):
         src = open(os.path.join(ROOT, path), encoding="utf-8").read()
@@ -424,11 +450,7 @@ def test_static_only_dash_tables_are_written():
         assert isinstance(target, str) and target.startswith("dash_"), (op, target)
     assert "today()" not in block and ".now(" not in block
     # 홈 카드 호출부(업무 루틴 홈 카드 try 블록)도 검사 범위
-    h0 = app_src.index("# 업무 루틴 홈 카드")
-    h1 = app_src.index("_h_so = fetch(", h0)
-    home = app_src[h0:h1]
-    assert ".insert(" not in home and ".update(" not in home and ".rpc(" not in home and ".delete(" not in home
-    assert "today()" not in home and ".now(" not in home
+    _assert_home_block_readonly(_home_block(app_src))
     # Ctx 생성 헬퍼도 쓰기 없음
     c0 = app_src.index("def _dash_ctx_make("); c1 = app_src.index("\n\n\n", c0)
     assert not _write_calls(ast.parse(app_src[c0:c1]))
@@ -451,13 +473,15 @@ def _dash_fetches(dash_db):
 
 
 def test_today_first_generation_query_budget(dash_db, monkeypatch):
-    """첫 생성 진입: 조회 ≤ 8 (RPC 1 + 생성 뒤 재조회 1 포함) — 계획서 §6."""
+    """첫 생성 진입: 조회 ≤ 8 (RPC 1 + 생성 뒤 재조회 1 포함) — 계획서 §6.
+    C12(2026-10-23): RPC 도 왕복이므로 조회+RPC 합산 ≤ 8 로 조인다. REQ3 은 P5-4 보류."""
     _fix_now(monkeypatch, WED_DAY)
     at = _make(); at.run(); _login(at, "김준오", "pw-day")
     dash_db.fetch_calls.clear(); dash_db.rpc_calls.clear()
     goto(at, "dash", "today")
     assert len(dash_db.rpc_calls) == 1
     assert len(_dash_fetches(dash_db)) <= 8, _dash_fetches(dash_db)
+    assert len(_dash_fetches(dash_db)) + len(dash_db.rpc_calls) <= 8, (_dash_fetches(dash_db), dash_db.rpc_calls)
 
 
 def test_today_reentry_query_budget(dash_db, monkeypatch):
