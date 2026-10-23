@@ -121,6 +121,7 @@ COMMENT ON FUNCTION public.so_close_lines(integer, text, text, text) IS
   '수주 종결(CLOSED)·취소(CANCELLED)를 한 트랜잭션으로: 미확정 전표 차단 → 활성 미납 라인 closed_qty 보존·pending 0·전 회차 보존(closed_rounds, 077)·열린 회차 닫기 → 활성 잔량 0 이면 머리글. 멱등. 거부 bad_args/not_found/blocked(HINT 전표) (076·077)';
 REVOKE EXECUTE ON FUNCTION public.so_close_lines(integer, text, text, text) FROM PUBLIC, anon, authenticated;
 GRANT  EXECUTE ON FUNCTION public.so_close_lines(integer, text, text, text) TO service_role;
+COMMENT ON COLUMN public.sales_order_items.closed_rounds IS '종결·취소 때 라인의 전 회차 [{sched_id, qty_before, delivered}] — 되돌리기 복원용(qty = delivered 인 회차만 qty_before 로). NULL = 닫은 적 없음(활성), [] = 회차 없음 (076·077)';   -- Data r3 L1: 076 열 주석 갱신
 
 -- 적용 후 검증(개발 세션, 08): 드라이런(ROLLBACK) — 완납 회차 + 열린 회차 혼재 라인을 종결 → 과거 출고 취소 흉내(delivered 감소 + qty = delivered)
 --   → so_reopen_lines → 두 회차 모두 qty_before 복원, rounds_skipped 0. 그리고 종결 라인을 참조하는 DRAFT 전표를 트랜잭션 안에서 만들어
