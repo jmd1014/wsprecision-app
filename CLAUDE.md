@@ -234,6 +234,12 @@
   HINT=전표) → 활성 미납 라인 closed_qty 보존·pending 0·회차 보존(`closed_rounds`)·닫기 → 활성 잔량 0 이면
   머리글. 되돌리기 **RPC `so_reopen_lines`**: 잔량 복원·상태 재계산·보존 회차 복원(납품완료 불변인 것만)·
   머리글 활성 라인 재계산. 둘 다 멱등(반쪽 상태는 같은 버튼 재호출로 복구), 응답 불명은 1회 재호출.
+  **종결·취소 머리글 아래 라인은 정정 시 라인 상태와 무관하게 비활성 취급**(D15 — 완납 라인을 감소 정정해도
+  PENDING 으로 되살리지 않고 status = 머리글 모드·closed_qty = qty − received). 정정의 라인 갱신은
+  `status=eq.<읽은 값>&received_qty=eq.<읽은 값>` 조건부 `update_count` 로 **라인 → LOT → 회차** 순(D16); 0행이면
+  그 라인부터 중단·안내(앞 라인은 반영된 채 — P3-1 출고 정정 RPC 전까지의 한계). `closed_rounds` 는 **전 회차**
+  보존(077, D17), 복원은 qty = delivered(아직 닫힌) 회차만 `GREATEST(qty_before, delivered)`. 잠금 순서는 라인 → 머리글
+  (076 머리 주석의 '머리글 → 라인'·'delivered 불변' 문장은 구식 — 077 주석이 최종).
   파이썬 `so_close.py` 는 RPC 래퍼 + 메시지만(쓰기 전 조회 없음). 잔량의 진실 = 라인 status + 저장된
   pending_qty + closed_qty(D10) — `sales_order_stats`·`sales_order_items_v` 는 qty−received 를 쓰지 않는다.
   **수동 상태 selectbox 는 없다**(취소를 고르면 잔량이 남아 자재 소요·계획률 오염). 활성 수주 집합은
@@ -502,7 +508,7 @@
 
 ## DB 작업 규칙
 
-- 스키마 변경은 Supabase MCP `apply_migration`으로 (이력 유지). 2026-10-15 확인: `supabase_migrations.schema_migrations` 최신은 **076(so_close_rpc — 수주 종결·되돌리기 RPC so_close_lines/so_reopen_lines 원자화, closed_rounds·CHECK closed_qty≥0·status NOT NULL, sales_order_stats/sales_order_items_v 재정의(비활성 라인 pending 0·total_closed_qty·종결/취소 납품상태), 069 confirm_shipment 재선언(line_closed 거부·머리글 활성 라인만·폴백 DRAFT), 2026-10-22)**; 075(so_status_closed — 수주 머리글·라인 상태 CLOSED(종결) + 라인 closed_qty·close_reason, chk_soi_status 전문 재선언(REPLACED 드리프트 해소), 2026-10-22); 074(dash_generate_cards_assignee — 생성 RPC 가 담당자 빈 템플릿 제외, 2026-10-21); 073(dash_routine — 업무 루틴 dash_ 테이블 4개·멱등 생성 RPC·시드, 2026-10-21); 072(item_map_vendor_default — 매핑표 업체 기본 유형 '*' 허용; 071 purchase_item_map 매입 품명 매핑표·장부 source/statement_no/map_id; 070 weekly_plan 은 2026-10-14, 067~069 는 2026-10-13 적용) — 적용 후 이 번호를 갱신하고, 새 번호는 문서가 아니라 실제 이력으로 확인할 것
+- 스키마 변경은 Supabase MCP `apply_migration`으로 (이력 유지). 2026-10-15 확인: `supabase_migrations.schema_migrations` 최신은 **077(so_close_rounds_all — so_close_lines 가 라인의 전 회차를 closed_rounds 에 보존, 최종 규칙 주석, 2026-10-23)**; 076(so_close_rpc — 수주 종결·되돌리기 RPC so_close_lines/so_reopen_lines 원자화, closed_rounds·CHECK closed_qty≥0·status NOT NULL, sales_order_stats/sales_order_items_v 재정의(비활성 라인 pending 0·total_closed_qty·종결/취소 납품상태), 069 confirm_shipment 재선언(line_closed 거부·머리글 활성 라인만·폴백 DRAFT), 2026-10-22); 075(so_status_closed — 수주 머리글·라인 상태 CLOSED(종결) + 라인 closed_qty·close_reason, chk_soi_status 전문 재선언(REPLACED 드리프트 해소), 2026-10-22); 074(dash_generate_cards_assignee — 생성 RPC 가 담당자 빈 템플릿 제외, 2026-10-21); 073(dash_routine — 업무 루틴 dash_ 테이블 4개·멱등 생성 RPC·시드, 2026-10-21); 072(item_map_vendor_default — 매핑표 업체 기본 유형 '*' 허용; 071 purchase_item_map 매입 품명 매핑표·장부 source/statement_no/map_id; 070 weekly_plan 은 2026-10-14, 067~069 는 2026-10-13 적용) — 적용 후 이 번호를 갱신하고, 새 번호는 문서가 아니라 실제 이력으로 확인할 것
 - **뷰 재정의는 항상 전체 정의를 명시** — `create or replace view v as select * from v ...`
   같은 자기 참조는 DDL 은 통과하지만 조회 시 무한 재귀로 뷰가 죽는다 (046 사고, 047 복구).
   기존 검사에 추가할 때도 전체 UNION 을 다시 쓴다
