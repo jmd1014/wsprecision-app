@@ -118,6 +118,16 @@ def replacement_revert_block(header_status_value, lines):
     return None
 
 
+def _log(db, detail):
+    """db.log_error 가 있으면 기록(실패해도 삼킨다) — 경고 1줄용."""
+    fn = getattr(db, "log_error", None)
+    if fn:
+        try:
+            fn("db_write", detail, table_name="sales_order_items")
+        except Exception:
+            pass
+
+
 # ── RPC 래퍼 ──
 def _exc(db, name):
     """RPC 예외 클래스 — 실제 db 모듈 것을 우선(목 db 가 들어와도 같은 클래스를 던진다)."""

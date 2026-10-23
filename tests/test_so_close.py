@@ -267,7 +267,7 @@ def test_static_no_manual_selectbox_no_confirmed_header_write_no_direct_recalc()
     assert "_soc.header_status(" not in SRC                        # 본체는 recompute_header 만
     assert '"status": r["old_so_status"]' not in SRC               # _rp_revert 과거 상태 덮기 제거 (F5)
     assert "line_status(_nq" not in SRC                            # 정정 라인 값은 revise_line_fields 만 (F3)
-    assert SRC.count("_soc.revise_line_fields(") == 2 and SRC.count("_soc.recompute_header(") == 3
+    assert SRC.count("_soc.revise_line_fields(") == 1 and SRC.count("_soc.recompute_header(") == 3   # 정정은 _line_patch 한 곳
     lines = SRC.splitlines()
     for i, ln in enumerate(lines):
         if 'update("sales_orders"' in ln:
@@ -560,6 +560,28 @@ def test_close_keeps_all_rounds_then_cancel_shipment_then_reopen_restores_both()
     assert m.line(1)["pending_qty"] == sum(x["qty"] - x["delivered_qty"] for x in m.tables["so_delivery_schedule"] if x["soi_id"] == 1)
 
 
+def test_d15_closed_line_with_snapshot_restores_rounds_on_reopen():
+    """Data r3 H1: 종결 머리글 아래 완납 라인(30/30, 회차 30/30, closed_rounds NULL)을 정정이 닫을 때 회차 스냅샷을 함께 쓰면
+    되돌리기가 회차 계획 30 을 복원한다(스냅샷 없으면 복원 0 — 소실)."""
+    m = SOMock().seed(so_status="CLOSED", lines=[(1, 30, 30, 0, "DELIVERED")], rounds=[(11, 1, 30, 30)])
+    m.line(1)["closed_rounds"] = None
+    f = C.revise_line_fields(m.line(1), 0, header_status="CLOSED")
+    f["closed_rounds"] = [{"sched_id": 11, "qty_before": 30.0, "delivered": 30.0}]      # 앱이 함께 쓰는 스냅샷
+    m.update("sales_order_items", "soi_id=eq.1", f)
+    m.round(11).update({"delivered_qty": 0, "qty": 0})                                   # 출고 30 취소 → 회차 닫힌 유지
+    r = C.reopen_sales_order(m, 101, "k")
+    assert r["reopened"] == 1 and r["rounds_restored"] == 1 and r["rounds_skipped"] == 0
+    assert m.round(11)["qty"] == 30.0 and m.line(1)["pending_qty"] == 30.0 and m.header()["status"] == "DRAFT"
+    assert m.line(1)["pending_qty"] == sum(x["qty"] - x["delivered_qty"] for x in m.tables["so_delivery_schedule"] if x["soi_id"] == 1)
+
+
+def test_recompute_header_limit_warning_logs_once():
+    """M-3: 라인 500건이면 log_error 1회, 반환은 정상 계산(예외 없음)."""
+    m = SOMock().seed(so_status="PARTIAL", lines=[(i, 10, 10, 0, "DELIVERED") for i in range(1, 501)])
+    assert C.recompute_header(m, 101) == "DELIVERED"
+    assert len(m.log_errors) == 1 and "500 한도" in m.log_errors[0][1]
+
+
 def test_migration_077_declares_all_rounds_and_final_rules():
     assert "WHERE d.soi_id = r.soi_id;" in SQL077 and "077 D17" in SQL077
     assert "CREATE OR REPLACE FUNCTION public.so_close_lines(p_so_id integer, p_mode text, p_reason text, p_who text)" in SQL077
@@ -571,16 +593,22 @@ def test_migration_077_declares_all_rounds_and_final_rules():
 
 
 def test_static_r3_revision_conditional_and_order():
-    i_patch = SRC.index("def _line_patch(_li_, _lf_)")
-    assert "status=eq.{}&received_qty=eq.{}" in SRC                              # D16 조건부
-    assert SRC.count("_line_patch(_li, _lf9)") == 2                              # 감소·증가 두 경로
+    i_patch = SRC.index("def _line_patch(_li_, _nr_, _pn_=None)")
+    assert "soi_id=eq.{}&status=eq.{}&{}" in SRC and '"received_qty=eq.{}".format(_fq(float(' in SRC   # D16 조건부
+    assert SRC.count("_n9, _lf9 = _line_patch(_li, _nr, x.get(\"pn\"))") == 2    # 감소·증가 두 경로
     dec = SRC.index("# ③→① 수주 라인 먼저, 조건부 (D16)")
     lot = SRC.index("# ① LOT 복원 — 마지막 차감 LOT 부터", dec)
     rnd = SRC.index("# ② 회차 충당 되돌림", dec)
     assert i_patch < dec < lot < rnd                                             # 라인 → LOT → 회차
-    assert SRC.count("_hdr_by.get(_li.get(\"so_id\"))") == 2                       # D15 머리글 상태 전달
+    assert "_hdr_by[_so_] = _hs_" in SRC and "cache=False" in SRC[SRC.index("def _line_patch"):SRC.index("def _stop_msg")]   # D15 + H-2 재조회
+    assert "종결·취소된 수주 — 수주 목록에서 되돌린 뒤 정정하세요" in SRC             # M-1 증가 정정 머리글 검사
+    assert "_todo_cx" in SRC and '"rev_id,si_id"' in SRC                            # B-1 권장 2 라인 단위 재취소
+    assert "갱신 실패(통신·서버 오류" in SRC                                          # B-1 권장 3 (-1 구분)
     assert "sched_id=eq.{_fq(_rc9['sched_id'])}&qty=gt.{_fq(_dv9)}" in SRC          # R4 조건부 회차 정리
-    assert "정정을 중단했습니다" in SRC and "앞 라인은" in SRC
+    assert SRC.count("정정 중단 — ") == 2 and "앞 라인은 반영됨" in SRC
+    assert "received_qty=is.null" in SRC                                          # H2 NULL received
+    assert 'startswith("정정 중단")' in SRC and SRC.count("not _stop9") >= 4         # B1·M4 호출부
+    assert "if _stopped:\n                    # 중단: 전표는 CONFIRMED" in SRC          # B1 머리글 무변경
 
 
 @app_test
@@ -607,10 +635,10 @@ def test_screen_confirm_gate_follows_selected_order_and_double_click(monkeypatch
     at.button(key="so_reopen_101").click()
     at.run()
     at.button(key="so_reopen_cfm_ok").click()
+    at.button(key="so_reopen_cfm_ok").click()          # 같은 run 에 두 번(큐잉된 더블 클릭)
     at.run()
     assert m.header(101)["status"] == "PARTIAL" and len(m.rpc_calls) == n_rpc + 1
     at.session_state["mr_cache"] = {"stale": True}
-    at.button(key="so_cancel_reason_101") if False else None
     at.text_input(key="so_cancel_reason_101").set_value("거래 무효")
     at.run()
     at.button(key="so_cancel_101").click()

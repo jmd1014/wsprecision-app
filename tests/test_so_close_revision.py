@@ -23,20 +23,29 @@ streamlit_available = importlib.util.find_spec("streamlit") is not None
 pytestmark = pytest.mark.skipif(not streamlit_available, reason="streamlit 미설치 — AppTest 불가")
 
 
-def _patch_header(monkeypatch, status, stale_line=None, current_line=None):
-    """sales_orders 머리글 상태를 덮고, 선택적으로 정정이 읽는 라인(stale)과 조건부 갱신이 보는 라인(current)을 가른다."""
-    real_fetch = _dbmod.fetch
-    real_uc = _dbmod.update_count
+def _patch_header(monkeypatch, status, stale_line=None, current_line=None, status_refetch=None, stale_lines=None):
+    """sales_orders 머리글 상태를 덮고, 선택적으로 정정이 읽는 라인(stale)과 조건부 갱신이 보는 라인(current)을 가른다.
+    status_refetch: PATCH 직전 재조회(so_id=eq., cache=False)가 돌려줄 머리글 상태(H-2 창 재현)."""
+    # 같은 테스트에서 두 번 부르면 래퍼가 겹쳐 조건을 두 번 검사(두 번째는 이미 바뀐 라인) → 0행 오판. 원본(rev_db)을 기억해 그 위에만 씌운다
+    if not hasattr(monkeypatch, "_so_base"):
+        monkeypatch._so_base = (_dbmod.fetch, _dbmod.update_count, _dbmod.update)
+    real_fetch, real_uc, real_update = monkeypatch._so_base
+    stale_map = dict(stale_lines or {})
+    if stale_line is not None:
+        stale_map[stale_line["soi_id"]] = stale_line
+    cur_map = {}
+    if current_line is not None:
+        cur_map[current_line["soi_id"]] = current_line
 
     def _fetch(table, select="*", filter_query="", limit=1000, **kw):
         if table == "sales_orders":
-            return [{"so_id": 100, "so_number": "SO-100", "customer": "㈜엠제이티", "status": status,
+            st_ = status_refetch if (status_refetch and "so_id=eq." in (filter_query or "")) else status
+            return [{"so_id": 100, "so_number": "SO-100", "customer": "㈜엠제이티", "status": st_,
                      "so_date": "2026-08-01", "due_date": None}]
-        if table == "sales_order_items" and stale_line is not None and "soi_id=in." in (filter_query or ""):
-            return [dict(stale_line)]
+        if table == "sales_order_items" and stale_map and "soi_id=in." in (filter_query or ""):
+            return [dict(stale_map.get(l["soi_id"], l)) for l in RV.LINES.values()]
         return real_fetch(table, select, filter_query, limit)
     monkeypatch.setattr(_dbmod, "fetch", _fetch)
-    real_update = _dbmod.update
 
     def _update(t, f, v):
         # 회차 갱신은 목 ROUNDS 에 반영 — 그 뒤 조회(닫힌 회차 정리)가 바뀐 delivered 를 본다
@@ -49,12 +58,17 @@ def _patch_header(monkeypatch, status, stale_line=None, current_line=None):
     monkeypatch.setattr(_dbmod, "update", _update)
 
     def _update_count(t, f, v, select="*"):
-        if t == "sales_order_items" and current_line is not None:
-            # 조건부 갱신: 읽은 status·received 가 현재 라인과 다르면 0행 (운영 PostgREST 와 같은 의미)
-            st_ok = f"status=eq.{current_line['status']}" in f
-            rc_ok = f"received_qty=eq.{float(current_line['received_qty'])}" in f
-            if not (st_ok and rc_ok):
-                return 0
+        if t == "sales_order_items" and "soi_id=eq." in f:
+            soi = int(f.split("soi_id=eq.")[1].split("&")[0])
+            cur = cur_map.get(soi) or RV.LINES.get(soi)
+            if cur is not None:
+                # 조건부 갱신: 읽은 status·received 가 현재 라인과 다르면 0행 (운영 PostgREST 와 같은 의미)
+                st_ok = f"status=eq.{cur.get('status')}" in f
+                rc_ok = ("received_qty=is.null" in f) if cur.get("received_qty") is None \
+                    else (f"received_qty=eq.{float(cur['received_qty'])}" in f)
+                if not (st_ok and rc_ok):
+                    return 0
+                cur.update(v)                                   # 목 라인도 바뀐다(2차 취소 시나리오)
         return real_uc(t, f, v, select)
     monkeypatch.setattr(_dbmod, "update_count", _update_count)
 
@@ -86,7 +100,12 @@ def test_revision_on_closed_header_keeps_delivered_line_inactive(rev_db, monkeyp
     assert ups, "수주 라인 갱신이 없음"
     flt, fields = ups[-1]
     assert "soi_id=eq.11" in flt and "status=eq.DELIVERED" in flt and "received_qty=eq.500.0" in flt   # D16 조건부
-    assert fields == {"received_qty": 0, "pending_qty": 0, "status": "CLOSED", "closed_qty": 500.0}
+    # D15 로 정정이 처음 닫는 라인: 회차 스냅샷(내리기 전)과 사유를 함께 쓴다 (Data r3 H1)
+    assert fields["closed_rounds"] == [{"sched_id": 1, "qty_before": 500.0, "delivered": 500.0},
+                                       {"sched_id": 2, "qty_before": 100.0, "delivered": 0.0}]
+    assert fields["close_reason"].startswith("출고 정정 SH-20260901-01")
+    assert {k: fields[k] for k in ("received_qty", "pending_qty", "status", "closed_qty")} == \
+        {"received_qty": 0, "pending_qty": 0, "status": "CLOSED", "closed_qty": 500.0}
     # LOT 복원(양수 ISSUE)과 회차 되돌림은 그대로 진행됐다(라인 갱신이 먼저, 그 뒤 LOT·회차)
     txns = [r for t, recs in RV.INSERTED if t == "inventory_transactions" for r in recs]
     assert sorted((r["lot_number"], r["qty"]) for r in txns) == [("W01", 300), ("W02", 200)]
@@ -108,21 +127,83 @@ def test_revision_stops_when_line_changed_meanwhile(rev_db, monkeypatch):
     assert _line_updates() == []                                        # 라인 덮어쓰기 없음
     assert not [1 for t, recs in RV.INSERTED if t == "inventory_transactions"]   # LOT 복원도 안 함(라인이 먼저)
     assert not [1 for t, f, v in RV.UPDATED if t == "so_delivery_schedule"]
-    texts = " ".join(str(getattr(w, "value", "") or "") for w in at.warning) + " " + \
-            " ".join(str(getattr(w, "value", "") or "") for w in at.error)
-    assert "중단" in texts and "새로 열고" in texts
+    # B1: 중단이면 전표 머리글(CANCELLED)·수주 머리글을 바꾸지 않고, 성공 안내 대신 오류로 보인다
+    assert not [1 for t, f, v in RV.UPDATED if t in ("shipments", "sales_orders")]
+    assert RV.SHIPMENTS[0]["status"] == "CONFIRMED"
+    assert not any("역반영 완료" in str(getattr(x, "value", "")) for x in at.success)
+    errs = " ".join(str(getattr(w, "value", "") or "") for w in at.error)
+    assert "정정 중단" in errs and "남은 라인" in errs
     assert RV.LINES[11]["closed_qty"] == 1500 and RV.LINES[11]["pending_qty"] == 0   # 보존 잔량 유지
+
+
+def test_revision_null_received_uses_is_null_filter(rev_db, monkeypatch):
+    """H2: received_qty NULL(레거시) 라인은 조건부 필터가 is.null 이어야 1행 갱신된다."""
+    RV._seed()
+    RV.LINES[11].update({"received_qty": None, "pending_qty": 2000, "status": "PENDING"})
+    _patch_header(monkeypatch, "PARTIAL")
+    at = RV._pick_confirmed(RV._open())
+    _cancel_confirmed(at)
+    flt, fields = _line_updates()[-1]
+    assert "received_qty=is.null" in flt and "received_qty=eq." not in flt
+    assert fields["received_qty"] == 0 and fields["status"] == "PENDING"
 
 
 def test_revision_on_active_header_unchanged_behaviour(rev_db, monkeypatch):
     """회귀: 활성 수주(PARTIAL)는 r1 과 같은 값(received 0·pending 2000·PENDING) — 조건부 갱신만 추가."""
     RV._seed()
+    RV.LINES[11]["status"] = "PARTIAL"
     _patch_header(monkeypatch, "PARTIAL")
     at = RV._pick_confirmed(RV._open())
     _cancel_confirmed(at)
     flt, fields = _line_updates()[-1]
     assert fields == {"received_qty": 0, "pending_qty": 2000, "status": "PENDING"}
-    assert "status=eq.PARTIAL" in flt or "status=eq." in flt
+    assert "status=eq.PARTIAL" in flt and "received_qty=eq.500.0" in flt
+    assert RV.SHIPMENTS[0]["status"] == "CANCELLED"
+
+
+def test_revision_header_closed_between_read_and_patch_applies_d15(rev_db, monkeypatch):
+    """H-2: 준비 조회 때 PARTIAL 이던 머리글이 PATCH 직전 재조회에서 CLOSED → 완납 라인도 D15 로 닫힌다."""
+    RV._seed()
+    RV.LINES[11].update({"qty": 500, "received_qty": 500, "pending_qty": 0, "status": "DELIVERED", "closed_qty": 0})
+    _patch_header(monkeypatch, "PARTIAL", status_refetch="CLOSED")
+    at = RV._pick_confirmed(RV._open())
+    _cancel_confirmed(at)
+    flt, fields = _line_updates()[-1]
+    assert fields["status"] == "CLOSED" and fields["pending_qty"] == 0 and fields["closed_qty"] == 500.0
+
+
+def test_revision_partial_stop_keeps_shipment_then_second_cancel_finishes(rev_db, monkeypatch):
+    """B-1(QA REQ 1): 2라인 전표 취소 중 2번째 라인 0행 → 1번째만 반영·전표 CONFIRMED 유지·이력 1건 →
+    2차 취소는 이력 없는 라인만 역반영하고 전표를 취소한다(이중 역반영 없음)."""
+    RV._seed()
+    RV.LINES[11]["status"] = "PARTIAL"
+    RV.LINES[12] = {"soi_id": 12, "so_id": 100, "canonical_pn": "4PDVN-04", "customer_part_no": "X", "customer_item_name": None,
+                    "product_id": "P1", "qty": 1000, "received_qty": 200, "pending_qty": 800, "unit": "EA", "unit_price": 1000,
+                    "due_date": None, "status": "PARTIAL", "closed_qty": 0}
+    RV.SHIP_ITEMS.append({"si_id": 3, "shipment_id": 1, "soi_id": 12, "so_id": 100, "sched_id": None, "product_id": "P1",
+                          "pn": "4PDVN-04", "customer_pn": "X", "item_name": None, "customer": "㈜엠제이티", "so_number": "SO-100",
+                          "qty": 200, "unit": "EA", "unit_price": 1000})
+    stale12 = dict(RV.LINES[12])
+    RV.LINES[12].update({"status": "CLOSED", "pending_qty": 0, "closed_qty": 800})       # 그 사이 종결된 현재 라인
+    _patch_header(monkeypatch, "PARTIAL", stale_lines={12: stale12})
+    at = RV._pick_confirmed(RV._open())
+    _cancel_confirmed(at)
+    ups = _line_updates()
+    assert [f.split("&")[0] for f, v in ups] == ["soi_id=eq.11"]                       # 1번째만
+    assert RV.SHIPMENTS[0]["status"] == "CONFIRMED" and RV.SHIPMENTS[0]["rev_no"] == 0
+    revs = [r for tt, recs in RV.INSERTED if tt == "shipment_revisions" for r in recs]
+    assert [r["si_id"] for r in revs] == [1]
+    assert any("정정 중단" in str(getattr(w, "value", "")) for w in at.error)
+    # 2차 취소: 라인 12 가 다시 정정 가능한 상태(종결 되돌림 흉내)로 돌아옴 → 이력 없는 라인 12 만 역반영, 전표 CANCELLED
+    RV.LINES[12].update({"status": "PARTIAL", "pending_qty": 800, "closed_qty": 0})
+    RV.UPDATED.clear()
+    _patch_header(monkeypatch, "PARTIAL")
+    at2 = RV._pick_confirmed(RV._open())
+    _cancel_confirmed(at2)
+    ups2 = _line_updates()
+    _msgs2 = [str(getattr(w, "value", "")) for w in list(at2.error) + list(at2.warning) + list(at2.success) + list(at2.info)]
+    assert [f.split("&")[0] for f, v in ups2] == ["soi_id=eq.12"], (ups2, _msgs2, RV.UPDATED[-5:])   # 11 은 이중 역반영 안 함
+    assert RV.SHIPMENTS[0]["status"] == "CANCELLED"
 
 
 # ── 대체 되돌리기 실제 흐름 (`_rp_revert`) ──

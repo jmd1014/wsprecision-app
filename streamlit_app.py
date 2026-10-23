@@ -9341,12 +9341,17 @@ elif page == "출고 관리":
                     # CONFIRMED 로 남아 다시 취소할 수 있다 → 이중 역반영
                     # (2026-10-12 QA 리뷰 H3). 이력에 CANCEL 이 있으면 머리글만.
                     try:
-                        _prev_cx = fetch("shipment_revisions", "rev_id",
+                        _prev_cx = fetch("shipment_revisions", "rev_id,si_id",
                                          f"shipment_id=eq.{_fq(pick['shipment_id'])}"
-                                         "&action=eq.CANCEL", limit=1)
+                                         "&action=eq.CANCEL", limit=500)
                     except Exception:
                         _prev_cx = []
-                    if _prev_cx:
+                    # 라인 단위(r3 QA B-1): 부분 중단 뒤 재취소는 이력 없는 라인만 역반영한다
+                    _done_si = {r.get("si_id") for r in _prev_cx if r.get("si_id") is not None}
+                    _todo_cx = [t for t in _deltas if t[0]["si_id"] not in _done_si]
+                    if _prev_cx and _todo_cx and _done_si:
+                        _deltas = _todo_cx
+                    if _prev_cx and not _todo_cx:
                         _hdr0 = {"status": "CANCELLED",
                                  "cancelled_at": _rv_now.now().isoformat(),
                                  "cancel_reason": reason or None}
@@ -9389,7 +9394,7 @@ elif page == "출고 관리":
                         _li_by = {l["soi_id"]: l for l in fetch(
                             "sales_order_items",
                             "soi_id,so_id,qty,received_qty,pending_qty,"
-                            "unit,status,closed_qty", "soi_id=in.({})".format(
+                            "unit,status,closed_qty,closed_rounds", "soi_id=in.({})".format(
                                 ",".join(str(s) for s in _soi_ids)),
                             limit=200)}
                     # 종결·취소 머리글 아래 라인은 전부 비활성 취급 (D15) — 머리글 상태 1회 조회
@@ -9436,6 +9441,11 @@ elif page == "출고 관리":
                             _need_stk.get(x["product_id"], 0) + d)
                 for _soi9, _n9 in _need_pend.items():
                     _l9 = _li_by.get(_soi9)
+                    if _l9 and _soc.is_inactive(_hdr_by.get(_l9.get("so_id"))):
+                        _errs.append(
+                            "종결·취소된 수주 — 수주 목록에서 되돌린 뒤 정정하세요 "
+                            "(soi {})".format(_soi9))
+                        continue
                     if _l9 and str(_l9.get("status") or "").upper() in _soc.LINE_INACTIVE:
                         _errs.append(
                             "종결·취소·대체된 수주 라인 — 수주 목록에서 되돌리거나 "
@@ -9461,18 +9471,59 @@ elif page == "출고 관리":
                 _so_ids9 = set()
                 _stopped = False
 
-                def _line_patch(_li_, _lf_):
-                    """정정의 수주 라인 갱신 — 읽은 status·received 를 조건으로(D16, Codex r2 H2).
-                    그 사이 종결·확정 등으로 바뀌었으면 0행 → 호출부가 남은 라인 처리를 멈춘다."""
-                    _flt = "soi_id=eq.{}&status=eq.{}&received_qty=eq.{}".format(
-                        _fq(_li_["soi_id"]), _fq(str(_li_.get("status") or "")),
-                        _fq(float(_li_.get("received_qty") or 0)))
+                def _line_patch(_li_, _nr_, _pn_=None):
+                    """정정의 수주 라인 갱신 → (행 수, 쓴 값). 읽은 status·received 를 조건으로(D16, Codex r2 H2):
+                    그 사이 종결·확정 등으로 바뀌었으면 0행 → 호출부가 남은 라인 처리를 멈춘다.
+                    PATCH 직전 머리글을 캐시 없이 재조회해 D15(종결·취소 머리글 아래 라인 전부 비활성)를
+                    적용한다 — 완납 라인은 라인 조건만으로 머리글 변화를 못 잡기 때문(r3 QA H-2)."""
+                    _so_ = _li_.get("so_id")
+                    _hs_ = _hdr_by.get(_so_)
+                    if _so_ is not None:
+                        try:
+                            _hf_ = fetch("sales_orders", "so_id,status",
+                                         f"so_id=eq.{_fq(_so_)}", limit=1, cache=False)
+                            if _hf_:
+                                _hs_ = _hf_[0].get("status")
+                                _hdr_by[_so_] = _hs_
+                        except Exception:
+                            pass
+                    _lf_ = _soc.revise_line_fields(_li_, _nr_, _hs_)
+                    if (_lf_.get("status") in _soc.LINE_INACTIVE
+                            and str(_li_.get("status") or "").upper() not in _soc.LINE_INACTIVE
+                            and not _li_.get("closed_rounds")):
+                        # D15 로 정정이 처음 닫는 라인: 되돌리기가 회차 계획을 복원할 수 있게
+                        # 회차 스냅샷(내리기 전)을 closed_rounds 에 함께 쓴다 (Data r3 H1)
+                        try:
+                            _lf_["closed_rounds"] = [
+                                {"sched_id": _rc0["sched_id"],
+                                 "qty_before": float(_rc0.get("qty") or 0),
+                                 "delivered": float(_rc0.get("delivered_qty") or 0)}
+                                for _rc0 in fetch("so_delivery_schedule",
+                                                  "sched_id,qty,delivered_qty",
+                                                  f"soi_id=eq.{_fq(_li_['soi_id'])}&order=sched_id.asc",
+                                                  limit=200)]
+                            _lf_["close_reason"] = f"출고 정정 {_ship_no}"
+                        except Exception as e:
+                            _warns.append(f"{_pn_} 회차 스냅샷 조회 실패: {e}")
+                    _rv_cond = ("received_qty=is.null" if _li_.get("received_qty") is None
+                                else "received_qty=eq.{}".format(_fq(float(_li_.get("received_qty") or 0))))
+                    _flt = "soi_id=eq.{}&status=eq.{}&{}".format(
+                        _fq(_li_["soi_id"]), _fq(str(_li_.get("status") or "")), _rv_cond)
                     try:
-                        return _db.update_count("sales_order_items", _flt, _lf_)
+                        return _db.update_count("sales_order_items", _flt, _lf_), _lf_
                     except Exception as e:
                         _db.log_error("db_write", f"정정 라인 갱신 실패(soi {_li_['soi_id']}): {e}",
                                       table_name="sales_order_items")
-                        return -1
+                        return -1, _lf_
+
+                def _stop_msg(_n_, _pn_, _soi_):
+                    if _n_ == 0:
+                        return ("정정 중단 — {} 수주 라인 상태가 그 사이 바뀌었습니다 (soi {}). "
+                                "전표는 그대로 두었습니다. 화면을 새로 열고 남은 라인만 다시 "
+                                "정정하세요(앞 라인은 반영됨).".format(_pn_, _soi_))
+                    return ("정정 중단 — {} 수주 라인 갱신 실패(통신·서버 오류, soi {}). "
+                            "전표는 그대로 두었습니다. 잠시 후 같은 화면에서 남은 라인만 다시 "
+                            "정정하세요(앞 라인은 반영됨).".format(_pn_, _soi_))
 
                 for x, old, new, d in _deltas:
                     if _stopped:
@@ -9494,15 +9545,11 @@ elif page == "출고 관리":
                                       - _q, 0.0)
                             # 비활성 라인·종결 머리글 아래 라인은 received 만 조정 — 잔량을
                             # 되살리지 않는다 (076 D11, D15)
-                            _lf9 = _soc.revise_line_fields(
-                                _li, _nr, _hdr_by.get(_li.get("so_id")))
-                            if _line_patch(_li, _lf9) != 1:
-                                _warns.append(
-                                    "{} — 수주 라인 상태가 그 사이 바뀌어 정정을 중단했습니다 "
-                                    "(soi {}). 화면을 새로 열고 다시 시도하세요. 앞 라인은 "
-                                    "반영된 채 남습니다.".format(x.get("pn"), _soi))
+                            _n9, _lf9 = _line_patch(_li, _nr, x.get("pn"))
+                            if _n9 != 1:
+                                _warns.append(_stop_msg(_n9, x.get("pn"), _soi))
                                 _db.log_error("db_write",
-                                              f"정정 중단: soi {_soi} 조건부 갱신 0행 (전표 {_ship_no})",
+                                              f"정정 중단: soi {_soi} 조건부 갱신 {_n9}행 (전표 {_ship_no})",
                                               table_name="sales_order_items")
                                 _stopped = True
                                 break
@@ -9588,15 +9635,11 @@ elif page == "출고 관리":
                         # LOT FIFO 차감 — 확정과 같은 규칙
                         if _li:
                             _nr = float(_li.get("received_qty") or 0) + d
-                            _lf9 = _soc.revise_line_fields(
-                                _li, _nr, _hdr_by.get(_li.get("so_id")))
-                            if _line_patch(_li, _lf9) != 1:
-                                _warns.append(
-                                    "{} — 수주 라인 상태가 그 사이 바뀌어 정정을 중단했습니다 "
-                                    "(soi {}). 화면을 새로 열고 다시 시도하세요. 앞 라인은 "
-                                    "반영된 채 남습니다.".format(x.get("pn"), _soi))
+                            _n9, _lf9 = _line_patch(_li, _nr, x.get("pn"))
+                            if _n9 != 1:
+                                _warns.append(_stop_msg(_n9, x.get("pn"), _soi))
                                 _db.log_error("db_write",
-                                              f"정정 중단: soi {_soi} 조건부 갱신 0행 (전표 {_ship_no})",
+                                              f"정정 중단: soi {_soi} 조건부 갱신 {_n9}행 (전표 {_ship_no})",
                                               table_name="sales_order_items")
                                 _stopped = True
                                 break
@@ -9703,6 +9746,11 @@ elif page == "출고 관리":
                         pass
                 if _n_ok:
                     st.session_state.pop("mr_cache", None)   # 정정 → 미납 변동 (F9)
+                if _stopped:
+                    # 중단: 전표는 CONFIRMED·rev_no 그대로 — 남은 라인을 같은 화면에서 다시 정정·취소할 수
+                    # 있어야 한다. 취소(CANCEL)를 CANCELLED 로 저장하면 역반영 안 된 라인이 취소 전표 뒤에
+                    # 묻힌다 (Data r3 B1). 호출부는 '정정 중단' 경고를 보고 성공 안내·알림을 내지 않는다.
+                    return _n_ok, _warns
                 _hdr = {"rev_no": _rev,
                         "revised_at": _rv_now.now().isoformat()}
                 if action == "CANCEL":
@@ -9920,9 +9968,10 @@ elif page == "출고 관리":
                             _n_ok, _ws = _cf_apply_deltas(
                                 _cf_pick, _cf_items, _pl[0], _pl[1],
                                 action="EDIT", allow_over=_pl[2])
+                            _stop9 = any(str(w).startswith("정정 중단") for w in _ws)
                             for _w in _ws:
-                                (st.warning if _n_ok else st.error)(_w)
-                            if _n_ok:
+                                (st.warning if (_n_ok and not _stop9) else st.error)(_w)
+                            if _n_ok and not _stop9:
                                 st.session_state["ship_open_no"] = \
                                     _cf_pick["ship_no"]
                                 _sk.notify(_sk.fmt_ship_edit(
@@ -9965,9 +10014,10 @@ elif page == "출고 관리":
                             {x["si_id"]: 0.0 for x in _cf_items},
                             _cx_reason.strip(), action="CANCEL",
                             keep_line_qty=True)
+                        _stop9 = any(str(w).startswith("정정 중단") for w in _ws)
                         for _w in _ws:
-                            (st.warning if _n_ok else st.error)(_w)
-                        if _n_ok:
+                            (st.warning if (_n_ok and not _stop9) else st.error)(_w)
+                        if _n_ok and not _stop9:
                             _cx_live = [x for x in _cf_items
                                         if float(x.get("qty") or 0) > 0]
                             _sk.notify(_sk.fmt_ship_cancel(
