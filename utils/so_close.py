@@ -68,18 +68,24 @@ def line_reopen_status(line) -> str:
     return "PARTIAL" if _f(line.get("received_qty")) > 0 else "PENDING"
 
 
-def revise_line_fields(line, new_received) -> dict:
-    """출고 정정·취소가 수주 라인에 쓸 값 (F3). 활성 라인은 기존 규칙(received·pending·status),
-    비활성 라인은 received 만 조정하고 pending 0·status 는 유지, CLOSED/CANCELLED 는
-    closed_qty = qty − received(received + pending + closed = qty 불변식), REPLACED 는 closed_qty 0 유지."""
+def revise_line_fields(line, new_received, header_status=None) -> dict:
+    """출고 정정·취소가 수주 라인에 쓸 값 (F3·D15). 활성 라인은 기존 규칙(received·pending·status).
+    비활성 라인(CLOSED·CANCELLED·REPLACED)은 received 만 조정하고 pending 0·status 유지,
+    CLOSED/CANCELLED 는 closed_qty = qty − received(received + pending + closed = qty 불변식 ⑤), REPLACED 는 closed_qty 0.
+    **머리글이 종결·취소(header_status)면 라인 상태와 무관하게 비활성 취급**(D15, Codex r2 H1): 완납 라인(DELIVERED,
+    pending 0)을 감소 정정해도 PENDING 으로 되살리지 않고 status = 머리글 모드·closed_qty = qty − received 로 보존한다
+    (되돌리기로 복원). REPLACED 라인은 그대로."""
     qty = _f(line.get("qty"))
     nr = max(_f(new_received), 0.0)
     st = str(line.get("status") or "").upper()
-    if st in LINE_INACTIVE:
-        out = {"received_qty": nr, "pending_qty": 0, "status": st}
-        if st in ("CLOSED", "CANCELLED"):
-            out["closed_qty"] = max(qty - nr, 0.0)
-        return out
+    hdr = str(header_status or "").upper()
+    if st == "REPLACED":
+        return {"received_qty": nr, "pending_qty": 0, "status": st}
+    if st in ("CLOSED", "CANCELLED"):
+        return {"received_qty": nr, "pending_qty": 0, "status": st, "closed_qty": max(qty - nr, 0.0)}
+    if hdr in ("CLOSED", "CANCELLED", "CANCELED"):
+        mode = "CLOSED" if hdr == "CLOSED" else "CANCELLED"
+        return {"received_qty": nr, "pending_qty": 0, "status": mode, "closed_qty": max(qty - nr, 0.0)}
     return {"received_qty": nr, "pending_qty": max(qty - nr, 0.0), "status": line_status(qty, nr)}
 
 
@@ -92,6 +98,8 @@ def recompute_header(db, so_id, force=False):
     if is_inactive(cur) and not force:
         return None
     lines = db.fetch("sales_order_items", "qty,received_qty,status", f"so_id=eq.{int(so_id)}", limit=500)
+    if len(lines) >= 500:
+        _log(db, f"recompute_header: so {so_id} 라인 조회가 500 한도에 닿음 — 머리글 재계산이 일부 라인을 빼고 계산됐을 수 있다")
     new = header_status(lines, cur)
     if new == cur:
         return None

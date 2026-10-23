@@ -9392,6 +9392,13 @@ elif page == "출고 관리":
                             "unit,status,closed_qty", "soi_id=in.({})".format(
                                 ",".join(str(s) for s in _soi_ids)),
                             limit=200)}
+                    # 종결·취소 머리글 아래 라인은 전부 비활성 취급 (D15) — 머리글 상태 1회 조회
+                    _hdr_by = {}
+                    _so_pre = sorted({l.get("so_id") for l in _li_by.values() if l.get("so_id")})
+                    if _so_pre:
+                        _hdr_by = {h["so_id"]: h.get("status") for h in fetch(
+                            "sales_orders", "so_id,status",
+                            "so_id=in.({})".format(",".join(str(x) for x in _so_pre)), limit=200)}
                 except Exception as e:
                     return 0, [f"정정 준비 조회 실패: {e}"]
                 # 증가분 사전 검증 — 수주 미납 한도 · 완성 재고
@@ -9452,7 +9459,24 @@ elif page == "출고 관리":
 
                 _warns, _txns9, _revs9, _n_ok = [], [], [], 0
                 _so_ids9 = set()
+                _stopped = False
+
+                def _line_patch(_li_, _lf_):
+                    """정정의 수주 라인 갱신 — 읽은 status·received 를 조건으로(D16, Codex r2 H2).
+                    그 사이 종결·확정 등으로 바뀌었으면 0행 → 호출부가 남은 라인 처리를 멈춘다."""
+                    _flt = "soi_id=eq.{}&status=eq.{}&received_qty=eq.{}".format(
+                        _fq(_li_["soi_id"]), _fq(str(_li_.get("status") or "")),
+                        _fq(float(_li_.get("received_qty") or 0)))
+                    try:
+                        return _db.update_count("sales_order_items", _flt, _lf_)
+                    except Exception as e:
+                        _db.log_error("db_write", f"정정 라인 갱신 실패(soi {_li_['soi_id']}): {e}",
+                                      table_name="sales_order_items")
+                        return -1
+
                 for x, old, new, d in _deltas:
+                    if _stopped:
+                        break
                     _si = x["si_id"]
                     _soi = x.get("soi_id")
                     _li = _li_by.get(_soi) if _soi is not None else None
@@ -9464,6 +9488,25 @@ elif page == "출고 관리":
                         reason or "-")
                     if d < 0:
                         _q = -d
+                        # ③→① 수주 라인 먼저, 조건부 (D16): 다른 쓰기에 의존하지 않으므로 선행 가능
+                        if _li:
+                            _nr = max(float(_li.get("received_qty") or 0)
+                                      - _q, 0.0)
+                            # 비활성 라인·종결 머리글 아래 라인은 received 만 조정 — 잔량을
+                            # 되살리지 않는다 (076 D11, D15)
+                            _lf9 = _soc.revise_line_fields(
+                                _li, _nr, _hdr_by.get(_li.get("so_id")))
+                            if _line_patch(_li, _lf9) != 1:
+                                _warns.append(
+                                    "{} — 수주 라인 상태가 그 사이 바뀌어 정정을 중단했습니다 "
+                                    "(soi {}). 화면을 새로 열고 다시 시도하세요. 앞 라인은 "
+                                    "반영된 채 남습니다.".format(x.get("pn"), _soi))
+                                _db.log_error("db_write",
+                                              f"정정 중단: soi {_soi} 조건부 갱신 0행 (전표 {_ship_no})",
+                                              table_name="sales_order_items")
+                                _stopped = True
+                                break
+                            _li.update(_lf9)
                         # ① LOT 복원 — 마지막 차감 LOT 부터, 양수 ISSUE
                         _plan, _rest = plan_lot_restore(
                             _txn_by.get(_si, []), _q)
@@ -9514,38 +9557,49 @@ elif page == "출고 관리":
                             except Exception as e:
                                 _warns.append(f"{x.get('pn')} 회차 되돌림 "
                                               f"실패: {e}")
-                            # ③ 수주 라인
-                            _nr = max(float(_li.get("received_qty") or 0)
-                                      - _q, 0.0)
-                            # 비활성 라인(종결·취소·대체)은 received 만 조정 — 잔량을
-                            # 되살리지 않는다 (076 D11, r1 리뷰 H1)
-                            _lf9 = _soc.revise_line_fields(_li, _nr)
-                            _db.update("sales_order_items",
-                                       f"soi_id=eq.{_fq(_soi)}", _lf9)
-                            _li.update(_lf9)
                             if _lf9.get("status") in _soc.LINE_INACTIVE:
                                 # 닫힌 회차는 닫힌 채로: delivered 가 줄어든 만큼 qty 도
                                 # 내려 "열린 회차"가 생기지 않게 (QA H-2 — 되돌리기가
-                                # qty = delivered 인 회차만 복원)
+                                # qty = delivered 인 회차만 복원). 조건부 갱신(R4),
+                                # closed_rounds 는 건드리지 않는다(복원 정보 보존)
                                 try:
                                     for _rc9 in fetch("so_delivery_schedule",
                                                       "sched_id,qty,delivered_qty",
                                                       f"soi_id=eq.{_fq(_soi)}", limit=200):
-                                        if float(_rc9.get("qty") or 0) > \
-                                                float(_rc9.get("delivered_qty") or 0) + 1e-9:
-                                            _db.update("so_delivery_schedule",
-                                                       f"sched_id=eq.{_fq(_rc9['sched_id'])}",
-                                                       {"qty": float(_rc9.get("delivered_qty") or 0)})
+                                        _dv9 = float(_rc9.get("delivered_qty") or 0)
+                                        if float(_rc9.get("qty") or 0) > _dv9 + 1e-9:
+                                            _nc9 = _db.update_count(
+                                                "so_delivery_schedule",
+                                                f"sched_id=eq.{_fq(_rc9['sched_id'])}&qty=gt.{_fq(_dv9)}",
+                                                {"qty": _dv9})
+                                            if _nc9 != 1:
+                                                _warns.append(
+                                                    f"{x.get('pn')} 닫힌 회차 {_rc9['sched_id']} 정리 "
+                                                    f"미반영({_nc9}) — 납품 스케줄에서 확인")
+                                                _db.log_error("db_write",
+                                                              f"닫힌 회차 정리 {_nc9}행: sched {_rc9['sched_id']}",
+                                                              table_name="so_delivery_schedule")
                                 except Exception as e:
                                     _warns.append(f"{x.get('pn')} 닫힌 회차 정리 실패: {e}")
+                                    _db.log_error("db_write", f"닫힌 회차 정리 예외: {e}",
+                                                  table_name="so_delivery_schedule")
                     else:
                         # 증가: 수주 반영 → 회차 충당(지정 회차 우선) →
                         # LOT FIFO 차감 — 확정과 같은 규칙
                         if _li:
                             _nr = float(_li.get("received_qty") or 0) + d
-                            _lf9 = _soc.revise_line_fields(_li, _nr)
-                            _db.update("sales_order_items",
-                                       f"soi_id=eq.{_fq(_soi)}", _lf9)
+                            _lf9 = _soc.revise_line_fields(
+                                _li, _nr, _hdr_by.get(_li.get("so_id")))
+                            if _line_patch(_li, _lf9) != 1:
+                                _warns.append(
+                                    "{} — 수주 라인 상태가 그 사이 바뀌어 정정을 중단했습니다 "
+                                    "(soi {}). 화면을 새로 열고 다시 시도하세요. 앞 라인은 "
+                                    "반영된 채 남습니다.".format(x.get("pn"), _soi))
+                                _db.log_error("db_write",
+                                              f"정정 중단: soi {_soi} 조건부 갱신 0행 (전표 {_ship_no})",
+                                              table_name="sales_order_items")
+                                _stopped = True
+                                break
                             _li.update(_lf9)
                             try:
                                 _rr9 = fetch("so_delivery_schedule",

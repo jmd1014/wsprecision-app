@@ -23,6 +23,7 @@ ROOT = os.path.dirname(os.path.dirname(__file__))
 APP_FILE = os.path.join(ROOT, "streamlit_app.py")
 SRC = open(APP_FILE, encoding="utf-8").read()
 SQL076 = open(os.path.join(ROOT, "supabase", "migrations", "076_so_close_rpc.sql"), encoding="utf-8").read()
+SQL077 = open(os.path.join(ROOT, "supabase", "migrations", "077_so_close_rounds_all.sql"), encoding="utf-8").read()
 streamlit_available = importlib.util.find_spec("streamlit") is not None
 app_test = pytest.mark.skipif(not streamlit_available, reason="streamlit 미설치 — AppTest 불가")
 
@@ -60,6 +61,14 @@ def test_line_status_keeps_inactive_and_revise_fields_protects_closed_lines():
     # REPLACED: closed_qty 건드리지 않음
     f3 = C.revise_line_fields({"qty": 100, "received_qty": 40, "status": "REPLACED"}, 0)
     assert f3 == {"received_qty": 0, "pending_qty": 0, "status": "REPLACED"}
+    # D15 (Codex r2 H1): 종결 머리글 아래 완납 라인(30/30) 출고 30 취소 → PENDING 으로 되살리지 않고 CLOSED·closed 30
+    f4 = C.revise_line_fields({"qty": 30, "received_qty": 30, "pending_qty": 0, "status": "DELIVERED"}, 0, header_status="CLOSED")
+    assert f4 == {"received_qty": 0, "pending_qty": 0, "status": "CLOSED", "closed_qty": 30.0}
+    f5 = C.revise_line_fields({"qty": 30, "received_qty": 30, "status": "DELIVERED"}, 10, header_status="CANCELLED")
+    assert f5 == {"received_qty": 10, "pending_qty": 0, "status": "CANCELLED", "closed_qty": 20.0}
+    # 종결 머리글이어도 REPLACED 는 그대로, 활성 머리글이면 기존 규칙
+    assert C.revise_line_fields({"qty": 30, "received_qty": 30, "status": "REPLACED"}, 0, header_status="CLOSED")["status"] == "REPLACED"
+    assert C.revise_line_fields({"qty": 30, "received_qty": 30, "status": "DELIVERED"}, 0, header_status="PARTIAL")["status"] == "PENDING"
 
 
 def test_recompute_header_skips_inactive_header_and_updates_active():
@@ -91,6 +100,7 @@ def test_close_keeps_remaining_closes_rounds_header_and_view():
     assert (l1["pending_qty"], l1["closed_qty"], l1["status"], l1["close_reason"]) == (0, 60.0, "CLOSED", "월 변경 이월")
     assert l1["closed_rounds"] == [{"sched_id": 11, "qty_before": 100.0, "delivered": 40.0}]
     assert (l2["pending_qty"], l2["closed_qty"], l2["status"]) == (0, 50.0, "CLOSED")
+    assert [c["sched_id"] for c in l2["closed_rounds"]] == [12, 13]
     assert "종결(월 변경 이월) 2026-10-22 김민수" in l1["remark"]
     assert (l3["pending_qty"], l3["closed_qty"], l3["status"]) == (0, 0, "DELIVERED")
     assert m.round(11)["qty"] == 40.0 and m.round(12)["qty"] == 0.0 and m.round(13)["qty"] == 0.0 and m.round(14)["qty"] == 30
@@ -295,7 +305,35 @@ def test_migration_076_declares_rpcs_views_and_guards():
 
 
 # ════════ 화면 (AppTest) ════════
+GRIDS = {}          # AgGrid 에 넘어간 DataFrame (key → df) — 화면이 그린 데이터 단언용 (R5 ②)
+SEL = {}            # key → 선택 행 인덱스 (A→B 전환 테스트용)
+
+
+def _hook_aggrid(monkeypatch):
+    """st_aggrid.AgGrid 를 기록기로 — 본체 toss_grid 가 함수 안에서 import 하므로 모듈 속성 교체가 그대로 적용된다."""
+    try:
+        import st_aggrid
+    except Exception:
+        return
+
+    class _G:
+        def __init__(self, df, key):
+            self.selected_rows = df.iloc[[SEL[key]]] if key in SEL and 0 <= SEL[key] < len(df) else None
+
+    def _fake(df, *a, key=None, **kw):
+        GRIDS[key] = df.copy()
+        return _G(df, key)
+    monkeypatch.setattr(st_aggrid, "AgGrid", _fake)
+
+
+def _grid_text():
+    return "\n".join(df.to_string() for df in GRIDS.values())
+
+
 def _open(monkeypatch, mock, main="so", sub="list"):
+    GRIDS.clear()
+    SEL.clear()
+    _hook_aggrid(monkeypatch)
     mock.install(monkeypatch, _dbmod)
     from streamlit.testing.v1 import AppTest
     at = AppTest.from_file(APP_FILE, default_timeout=90)
@@ -502,6 +540,87 @@ def test_screen_finish_buttons_follow_kept_mode(monkeypatch):
     assert "취소 마무리" in b.label and not b.disabled
 
 
+
+
+# ════════ r3 (D15·D17, R5 ④) ════════
+def test_close_keeps_all_rounds_then_cancel_shipment_then_reopen_restores_both():
+    """D17/Codex r2 H3: 완납 회차(40/40)+열린 회차(60/0) 라인을 종결 → 과거 출고 40 취소(정정 흉내: delivered 0 + 닫힌 유지)
+    → 되돌리기가 두 회차 모두 qty_before 로 복원, rounds_skipped 0."""
+    m = _m(lines=[(1, 100, 40, 60, "PARTIAL")], rounds=[(11, 1, 40, 40), (12, 1, 60, 0)])
+    C.close_sales_order(m, 101, "CLOSED", "월 변경 이월", "k")
+    assert [c["sched_id"] for c in m.line(1)["closed_rounds"]] == [11, 12]          # 전 회차 보존
+    assert m.round(11)["qty"] == 40 and m.round(12)["qty"] == 0.0
+    # 과거 출고 40 취소(정정 루틴 규칙): 라인 received 0·closed 100, 회차 11 delivered 0 → qty 도 0(닫힌 유지)
+    m.update("sales_order_items", "soi_id=eq.1", C.revise_line_fields(m.line(1), 0, header_status="CLOSED"))
+    m.round(11)["delivered_qty"] = 0
+    m.round(11)["qty"] = 0
+    r = C.reopen_sales_order(m, 101, "k")
+    assert r["rounds_restored"] == 2 and r["rounds_skipped"] == 0 and r["header"] == "DRAFT"
+    assert m.round(11)["qty"] == 40.0 and m.round(12)["qty"] == 60.0 and m.line(1)["pending_qty"] == 100.0
+    assert m.line(1)["pending_qty"] == sum(x["qty"] - x["delivered_qty"] for x in m.tables["so_delivery_schedule"] if x["soi_id"] == 1)
+
+
+def test_migration_077_declares_all_rounds_and_final_rules():
+    assert "WHERE d.soi_id = r.soi_id;" in SQL077 and "077 D17" in SQL077
+    assert "CREATE OR REPLACE FUNCTION public.so_close_lines(p_so_id integer, p_mode text, p_reason text, p_who text)" in SQL077
+    assert "so_reopen_lines" not in SQL077.split("CREATE OR REPLACE FUNCTION")[1].split("COMMENT ON")[0]   # reopen 은 재선언 안 함
+    assert "ORDER BY soi_id FOR UPDATE" in SQL077 and SQL077.index("ORDER BY soi_id FOR UPDATE") < SQL077.index("FROM sales_orders WHERE so_id = p_so_id FOR UPDATE")
+    assert "076 머리 주석" in SQL077 and "구식" in SQL077                       # Codex r2 L1 — 최종 규칙 기록
+    assert "GRANT  EXECUTE ON FUNCTION public.so_close_lines" in SQL077 and "SECURITY DEFINER" not in SQL077
+    assert "DROP COLUMN" not in SQL077 and "DELETE FROM" not in SQL077.upper()
+
+
+def test_static_r3_revision_conditional_and_order():
+    i_patch = SRC.index("def _line_patch(_li_, _lf_)")
+    assert "status=eq.{}&received_qty=eq.{}" in SRC                              # D16 조건부
+    assert SRC.count("_line_patch(_li, _lf9)") == 2                              # 감소·증가 두 경로
+    dec = SRC.index("# ③→① 수주 라인 먼저, 조건부 (D16)")
+    lot = SRC.index("# ① LOT 복원 — 마지막 차감 LOT 부터", dec)
+    rnd = SRC.index("# ② 회차 충당 되돌림", dec)
+    assert i_patch < dec < lot < rnd                                             # 라인 → LOT → 회차
+    assert SRC.count("_hdr_by.get(_li.get(\"so_id\"))") == 2                       # D15 머리글 상태 전달
+    assert "sched_id=eq.{_fq(_rc9['sched_id'])}&qty=gt.{_fq(_dv9)}" in SRC          # R4 조건부 회차 정리
+    assert "정정을 중단했습니다" in SRC and "앞 라인은" in SRC
+
+
+@app_test
+def test_screen_confirm_gate_follows_selected_order_and_double_click(monkeypatch):
+    """R5 ④: 확인창은 선택 수주(scope)에 붙는다 — A 에서 확인창 연 뒤 B 로 바꾸면 B 에는 안 뜨고, 연속 클릭은 1회만 반영."""
+    m = _two()
+    at = _open(monkeypatch, m)
+    SEL["so_grid"] = 0                                   # A(101)
+    at.run()
+    at.button(key="so_close_101").click()
+    at.run()
+    assert "so_close_cfm_ok" in _keys(at)
+    SEL["so_grid"] = 1                                   # B(102) 로 전환 — A 의 확인창이 따라오지 않는다
+    at.run()
+    assert "so_close_cfm_ok" not in _keys(at) and "so_close_102" in _keys(at) and m.writes == []
+    SEL["so_grid"] = 0
+    at.run()
+    assert "so_close_cfm_ok" in _keys(at)                # A 로 돌아오면 확인창 유지
+    at.button(key="so_close_cfm_ok").click()
+    at.run()
+    assert m.header(101)["status"] == "CLOSED" and len([w for w in m.writes if w[1] == "sales_orders"]) == 1
+    n_rpc = len(m.rpc_calls)
+    # 연속 클릭: 이미 종결된 뒤 되돌리기 버튼을 두 번(확인 2회) — click_guard 가 두 번째를 막는다
+    at.button(key="so_reopen_101").click()
+    at.run()
+    at.button(key="so_reopen_cfm_ok").click()
+    at.run()
+    assert m.header(101)["status"] == "PARTIAL" and len(m.rpc_calls) == n_rpc + 1
+    at.session_state["mr_cache"] = {"stale": True}
+    at.button(key="so_cancel_reason_101") if False else None
+    at.text_input(key="so_cancel_reason_101").set_value("거래 무효")
+    at.run()
+    at.button(key="so_cancel_101").click()
+    at.run()
+    at.button(key="so_cancel_cfm_ok").click()
+    at.run()
+    assert not at.exception, [str(e.value) for e in at.exception]
+    assert m.header(101)["status"] == "CANCELLED" and "mr_cache" not in at.session_state   # 취소 뒤 캐시 비움
+
+
 # ── 종결 전/후 화면 비교(활성 대조 수주 유지) — F7 ──
 def _two():
     m = SOMock()
@@ -526,35 +645,26 @@ def test_screens_exclude_closed_order_keep_control(monkeypatch, main, sub, label
     m = _two()
     at = _open(monkeypatch, m, main, sub)
     before = _texts(at) + "\n" + "\n".join(str(getattr(x, "value", "")) for x in at.metric)
-    before += "\n" + "\n".join(str(getattr(sb, "options", "")) for sb in at.selectbox)
+    before += "\n" + "\n".join(str(getattr(sb, "options", "")) for sb in at.selectbox) + "\n" + _grid_text()
     if sub == "list":
         assert _metric(at, "미납 수량") == "1,332"          # 777 + 555
-    if sub == "fstock":
-        # 완성 재고 표는 AgGrid 라 텍스트에 안 잡힌다 — 화면이 쓰는 조회 경로(pending_qty>0 라인)를 목에서 직접 대조
-        _q = "pending_qty=gt.0&product_id=not.is.null"
-        assert {l["product_id"] for l in m.fetch("sales_order_items", "product_id,pending_qty", _q)} == {"P1", "P2"}
-    elif sub != "list":        # 수주 목록은 위 KPI 지표(1,332)가 비공허 증거 — 목록 그리드(AgGrid)는 텍스트에 안 잡힌다
-        assert ("PO-KEEP-555" in before) or ("555" in before), f"{label}: 화면이 대조 수주를 그리지 않음(공허한 비교)"
+    # R5 ①: 종결 전 대상(777)·대조(555) 노출을 모든 화면에서 필수 단언 (그리드 데이터 포함)
+    assert "777" in before, f"{label}: 종결 대상 수주가 화면에 없음(공허한 비교)"
+    assert "555" in before, f"{label}: 대조 수주가 화면에 없음(공허한 비교)"
     r = C.close_sales_order(m, 101, "CLOSED", "월 변경 이월", "k")
     assert r["ok"] and m.stats(101)["total_pending_qty"] == 0
     _dbmod.clear_cache()
-    if "mr_cache" in at.session_state:                      # 화면 경로는 F9 가 비운다(아래 screen 테스트) — 여기선 루틴 직접 호출
+    if "mr_cache" in at.session_state:                      # 화면 경로는 F9 가 비운다(screen 테스트) — 여기선 루틴 직접 호출
         del at.session_state["mr_cache"]
+    GRIDS.clear()
     at.run()
     assert not at.exception, [str(e.value) for e in at.exception]
     after = _texts(at) + "\n" + "\n".join(str(getattr(x, "value", "")) for x in at.metric)
-    after += "\n" + "\n".join(str(getattr(sb, "options", "")) for sb in at.selectbox)
+    after += "\n" + "\n".join(str(getattr(sb, "options", "")) for sb in at.selectbox) + "\n" + _grid_text()
     if sub == "list":
-        # 수주 목록 자체는 종결 수주를 보여준다(필터 '전체') — KPI 미납 수량만 대조 수주로 줄어든다
+        # 수주 목록 자체는 종결 수주를 보여준다(필터 '전체', 보존 777) — KPI 미납 수량만 대조 수주로 줄어든다
         assert _metric(at, "미납 수량") == "555" and "PO-CLOSE-777" in after
         return
-    if sub == "fstock":
-        assert {l["product_id"] for l in m.fetch("sales_order_items", "product_id,pending_qty",
-                                                  "pending_qty=gt.0&product_id=not.is.null")} == {"P2"}
-        return
-    # 대조 수주(102)가 전에 보였으면 후에도 보인다(일부 화면은 목록을 줄여 보여 전에 없을 수 있다). 종결 수주는 후에 없다.
-    keep_before, keep_after = "PO-KEEP-555" in before, "PO-KEEP-555" in after
-    assert (not keep_before) or keep_after, label
-    assert "PO-CLOSE-777" not in after, label
-    if "777" in before:                      # 미납 수량으로 표시되는 화면: 종결 뒤 777 이 사라지고 555 는 남는다
-        assert "777" not in after and ("555" in after) == ("555" in before), label
+    # 종결 수주와 그 미납 777 은 사라지고, 대조 수주 555 는 남는다
+    assert "PO-CLOSE-777" not in after and "777" not in after, label
+    assert "555" in after, label

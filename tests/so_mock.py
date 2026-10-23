@@ -14,7 +14,7 @@ from datetime import date as _date
 
 from tests.dash_mock import DashMock
 
-WRITABLE = ("sales_orders", "sales_order_items", "so_delivery_schedule")
+WRITABLE = ("sales_orders", "sales_order_items", "so_delivery_schedule", "so_line_replacements")   # 마지막은 _rp_revert 실제 흐름용
 LINE_INACTIVE = ("CLOSED", "CANCELLED", "REPLACED")
 
 
@@ -93,6 +93,10 @@ class SOMock(DashMock):
                     continue
                 raise AssertionError(f"so_mock: 지원하지 않는 연산자 not.{sub}")
             a, b = _num(cur), _num(val)
+            if op == "eq" and a is not None and b is not None and val not in ("true", "false"):
+                if abs(a - b) > 1e-9:
+                    return False
+                continue
             if op in ("gt", "lt", "gte", "lte") and a is not None and b is not None:
                 if op == "gt" and not a > b:
                     return False
@@ -199,10 +203,11 @@ class SOMock(DashMock):
         for l in lines:
             if float(l.get("pending_qty") or 0) <= 0 or str(l.get("status") or "").upper() in LINE_INACTIVE:
                 continue
-            rs = [r for r in self.tables["so_delivery_schedule"] if r["soi_id"] == l["soi_id"]
-                  and float(r.get("qty") or 0) > float(r.get("delivered_qty") or 0) + 1e-9]
+            rs_all = [r for r in self.tables["so_delivery_schedule"] if r["soi_id"] == l["soi_id"]]
+            rs = [r for r in rs_all if float(r.get("qty") or 0) > float(r.get("delivered_qty") or 0) + 1e-9]
+            # 077(D17): 전 회차 보존 — 완납 회차도 qty_before 를 남긴다(종결 중 과거 출고 취소 뒤 복원용)
             l["closed_rounds"] = [{"sched_id": r["sched_id"], "qty_before": float(r["qty"]),
-                                   "delivered": float(r.get("delivered_qty") or 0)} for r in sorted(rs, key=lambda r: r["sched_id"])]
+                                   "delivered": float(r.get("delivered_qty") or 0)} for r in sorted(rs_all, key=lambda r: r["sched_id"])]
             l.update({"closed_qty": float(l["pending_qty"]), "pending_qty": 0, "status": mode, "close_reason": reason,
                       "remark": self._tag_append(l.get("remark"), tag)})
             self.writes.append(("rpc_update", "sales_order_items", {"soi_id": l["soi_id"], "status": mode}))
