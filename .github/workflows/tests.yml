@@ -14,13 +14,20 @@ concurrency:
 
 jobs:
   pytest:
+    name: pytest (py${{ matrix.python-version }})
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    strategy:
+      # 3.11 = 로컬 개발·기존 기준, 3.14 = Streamlit Cloud 운영 런타임(2026-10-23 관리자 진단, P1-4).
+      # 한쪽이 실패해도 다른 쪽 결과는 끝까지 본다.
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.14"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.python-version }}
           cache: pip
       - name: Install
         run: |
@@ -49,7 +56,7 @@ jobs:
           python -m pytest tests -q -rf -p no:cacheprovider 2>&1 | tee pytest.log
           status=${PIPESTATUS[0]}
           {
-            echo "### pytest (exit $status)"
+            echo "### pytest py${{ matrix.python-version }} (exit $status)"
             echo
             echo '```'
             grep -E "^(FAILED|ERROR) " pytest.log | head -40
@@ -64,6 +71,6 @@ jobs:
             echo "</details>"
           } >> "$GITHUB_STEP_SUMMARY"
           # 요약·로그는 GitHub 로그인해야 보여서, 실패 테스트 이름을 annotation(공개)으로도 올린다 (최대 10개)
-          grep -E "^(FAILED|ERROR) " pytest.log | head -10 | while IFS= read -r line; do echo "::error title=pytest::${line}"; done
-          echo "::notice title=pytest::$(tail -1 pytest.log)"
+          grep -E "^(FAILED|ERROR) " pytest.log | head -10 | while IFS= read -r line; do echo "::error title=pytest py${{ matrix.python-version }}::${line}"; done
+          echo "::notice title=pytest py${{ matrix.python-version }}::$(tail -1 pytest.log)"
           exit $status
