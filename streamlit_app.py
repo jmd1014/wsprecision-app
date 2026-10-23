@@ -7329,7 +7329,7 @@ elif page == "수주 관리":
                             st.session_state[f"cfm_so_reopen_{_soid}"] = True
                         if st.session_state.get(f"cfm_so_reopen_{_soid}") and confirm_gate(
                                 "so_reopen", "보존한 잔량을 미납으로 복원하고 수주 상태를 다시 계산합니다. "
-                                "닫힌 납품 회차는 납품완료가 그대로인 것만 복원됩니다.", scope=_soid):
+                                "닫힌 납품 회차는 현재 닫힌 상태(수량 = 납품완료)인 것만 종결 전 수량으로 복원됩니다.", scope=_soid):
                             if click_guard("so_reopen"):
                                 _so_flash_rerun(_soc.reopen_sales_order(_db, _soid, current_user_name()))
                             st.rerun()
@@ -9344,8 +9344,12 @@ elif page == "출고 관리":
                         _prev_cx = fetch("shipment_revisions", "rev_id,si_id",
                                          f"shipment_id=eq.{_fq(pick['shipment_id'])}"
                                          "&action=eq.CANCEL", limit=500)
-                    except Exception:
-                        _prev_cx = []
+                    except Exception as e:
+                        # D18 fail-closed: 이력을 모르면 기처리 라인을 다시 역반영할 수 있다 → 쓰기 없이 중단
+                        _db.log_error("db_read", f"취소 이력 조회 실패(전표 {pick.get('ship_no')}): {e}",
+                                      table_name="shipment_revisions")
+                        return 0, ["정정 중단 — 취소 이력 조회 실패. 화면을 새로 열고 다시 "
+                                   "시도하세요(쓰기 없음)."]
                     # 라인 단위(r3 QA B-1): 부분 중단 뒤 재취소는 이력 없는 라인만 역반영한다
                     _done_si = {r.get("si_id") for r in _prev_cx if r.get("si_id") is not None}
                     _todo_cx = [t for t in _deltas if t[0]["si_id"] not in _done_si]
@@ -9479,14 +9483,18 @@ elif page == "출고 관리":
                     _so_ = _li_.get("so_id")
                     _hs_ = _hdr_by.get(_so_)
                     if _so_ is not None:
+                        # D18 fail-closed: 재조회가 실패하거나 비면 옛 값으로 계산하지 않고 그 라인부터 중단
                         try:
                             _hf_ = fetch("sales_orders", "so_id,status",
                                          f"so_id=eq.{_fq(_so_)}", limit=1, cache=False)
-                            if _hf_:
-                                _hs_ = _hf_[0].get("status")
-                                _hdr_by[_so_] = _hs_
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            _db.log_error("db_read", f"정정 머리글 재조회 실패(so {_so_}): {e}",
+                                          table_name="sales_orders")
+                            return -9, {"_why": "수주 머리글 조회 실패"}
+                        if not _hf_:
+                            return -9, {"_why": "수주 머리글 없음(조회 결과 0건)"}
+                        _hs_ = _hf_[0].get("status")
+                        _hdr_by[_so_] = _hs_
                     _lf_ = _soc.revise_line_fields(_li_, _nr_, _hs_)
                     if (_lf_.get("status") in _soc.LINE_INACTIVE
                             and str(_li_.get("status") or "").upper() not in _soc.LINE_INACTIVE
@@ -9504,7 +9512,10 @@ elif page == "출고 관리":
                                                   limit=200)]
                             _lf_["close_reason"] = f"출고 정정 {_ship_no}"
                         except Exception as e:
-                            _warns.append(f"{_pn_} 회차 스냅샷 조회 실패: {e}")
+                            # D18 fail-closed: 스냅샷 없이 닫으면 되돌리기가 회차를 복원 못 한다 → 중단
+                            _db.log_error("db_read", f"정정 회차 스냅샷 조회 실패(soi {_li_['soi_id']}): {e}",
+                                          table_name="so_delivery_schedule")
+                            return -9, {"_why": "납품 회차 조회 실패"}
                     _rv_cond = ("received_qty=is.null" if _li_.get("received_qty") is None
                                 else "received_qty=eq.{}".format(_fq(float(_li_.get("received_qty") or 0))))
                     _flt = "soi_id=eq.{}&status=eq.{}&{}".format(
@@ -9516,7 +9527,11 @@ elif page == "출고 관리":
                                       table_name="sales_order_items")
                         return -1, _lf_
 
-                def _stop_msg(_n_, _pn_, _soi_):
+                def _stop_msg(_n_, _pn_, _soi_, _why_=None):
+                    if _n_ == -9:
+                        return ("정정 중단 — {} {} (soi {}). 전표는 그대로 두었습니다. "
+                                "화면을 새로 열고 다시 시도하세요(이 라인부터 쓰기 없음, "
+                                "앞 라인은 반영됨).".format(_pn_, _why_ or "조회 실패", _soi_))
                     if _n_ == 0:
                         return ("정정 중단 — {} 수주 라인 상태가 그 사이 바뀌었습니다 (soi {}). "
                                 "전표는 그대로 두었습니다. 화면을 새로 열고 남은 라인만 다시 "
@@ -9547,7 +9562,7 @@ elif page == "출고 관리":
                             # 되살리지 않는다 (076 D11, D15)
                             _n9, _lf9 = _line_patch(_li, _nr, x.get("pn"))
                             if _n9 != 1:
-                                _warns.append(_stop_msg(_n9, x.get("pn"), _soi))
+                                _warns.append(_stop_msg(_n9, x.get("pn"), _soi, _lf9.get("_why")))
                                 _db.log_error("db_write",
                                               f"정정 중단: soi {_soi} 조건부 갱신 {_n9}행 (전표 {_ship_no})",
                                               table_name="sales_order_items")
@@ -9637,7 +9652,7 @@ elif page == "출고 관리":
                             _nr = float(_li.get("received_qty") or 0) + d
                             _n9, _lf9 = _line_patch(_li, _nr, x.get("pn"))
                             if _n9 != 1:
-                                _warns.append(_stop_msg(_n9, x.get("pn"), _soi))
+                                _warns.append(_stop_msg(_n9, x.get("pn"), _soi, _lf9.get("_why")))
                                 _db.log_error("db_write",
                                               f"정정 중단: soi {_soi} 조건부 갱신 {_n9}행 (전표 {_ship_no})",
                                               table_name="sales_order_items")
@@ -9735,10 +9750,11 @@ elif page == "출고 관리":
                         _db.insert("inventory_transactions", _txns9)
                     except Exception as e:
                         _warns.append(f"재고 원장 기록 실패: {e}")
-                try:
-                    _db.insert("shipment_revisions", _revs9)
-                except Exception as e:
-                    _warns.append(f"정정 이력 기록 실패: {e}")
+                if _revs9:               # 중단으로 처리 라인이 0 이면 빈 이력을 넣지 않는다
+                    try:
+                        _db.insert("shipment_revisions", _revs9)
+                    except Exception as e:
+                        _warns.append(f"정정 이력 기록 실패: {e}")
                 for _sid7 in _so_ids9:
                     try:
                         _soc.recompute_header(_db, _sid7)
@@ -9894,8 +9910,27 @@ elif page == "출고 관리":
                             "없습니다. 필요하면 영업 보고 > 마감 조회에서 "
                             "마감을 해제하세요 (관리자).")
                 else:
+                    # D19: CANCEL 이력이 일부 라인에만 있는 전표(부분 취소 상태)는 정정(EDIT) 진입을 막고
+                    # 취소 재개만 허용한다. 이력 조회가 실패하면 EDIT·CANCEL 모두 차단(D18 fail-closed).
+                    _cx_done_si, _cx_hist_fail = set(), False
+                    try:
+                        _cx_done_si = {r.get("si_id") for r in fetch(
+                            "shipment_revisions", "si_id",
+                            f"shipment_id=eq.{_fq(_cf_pick['shipment_id'])}&action=eq.CANCEL",
+                            limit=500) if r.get("si_id") is not None}
+                    except Exception:
+                        _cx_hist_fail = True
+                    _cx_live_si = {x["si_id"] for x in _cf_items if float(x.get("qty") or 0) > 0}
+                    _cx_partial = bool(_cx_done_si) and bool(_cx_live_si - _cx_done_si)
+                    _rv_blocked = _cx_hist_fail or _cx_partial
                     # ── 전표 정정: 같은 전표번호 유지, 차이만 역반영 ──
                     with st.expander("전표 정정 (수량 변경 · 라인 제외)"):
+                        if _cx_hist_fail:
+                            st.error("취소 이력 조회 실패 — 화면을 새로 열고 다시 시도하세요. "
+                                     "정정·취소를 진행하지 않습니다.")
+                        elif _cx_partial:
+                            st.warning("부분 취소 상태 — 이 전표는 일부 라인만 취소 역반영됐습니다. "
+                                       "[전표 취소] 로 남은 라인을 마저 취소하세요(정정은 할 수 없습니다).")
                         _rv_df = _cf_pd.DataFrame([{
                             "품번": x.get("pn"),
                             "품명": _cf_names.get(x.get("si_id")) or "-",
@@ -9949,12 +9984,13 @@ elif page == "출고 관리":
                                           "이력이 남으며 재발행 문서에 정정본 표기가 "
                                           "찍힙니다 — 이미 나간 명세서는 회수 후 "
                                           "재발행하세요",
-                                     disabled=not (_rv_changed
-                                                   and _rv_reason.strip())):
+                                     disabled=_rv_blocked or not (_rv_changed
+                                                                   and _rv_reason.strip())):
                             st.session_state["cfm_cf_rv"] = True
                             st.session_state["cf_rv_plan"] = (
                                 _rv_new, _rv_reason.strip(), _rv_over)
                         if st.session_state.get("cfm_cf_rv") \
+                                and not _rv_blocked \
                                 and confirm_gate("cf_rv",
                                     "전표 {} 를 정정합니다 — 변경 {}건의 "
                                     "차이만큼 수주 납품·회차·재고를 "
@@ -9995,12 +10031,12 @@ elif page == "출고 관리":
                         key="cf_cx_reason_{}".format(_cf_pick["shipment_id"]),
                         placeholder="예: 거래처 착오, 납품일 오류")
                     if st.button("전표 취소 (전체 역반영)", key="cf_cancel",
-                                 disabled=not _cx_reason.strip()):
+                                 disabled=not _cx_reason.strip() or _cx_hist_fail):
                         st.session_state[f"cfm_cf_cancel_{_cf_pick['shipment_id']}"] = True
                     # 사유가 비면 확인창도 띄우지 않는다 — 플래그만 남은 상태(전표 전환·
                     # 재진입)에서 사유 없이 역반영되는 일을 막는다 (§5-2 (2))
                     if st.session_state.get(f"cfm_cf_cancel_{_cf_pick['shipment_id']}") \
-                            and _cx_reason.strip() \
+                            and _cx_reason.strip() and not _cx_hist_fail \
                             and confirm_gate("cf_cancel",
                                 "확정된 전표 {}를 취소합니다 — 전 라인의 "
                                 "수주 납품·회차 충당·완성 재고 차감을 "

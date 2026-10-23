@@ -604,8 +604,10 @@ def test_static_r3_revision_conditional_and_order():
     assert "종결·취소된 수주 — 수주 목록에서 되돌린 뒤 정정하세요" in SRC             # M-1 증가 정정 머리글 검사
     assert "_todo_cx" in SRC and '"rev_id,si_id"' in SRC                            # B-1 권장 2 라인 단위 재취소
     assert "갱신 실패(통신·서버 오류" in SRC                                          # B-1 권장 3 (-1 구분)
+    assert SRC.count('return -9, {"_why": ') == 3 and "_rv_blocked" in SRC and "_cx_hist_fail" in SRC   # r4 D18·D19
+    assert 'except Exception:\n                            pass\n                    _lf_ = _soc.revise_line_fields' not in SRC   # fail-open 제거
     assert "sched_id=eq.{_fq(_rc9['sched_id'])}&qty=gt.{_fq(_dv9)}" in SRC          # R4 조건부 회차 정리
-    assert SRC.count("정정 중단 — ") == 2 and "앞 라인은 반영됨" in SRC
+    assert SRC.count("정정 중단 — ") == 4 and "앞 라인은 반영됨" in SRC          # 0행·−1·조회 실패(-9)·취소 이력 조회 실패
     assert "received_qty=is.null" in SRC                                          # H2 NULL received
     assert 'startswith("정정 중단")' in SRC and SRC.count("not _stop9") >= 4         # B1·M4 호출부
     assert "if _stopped:\n                    # 중단: 전표는 CONFIRMED" in SRC          # B1 머리글 무변경
@@ -635,9 +637,31 @@ def test_screen_confirm_gate_follows_selected_order_and_double_click(monkeypatch
     at.button(key="so_reopen_101").click()
     at.run()
     at.button(key="so_reopen_cfm_ok").click()
-    at.button(key="so_reopen_cfm_ok").click()          # 같은 run 에 두 번(큐잉된 더블 클릭)
     at.run()
     assert m.header(101)["status"] == "PARTIAL" and len(m.rpc_calls) == n_rpc + 1
+    # 연속 클릭(Codex r3 M1): 두 번의 독립 run — 2차 확정 클릭 직전에 가드 시각을 '방금'으로 두어
+    # (AppTest 는 run 하나가 5초를 넘겨 실제 연타를 재현할 수 없다) click_guard 가 막아 RPC 수 불변
+    import time as _time
+    n_rpc = len(m.rpc_calls)
+    at.button(key="so_close_101").click()
+    at.run()
+    at.session_state["_guard_so_close"] = _time.time()
+    at.button(key="so_close_cfm_ok").click()
+    at.run()
+    assert len(m.rpc_calls) == n_rpc and m.header(101)["status"] == "PARTIAL"   # 가드가 막음(경고 뒤 rerun 으로 문구는 사라짐)
+    # 역검사: 가드를 지우면 같은 클릭이 RPC 를 부른다(테스트가 가드에 의존함을 증명)
+    at.session_state["_guard_so_close"] = 0.0
+    at.button(key="so_close_101").click()
+    at.run()
+    at.button(key="so_close_cfm_ok").click()
+    at.run()
+    assert len(m.rpc_calls) == n_rpc + 1 and m.header(101)["status"] == "CLOSED"
+    at.button(key="so_reopen_101").click()
+    at.run()
+    at.session_state["_guard_so_reopen"] = 0.0
+    at.button(key="so_reopen_cfm_ok").click()
+    at.run()
+    assert m.header(101)["status"] == "PARTIAL"
     at.session_state["mr_cache"] = {"stale": True}
     at.text_input(key="so_cancel_reason_101").set_value("거래 무효")
     at.run()

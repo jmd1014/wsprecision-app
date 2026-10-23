@@ -23,7 +23,8 @@ streamlit_available = importlib.util.find_spec("streamlit") is not None
 pytestmark = pytest.mark.skipif(not streamlit_available, reason="streamlit 미설치 — AppTest 불가")
 
 
-def _patch_header(monkeypatch, status, stale_line=None, current_line=None, status_refetch=None, stale_lines=None):
+def _patch_header(monkeypatch, status, stale_line=None, current_line=None, status_refetch=None, stale_lines=None,
+                  refetch_raise=False, refetch_empty=False, snapshot_raise=False, hist_raise=False):
     """sales_orders 머리글 상태를 덮고, 선택적으로 정정이 읽는 라인(stale)과 조건부 갱신이 보는 라인(current)을 가른다.
     status_refetch: PATCH 직전 재조회(so_id=eq., cache=False)가 돌려줄 머리글 상태(H-2 창 재현)."""
     # 같은 테스트에서 두 번 부르면 래퍼가 겹쳐 조건을 두 번 검사(두 번째는 이미 바뀐 라인) → 0행 오판. 원본(rev_db)을 기억해 그 위에만 씌운다
@@ -38,6 +39,15 @@ def _patch_header(monkeypatch, status, stale_line=None, current_line=None, statu
         cur_map[current_line["soi_id"]] = current_line
 
     def _fetch(table, select="*", filter_query="", limit=1000, **kw):
+        if table == "sales_orders" and "so_id=eq." in (filter_query or ""):
+            if refetch_raise:
+                raise RuntimeError("머리글 재조회 실패(시뮬레이션)")
+            if refetch_empty:
+                return []
+        if table == "so_delivery_schedule" and snapshot_raise and "order=sched_id.asc" in (filter_query or ""):
+            raise RuntimeError("회차 스냅샷 조회 실패(시뮬레이션)")
+        if table == "shipment_revisions" and hist_raise and "action=eq.CANCEL" in (filter_query or ""):
+            raise RuntimeError("취소 이력 조회 실패(시뮬레이션)")
         if table == "sales_orders":
             st_ = status_refetch if (status_refetch and "so_id=eq." in (filter_query or "")) else status
             return [{"so_id": 100, "so_number": "SO-100", "customer": "㈜엠제이티", "status": st_,
@@ -254,3 +264,95 @@ def test_rp_revert_real_flow_blocked_when_closed(monkeypatch):
     assert m.line(1)["status"] == "REPLACED" and m.header(101)["status"] == "CLOSED"
     assert m.tables["so_line_replacements"][0]["reverted_at"] is None
     assert any("먼저" in str(getattr(w, "value", "")) for w in at.warning)
+
+# ── r4: D18 fail-closed · D19 부분 취소 전표 · 증가 정정 머리글 거부 실제 흐름 ──
+def _no_writes():
+    assert _line_updates() == []
+    assert not [1 for t, recs in RV.INSERTED if t in ("inventory_transactions", "shipment_revisions") and recs]
+    assert not [1 for t, f, v in RV.UPDATED if t in ("so_delivery_schedule", "shipments", "sales_orders")]
+    assert RV.SHIPMENTS[0]["status"] == "CONFIRMED"
+
+
+def _errs(at):
+    return " ".join(str(getattr(w, "value", "") or "") for w in at.error)
+
+
+@pytest.mark.parametrize("kw,why", [({"refetch_raise": True}, "머리글 조회 실패"),
+                                    ({"refetch_empty": True}, "머리글 없음"),
+                                    ({"snapshot_raise": True}, "납품 회차 조회 실패")])
+def test_revision_failclosed_on_lookup_failure(rev_db, monkeypatch, kw, why):
+    """S1/D18: 머리글 재조회 실패·빈 결과, D15 스냅샷 조회 실패 → 그 라인부터 쓰기 없이 중단, 전표 유지, 빨간 안내."""
+    RV._seed()
+    RV.LINES[11].update({"qty": 500, "received_qty": 500, "pending_qty": 0, "status": "DELIVERED", "closed_qty": 0})
+    _patch_header(monkeypatch, "CLOSED", **kw)
+    at = RV._pick_confirmed(RV._open())
+    _cancel_confirmed(at)
+    _no_writes()
+    e = _errs(at)
+    assert "정정 중단" in e and why in e and "쓰기 없음" in e
+
+
+def test_cancel_failclosed_on_history_failure(rev_db, monkeypatch):
+    """S1/D18: CANCEL 이력 조회 실패 → 취소 진입 전 중단(쓰기 0). 화면도 D19 로 취소 버튼이 잠긴다."""
+    RV._seed()
+    RV.LINES[11]["status"] = "PARTIAL"
+    _patch_header(monkeypatch, "PARTIAL", hist_raise=True)
+    at = RV._pick_confirmed(RV._open())
+    assert at.button(key="cf_cancel").disabled                      # D19: 이력 조회 실패 → 취소 버튼 잠김
+    assert at.button(key="cf_rv_go").disabled
+    assert "취소 이력 조회 실패" in _errs(at)
+    # 버튼이 잠겼어도 루틴 자체도 fail-closed 인지: 확인 플래그를 직접 세워 호출 경로를 밟는다
+    at.text_input(key="cf_cx_reason_1").set_value("정정 테스트")
+    at.run()
+    at.session_state["cfm_cf_cancel_1"] = True
+    at.run()
+    assert "cf_cancel_cfm_ok" not in {b.key for b in at.button}      # 게이트 자체가 열리지 않는다
+    _no_writes()
+
+
+def _seed_two_lines():
+    RV._seed()
+    RV.LINES[11]["status"] = "PARTIAL"
+    RV.LINES[12] = {"soi_id": 12, "so_id": 100, "canonical_pn": "4PDVN-04", "customer_part_no": "X", "customer_item_name": None,
+                    "product_id": "P1", "qty": 1000, "received_qty": 200, "pending_qty": 800, "unit": "EA", "unit_price": 1000,
+                    "due_date": None, "status": "PARTIAL", "closed_qty": 0}
+    RV.SHIP_ITEMS.append({"si_id": 3, "shipment_id": 1, "soi_id": 12, "so_id": 100, "sched_id": None, "product_id": "P1",
+                          "pn": "4PDVN-04", "customer_pn": "X", "item_name": None, "customer": "㈜엠제이티", "so_number": "SO-100",
+                          "qty": 200, "unit": "EA", "unit_price": 1000})
+
+
+def test_partial_cancelled_shipment_blocks_edit_allows_cancel_resume(rev_db, monkeypatch):
+    """S2/D19: CANCEL 이력이 si 1 에만 있는 전표 → 정정 버튼 잠김·안내, 취소 재개는 si 3 만 역반영."""
+    _seed_two_lines()
+    RV.REVS[:] = [{"shipment_id": 1, "rev_no": 1, "action": "CANCEL", "si_id": 1, "pn": "4PDVN-03", "qty_before": 500,
+                   "qty_after": 0, "reason": "x", "created_by": "t"}]
+    _patch_header(monkeypatch, "PARTIAL")
+    at = RV._pick_confirmed(RV._open())
+    at.text_input(key="cf_cx_reason_1").set_value("재개")
+    at.run()
+    assert at.button(key="cf_rv_go").disabled and not at.button(key="cf_cancel").disabled
+    assert any("부분 취소 상태" in str(getattr(w, "value", "")) for w in at.warning)
+    # 정정 게이트를 억지로 열어도 막힌다
+    at.session_state["cfm_cf_rv"] = True
+    at.session_state["cf_rv_plan"] = ({1: 0.0, 3: 0.0}, "억지", False)
+    at.run()
+    assert "cf_rv_cfm_ok" not in {b.key for b in at.button}
+    _cancel_confirmed(at)
+    assert [f.split("&")[0] for f, v in _line_updates()] == ["soi_id=eq.12"]
+    assert RV.SHIPMENTS[0]["status"] == "CANCELLED"
+
+
+def test_edit_increase_on_closed_header_is_rejected_in_flow(rev_db, monkeypatch):
+    """S3 ④: 종결 머리글 아래 라인의 출고 증가 정정(EDIT) → 사전 검증 거부, 쓰기 0."""
+    RV._seed()
+    RV.LINES[11]["status"] = "PARTIAL"
+    _patch_header(monkeypatch, "CLOSED")
+    at = RV._pick_confirmed(RV._open())
+    at.session_state["cfm_cf_rv"] = True
+    at.session_state["cf_rv_plan"] = ({1: 600.0}, "증가 시도", False)       # si 1: 500 → 600
+    at.run()
+    at.button(key="cf_rv_cfm_ok").click()
+    at.run()
+    assert not at.exception, [str(e.value) for e in at.exception]
+    assert "종결·취소된 수주" in _errs(at)
+    _no_writes()

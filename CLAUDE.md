@@ -232,12 +232,14 @@
   이월·고객 요청 중단)과 취소(CANCELLED, 거래 무효·사유 필수)는 수주 목록 상세의 버튼 →
   **RPC `so_close_lines(so_id, mode, reason, who)` 한 트랜잭션**(076 D9): 미확정 전표 차단(`blocked`,
   HINT=전표) → 활성 미납 라인 closed_qty 보존·pending 0·회차 보존(`closed_rounds`)·닫기 → 활성 잔량 0 이면
-  머리글. 되돌리기 **RPC `so_reopen_lines`**: 잔량 복원·상태 재계산·보존 회차 복원(납품완료 불변인 것만)·
+  머리글. 되돌리기 **RPC `so_reopen_lines`**: 잔량 복원·상태 재계산·보존 회차 복원(현재 닫힌 상태 qty = delivered 인 회차만)·
   머리글 활성 라인 재계산. 둘 다 멱등(반쪽 상태는 같은 버튼 재호출로 복구), 응답 불명은 1회 재호출.
   **종결·취소 머리글 아래 라인은 정정 시 라인 상태와 무관하게 비활성 취급**(D15 — 완납 라인을 감소 정정해도
   PENDING 으로 되살리지 않고 status = 머리글 모드·closed_qty = qty − received). 정정의 라인 갱신은
   `status=eq.<읽은 값>&received_qty=eq.<읽은 값>` 조건부 `update_count` 로 **라인 → LOT → 회차** 순(D16); 0행이면
-  그 라인부터 중단·안내(앞 라인은 반영된 채 — P3-1 출고 정정 RPC 전까지의 한계). `closed_rounds` 는 **전 회차**
+  그 라인부터 중단·안내(앞 라인은 반영된 채, 전표 머리글은 무변경 — P3-1 출고 정정 RPC 전까지의 한계). 쓰기 전 조회
+  (머리글 재조회·D15 회차 스냅샷·CANCEL 이력)가 실패·빈 결과면 옛 값으로 진행하지 않고 그 라인부터 중단(D18 fail-closed);
+  CANCEL 이력이 일부 라인에만 있는 전표는 정정(EDIT) 진입 차단, 취소 재개만(D19). `closed_rounds` 는 **전 회차**
   보존(077, D17), 복원은 qty = delivered(아직 닫힌) 회차만 `GREATEST(qty_before, delivered)`. 잠금 순서는 라인 → 머리글
   (076 머리 주석의 '머리글 → 라인'·'delivered 불변' 문장은 구식 — 077 주석이 최종).
   파이썬 `so_close.py` 는 RPC 래퍼 + 메시지만(쓰기 전 조회 없음). 잔량의 진실 = 라인 status + 저장된
