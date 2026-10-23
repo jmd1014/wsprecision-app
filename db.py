@@ -88,9 +88,22 @@ def health_check() -> dict:
     return {"status": "OK", "counts": counts}
 
 
+def lib_versions() -> dict:
+    """운영 런타임 버전 4종 (P1-4: requirements 상한 고정 근거). 실패해도 진단은 계속."""
+    import sys
+    from importlib import metadata
+    v = {"python": sys.version.split()[0]}
+    for key, dist in (("streamlit", "streamlit"), ("pandas", "pandas"), ("st_aggrid", "streamlit-aggrid")):
+        try:
+            v[key] = metadata.version(dist)
+        except Exception as e:  # 미설치·메타데이터 없음
+            v[key] = f"(확인 불가: {type(e).__name__})"
+    return v
+
+
 def debug_check() -> dict:
     """secrets 등록 상태 + 실제 API 호출 결과를 진단 (값은 마스킹)"""
-    info = {}
+    info = {"versions": lib_versions()}   # secrets 오류로 일찍 돌아가도 버전은 보이게 맨 앞
     try:
         url = st.secrets["supabase"].get("url", "")
         info["url_set"] = bool(url)
