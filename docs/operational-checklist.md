@@ -105,3 +105,15 @@
 | | | | |
 
 신규 점검 시마다 행 추가.
+
+---
+
+## G. 배포 후 점검 (매 push)
+
+> 계획서(P1-3)는 "D절" 로 적었으나 D 는 자동화 테스트가 이미 쓰고 있어 G 로 둔다. push(= Streamlit Cloud 자동 배포) 마다 아래 5줄. G1·G2 는 개발 세션(Lead)이, G3·G4 는 운영 계정이 필요하므로 **사용자**가 확인하거나 AppTest 결과로 갈음한다(AGENTS §9).
+
+- [ ] **G1. Streamlit Cloud 기동** — 앱 URL 에서 로그인 화면이 렌더된다.
+- [ ] **G2. GitHub Actions `tests` success** — 런 ID 를 기록한다.
+- [ ] **G3. 관리자 진단** — 관리자 > 진단(secrets 점검): `versions`(python·streamlit·pandas·st_aggrid) 가 예상값이고 `test_status` 가 200.
+- [ ] **G4. 변경 화면 1개 열어 신규 오류 0** — 관리자 오류 기록(`app_errors`) 최근 10분에 새 행 없음.
+- [ ] **G5. 기록** — 트래커·해당 계획서 §11 에 push SHA·CI 런 ID·확인자를 적는다.

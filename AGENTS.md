@@ -81,7 +81,7 @@ CLAUDE.md "읽기 캐시·조회 상한"을 따른다. 앱 쓰기는 `db.py` 경
 
 - **main push = Streamlit Cloud 즉시 배포.** 커밋과 푸시를 구분한다.
 - 푸시 전: 전체 pytest 통과(8절 배포 게이트), 필수 Reviewer 완료, BLOCKER 해결, DB 호환 확인, 변경 범위 확인.
-- 푸시 후: Lead 는 Streamlit Cloud 배포 완료와 앱 기동(로그인 화면 렌더), GitHub Actions `tests` 결과를 확인한다. 로그인 뒤 화면·핵심 조회·신규 오류 확인은 **사용자가 하거나 AppTest 결과로 갈음**한다 — Lead 는 운영 계정으로 로그인하지 않는다.
+- 푸시 후: Lead 는 Streamlit Cloud 배포 완료와 앱 기동(로그인 화면 렌더), GitHub Actions `tests` 결과를 확인한다. 로그인 뒤 화면·핵심 조회·신규 오류 확인은 **사용자가 하거나 AppTest 결과로 갈음**한다 — Lead 는 운영 계정으로 로그인하지 않는다. 항목은 `docs/operational-checklist.md` **G절(배포 후 점검, 5줄)** 을 따른다.
 - 문제 시 복구 우선: 코드는 `git revert` 후 재푸시. migration 이 섞였으면 revert 만으로 복구되지 않는다.
 - 브랜치: L1 은 main 직접, L2 는 테스트·Reviewer 게이트 충족 시 main, L3 는 별도 branch 권장. 불필요한 PR 절차는 강제하지 않는다. 외부 모델이 코드를 쓰기 시작하면 branch/PR 정책을 다시 강화한다.
 - 커밋 메시지는 한글 요약 + 본문에 변경 항목, 끝에 `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>`.
