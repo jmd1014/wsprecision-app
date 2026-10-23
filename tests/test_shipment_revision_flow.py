@@ -86,7 +86,7 @@ def _in_ids(fq, key):
     return {x.strip('"') for x in raw.split(",") if x}
 
 
-def _fetch(table, select="*", filter_query="", limit=1000):
+def _fetch(table, select="*", filter_query="", limit=1000, **kw):   # cache=False 등 키워드 수용 (r4: 머리글 재조회 fail-closed)
     fq = filter_query
     if table == "shipments":
         rows = [dict(s) for s in SHIPMENTS]
