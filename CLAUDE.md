@@ -32,6 +32,7 @@
 
 ## 디자인 시스템 (토스 스타일, 2026-08-12 확정)
 
+- **기준 문서: docs/design/DESIGN_SYSTEM.md** (토큰·컴포넌트 규격 단일 기준, 2026-10-22. 구버전 `docs/design/legacy/` 는 참고만)
 - 폰트 **Pretendard** / 주색 **#3182f6** (hover #1b64da) / 배경 #f9fafb
 - 카드: 테두리 없음 + radius 16px + `var(--shadow)` / 버튼: radius 10px, 보조는 회색 면 #f2f4f6
 - 상태 색 규칙(전 페이지 고정): 문제=#f04452 / 대기·부분=#dd6b02 / 완료=#01a76b / 진행·활성=#3182f6

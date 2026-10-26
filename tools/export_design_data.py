@@ -5,7 +5,7 @@
 현재 운영 데이터를 화면별 구조 그대로 JSON 한 파일로 뽑아 첨부한다.
 
 실행:  python tools/export_design_data.py
-출력:  docs/design-data.json  (+ 콘솔 요약)
+출력:  docs/design/legacy/design-data.json  (+ 콘솔 요약)
 
 주의: 실데이터이므로 외부 공유 시 거래처·단가 노출을 확인할 것.
       단가·금액은 기본 제외(--with-price 로 포함).
@@ -22,7 +22,7 @@ import db  # noqa: E402
 
 WITH_PRICE = "--with-price" in sys.argv
 OUT = os.path.join(os.path.dirname(os.path.dirname(
-    os.path.abspath(__file__))), "docs", "design-data.json")
+    os.path.abspath(__file__))), "docs", "design", "legacy", "design-data.json")
 
 
 def q(table, select="*", flt="", limit=1000):
@@ -43,6 +43,8 @@ def num(v, d=0.0):
 today = date.today()
 mon = today - timedelta(days=today.weekday())
 data = {
+    # 2026-10-22 대체됨 — 디자인 단일 기준은 docs/design/DESIGN_SYSTEM.md (palette 는 구버전 값)
+    "_superseded": "대체됨 — 2026-10-22, docs/design/DESIGN_SYSTEM.md 참조 (JSON 은 주석이 없어 첫 키로 표기. palette 는 구버전 값)",
     "_meta": {
         "generated": today.isoformat(),
         "source": "우성정밀 업무관리 (Supabase 운영 데이터)",

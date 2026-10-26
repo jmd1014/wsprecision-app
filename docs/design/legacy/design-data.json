@@ -1,4 +1,5 @@
 {
+ "_superseded": "대체됨 — 2026-10-22, docs/design/DESIGN_SYSTEM.md 참조 (JSON 은 주석이 없어 첫 키로 표기. palette 는 구버전 값)",
  "_meta": {
   "generated": "2026-07-30",
   "source": "우성정밀 업무관리 시스템 — Supabase 운영 데이터 스냅샷",
