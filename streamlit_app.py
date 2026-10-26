@@ -151,6 +151,14 @@ div[data-testid="stMetricValue"] p{
 [class*="st-key-nav_sc_"] [role="radiogroup"] button p{color:inherit !important}
 [class*="st-key-nav_sc_"] [role="radiogroup"] button[aria-checked="true"]{
   color:var(--link) !important;box-shadow:inset 0 -2px 0 var(--primary)}
+/* U1b ⑤ 발주서 작성 '작업 방식' 컨트롤 — 세부 탭 바와 간격 */
+.st-key-po_mode_sc{margin-top:var(--sp-2);margin-bottom:var(--sp-2)}
+/* U1b 빈 상태 한 줄(EmptyState) */
+.ws-empty{background:var(--card);border-radius:12px;box-shadow:var(--shadow);
+  padding:var(--sp-3) var(--sp-4);margin:var(--sp-1) 0 var(--sp-3);
+  color:var(--faint);font-size:13px}
+/* U1b 수기 수주 품목 행(삭제 버튼 옆 한 줄) */
+.so-item-row{font-size:13px;color:var(--body);padding-top:var(--sp-2)}
 """
 
 # ─── 토스 스타일 리스타일 (design/toss-restyle, 2026-08-12) ───
@@ -853,6 +861,16 @@ def _badge_class(v):
     return "b-gray"
 
 
+EMPTY_MSG = "표시할 항목이 없습니다"
+
+
+def _empty_state(msg=EMPTY_MSG):
+    """빈 결과 한 줄 안내 — toss_table·toss_df·toss_grid 공용(DESIGN_SYSTEM §3 EmptyState, U1b)."""
+    import html as _h
+    st.markdown(f'<div class="ws-empty">{_h.escape(str(msg))}</div>',
+                unsafe_allow_html=True)
+
+
 def toss_table(rows, columns=None, *, badge_cols=(), num_cols=(),
                strong_cols=(), raw_cols=(), hl_rows=(), scroll=False):
     """읽기 전용 표를 토스 스타일 HTML 테이블로 렌더 (.tt CSS).
@@ -869,6 +887,7 @@ def toss_table(rows, columns=None, *, badge_cols=(), num_cols=(),
     if hasattr(rows, "to_dict"):
         rows = rows.to_dict("records")
     if not rows:
+        _empty_state()
         return
     cols = list(columns) if columns else list(rows[0].keys())
 
@@ -924,7 +943,7 @@ def toss_df(data, *, column_config=None, hide_index=True,
     if not hasattr(data, "to_dict"):
         data = pd.DataFrame(data)
     if data is None or len(data) == 0:
-        st.caption("표시할 데이터 없음")
+        _empty_state()
         return
     _num = tuple(c for c in data.columns
                  if pd.api.types.is_numeric_dtype(data[c]))
@@ -1158,6 +1177,7 @@ def toss_grid(rows, *, key, badge_cols=(), num_cols=(), strong_cols=(),
     if hasattr(rows, "to_dict"):
         rows = rows.to_dict("records")
     if not rows:
+        _empty_state()
         return None
     # '_' 로 시작하는 키는 내부용(예: _pid) — 표에 보이지 않는다
     _cols = ([c for c in columns if c in rows[0]] if columns
@@ -1889,6 +1909,13 @@ def nav_page_head():
             st.radio("세부 화면", _labels, key=_sck, horizontal=True,
                      on_change=_nav_sc_change, args=(nav_page,),
                      label_visibility="collapsed")
+    nav_flash_show()
+
+
+def nav_flash_show():
+    """이전 실행이 남긴 flash(nav_flash·nav_go(flash=)) 를 한 번 보여 준다. 사용자 영역은
+    nav_page_head 가, 제목 줄을 직접 그리는 관리자 화면은 제목 바로 아래에서 부른다
+    (U1b 2026-10-26 — 안 부르면 메시지가 다음 사용자 화면으로 새어 나간다)."""
     _fl = st.session_state.pop("_nav_flash", None)
     if _fl:
         if _fl.get("action"):
@@ -2392,6 +2419,7 @@ if page == "홈":
 
 elif page == "마스터 관리":
     st.subheader("마스터 데이터 관리")
+    nav_flash_show()
 
     if not DB_AVAILABLE:
         st.error("DB 연결이 활성화되지 않았습니다."); st.stop()
@@ -2957,7 +2985,7 @@ elif page == "마스터 관리":
                             for _l, _d, _ in _lot_ch:
                                 _ft_adj(_d, _l, _lmemo.strip(),
                                         "LOT 실사 조정")
-                            st.success(f"LOT 조정 {len(_lot_ch)}건 기록")
+                            nav_flash(f"LOT 조정 {len(_lot_ch)}건 기록")
                             st.rerun()
                         except Exception as e:
                             st.error(f"조정 실패: {e}")
@@ -2992,7 +3020,7 @@ elif page == "마스터 관리":
                     try:
                         _ft_adj(_ob_qty, _ob_lot.strip(), _omemo.strip(),
                                 "기초 재고 (OB)", wlot=_ob_w, on=_ob_on)
-                        st.success("{} +{:,.0f} 등록".format(
+                        nav_flash("{} +{:,.0f} 등록".format(
                             _ob_lot.strip(), _ob_qty))
                         st.rerun()
                     except Exception as e:
@@ -3348,7 +3376,7 @@ elif page == "마스터 관리":
                         st.info("변경 사항 없음")
                     elif _db.update("vendors", f"vendor_id=eq.{_fq(_vid)}",
                                     _vupd):
-                        st.success(f"{_nn} — {len(_vupd)}개 항목 저장")
+                        nav_flash(f"{_nn} — {len(_vupd)}개 항목 저장")
                         st.rerun()
                     else:
                         st.error("저장 실패 — 다시 시도해 주세요.")
@@ -3424,7 +3452,7 @@ elif page == "마스터 관리":
                             if _db.update("vendors", f"vendor_id=eq.{_fq(orig['vendor_id'])}", updates):
                                 changed += 1
                     if changed:
-                        st.success(f"{changed}건 업데이트")
+                        nav_flash(f"{changed}건 업데이트")
                         st.rerun()
                     else:
                         st.info("변경 사항 없음")
@@ -3713,7 +3741,7 @@ elif page == "마스터 관리":
                         except Exception:
                             st.warning("단가 변동 이력 기록 실패 — "
                                        "값은 저장되었습니다.")
-                    st.success(f"{_pd['pn']} — {len(_pupd)}개 항목 저장")
+                    nav_flash(f"{_pd['pn']} — {len(_pupd)}개 항목 저장")
                     st.rerun()
                 else:
                     st.error("저장 실패 — 다시 시도해 주세요.")
@@ -3724,7 +3752,7 @@ elif page == "마스터 관리":
                     if _db.update("products", f"product_id=eq.{_fq(_pid)}",
                                   {"archived_at": None,
                                    "archive_reason": None}):
-                        st.success(f"{_pd['pn']} 휴면 해제")
+                        nav_flash(f"{_pd['pn']} 휴면 해제")
                         st.rerun()
             else:
                 _pd_ar = pb3.text_input(
@@ -3739,7 +3767,7 @@ elif page == "마스터 관리":
                     if _db.update("products", f"product_id=eq.{_fq(_pid)}",
                                   {"archived_at": "now()",
                                    "archive_reason": _pd_ar.strip()}):
-                        st.success(f"{_pd['pn']} 휴면 처리")
+                        nav_flash(f"{_pd['pn']} 휴면 처리")
                         st.rerun()
 
             _prod_bulk = st.expander(
@@ -3841,7 +3869,7 @@ elif page == "마스터 관리":
                             except Exception:
                                 pass
                     if chg:
-                        st.success(f"{chg}건 변경 저장")
+                        nav_flash(f"{chg}건 변경 저장")
                         st.rerun()
                     else:
                         st.info("변경 사항 없음")
@@ -4032,7 +4060,7 @@ elif page == "마스터 관리":
                     for _k in ("np_pn", "np_iname", "np_mq",
                                "np_nm_name"):
                         st.session_state.pop(_k, None)
-                    st.success(f"제품 추가: **{new_pid}** | "
+                    nav_flash(f"제품 추가: **{new_pid}** | "
                                f"{_pn_new}{_bom_msg}")
                     st.rerun()
                 except Exception as e:
@@ -4132,7 +4160,7 @@ elif page == "마스터 관리":
                                                str(l["poi_id"])
                                                for l in _g["lines"])),
                                            {"material_id": _mid})
-                                st.success(f"{_k} → 자재 {_mid} 등록, 발주 라인 "
+                                nav_flash(f"{_k} → 자재 {_mid} 등록, 발주 라인 "
                                            f"{len(_g['lines'])}건 연결")
                                 st.rerun()
                             except Exception as e:
@@ -4398,7 +4426,7 @@ elif page == "마스터 관리":
                                    f"동기화에 실패했습니다: {_sync_err} — "
                                    "정합 점검에서 확인하세요.")
                     else:
-                        st.success(f"{_mid} — {len(_mupd)}개 항목 저장"
+                        nav_flash(f"{_mid} — {len(_mupd)}개 항목 저장"
                                    + (" (BOM·제품 표기 동기화)"
                                       if "raw_name" in _mupd else ""))
                         st.rerun()
@@ -4714,7 +4742,7 @@ elif page == "마스터 관리":
                                                    "stock_qty": _ds,
                                                    "in_use": m.get("in_use", True),
                                                    "remark": m.get("remark")}))
-                                st.success(
+                                nav_flash(
                                     "병합 완료 — {} 로 통합 · BOM {}건 이동"
                                     .format(_kid, _nbom))
                                 st.rerun()
@@ -5151,7 +5179,7 @@ elif page == "마스터 관리":
                             elif _db.update("bom",
                                             f"bom_id=eq.{_fq(_bid)}",
                                             _bupd):
-                                st.success(
+                                nav_flash(
                                     f"{len(_bupd)}개 항목 저장 — "
                                     "공정 순서는 아래에서")
                                 st.rerun()
@@ -5175,7 +5203,7 @@ elif page == "마스터 관리":
                 try:
                     _db.delete("product_routing", f"bom_id=eq.{_fq(_bid)}")
                     _db.delete("bom", f"bom_id=eq.{_fq(_bid)}")
-                    st.success("행 삭제 완료")
+                    nav_flash("행 삭제 완료")
                     st.rerun()
                 except Exception as e:
                     st.error(f"삭제 실패: {e}")
@@ -5253,7 +5281,7 @@ elif page == "마스터 관리":
                                          m_pick_name})
                             except Exception:
                                 pass
-                            st.success(f"소재행 추가: {_bp['pn']} ↔ "
+                            nav_flash(f"소재행 추가: {_bp['pn']} ↔ "
                                        f"{m_pick_name}")
                             st.rerun()
                         except Exception as e:
@@ -5577,7 +5605,7 @@ elif page == "마스터 관리":
                                       "후 라우팅을 다시 저장하면 "
                                       "고정됩니다 (그 전에는 공정 "
                                       "처리에서 직접 선택)")
-                        st.success(_msg8)
+                        nav_flash(_msg8)
                         st.rerun()
                     except Exception as e:
                         st.error(f"저장 실패: {e}")
@@ -5594,7 +5622,7 @@ elif page == "마스터 관리":
                 try:
                     _db.delete("product_routing",
                                f"product_id=eq.{_fq(_bp['product_id'])}")
-                    st.success("라우팅 삭제 — 기본 플로우로 "
+                    nav_flash("라우팅 삭제 — 기본 플로우로 "
                                "동작합니다.")
                     st.rerun()
                 except Exception as e:
@@ -5713,7 +5741,7 @@ elif page == "마스터 관리":
                             if _ae_pw:
                                 _ae["pw"] = _auth.hash_pw(_ae_pw)
                             if _auth.save_users(_db, _ac_users):
-                                st.success("저장 완료"
+                                nav_flash("저장 완료"
                                            + (" — 새 비밀번호를 본인에게 "
                                               "전달하세요." if _ae_pw else ""))
                                 st.rerun()
@@ -5730,7 +5758,7 @@ elif page == "마스터 관리":
                             "즉시 불가해집니다. 실행할까요?"):
                     _ac_users.pop(_ae_id, None)
                     if _auth.save_users(_db, _ac_users):
-                        st.success(f"삭제 완료 — {_ae_id}")
+                        nav_flash(f"삭제 완료 — {_ae_id}")
                         st.rerun()
                     else:
                         st.error("저장 실패 — 다시 시도하세요.")
@@ -6184,7 +6212,7 @@ elif page == "수주 관리":
                                 _so_log("products", _p["product_id"],
                                         "sale_price", _p.get("sale_price"),
                                         _g["price"], f"수주 {_sos9} 단가 반영")
-                            st.success(f"{_p['pn']} 활성화")
+                            nav_flash(f"{_p['pn']} 활성화")
                             st.rerun()
                         else:
                             st.error("활성화 실패 — 다시 시도해 주세요.")
@@ -6244,7 +6272,7 @@ elif page == "수주 관리":
                                                 f"수주 {', '.join(sorted(_g['sos']))}"
                                                 " 등록 시 단가")
                                     _link_lines(_npid9, _npn9)
-                                    st.success(f"{_npn9} 등록({_npid9}) + "
+                                    nav_flash(f"{_npn9} 등록({_npid9}) + "
                                                f"{len(_g['lines'])}라인 연결")
                                     st.rerun()
                                 except Exception as _e:
@@ -7202,7 +7230,7 @@ elif page == "수주 관리":
                                 "active": "1",
                             }])
                             st.session_state["m_pn_q_seed"] = _mq_pn
-                            st.success(f"품목 등록: {_mq_pid} | "
+                            nav_flash(f"품목 등록: {_mq_pid} | "
                                        f"{_mq_pn} — 위 검색에서 "
                                        "선택하세요.")
                             st.rerun()
@@ -7212,6 +7240,25 @@ elif page == "수주 관리":
             if st.session_state.m_so_items:
                 df = pd.DataFrame(st.session_state.m_so_items)
                 toss_df(df, use_container_width=True, hide_index=True)
+                # 행 삭제(U1b) — 콜백에서 지우고 번호를 다시 매긴다(저장은 line_no 사용).
+                # key 는 위치 기반이라 콜백 안에서만 지운다(렌더 뒤 rerun 없이 한 번에 반영).
+                def _m_so_item_del(_i):
+                    _its = list(st.session_state.get("m_so_items") or [])
+                    if 0 <= _i < len(_its):
+                        _its.pop(_i)
+                        for _n, _it in enumerate(_its, 1):
+                            _it["line_no"] = _n
+                        st.session_state.m_so_items = _its
+                import html as _html_soi
+                for _soi_i, _soi_it in enumerate(st.session_state.m_so_items):
+                    _dc1, _dc2 = st.columns([5, 1])
+                    _dc1.markdown(
+                        f'<div class="so-item-row">{_soi_it["line_no"]}. '
+                        f'<b>{_html_soi.escape(str(_soi_it.get("customer_part_no") or ""))}</b> · '
+                        f'{float(_soi_it.get("qty") or 0):,.0f} EA</div>',
+                        unsafe_allow_html=True)
+                    _dc2.button("삭제", key=f"so_item_{_soi_i}_del", on_click=_m_so_item_del,
+                                args=(_soi_i,), use_container_width=True)
                 total = sum(it["amount"] for it in st.session_state.m_so_items)
                 st.markdown(f"**총액**: ₩{total:,}")
 
@@ -7251,14 +7298,17 @@ elif page == "수주 관리":
                                     "due_date": it["due_date"].isoformat() if it.get("due_date") else None,
                                     "status": "PENDING",
                                 }])
-                        st.success(f"수주 '{m_so_no}' 저장 완료")
                         _sk.notify(_sk.fmt_so(
                             [m_so_no], [m_cust], 1, len(st.session_state.m_so_items),
                             sum(float(it.get("qty") or 0) for it in st.session_state.m_so_items),
                             current_user_name(), "수기"))
+                        # 저장 뒤 품목표를 비우고 결과는 flash 로(U1b — 표가 남아 중복 저장을 부르던 P13)
                         st.session_state.m_so_items = []
+                        nav_flash(f"수주 '{m_so_no}' 저장 완료")
                     except Exception as e:
                         st.error(f"저장 실패: {e}")
+                    else:
+                        st.rerun()
 
     # ════════ TAB 2: 수주 목록 (다중 뷰) ════════
     if _sub == "list":
@@ -8479,7 +8529,7 @@ elif page == "수주 관리":
                                                     "so_delivery_schedule",
                                                     f"sched_id=eq.{_fq(_r['sched_id'])}",
                                                     {"qty": float(_q)})
-                                            st.success(
+                                            nav_flash(
                                                 f"총량 {_new_tot:,.0f} 로 "
                                                 "재배분 완료")
                                             st.rerun()
@@ -8522,7 +8572,7 @@ elif page == "수주 관리":
                                                 {"due_date":
                                                  _nd.isoformat()})
                                             _n += 1
-                                        st.success(f"{_n}개 회차 "
+                                        nav_flash(f"{_n}개 회차 "
                                                    f"{_shift:+d}일 이동")
                                         st.rerun()
                                     except Exception as e:
@@ -8652,7 +8702,7 @@ elif page == "수주 관리":
                                                f"soi_id=eq.{_fq(_li['soi_id'])}")
                                     st.session_state[_rk] = False
                                     st.session_state[_pend_key] = []
-                                    st.success("전체 삭제 완료")
+                                    nav_flash("전체 삭제 완료")
                                     st.rerun()
                                 except Exception as e:
                                     st.error(f"삭제 실패: {e}")
@@ -8761,7 +8811,7 @@ elif page == "수주 관리":
                                 except Exception:
                                     pass
                             st.session_state[_pend_key] = []
-                            st.success(f"저장 완료 — {len(_keep)}개 회차")
+                            nav_flash(f"저장 완료 — {len(_keep)}개 회차")
                             st.rerun()
                         except Exception as e:
                             st.error(f"저장 실패: {e}")
@@ -9127,6 +9177,8 @@ elif page == "출고 관리":
                     f"{len(_sh_sel)}건)",
                     type="primary", key="ship_reg",
                     use_container_width=True,
+                    help=("등록 시점에는 아무것도 차감되지 않습니다 — 확정('출고 전표' "
+                          "화면)에서 수주 반영·재고 차감·거래명세서 발행이 이루어집니다."),
                     disabled=_sh_total <= 0):
                 _sd = _sh_ship_d.isoformat()   # 전표 날짜 = 실제 납품일
                 # 이중 클릭 가드 — 화면 구성 시점의 제외 목록은 클릭
@@ -9184,9 +9236,7 @@ elif page == "출고 관리":
                         st.rerun()
                     except Exception as e:
                         st.error(f"전표 등록 실패: {e}")
-            _rg2.caption("등록 시점에는 아무것도 차감되지 않습니다 — "
-                         "확정('출고 전표' 화면)에서 수주 반영·재고 차감·"
-                         "거래명세서 발행이 이루어집니다.")
+            # (설명 caption → [출고 등록] 버튼 help 로 이동, U1b ⑥ 2026-10-26)
 
     # ════════ TAB 2: 출고 전표 (확인 → 정정 → 확정 → 재발행) ════════
     if _sub == "slip":
@@ -9958,7 +10008,7 @@ elif page == "출고 관리":
                                         "cancelled_at":
                                         _cx_now0.now().isoformat(),
                                         "cancel_reason": "작성중 취소 (품목 없음)"})
-                            st.success("전표 취소됨")
+                            nav_flash("전표 취소됨")
                             st.rerun()
                         except Exception as e:
                             st.error(f"취소 실패: {e}")
@@ -10134,7 +10184,7 @@ elif page == "출고 관리":
                                          x["si_id"], x.get("qty") or 0) or 0)
                                          - float(x.get("qty") or 0)) > 1e-9],
                                     current_user_name(), _pl[1]))
-                                st.success(
+                                nav_flash(
                                     f"정정 완료 — {_n_ok}개 라인. 문서를 "
                                     "재발행하세요 (정정본 표기).")
                                 st.rerun()
@@ -10177,7 +10227,7 @@ elif page == "출고 관리":
                                 sum(float(x.get("qty") or 0)
                                     for x in _cx_live),
                                 current_user_name(), _cx_reason.strip()))
-                            st.success("전표 취소 — 수주·재고 역반영 완료")
+                            nav_flash("전표 취소 — 수주·재고 역반영 완료")
                             st.rerun()
             else:
                 # ── DRAFT: 확인용 인쇄 → 정정 저장 → 확정 ──
@@ -10323,7 +10373,7 @@ elif page == "출고 관리":
                             except Exception:
                                 pass
                     if _n_keep > 0:
-                        st.success(f"정정 저장 — 수정 {_n_upd} · 제외 {_n_del}")
+                        nav_flash(f"정정 저장 — 수정 {_n_upd} · 제외 {_n_del}")
                         st.rerun()
                 _cf_over = ac3.checkbox("재고 없이 출고 허용",
                                         value=False, key="cf_over",
@@ -10828,7 +10878,7 @@ elif page == "출고 관리":
                                 {"status": "CANCELLED",
                                  "cancelled_at": _cx_now.now().isoformat(),
                                  "cancel_reason": "작성중 취소"}):
-                            st.success("전표 취소됨")
+                            nav_flash("전표 취소됨")
                             st.rerun()
                         else:
                             st.error("취소되지 않았습니다 — 전표가 이미 확정·"
@@ -11886,7 +11936,7 @@ elif page == "생산 계획":
                             _db.update("product_op_std",
                                        f"pn=eq.{_fq(_sp_pn)}",
                                        {"product_id": _lk_pick["product_id"]})
-                            st.success(f"{_sp_pn} → {_lk_pick['pn']} 연결")
+                            nav_flash(f"{_sp_pn} → {_lk_pick['pn']} 연결")
                             st.rerun()
                         except Exception as e:
                             st.error(f"연결 실패: {e}")
@@ -12003,7 +12053,7 @@ elif page == "생산 계획":
                         _db.insert("product_op_std_log", _logs9)
                     except Exception:
                         pass
-                st.success(f"표준 저장 — {_n_chg}개 작업 확정")
+                nav_flash(f"표준 저장 — {_n_chg}개 작업 확정")
                 st.session_state["std_nonce"] = _std_nonce + 1
                 st.rerun()
 
@@ -12564,7 +12614,7 @@ elif page == "생산 계획":
                         if _bad:
                             st.warning("인식 못한 값 (목록에서 골라 주세요): "
                                        + "; ".join(_bad[:8]))
-                        st.success(_msg)
+                        nav_flash(_msg)
                         st.session_state["sb_nonce"] = _sb_nonce + 1
                         st.rerun()
                     except Exception as e:
@@ -12838,7 +12888,7 @@ elif page == "생산 계획":
                             _db.update("production_schedule",
                                        f"sched_id=eq.{_fq(s['sched_id'])}", _new)
                             _n_a += 1
-                    st.success(f"조정 {_n_a}건 · 비움 {_n_d}건")
+                    nav_flash(f"조정 {_n_a}건 · 비움 {_n_d}건")
                     st.session_state["sb_adj_nonce"] = _adj_nonce + 1
                     st.rerun()
 
@@ -12961,7 +13011,7 @@ elif page == "생산 계획":
                                 _n_mc += 1
                         except Exception as e:
                             st.error(f"{_m0['machine_id']} 저장 실패: {e}")
-                st.success(f"설비 {_n_mc}대 저장")
+                nav_flash(f"설비 {_n_mc}대 저장")
                 st.session_state["mc_nonce"] = _mc_nonce + 1
                 st.rerun()
 
@@ -13019,7 +13069,7 @@ elif page == "생산 계획":
                                     "note": _ma_note.strip() or None}
                             try:
                                 _db.insert("machines", [_rec])
-                                st.success(f"{_mid} 등록 ({_rec['group_code']})")
+                                nav_flash(f"{_mid} 등록 ({_rec['group_code']})")
                                 st.session_state["mc_nonce"] = st.session_state.get(
                                     "mc_nonce", 0) + 1
                                 st.rerun()
@@ -13124,14 +13174,14 @@ elif page == "생산 계획":
                             "cal_date": _ca_date.isoformat(), "day_type": _ca_type,
                             "note": _ca_note.strip() or None,
                             "created_by": current_user_name()}])
-                        st.success(f"{_ca_date} 등록 — 주간 계획 능력에 바로 반영됩니다")
+                        nav_flash(f"{_ca_date} 등록 — 주간 계획 능력에 바로 반영됩니다")
                         st.rerun()
                     except Exception as e:
                         st.error(f"등록 실패: {str(e)[:160]}")
             if _ca_del and click_guard("cal_del"):
                 try:
                     _n = _db.delete("work_calendar", f"cal_date=eq.{_ca_date.isoformat()}")
-                    st.success(f"{_ca_date} 삭제 ({_n}건) — 요일 규칙으로 돌아갑니다")
+                    nav_flash(f"{_ca_date} 삭제 ({_n}건) — 요일 규칙으로 돌아갑니다")
                     st.rerun()
                 except Exception as e:
                     st.error(f"삭제 실패: {str(e)[:160]}")
@@ -13484,11 +13534,11 @@ elif page == "구매 관리":
         # 위젯 생성 전에 세션 값으로 현재 모드를 맞춘다(default 인자 없음 → 경고 없음)
         st.session_state["po_mode_sc"] = dict(_PO_MODES)[_po_mode]
         if hasattr(st, "segmented_control"):
-            st.segmented_control("모드", [l for _, l in _PO_MODES], key="po_mode_sc",
-                                 on_change=_po_mode_change, label_visibility="collapsed")
+            st.segmented_control("작업 방식", [l for _, l in _PO_MODES], key="po_mode_sc",
+                                 on_change=_po_mode_change)
         else:
-            st.radio("모드", [l for _, l in _PO_MODES], key="po_mode_sc", horizontal=True,
-                     on_change=_po_mode_change, label_visibility="collapsed")
+            st.radio("작업 방식", [l for _, l in _PO_MODES], key="po_mode_sc", horizontal=True,
+                     on_change=_po_mode_change)
 
     # ════════════ 발주서 작성 › 부족 자재에서 담기 (옛 '발주 제안', 2026-09-11 생산 계획에서 이동) ════════════
     if _sub == "new" and _po_mode == "pick":
@@ -14201,7 +14251,7 @@ elif page == "구매 관리":
                                                  "DB 오류. 다시 조회하세요.")
                                     else:
                                         w_lot_sync_counter()
-                                        st.success(f"식별 번호 변경 → {_nw} "
+                                        nav_flash(f"식별 번호 변경 → {_nw} "
                                                    "— 라벨을 재발행해 "
                                                    "부착하세요.")
                                         st.rerun()
@@ -15641,7 +15691,7 @@ elif page == "구매 관리":
                                 _sk.notify(_sk.fmt_po_cancel(
                                     po["po_number"], po.get("_vname"),
                                     current_user_name(), restored=True))
-                                st.success("취소 해제 — 발주중으로 "
+                                nav_flash("취소 해제 — 발주중으로 "
                                            "복구되었습니다.")
                                 st.rerun()
                     else:
@@ -15706,7 +15756,7 @@ elif page == "구매 관리":
                                 _sk.notify(_sk.fmt_po_cancel(
                                     po["po_number"], po.get("_vname"),
                                     current_user_name()))
-                                st.success("발주 취소 완료")
+                                nav_flash("발주 취소 완료")
                                 st.rerun()
 
                 # 품목별 잔량 종결 표시 + 해제 (043)
@@ -15734,7 +15784,7 @@ elif page == "구매 관리":
                                     f"po_id=eq.{_fq(po['po_id'])}",
                                     {"status": "SENT"})
                             st.session_state.pop("mr_cache", None)
-                            st.success("종결 해제 — 미입고가 입고 "
+                            nav_flash("종결 해제 — 미입고가 입고 "
                                        "대기에 복구되었습니다.")
                             st.rerun()
                         else:
@@ -15973,7 +16023,7 @@ elif page == "구매 관리":
                                         "procurement_type": _rq_proc
                                                             or None,
                                     }])
-                                    st.success(
+                                    nav_flash(
                                         f"자재 등록: {_rq_mid} — "
                                         "자동으로 다시 매핑됩니다.")
                                     st.rerun()
@@ -16072,7 +16122,7 @@ elif page == "구매 관리":
                         _sk.notify(_sk.fmt_receipt(
                             [_w], [_r.get("material_name") or _mid8],
                             _r_vendor, current_user_name(), qty=_q8))
-                        st.success(f"입고 처리 — {_q8:,.0f}개 "
+                        nav_flash(f"입고 처리 — {_q8:,.0f}개 "
                                    f"(식별 번호 {_w or '-'}, 실재고 "
                                    "자동 반영)")
                         st.rerun()
@@ -16141,7 +16191,7 @@ elif page == "구매 관리":
                                            + _scl_note})
                         except Exception:
                             pass
-                        st.success(f"잔량 종결 — {_r.get('item_name')}"
+                        nav_flash(f"잔량 종결 — {_r.get('item_name')}"
                                    f" 미입고 {_pend8:,.0f}이 입고 "
                                    "대기에서 제외됩니다.")
                         st.rerun()
@@ -16261,7 +16311,7 @@ elif page == "구매 관리":
                     [_dw], [_dr_pick.get("raw_name") or _dr_pick["material_id"]],
                     (_dr_src or "직접 입고") + (" (사급)" if _dr_sagup else ""),
                     current_user_name(), qty=_dr_qty))
-                st.success(f"직접 입고 완료: "
+                nav_flash(f"직접 입고 완료: "
                            f"{_dr_pick['material_id']} {_dr_qty:,.0f} "
                            + (f"(소재 LOT {_dw})" if _dw else "(식별 번호 없음)"))
                 st.rerun()
@@ -16289,7 +16339,7 @@ elif page == "구매 관리":
                     _db.insert("app_settings", [{
                         "key": "w_lot_counter",
                         "value": str(int(_wc_new0))}])
-                    st.success(f"저장 — 다음 입고부터 "
+                    nav_flash(f"저장 — 다음 입고부터 "
                                f"W{int(_wc_new0) + 1:04d}")
                     st.rerun()
                 except Exception as e:
@@ -16419,7 +16469,7 @@ elif page == "구매 관리":
                                     if _ok1:
                                         _left = [p for i, p in enumerate(_sc_pages) if i != _pi]
                                         st.session_state["sc_pages"] = _left
-                                        st.success(_msg1)
+                                        nav_flash(_msg1)
                                         st.rerun()
                                     else:
                                         st.error(_msg1)
@@ -16662,7 +16712,7 @@ elif page == "구매 관리":
                                  f"매칭 {_upd9}건까지 반영됨. 다시 실행하면 "
                                  "중복 없이 이어서 처리됩니다.")
                     else:
-                        st.success(f"동기화 완료 — {_ins9:,}건 추가, 자재 "
+                        nav_flash(f"동기화 완료 — {_ins9:,}건 추가, 자재 "
                                    f"매칭 {_upd9}건({len(_mset9)}개 자재). "
                                    "소재 단가가 즉시 원가에 반영됩니다.")
                         st.rerun()
@@ -16786,7 +16836,7 @@ elif page == "구매 관리":
                     _ok0, _msg0 = _mi_save_rows(_mi_rows, _mi_date.isoformat(), _mi_no, _mi_dupok, "MANUAL")
                     if _ok0:
                         st.session_state["mi_nonce"] = _mi_nonce + 1
-                        st.success(_msg0 + " 연결 안 된 행은 '확인 대기'에서 연결하세요.")
+                        nav_flash(_msg0 + " 연결 안 된 행은 '확인 대기'에서 연결하세요.")
                         st.rerun()
                     else:
                         st.error(_msg0)
@@ -16870,7 +16920,7 @@ elif page == "구매 관리":
                         if _uv_fail:
                             st.error(f"업체 규칙은 저장됐지만 장부 {_uv_fail}행 갱신 실패 — [미연결 재평가]로 다시.")
                         else:
-                            st.success(f"{_uv_g['이름']} → {_uv_type}: {_uv_n}행 분류. 앞으로 이 업체 행은 자동 분류되고, "
+                            nav_flash(f"{_uv_g['이름']} → {_uv_type}: {_uv_n}행 분류. 앞으로 이 업체 행은 자동 분류되고, "
                                        "품명별 자재 연결이 있으면 그것이 우선합니다.")
                             st.rerun()
                     except Exception as _e:
@@ -16887,7 +16937,7 @@ elif page == "구매 관리":
                     if _re_f:
                         st.error(f"재평가 — {_re_n}행 연결, {_re_f}행 갱신 실패")
                     else:
-                        st.success(f"재평가 — {_re_n}행 연결({len(_re_m)}개 자재)")
+                        nav_flash(f"재평가 — {_re_n}행 연결({len(_re_m)}개 자재)")
                         st.rerun()
                 except Exception as _e:
                     st.error(f"재평가 실패: {_e}")
@@ -16989,7 +17039,7 @@ elif page == "구매 관리":
                             st.error(f"매핑표는 저장됐지만 장부 {_uw_fail}행 갱신에 실패했습니다 — "
                                      "[미연결 재평가]를 눌러 다시 채우세요.")
                         else:
-                            st.success(f"매핑표 저장 · 장부 {_uw_n}행 연결 — 다음 입력부터 자동 적용")
+                            nav_flash(f"매핑표 저장 · 장부 {_uw_n}행 연결 — 다음 입력부터 자동 적용")
                             st.rerun()
                     except Exception as _e:
                         st.error(f"연결 실패: {_e}")
@@ -17030,7 +17080,7 @@ elif page == "구매 관리":
                                 "old_value": f"{_m['vendor_key']} | {_m['item_key']} | {_m['line_type']} | {_m.get('material_id') or _m.get('product_id') or ''}",
                                 "new_value": None, "changed_by": current_user_name(),
                                 "reason": f"확인 대기 연결 취소 — 장부 {_n_ok}행 복원"}])
-                            st.success(f"연결 취소 — 매핑표 #{_m['map_id']} 삭제, 장부 {_n_ok}행 복원(확인 대기로 돌아옴)")
+                            nav_flash(f"연결 취소 — 매핑표 #{_m['map_id']} 삭제, 장부 {_n_ok}행 복원(확인 대기로 돌아옴)")
                             st.rerun()
                         except Exception as _e:
                             st.error(f"연결 취소 실패: {_e}")
@@ -18197,7 +18247,7 @@ elif page == "공정 관리":
                         detail=_dt9))
                 if docs:
                     st.session_state["pe_docs"] = docs
-                st.success(msg)
+                nav_flash(msg)
                 st.rerun()
 
             # ═══ 배치 단위 처리 (Phase B) — 분기·합류가 처리의 기본 ═══
@@ -18962,7 +19012,7 @@ elif page == "공정 관리":
                                                     _mg_new["batch_id"],
                                                 "qty": float(b["qty"]),
                                                 "link_type": "MERGE"}])
-                                    st.success(f"합치기 완료 → {_mg_no} "
+                                    nav_flash(f"합치기 완료 → {_mg_no} "
                                                f"({_mg_qty:,.0f} EA)")
                                     st.rerun()
                                 except Exception as e:
@@ -19704,7 +19754,7 @@ elif page == "공정 관리":
                             _sk.notify(f"[검사 취소] {_cw.get('pn') or '-'} "
                                        f"{_plan['out']:,.0f} EA · LOT {_plan['fin_lot']}"
                                        f" — {current_user_name()} · {_ic_reason.strip()}")
-                            st.success(f"검사 판정 취소 — {_cw['wo_number']} 검사 "
+                            nav_flash(f"검사 판정 취소 — {_cw['wo_number']} 검사 "
                                        "대기로 복귀. '공정 처리' 화면에서 다시 판정하세요.")
                             st.rerun()
                         except Exception as e:
@@ -19928,6 +19978,7 @@ elif page == "업무 루틴":
 
 elif page == "생산 보고":
     st.subheader("생산 보고")
+    nav_flash_show()
     st.caption(
         "생산 완료 보고 → `production_log` 기록 + BOM 기준 자재 자동 차감 "
         "(PROD_INPUT) + 제품 완성 재고 (PROD_OUTPUT). 모두 원장 기반."
@@ -21045,6 +21096,7 @@ elif page == "생산 보고":
 
 elif page == "영업 보고":
     st.subheader("영업 보고")
+    nav_flash_show()
     st.caption(
         "**출고 확정된 전표만** 집계합니다 — 작성중 전표는 확정 전까지 "
         "매출로 잡히지 않습니다. 확정 전표를 정정하면 집계에 즉시 "
@@ -21400,7 +21452,7 @@ elif page == "영업 보고":
                     try:
                         _db.delete("sales_month_close",
                                    f"ym=eq.{_fq(_lk_pick)}")
-                        st.success(f"{_lk_pick} 마감 해제")
+                        nav_flash(f"{_lk_pick} 마감 해제")
                         st.rerun()
                     except Exception as e:
                         st.error(f"해제 실패: {e}")
@@ -21426,7 +21478,7 @@ elif page == "영업 보고":
                             "ym": _lk_pick,
                             "closed_by": current_user_name(),
                             "note": _mc_note.strip() or None}])
-                        st.success(f"{_lk_pick} 마감 완료")
+                        nav_flash(f"{_lk_pick} 마감 완료")
                         st.rerun()
                     except Exception as e:
                         st.error(f"마감 실패: {e}")
@@ -21541,6 +21593,7 @@ elif page == "영업 보고":
 
 elif page == "원가 확인":
     st.subheader("원가 확인")
+    nav_flash_show()
     st.caption(
         "**가격·원가·마진만 다루는 화면**. BOM 구조 편집은 마스터 관리 → BOM 편집 에서. "
         "**자동 반영 / 자동 overwrite 없음** — 후보 확인 → 사용자 직접 반영."
@@ -22468,7 +22521,7 @@ elif page == "원가 확인":
                                     except Exception:
                                         pass
                             if chg:
-                                st.success(f"{chg}건 단가 변경 저장")
+                                nav_flash(f"{chg}건 단가 변경 저장")
                                 st.rerun()
                             else:
                                 st.info("변경 사항 없음")
@@ -22782,7 +22835,7 @@ elif page == "원가 확인":
                                     fail_n += 1
                             except Exception:
                                 fail_n += 1
-                        st.success(
+                        nav_flash(
                             f"적용 완료: {ok_n}건"
                             + (f" / 실패 {fail_n}건" if fail_n else ""))
                         st.rerun()
@@ -22880,7 +22933,7 @@ elif page == "원가 확인":
                                         if _db.update("products",
                                             f"product_id=eq.{_fq(m['product_id'])}",
                                             payload):
-                                            st.success(
+                                            nav_flash(
                                                 f"{m['pn']} 소재비 → "
                                                 f"{int(new_mat):,}원 적용 완료")
                                             st.rerun()
@@ -22977,7 +23030,7 @@ elif page == "원가 확인":
                                     ok = _db.update("products",
                                         f"product_id=eq.{_fq(r['product_id'])}", payload)
                                     if ok:
-                                        st.success(f"{r['pn']} 원가 저장 완료")
+                                        nav_flash(f"{r['pn']} 원가 저장 완료")
                                         st.rerun()
                                     else:
                                         st.error("저장 실패")
@@ -23107,7 +23160,7 @@ elif page == "원가 확인":
                                     fail_n += 1
                             except Exception:
                                 fail_n += 1
-                        st.success(f"저장 완료: {ok_n}건"
+                        nav_flash(f"저장 완료: {ok_n}건"
                                    + (f" / 실패 {fail_n}건" if fail_n else ""))
                         st.rerun()
 

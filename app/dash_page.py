@@ -321,7 +321,8 @@ def render_today(ctx: Ctx):
                 bits.append(f"담당자 미지정 {info['excluded']}개 제외")
             if bits:
                 st.caption(" · ".join(bits))
-        if info.get("msg") and not cards:
+        # 읽기 모드 안내는 상단 배너(READONLY_MSG) 하나로 — 같은 화면 두 번 표시 제거(U1b ④, 2026-10-26)
+        if info.get("msg") and not cards and not ctx.readonly:
             st.info(info["msg"])
     # 어제(같은 교대의 전날) 미완료
     try:
