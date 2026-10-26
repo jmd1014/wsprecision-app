@@ -65,6 +65,7 @@ def _make_case(conn, tag):
 
 def _cleanup(conn, ids):
     cur = conn.cursor()
+    cur.execute("set statement_timeout = 10000")   # 잠금이 남아도 정리가 무한 대기하지 않게 (r2 M3)
     cur.execute("delete from shipment_items where si_id = %s", (ids["si"],))
     cur.execute("delete from shipments where shipment_id = %s", (ids["sh"],))
     cur.execute("delete from sales_order_items where soi_id = %s", (ids["soi"],))
@@ -102,26 +103,27 @@ def _waiting_on_lock(conn, pid_a):
     return cur.fetchone()[0]
 
 
-@pytest.mark.parametrize("a_end", ["commit", "rollback"])
-def test_t8_two_sessions_serialize_on_shipment_lock(a_end):
-    rl, cfg = _local()
+def _scenario(rl, cfg, a_end, fail_while_locked=False):
     adm = rl.connect(cfg, rl.TARGET_DB)
     ids = _make_case(adm, uuid.uuid4().hex[:8])
+    a, tb = None, None
     try:
         a = rl.connect(cfg, rl.TARGET_DB)
         a_pid = a.get_backend_pid()
         res_a = _call(a, ids)                      # ① A 반영, 커밋 보류(잠금 보유)
         assert res_a["ok"] is True
         out = {}
-        tb = threading.Thread(target=_run_b, args=(rl, cfg, ids, out))
+        tb = threading.Thread(target=_run_b, args=(rl, cfg, ids, out), daemon=True)
         tb.start()
         time.sleep(1.5)
         assert tb.is_alive(), "B 는 A 의 shipments FOR UPDATE 를 기다려야 한다"
         mon = rl.connect(cfg, rl.TARGET_DB)
         assert _waiting_on_lock(mon, a_pid) >= 1, "pg_stat_activity: B 가 Lock 대기"
         mon.close()
+        assert not fail_while_locked, "의도한 실패(잠금 보유 중)"
         (a.commit if a_end == "commit" else a.rollback)()
         a.close()
+        a = None
         tb.join(25)
         assert not tb.is_alive()
         assert out["sec"] >= 1.4, out
@@ -140,5 +142,41 @@ def test_t8_two_sessions_serialize_on_shipment_lock(a_end):
         print(f"T8[{a_end}] B 대기 {out['sec']:.2f}s → " + (out.get("err") or json.dumps(out.get("res"), ensure_ascii=False)[:80])
               + f" / 전표 {status} / 수주 라인 기납품 {recv:g}")
     finally:
+        # 정리 순서(r2 M3): A 롤백·닫기(잠금 해제) → B 끝나길 제한 시간 대기 → 그 뒤 행 삭제
+        if a is not None:
+            try:
+                a.rollback()
+                a.close()
+            except Exception:
+                pass
+        if tb is not None:
+            tb.join(25)
+        adm.rollback()
         _cleanup(adm, ids)
         adm.close()
+    return ids
+
+
+@pytest.mark.parametrize("a_end", ["commit", "rollback"])
+def test_t8_two_sessions_serialize_on_shipment_lock(a_end):
+    rl, cfg = _local()
+    _scenario(rl, cfg, a_end)
+
+
+def test_t8_failure_while_locked_cleans_up_quickly():
+    """잠금 보유 중 단언이 실패해도 정리가 막히지 않고 끝난다(r2 M3) — 테스트 행이 남지 않는다."""
+    rl, cfg = _local()
+    t0 = time.perf_counter()
+    with pytest.raises(AssertionError, match="의도한 실패"):
+        _scenario(rl, cfg, "rollback", fail_while_locked=True)
+    sec = time.perf_counter() - t0
+    chk = rl.connect(cfg, rl.TARGET_DB)
+    cur = chk.cursor()
+    cur.execute("select count(*) from shipments where ship_no like 'T8-%%'")
+    left = cur.fetchone()[0]
+    cur.execute("select count(*) from sales_orders where so_number like 'T8-%%'")
+    left += cur.fetchone()[0]
+    chk.close()
+    print(f"T8[실패 유도] 종료 {sec:.2f}s / 남은 테스트 행 {left}")
+    assert sec < 20, sec
+    assert left == 0

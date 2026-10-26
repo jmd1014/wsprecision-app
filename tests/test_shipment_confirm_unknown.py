@@ -12,6 +12,7 @@
 전표를 CONFIRMED·흔적 생성으로 바꾸는 것으로 모사한다. 실제 잠금 직렬화는 T8(로컬 복원 DB).
 """
 import ast
+import copy
 import os
 import sys
 
@@ -43,7 +44,7 @@ class World:
         self.db = ship_db
         self.calls, self.applied = [], 0
         self.allocs, self.issues = [], []
-        self.logs, self.notify = [], []
+        self.logs, self.notify, self.cleared = [], [], []
         self.head_raise = self.head_empty = self.trace_raise = False
         mp = monkeypatch
 
@@ -64,6 +65,12 @@ class World:
             return _base_fetch(table, select, filter_query, limit)
         mp.setattr(ship_db, "fetch", _fetch)
         mp.setattr(ship_db, "log_error", lambda kind, detail, **k: self.logs.append((kind, str(detail))) or True)
+        _orig_clear = ship_db.clear_cache
+
+        def _clear():
+            self.cleared.append(SHIPMENTS[0]["status"])
+            return _orig_clear()
+        mp.setattr(ship_db, "clear_cache", _clear)
         import utils.slack_notify as _sk
         mp.setattr(_sk, "notify", lambda *a, **k: self.notify.append(a) or True)
 
@@ -79,14 +86,14 @@ class World:
     def rpc_seq(self, *steps):
         """steps[i] = i번째 호출 때 할 일(callable(world) → 반환값 또는 예외)."""
         def _rpc(name, params=None, **kw):
-            self.calls.append((name, params))
+            self.calls.append((name, copy.deepcopy(params)))   # 호출 시점 값(같은 객체 비교 방지)
             i = len(self.calls) - 1
             step = steps[min(i, len(steps) - 1)]
             return step(self)
         return _rpc
 
     def unknown_logs(self):
-        return [d for k, d in self.logs if k == "rpc_unknown"]
+        return [d for k, d in self.logs if d.startswith("[rpc_unknown]")]
 
 
 def _transport(w):
@@ -167,6 +174,7 @@ def test_t1_first_unknown_then_recheck_classification(ship_db, monkeypatch, case
     if case.startswith("confirmed"):
         assert SEEN in _succ(at2) and not at2.error
         assert w.notify == [], "재조회 확인은 슬랙 알림 없음(다른 세션 확정일 수 있음)"
+        assert "CONFIRMED" in w.cleared, "seen 후처리에서 화면 캐시 비움(r2 M1)"
         assert at2.session_state["ship_open_no"] == SHIPMENTS[0]["ship_no"]
     else:
         assert SEEN not in _succ(at2) and "출고 확정 —" not in _succ(at2)
@@ -201,8 +209,12 @@ def test_t3_second_rejected_rechecks(ship_db, monkeypatch, second, status, done)
     assert len(w.calls) == 2 and _writes() == []
     if done:
         assert SEEN in _succ(at2) and not at2.error and w.notify == []
+        assert "CONFIRMED" in w.cleared, "seen 후처리에서 화면 캐시 비움(r2 M1)"
     else:
         assert RETRY_REJECTED in _errs(at2)
+        # 2차 거부 문구가 1차 불명을 덮지 않는다 — '반영되지 않음'·'다시 확정' 금지 (r2 M2)
+        assert "반영되지 않음" not in _errs(at2) and "다시 확정" not in _errs(at2), _errs(at2)
+        assert second[1][:20] in _errs(at2), "거부 원인(코드·메시지)은 보인다"
         assert "출고 확정 —" not in _succ(at2) and SEEN not in _succ(at2) and w.notify == []
 
 
@@ -266,14 +278,32 @@ def test_t6_static_legacy_only_on_unavailable_and_helpers_write_nothing():
     assert len(hits) == 1, hits
     assert 'elif _cf_r["state"] == "unavailable":' in lines[hits[0] - 1]
     for fn in ("_cf_confirm_via_rpc", "_cf_head_state"):
-        body = _func_src(src, fn)
+        body = _func_src(src, fn).replace("_cf_stat.update(", "")   # st.status 표시 갱신은 쓰기 아님
         for w_ in (".update(", ".insert(", ".delete(", "update_count(", "_cf_set_status_if_draft("):
             assert w_ not in body, (fn, w_)
     head = _func_src(src, "_cf_head_state")
     assert head.count("cache=False") >= 2            # 머리글 + 흔적(_cf_draft_applied) 모두 캐시 우회
     body = _func_src(src, "_cf_confirm_via_rpc")
     assert body.count('_db.rpc("confirm_shipment"') == 1 and body.count("= _call()") == 2   # 최대 2회
-    assert "rpc_unknown" in body and "RpcUnavailable" in body
+    assert "[rpc_unknown]" in body and "RpcUnavailable" in body
+    assert '_db.log_error("rpc_unknown"' not in body       # 067 CHECK 밖 kind 금지 (QA M1)
+
+
+def test_stop_messages_render_outside_collapsed_status():
+    """중단 문구는 접힌 st.status('완료 ✓') 안이 아니라 바깥 최상위에 (QA H1).
+    AppTest 의 at.error 는 컨테이너 안까지 모으므로 구조로 고정한다."""
+    src = open(APP_FILE, encoding="utf-8").read()
+    body = _func_src(src, "_cf_confirm_via_rpc")
+    tree = ast.parse(body)
+    withs = [n for n in ast.walk(tree) if isinstance(n, ast.With)
+             and "st.status" in ast.get_source_segment(body, n.items[0].context_expr)]
+    assert len(withs) == 1
+    seg = ast.get_source_segment(body, withs[0])
+    assert "st.error(" not in seg and 'state="error"' in seg
+    inner = _func_src(body, "_after_unknown")
+    assert "st.error(" not in inner and "st.status" not in inner
+    after = body[body.index(seg) + len(seg):]
+    assert "st.error(_stop_msg)" in after
 
 
 # ── T7 후처리 횟수 (기존 경로·성공·재조회 확인) ───────────────────────

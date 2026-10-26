@@ -191,22 +191,34 @@ def test_over_pending_is_blocked_before_rpc(ship_db, monkeypatch):
 def test_transport_error_rechecks_bypass_cache_every_time(ship_db, monkeypatch):
     """응답 불명 재조회는 매 회차 cache=False (P3-0 v2 M1 — clear_cache 1회로는 2회째가
     60초 캐시를 읽는다). 전송 오류 뒤 기존 경로로 가지 않는다."""
-    seen = []
+    seen, after = [], []          # after: 첫 RPC 응답 불명 이후의 조회만 (r2 L1)
+    unknown = {"on": False}
 
     def _fetch(table, select="*", filter_query="", limit=1000, **kw):
-        if table in ("shipments", "inventory_transactions", "shipment_allocations") \
-                and ("shipment_id=eq." in filter_query or "ref_id=in." in filter_query
-                     or "si_id=in." in filter_query):
-            seen.append((table, kw.get("cache")))
+        kind = None
+        if table == "shipments" and "shipment_id=eq." in filter_query:
+            kind = "head"
+        elif (table == "inventory_transactions" and "txn_type=eq.ISSUE" in filter_query
+              and "ref_table=eq.shipment_items" in filter_query):
+            kind = "issue"
+        elif table == "shipment_allocations" and "si_id=in." in filter_query:
+            kind = "alloc"
+        if kind:
+            seen.append((kind, kw.get("cache", "미지정")))
+            if unknown["on"]:
+                after.append((kind, kw.get("cache", "미지정")))
         return _base_fetch(table, select, filter_query, limit)
     monkeypatch.setattr(ship_db, "fetch", _fetch)
 
     def _rpc(name, params=None, **kw):
+        unknown["on"] = True
         raise ship_db.RpcTransportError("timeout")
     _confirm_with_rpc(ship_db, monkeypatch, _rpc)
-    heads = [c for t, c in seen if t == "shipments"]
-    assert len(heads) >= 2 and all(c is False for c in heads), seen   # 재조회 2회 이상, 전부 캐시 우회
-    assert all(c is False for t, c in seen if t != "shipments" and c is not None)
+    # 1차 불명 → 재조회 → DRAFT_CLEAN → 대기 뒤 재조회 → 2차 불명 → 중단: 재조회 2회차
+    for kind in ("head", "issue", "alloc"):
+        got = [c for k, c in after if k == kind]
+        assert len(got) == 2, (kind, after)                  # 두 흔적 테이블·머리글이 회차마다
+        assert all(c is False for c in got), (kind, after)   # 전부 캐시 우회 (예외 없이)
     assert _writes() == [] and SHIPMENTS[0]["status"] == "DRAFT"      # 폴백 없음
 
 

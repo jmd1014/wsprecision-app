@@ -9594,8 +9594,10 @@ elif page == "출고 관리":
 
                 def _log_unknown(step, detail):
                     try:
-                        _db.log_error("rpc_unknown",
-                                      f"confirm_shipment {step} (shipment {shipment_id}): "
+                        # kind 'rpc_unknown' 은 067 CHECK 밖이라 manual 로 바뀐다 → 접두어로 감시
+                        # (select … from app_errors where detail like '[rpc_unknown]%') (QA M1)
+                        _db.log_error("manual",
+                                      f"[rpc_unknown] confirm_shipment {step} (shipment {shipment_id}): "
                                       f"{str(detail)[:160]}", table_name="shipments")
                     except Exception:
                         pass
@@ -9610,33 +9612,48 @@ elif page == "출고 관리":
                     return {"state": "unavailable", "res": None}
                 _log_unknown("1차 응답 불명", _r1)
                 import time as _cf_wait
-                with st.status("출고 확정 응답 지연 — 반영 여부 확인 중…"):
+
+                def _after_unknown():
+                    """② 재조회 → ③ 2차 → ④. 반환 (결과, 중단 문구 또는 None) — 화면 출력은
+                    하지 않는다: 접힌 상태 표시 상자 안의 오류 문구는 '완료 ✓' 아래 숨는다 (QA H1)."""
                     _k = _cf_head_state(shipment_id, items)
                     if _k == "DRAFT_CLEAN":
                         _cf_wait.sleep(_CF_RECHECK_SEC)
                         _k = _cf_head_state(shipment_id, items)
                     if _k == "CONFIRMED":
-                        return {"state": "seen", "res": None}
+                        return {"state": "seen", "res": None}, None
                     if _k != "DRAFT_CLEAN":
-                        st.error(_CF_STOP_TEXT[_k])
                         _log_unknown("재조회 뒤 중단", _k)
-                        return {"state": "stopped", "res": None}
+                        return {"state": "stopped", "res": None}, _CF_STOP_TEXT[_k]
                     _s2, _r2 = _call()
                     if _s2 == "ok":
-                        return {"state": "ok", "res": _r2}
+                        return {"state": "ok", "res": _r2}, None
                     if _s2 in ("unknown", "unavailable"):
                         # 2차의 '함수 없음'은 1차와 모순 — 기존 6단계 금지, 불명으로 중단
                         _log_unknown("2차 응답 불명", _r2)
-                        st.error(_CF_TWICE_TEXT)
-                        return {"state": "stopped", "res": None}
+                        return {"state": "stopped", "res": None}, _CF_TWICE_TEXT
                     # 2차 거부(어떤 코드든)는 성공 증거가 아니라 재조회 계기 (v2 H1·M2)
                     _k2 = _cf_head_state(shipment_id, items)
                     if _k2 == "CONFIRMED":
-                        return {"state": "seen", "res": None}
+                        return {"state": "seen", "res": None}, None
                     _log_unknown("2차 거부 뒤 미확인", f"{_k2} {_r2}")
-                    st.error("재시도는 거부됐으나 최초 요청 반영 여부 미확인 — 화면을 새로 "
-                             "고쳐 전표 상태를 확인하세요. (" + _cf_reject_text(_r2) + ")")
-                    return {"state": "stopped", "res": None}
+                    # 거부 문구(_cf_reject_text)는 '아무것도 반영되지 않음'·'다시 확정' 을 말한다 —
+                    # 그건 2차 호출 얘기라 1차 불명과 섞으면 오해 → 코드·원인만 붙인다 (P3-0 r2 M2)
+                    _rc = str(getattr(_r2, "code", "") or "")
+                    _rm = str(getattr(_r2, "message", "") or _r2)[:60]
+                    return {"state": "stopped", "res": None}, (
+                        "재시도는 거부됐으나 최초 요청 반영 여부 미확인 — 화면을 새로 "
+                        "고쳐 전표 상태를 확인하세요. (재시도 거부: "
+                        + " ".join(x for x in (_rc, _rm) if x) + ")")
+
+                with st.status("출고 확정 응답 지연 — 반영 여부 확인 중…") as _cf_stat:
+                    _res, _stop_msg = _after_unknown()
+                    if _stop_msg:
+                        _cf_stat.update(label="출고 확정 중단 — 아래 안내를 확인하세요",
+                                        state="error", expanded=False)
+                if _stop_msg:
+                    st.error(_stop_msg)          # status 바깥 최상위에 (QA H1)
+                return _res
 
             def _cf_apply_deltas(pick, items, new_qtys, reason,
                                  action="EDIT", allow_over=False,
@@ -10941,6 +10958,9 @@ elif page == "출고 관리":
                         # 응답 지연 뒤 재조회로 확정을 확인 — 이번 호출이 반영했는지 다른 세션이
                         # 확정했는지 모른다: 이번 계획의 경고·슬랙 알림은 올리지 않는다 (P3-0 v2 L1)
                         st.session_state["ship_open_no"] = _cf_pick["ship_no"]
+                        # 재조회는 캐시를 우회했지만 화면용 60초 캐시에는 DRAFT 가 남아 있을 수
+                        # 있다 → 다음 실행이 현재 값을 읽도록 비운다 (P3-0 r2 M1)
+                        _db.clear_cache()
                         nav_flash(
                             f"출고 확정 확인됨(응답 지연) — {_cf_pick['ship_no']} 은 확정 "
                             "상태입니다. 수량·회차를 확인한 뒤 아래에서 거래명세서를 "
