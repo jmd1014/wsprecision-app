@@ -9435,7 +9435,7 @@ elif page == "출고 관리":
             # ── 확정 전표 정정 엔진: 라인 수량의 차이(delta)만 되돌린다
             # (2026-09-04 사용자 확정 — 전표번호 유지, 정정분만 역반영,
             #  이력은 shipment_revisions, 재발행 문서에 '정정본 vN' 표기)
-            def _cf_draft_applied(items):
+            def _cf_draft_applied(items, cache=None):
                 """작성중(DRAFT) 전표의 라인에 이미 확정 반영 흔적(완성 재고
                 차감 ISSUE·회차 충당)이 있으면 그 건수. 확정의 마지막 단계인
                 전표 머리글 갱신만 실패해 DRAFT 로 남은 전표를 '아직 아무것도
@@ -9446,6 +9446,7 @@ elif page == "출고 관리":
                 if not _ids:
                     return {"txn": 0, "alloc": 0, "ok": True, "si": set()}
                 _s = ",".join(str(i) for i in _ids)
+                _ckw = {} if cache is None else {"cache": cache}   # 응답 불명 재조회는 cache=False (P3-0)
                 try:
                     # 라인별 ISSUE 순합 — 역분개로 0 이 된 라인은 흔적 아님
                     # (2026-10-12 리뷰: 건수 기준이면 순합 0 전표를 오판)
@@ -9454,11 +9455,11 @@ elif page == "출고 관리":
                                     "txn_id,ref_id,qty",
                                     "ref_table=eq.shipment_items"
                                     f"&txn_type=eq.ISSUE&ref_id=in.({_s})",
-                                    limit=1000):
+                                    limit=1000, **_ckw):
                         _net[_t["ref_id"]] = (_net.get(_t["ref_id"], 0.0)
                                               + float(_t.get("qty") or 0))
                     _al = fetch("shipment_allocations", "alloc_id,si_id",
-                                f"si_id=in.({_s})", limit=1000)
+                                f"si_id=in.({_s})", limit=1000, **_ckw)
                 except Exception:
                     # 조회 실패 = 모름 → 호출부가 확정·취소·정정을 모두 잠근다
                     return {"txn": None, "alloc": None, "ok": False,
@@ -9510,6 +9511,125 @@ elif page == "출고 관리":
                     return ("전표 라인이 화면과 다릅니다(정정 저장 등) — 새로 고친 "
                             f"뒤 다시 확정하세요. ({m})")
                 return f"출고 확정 거부 ({code}: {m[:80]}) — 관리자에게 확인하세요."
+
+            # ── 출고 확정 응답 불명 처리 (P3-0, 2026-10-26 — 계획서 v2 §7 상태 기계) ──
+            # 전송 오류·비정상 응답 = 반영 여부 불명. 기존 6단계 경로는 쓰지 않는다: PostgREST 가
+            # 연결을 끊어도 DB 함수는 뒤늦게 커밋할 수 있어(늦은 커밋) 6단계가 겹치면 이중 반영.
+            # 재조회(매번 캐시 우회) → 깨끗하면 같은 payload 로 2차 RPC 1회 — 함수 첫머리
+            # shipments FOR UPDATE 가 1차와 직렬화하고, 1차가 커밋됐으면 not_draft 로 거부된다.
+            # 완료 판정은 재조회한 머리글 CONFIRMED 뿐. 2차도 불명이면 중단(자동 3차 없음).
+            _CF_RECHECK_SEC = float(__import__("os").environ.get("WS_CF_RECHECK_SEC", "2"))
+            _CF_STOP_TEXT = {
+                "DRAFT_WITH_TRACES": (
+                    "출고 확정 응답을 받지 못했고, 이 전표에 일부 반영 흔적이 있습니다 — "
+                    "화면을 새로 고친 뒤 상단 안내([확정 상태로 저장] 등)에 따라 처리하세요. "
+                    "(중복 반영 방지로 다시 호출하지 않음)"),
+                "CANCELLED": (
+                    "출고 확정 응답을 받지 못했고, 그 사이 이 전표가 다른 곳에서 취소됐습니다 — "
+                    "화면을 새로 고쳐 상태를 확인하세요."),
+                "UNKNOWN": (
+                    "출고 확정 응답을 받지 못했고 전표 상태도 읽지 못했습니다 — 반영됐을 수 "
+                    "있습니다. 화면을 새로 고쳐 전표 상태를 확인하세요. (중복 반영 방지로 중단)"),
+                "TRACES_UNKNOWN": (
+                    "출고 확정 응답을 받지 못했고 반영 흔적(충당·재고 차감) 조회에 실패했습니다 — "
+                    "화면을 새로 고쳐 전표 상태를 확인하세요. (중복 반영 방지로 중단)"),
+            }
+            _CF_TWICE_TEXT = ("출고 확정 응답을 두 번 받지 못했습니다 — 반영됐을 수 있습니다. "
+                              "화면을 새로 고쳐 전표 상태를 확인한 뒤, 아직 작성중이면 다시 "
+                              "확정하세요.")
+
+            def _cf_head_state(shipment_id, items):
+                """응답 불명 뒤 재조회(매번 cache=False). 반환: CONFIRMED / DRAFT_CLEAN /
+                DRAFT_WITH_TRACES / CANCELLED / UNKNOWN(머리글 못 읽음) / TRACES_UNKNOWN
+                (흔적 조회 실패). 쓰기 없음."""
+                try:
+                    _hh = fetch("shipments", "shipment_id,status",
+                                f"shipment_id=eq.{_fq(shipment_id)}", limit=1,
+                                cache=False)
+                except Exception:
+                    return "UNKNOWN"
+                _h0 = _hh[0] if _hh else None
+                if not _h0 or str(_h0.get("shipment_id")) != str(shipment_id):
+                    return "UNKNOWN"
+                _hs = _h0.get("status")
+                if _hs == "CONFIRMED":
+                    return "CONFIRMED"
+                if _hs == "CANCELLED":
+                    return "CANCELLED"
+                if _hs != "DRAFT":
+                    return "UNKNOWN"
+                _ap = _cf_draft_applied(items, cache=False)
+                if not _ap.get("ok", False):
+                    return "TRACES_UNKNOWN"
+                if _ap.get("txn") or _ap.get("alloc"):
+                    return "DRAFT_WITH_TRACES"
+                return "DRAFT_CLEAN"
+
+            def _cf_confirm_via_rpc(shipment_id, payload, items):
+                """confirm_shipment 호출 + 응답 불명 처리. 반환 {"state", "res"}:
+                ok = 이번 호출(1차 또는 2차)이 반영 / seen = 재조회로 CONFIRMED 확인(응답 지연 —
+                다른 세션 확정일 수도) / unavailable = 함수 없음(1차만 — 호출부가 기존 6단계) /
+                rejected·stopped = 화면에 안내하고 중단. 이 함수는 업무 테이블에 직접 쓰지 않는다."""
+                _params = {"p_shipment_id": shipment_id, "p_payload": payload}
+
+                def _call():
+                    try:
+                        _r = _db.rpc("confirm_shipment", _params)
+                    except getattr(_db, "RpcUnavailable", ()) as _e:
+                        return "unavailable", _e
+                    except getattr(_db, "RpcRejected", ()) as _e:
+                        return "rejected", _e
+                    except Exception as _e:      # RpcTransportError 등 — 반영 여부 불명
+                        return "unknown", _e
+                    if isinstance(_r, dict) and _r.get("ok"):
+                        return "ok", _r
+                    return "unknown", _r         # None·{}·{"ok": false} 도 불명 (v2 M3)
+
+                def _log_unknown(step, detail):
+                    try:
+                        _db.log_error("rpc_unknown",
+                                      f"confirm_shipment {step} (shipment {shipment_id}): "
+                                      f"{str(detail)[:160]}", table_name="shipments")
+                    except Exception:
+                        pass
+
+                _s1, _r1 = _call()
+                if _s1 == "ok":
+                    return {"state": "ok", "res": _r1}
+                if _s1 == "rejected":
+                    st.error(_cf_reject_text(_r1))
+                    return {"state": "rejected", "res": None}
+                if _s1 == "unavailable":
+                    return {"state": "unavailable", "res": None}
+                _log_unknown("1차 응답 불명", _r1)
+                import time as _cf_wait
+                with st.status("출고 확정 응답 지연 — 반영 여부 확인 중…"):
+                    _k = _cf_head_state(shipment_id, items)
+                    if _k == "DRAFT_CLEAN":
+                        _cf_wait.sleep(_CF_RECHECK_SEC)
+                        _k = _cf_head_state(shipment_id, items)
+                    if _k == "CONFIRMED":
+                        return {"state": "seen", "res": None}
+                    if _k != "DRAFT_CLEAN":
+                        st.error(_CF_STOP_TEXT[_k])
+                        _log_unknown("재조회 뒤 중단", _k)
+                        return {"state": "stopped", "res": None}
+                    _s2, _r2 = _call()
+                    if _s2 == "ok":
+                        return {"state": "ok", "res": _r2}
+                    if _s2 in ("unknown", "unavailable"):
+                        # 2차의 '함수 없음'은 1차와 모순 — 기존 6단계 금지, 불명으로 중단
+                        _log_unknown("2차 응답 불명", _r2)
+                        st.error(_CF_TWICE_TEXT)
+                        return {"state": "stopped", "res": None}
+                    # 2차 거부(어떤 코드든)는 성공 증거가 아니라 재조회 계기 (v2 H1·M2)
+                    _k2 = _cf_head_state(shipment_id, items)
+                    if _k2 == "CONFIRMED":
+                        return {"state": "seen", "res": None}
+                    _log_unknown("2차 거부 뒤 미확인", f"{_k2} {_r2}")
+                    st.error("재시도는 거부됐으나 최초 요청 반영 여부 미확인 — 화면을 새로 "
+                             "고쳐 전표 상태를 확인하세요. (" + _cf_reject_text(_r2) + ")")
+                    return {"state": "stopped", "res": None}
 
             def _cf_apply_deltas(pick, items, new_qtys, reason,
                                  action="EDIT", allow_over=False,
@@ -10689,8 +10809,9 @@ elif page == "출고 관리":
                         st.error("반영할 수주 라인이 없습니다 — 수주와 연결되지 "
                                  "않은 라인뿐입니다.")
 
-                    # ── 2) 반영: RPC(한 트랜잭션) → 불명이면 재검사 뒤 기존 경로 ──
+                    # ── 2) 반영: RPC(한 트랜잭션). 불명이면 재조회·재호출(P3-0), 기존 경로는 함수 없음일 때만 ──
                     _cf_ok, _cf_done, _cf_legacy = 0, False, False
+                    _cf_seen, _rpc_res = False, None   # seen = 재조회로 CONFIRMED 확인(응답 지연)
                     if _plan:
                         _payload = {
                             "v": 1, "allow_over": bool(_cf_over),
@@ -10712,22 +10833,11 @@ elif page == "출고 관리":
                                       "created_by": t9["created_by"]}
                                      for _pl9 in _plan.values()
                                      for t9 in _pl9["txns"]]}
-                        _rpc_res, _rpc_state = None, "unknown"
-                        try:
-                            _rpc_res = _db.rpc(
-                                "confirm_shipment",
-                                {"p_shipment_id": _cf_pick["shipment_id"],
-                                 "p_payload": _payload})
-                            _rpc_state = ("ok" if isinstance(_rpc_res, dict)
-                                          and _rpc_res.get("ok") else "unknown")
-                        except getattr(_db, "RpcUnavailable", ()) as _e9:
-                            _rpc_state = "unavailable"
-                        except getattr(_db, "RpcRejected", ()) as _e9:
-                            _rpc_state = "rejected"
-                            st.error(_cf_reject_text(_e9))
-                        except Exception:
-                            _rpc_state = "unknown"
-                        if _rpc_state == "ok":
+                        # 응답 불명 처리는 _cf_confirm_via_rpc (P3-0 v2) — 기존 6단계는 함수 없음일 때만
+                        _cf_r = _cf_confirm_via_rpc(
+                            _cf_pick["shipment_id"], _payload, _cf_items)
+                        if _cf_r["state"] == "ok":
+                            _rpc_res = _cf_r["res"]
                             _cf_done = True
                             _cf_ok = int(_rpc_res.get("sois") or len(_plan))
                             _sk9 = _rpc_res.get("skipped") or []
@@ -10739,40 +10849,13 @@ elif page == "출고 관리":
                                     "수주와 연결되지 않아 납품·재고에 반영되지 "
                                     "않은 라인: " + ", ".join(
                                         str(p) for p in _pn9 if p))
-                        elif _rpc_state == "unavailable":
+                        elif _cf_r["state"] == "seen":
+                            _cf_done, _cf_seen = True, True
+                            _cf_ok = len(_plan)
+                        elif _cf_r["state"] == "unavailable":
                             _cf_legacy = True     # 함수 없음 — 기존 경로 (기록됨)
-                        elif _rpc_state == "unknown":
-                            # 응답 없음·전송 오류 — 반영됐을 수도 있다. 머리글과
-                            # 흔적을 다시 보고 깨끗할 때만 기존 경로 (QA 리뷰 BLOCKER)
-                            # 캐시(60초)를 비우고 본다 — 함수가 커밋된 뒤 응답만
-                            # 유실된 경우 직전 사전 검사 결과가 캐시에 남아 있다
-                            # (2026-10-13 Data 리뷰 BLOCKER)
-                            try:
-                                _db.clear_cache()
-                            except Exception:
-                                pass
-                            _h9 = None
-                            try:
-                                _h9 = _db.fetch_one(
-                                    "shipments",
-                                    "shipment_id=eq.{}".format(
-                                        _cf_pick["shipment_id"]), "status")
-                            except Exception:
-                                _h9 = None
-                            _ap9 = _cf_draft_applied(_cf_items)
-                            # 머리글을 못 읽으면(None) 불명 그대로 — 제품·회차 없는
-                            # 라인만 있는 전표는 흔적이 없어 흔적 검사로 못 가린다
-                            if ((_h9 or {}).get("status") != "DRAFT"
-                                    or not _ap9.get("ok", True)
-                                    or _ap9["txn"] or _ap9["alloc"]):
-                                st.error("출고 확정 응답을 받지 못했고 반영 여부를 "
-                                         "확인할 수 없습니다 — 화면을 새로 고쳐 "
-                                         "전표 상태를 확인하세요. (중복 반영 방지로 "
-                                         "중단)")
-                            else:
-                                _cf_legacy = True
                     if _cf_legacy:
-                        # ── 기존 6단계 (함수가 없거나 응답 불명 + 흔적 없음) ──
+                        # ── 기존 6단계 (함수 없음 RpcUnavailable 1차일 때만 — P3-6 에서 제거) ──
                         _ok_sois = set()
                         for _soi5, _pl in _plan.items():
                             _nr = _pl["received"] + _pl["add"]
@@ -10847,6 +10930,15 @@ elif page == "출고 관리":
                                     _cf_pick["ship_no"]
                                 st.rerun()
                             _cf_done = True
+                    if _cf_done and _cf_seen:
+                        # 응답 지연 뒤 재조회로 확정을 확인 — 이번 호출이 반영했는지 다른 세션이
+                        # 확정했는지 모른다: 이번 계획의 경고·슬랙 알림은 올리지 않는다 (P3-0 v2 L1)
+                        st.session_state["ship_open_no"] = _cf_pick["ship_no"]
+                        nav_flash(
+                            f"출고 확정 확인됨(응답 지연) — {_cf_pick['ship_no']} 은 확정 "
+                            "상태입니다. 수량·회차를 확인한 뒤 아래에서 거래명세서를 "
+                            "발행하세요.")
+                        st.rerun()
                     if _cf_done:
                         # 반영이 끝난 확정에 대해서만 경고를 올린다 (거부·중단 뒤
                         # 거짓 경고 방지, 2026-10-13 QA 리뷰 M3)

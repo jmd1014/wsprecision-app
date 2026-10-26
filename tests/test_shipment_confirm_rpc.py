@@ -3,8 +3,8 @@
 
 test_bulk_delivery 의 상태 저장 mock 을 그대로 쓴다. 폴백(기존 6단계) 경로는
 그 파일의 확정 테스트가 고정하고, 여기서는 ① RPC payload(증감값) 내용과 "쓰기 없음",
-② 거부 → 무반영, ③ 응답 불명 + 흔적 → 폴백 금지, ④ 함수 없음/전송 오류 + 흔적 없음
-→ 폴백, ⑤ 미납 초과는 RPC 호출 전 중단을 검증한다.
+② 거부 → 무반영, ③ 응답 불명 + 흔적 → 폴백 금지, ④ 함수 없음 → 폴백(전송 오류는 P3-0
+부터 폴백 금지 — tests/test_shipment_confirm_unknown.py), ⑤ 미납 초과는 RPC 호출 전 중단을 검증한다.
 """
 import os
 import sys
@@ -19,6 +19,11 @@ from tests.test_bulk_delivery import (   # noqa: E402  (fixture·헬퍼 재사�
 
 pytestmark = pytest.mark.skipif(
     not streamlit_available, reason="streamlit 미설치 — AppTest 불가")
+
+
+@pytest.fixture(autouse=True)
+def _no_recheck_wait(monkeypatch):
+    monkeypatch.setenv("WS_CF_RECHECK_SEC", "0")    # P3-0 재조회 대기(2초)를 테스트에서 생략
 
 WRITE_TABLES = ("sales_order_items", "so_delivery_schedule",
                 "shipment_allocations", "inventory_transactions",
@@ -106,25 +111,27 @@ def test_rpc_rejected_writes_nothing_and_explains(ship_db, monkeypatch):
 def test_rpc_unknown_response_with_traces_does_not_fall_back(ship_db, monkeypatch):
     """RPC 가 실제로 반영했는데 응답이 None/유실 → 흔적이 보이면 기존 경로로 가지
     않는다 (2026-10-12 QA 리뷰 BLOCKER: 이중 반영 방지)."""
-    traces = []
+    traces, calls = [], []
 
-    def _fetch(table, select="*", filter_query="", limit=1000):
+    def _fetch(table, select="*", filter_query="", limit=1000, **kw):
         if table == "shipment_allocations":
             return list(traces)
         return _base_fetch(table, select, filter_query, limit)
     monkeypatch.setattr(ship_db, "fetch", _fetch)
 
     def _rpc(name, params=None, **kw):
+        calls.append(name)
         traces.append({"alloc_id": 1, "si_id": SHIP_ITEMS[0]["si_id"]})
         return None
     at2 = _confirm_with_rpc(ship_db, monkeypatch, _rpc)
-    assert _writes() == []
-    assert any("반영 여부를 확인할 수 없습니다" in e.value for e in at2.error)
+    assert _writes() == [] and len(calls) == 1            # DRAFT + 흔적 → 재호출 금지(P3-0)
+    assert any("일부 반영 흔적" in e.value for e in at2.error)
     assert not at2.success
 
 
-@pytest.mark.parametrize("exc_name", ["RpcUnavailable", "RpcTransportError"])
-def test_rpc_unavailable_or_transport_without_traces_falls_back(ship_db, monkeypatch, exc_name):
+@pytest.mark.parametrize("exc_name", ["RpcUnavailable"])
+def test_rpc_unavailable_without_traces_falls_back(ship_db, monkeypatch, exc_name):
+    """함수 없음(RpcUnavailable 1차)만 기존 6단계 — 전송 오류는 P3-0 부터 폴백 금지."""
     def _rpc(name, params=None, **kw):
         raise getattr(ship_db, exc_name)("mock")
     at2 = _confirm_with_rpc(ship_db, monkeypatch, _rpc)
@@ -181,45 +188,60 @@ def test_over_pending_is_blocked_before_rpc(ship_db, monkeypatch):
 
 
 # ─── 2026-10-13 Data 리뷰(069 구현) 반영 ───
-def test_transport_error_clears_cache_before_recheck(ship_db, monkeypatch):
-    """응답 불명이면 재검사 전에 캐시를 비운다 (BLOCKER: 사전 검사 결과가 캐시에
-    남아 '흔적 없음'으로 보이던 경로)."""
-    cleared = []
-    monkeypatch.setattr(ship_db, "clear_cache", lambda: cleared.append(1))
+def test_transport_error_rechecks_bypass_cache_every_time(ship_db, monkeypatch):
+    """응답 불명 재조회는 매 회차 cache=False (P3-0 v2 M1 — clear_cache 1회로는 2회째가
+    60초 캐시를 읽는다). 전송 오류 뒤 기존 경로로 가지 않는다."""
+    seen = []
+
+    def _fetch(table, select="*", filter_query="", limit=1000, **kw):
+        if table in ("shipments", "inventory_transactions", "shipment_allocations") \
+                and ("shipment_id=eq." in filter_query or "ref_id=in." in filter_query
+                     or "si_id=in." in filter_query):
+            seen.append((table, kw.get("cache")))
+        return _base_fetch(table, select, filter_query, limit)
+    monkeypatch.setattr(ship_db, "fetch", _fetch)
 
     def _rpc(name, params=None, **kw):
         raise ship_db.RpcTransportError("timeout")
     _confirm_with_rpc(ship_db, monkeypatch, _rpc)
-    assert cleared, "재검사 전 clear_cache 호출"
-    assert SHIPMENTS[0]["status"] == "CONFIRMED"      # 흔적 없음 → 폴백
+    heads = [c for t, c in seen if t == "shipments"]
+    assert len(heads) >= 2 and all(c is False for c in heads), seen   # 재조회 2회 이상, 전부 캐시 우회
+    assert all(c is False for t, c in seen if t != "shipments" and c is not None)
+    assert _writes() == [] and SHIPMENTS[0]["status"] == "DRAFT"      # 폴백 없음
 
 
 def test_unknown_response_with_confirmed_header_does_not_fall_back(ship_db, monkeypatch):
-    """함수가 커밋돼 머리글이 CONFIRMED 인데 응답만 유실 → 폴백 금지."""
+    """함수가 커밋돼 머리글이 CONFIRMED 인데 응답만 유실 → 폴백 금지, 재조회로 확정 확인
+    (P3-0: '확정 확인됨(응답 지연)' 안내, 재호출 없음)."""
+    calls = []
+
     def _rpc(name, params=None, **kw):
+        calls.append(name)
         SHIPMENTS[0]["status"] = "CONFIRMED"
         return None
     at2 = _confirm_with_rpc(ship_db, monkeypatch, _rpc)
-    assert _writes() == []
-    assert any("반영 여부를 확인할 수 없습니다" in e.value for e in at2.error)
+    assert _writes() == [] and len(calls) == 1
+    assert not at2.error
+    assert any("확정 확인됨(응답 지연)" in s.value for s in at2.success)
 
 
 def test_unknown_response_with_unreadable_header_does_not_fall_back(ship_db, monkeypatch):
     """머리글을 못 읽으면(None) 불명 그대로 중단 — 제품·회차 없는 전표는 흔적으로
     가릴 수 없다 (M-4)."""
-    from tests.test_bulk_delivery import _fetch_one as _base_fetch_one
+    calls = []
 
-    def _fetch_one(table, filter_query="", select="*"):
-        if table == "shipments" and "shipment_id=eq." in filter_query:
-            return None            # 머리글을 못 읽는 상황
-        return _base_fetch_one(table, filter_query, select)
-    monkeypatch.setattr(ship_db, "fetch_one", _fetch_one)
+    def _fetch(table, select="*", filter_query="", limit=1000, **kw):
+        if table == "shipments" and "shipment_id=eq." in filter_query and kw.get("cache") is False:
+            return []              # 재조회에서 머리글을 못 읽는 상황
+        return _base_fetch(table, select, filter_query, limit)
+    monkeypatch.setattr(ship_db, "fetch", _fetch)
 
     def _rpc(name, params=None, **kw):
+        calls.append(name)
         return None
     at2 = _confirm_with_rpc(ship_db, monkeypatch, _rpc)
-    assert _writes() == []
-    assert any("반영 여부를 확인할 수 없습니다" in e.value for e in at2.error)
+    assert _writes() == [] and len(calls) == 1            # 읽기도 안 되면 재호출하지 않는다
+    assert any("전표 상태도 읽지 못했습니다" in e.value for e in at2.error)
 
 
 def test_fallback_skips_issue_rows_of_failed_so_line(ship_db, monkeypatch):

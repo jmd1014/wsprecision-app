@@ -57,9 +57,12 @@ SHIPMENTS, SHIP_ITEMS = [], []
 INSERTED, UPDATED = [], []
 
 
-def _fetch(table, select="*", filter_query="", limit=1000):
+def _fetch(table, select="*", filter_query="", limit=1000, **kw):   # cache=False 등 키워드 수용 (P3-0 재조회)
     if table == "shipments":
         rows = [dict(s) for s in SHIPMENTS]
+        if "shipment_id=eq." in filter_query:
+            v = int(filter_query.split("shipment_id=eq.")[1].split("&")[0])
+            rows = [r for r in rows if r["shipment_id"] == v]
         if "ship_date=eq." in filter_query:
             v = filter_query.split("ship_date=eq.")[1].split("&")[0]
             rows = [r for r in rows if r["ship_date"] == v]
@@ -172,7 +175,11 @@ def ship_db(monkeypatch):
                 return 0
         return 1 if db.update(t, f, v) else 0
     monkeypatch.setattr(db, "update_count", _update_count)
-    monkeypatch.setattr(db, "rpc", lambda *a, **k: None)   # RPC 없음 → 기존 경로
+    # 기본 RPC = 함수 없음(RpcUnavailable) → 기존 6단계 경로. P3-0 부터 None·전송 오류는 '응답 불명'이라
+    # 기존 경로로 가지 않는다 — 기존 경로 검증은 명시적인 RpcUnavailable 로 (Codex 계획 리뷰 M3)
+    def _rpc_unavailable(name, params=None, **kw):
+        raise db.RpcUnavailable(f"{name}: mock 함수 없음")
+    monkeypatch.setattr(db, "rpc", _rpc_unavailable)
     monkeypatch.setattr(db, "delete", lambda t, f: 1)
     monkeypatch.setattr(db, "health_check",
                         lambda: {"status": "OK", "counts": {}})
