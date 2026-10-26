@@ -182,7 +182,10 @@ def rev_db(monkeypatch):
                 return 0
         return 1 if db.update(t, f, v) else 0
     monkeypatch.setattr(db, "update_count", _update_count)
-    monkeypatch.setattr(db, "rpc", lambda *a, **k: None)   # RPC 없음 → 기존 경로
+    def _rpc_unavailable(*a, **k):
+        # 기존 6단계 경로 검증은 명시적 '함수 없음'으로 — None 은 P3-0 부터 응답 불명(재조회·중단)
+        raise db.RpcUnavailable("confirm_shipment: mock 함수 없음")
+    monkeypatch.setattr(db, "rpc", _rpc_unavailable)
     monkeypatch.setattr(db, "delete", _delete)
     monkeypatch.setattr(db, "health_check",
                         lambda: {"status": "OK", "counts": {}})
