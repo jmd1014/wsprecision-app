@@ -60,6 +60,8 @@ Reviewer 도구는 **Read·Grep·Glob 만**이다. Bash 는 읽기 전용이 아
 
 - schema 변경은 `supabase/migrations/NNN_*.sql` + Supabase MCP `apply_migration` 으로만. 새 번호는 문서를 믿지 말고 `supabase_migrations.schema_migrations` 와 파일 목록으로 실제 확인하고, 적용 후 CLAUDE.md 번호를 갱신한다. CLAUDE.md "DB 작업 규칙"의 뷰 전체 재정의·CHECK 제약 동시 확인·새 테이블 RLS·새 뷰 security_invoker 규칙을 따른다.
 - 여러 테이블에 걸친 하나의 업무 사건(출고 확정, 입고 확정, 생산 완료, 검사 판정, 재고 이동, 취소/정정)은 원자성·중복 실행·부분 실패를 검토한다. 부분 성공이 불일치를 만들면 PostgreSQL transaction/RPC 를 우선 검토한다. (2026-10-08 출고 확정: 라인 반영 뒤 머리글 저장만 실패한 사고가 실제 사례)
+- 마이그레이션에 시간대 없는 timestamptz 상수 금지 — `'2026-09-05'::timestamptz` 는 세션 시간대에 따라 값이 달라진다(054 사례, 복원 리허설 2026-10-26). 날짜 상수는 `'2026-09-05 00:00:00+00'` 처럼 오프셋을 쓴다.
+- 마이그레이션 밖에서 표를 만들지 않는다(033 사례: 백업 표 13개가 파일 없이 만들어져 복원이 막혔다).
 - **git branch 는 운영 DB 를 격리하지 않는다.** 가능하면 하위 호환 migration 을 쓰고 Old App + New DB 를 확인한다. 깨지는 migration 은 승인된 시간에 migration 적용과 main 푸시를 연속으로 한다. DB rollback 과 코드 rollback 은 따로 계획한다.
 
 ## 7. 캐시
