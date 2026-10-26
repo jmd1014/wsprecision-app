@@ -116,5 +116,6 @@
 - [ ] **G2. GitHub Actions `tests` success** — 런 ID 를 기록한다.
 - [ ] **G3. 관리자 진단** — 관리자 > 진단(secrets 점검): `versions`(python·streamlit·pandas·st_aggrid) 가 예상값이고 `test_status` 가 200.
   - 진단 버전 = `requirements.txt` 상한 범위 안(streamlit 1.66.x·pandas 3.1.x·aggrid 1.2.x, P1-4). 벗어나면 상한을 올리기 전에 로컬 전체 pytest 를 그 버전으로 먼저 돌린다.
+  - Streamlit 상한을 올릴 때: 사이드바 강조·세부 탭 바·위험 버튼은 DOM 구조 의존 셀렉터(`st-key-` 클래스 위치, 버튼 안쪽 `div > span`, `[role=radiogroup]`) — 정적 테스트로는 안 잡히므로 브라우저(1024·375)로 확인한다.
 - [ ] **G4. 변경 화면 1개 열어 신규 오류 0** — 관리자 오류 기록(`app_errors`) 최근 10분에 새 행 없음.
 - [ ] **G5. 기록** — 트래커·해당 계획서 §11 에 push SHA·CI 런 ID·확인자를 적는다.

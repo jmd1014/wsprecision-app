@@ -23,6 +23,7 @@ SUBS = [("today", "오늘 루틴"), ("rate", "완료율"), ("tmpl", "템플릿 �
 RULE_KO = {"always": "매 교대", "pre_holiday": "휴무 전날만"}
 NOT_READY_MSG = "업무 루틴 준비 중 — 데이터베이스에 루틴 테이블이 아직 없습니다 (migration 073)."
 READONLY_MSG = "로컬 읽기 모드 — 업무 루틴 쓰기 차단 (생성·체크·취소·템플릿 저장은 배포 화면에서)"
+READONLY_GEN_MSG = "읽기 모드 — 이 교대의 카드는 배포 화면에서 생성됩니다"   # ensure_cards 안내(읽기 모드 계열)
 
 
 def now_utc() -> datetime:
@@ -122,7 +123,7 @@ def ensure_cards(ctx: Ctx, templates, slot, cal, cards) -> tuple[list, dict]:
     d, shift = slot
     info = {"inserted": 0, "skipped": 0, "excluded": 0, "missing": 0, "error": None, "msg": None}
     if ctx.readonly:
-        info["msg"] = "읽기 모드 — 이 교대의 카드는 배포 화면에서 생성됩니다" if not cards else None
+        info["msg"] = READONLY_GEN_MSG if not cards else None
         return cards, info
     if cal is None:                 # 달력 조회 실패 — 휴무 판정 불가 → 생성 중단(M1)
         info["error"] = CAL_FAIL_MSG
@@ -321,8 +322,8 @@ def render_today(ctx: Ctx):
                 bits.append(f"담당자 미지정 {info['excluded']}개 제외")
             if bits:
                 st.caption(" · ".join(bits))
-        # 읽기 모드 안내는 상단 배너(READONLY_MSG) 하나로 — 같은 화면 두 번 표시 제거(U1b ④, 2026-10-26)
-        if info.get("msg") and not cards and not ctx.readonly:
+        # 읽기 모드 계열 안내만 숨긴다 — 상단 배너(READONLY_MSG) 하나로(U1b ④). 휴무일·담당자 안내는 그대로(r2 R3)
+        if info.get("msg") and not cards and info["msg"] not in (READONLY_MSG, READONLY_GEN_MSG):
             st.info(info["msg"])
     # 어제(같은 교대의 전날) 미완료
     try:
@@ -350,8 +351,7 @@ def render_today(ctx: Ctx):
                               + (f" · 실패: {info2['error']}" if info2.get("error") else ""))
             st.rerun()
     if not cards:
-        if not info or not info.get("msg"):
-            st.info("이 교대의 루틴 카드가 없습니다")
+        st.info("이 교대의 루틴 카드가 없습니다")   # 안내(msg) 표시 여부와 무관하게 카드 0 이면(r2 R3)
         return
     _render_cards(ctx, cards, slot, now_slot)
 

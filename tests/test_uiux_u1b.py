@@ -35,6 +35,49 @@ def test_no_success_followed_by_rerun():
         assert _success_then_rerun(_read(p)) == [], (p, _success_then_rerun(_read(p)))
 
 
+def _is_call(stmt, owner, attr):
+    return (isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call)
+            and isinstance(stmt.value.func, ast.Attribute) and stmt.value.func.attr == attr
+            and isinstance(stmt.value.func.value, ast.Name) and stmt.value.func.value.id == owner)
+
+
+def _success_rerun_ast(src):
+    """같은 블록에서 st.success(...) 문 뒤에 st.rerun() 문이 오는 곳 — 같은 줄(;)·다중행 호출 모두 잡힌다(r2 R2)."""
+    out = []
+    for node in ast.walk(ast.parse(src)):
+        for fld in ("body", "orelse", "finalbody"):
+            blk = getattr(node, fld, None)
+            if not isinstance(blk, list):
+                continue
+            for i, a in enumerate(blk):
+                if _is_call(a, "st", "success") and any(_is_call(b, "st", "rerun") for b in blk[i + 1:]):
+                    out.append(a.lineno)
+    return out
+
+
+def test_no_success_then_rerun_ast():
+    for p in (APP_FILE, DASH_FILE):
+        assert _success_rerun_ast(_read(p)) == [], (p, _success_rerun_ast(_read(p)))
+    # 검사기 자체가 살아 있는지(역검사): 같은 줄·다중행·사이에 다른 문이 있는 경우
+    bad = "\n".join([
+        "if x: st.success('a'); st.rerun()",
+        "def f():",
+        "    st.success(",
+        "        'b')",
+        "    y = 1",
+        "    st.rerun()",
+        ""])
+    assert len(_success_rerun_ast(bad)) == 2
+
+
+def test_flash_also_toasts_once_in_renderer():
+    """r2 R1: flash 를 그리는 한 곳(nav_flash_show)에서 st.toast 도 — 80자 넘으면 자름."""
+    src = _read(APP_FILE)
+    a = src.index("def nav_flash_show():"); b = src.index("\ndef ", a + 10)
+    body = src[a:b]
+    assert body.count("st.toast(") == 1 and "[:79]" in body
+
+
 def test_flash_rendered_on_pages_without_page_head():
     """flash 를 쓰는 관리자 화면은 제목 아래에서 nav_flash_show() — 안 그리면 다음 사용자 화면으로 샌다."""
     src = _read(APP_FILE)
@@ -72,7 +115,11 @@ def test_dash_readonly_notice_shown_once():
     a = src.index("def render_today("); b = src.index("def _render_cards(")
     blk = src[a:b]
     assert blk.count("st.warning(READONLY_MSG)") == 1
-    assert 'if info.get("msg") and not cards and not ctx.readonly:' in blk
+    # r2 R3: 읽기 모드 계열 안내만 숨기고(휴무일·담당자 안내는 표시), 카드 0 안내는 msg 와 무관하게
+    assert 'info["msg"] not in (READONLY_MSG, READONLY_GEN_MSG)' in blk
+    i = blk.index("    if not cards:\n")
+    assert blk[i:i + 120].count('st.info("이 교대의 루틴 카드가 없습니다")') == 1
+    assert "if not info or not info.get(\"msg\")" not in blk
 
 
 def test_po_mode_label_and_ship_caption_moved_to_help():
@@ -177,3 +224,132 @@ def test_manual_so_row_delete_then_save_clears_and_flashes(monkeypatch):
     assert len(so) == 1
     lines = [r for r in mock.tables["sales_order_items"] if r.get("so_id") == so[0]["so_id"]]
     assert [(r["line_no"], r["customer_part_no"]) for r in lines] == [(1, "AAA-1"), (2, "CCC-3")]
+
+
+# ── r2 R8: flash 1회성·관리자 화면·저장 실패·라인 중간 실패·삭제 불일치·마지막 행 ─────────
+
+def _manual_open(monkeypatch, mock, items=None):
+    import db as _dbmod
+    from streamlit.testing.v1 import AppTest
+    from tests.conftest import goto
+    mock.install(monkeypatch, _dbmod)
+    at = AppTest.from_file(APP_FILE, default_timeout=90)
+    at.secrets["supabase"] = {"url": "https://mock.local", "anon_key": "a", "service_role_key": "s"}
+    at.secrets["auth"] = {"disabled": True}
+    at.run()
+    goto(at, "so", "input")
+    next(r for r in at.radio if r.label == "입력 방식").set_value("수기 입력")
+    at.run()
+    at.session_state["m_so_items"] = items if items is not None else \
+        [_item(1, "AAA-1", 10), _item(2, "BBB-2", 20), _item(3, "CCC-3", 30)]
+    at.text_input(key="m_so_no").set_value("PO-T-9")
+    at.text_input(key="m_cust").set_value("(주)테스트")
+    at.run()
+    assert not at.exception, [str(e.value) for e in at.exception]
+    return at
+
+
+def _save(at):
+    next(b for b in at.button if b.label == "수주 저장").click()
+    at.run()
+    assert not at.exception, [str(e.value) for e in at.exception]
+
+
+def _succ(at):
+    return [str(s.value) for s in at.success]
+
+
+@pytest.mark.skipif(not streamlit_available, reason="streamlit 미설치 — AppTest 불가")
+def test_flash_shows_once_then_gone(monkeypatch):
+    """① 저장 뒤 안내는 한 번만 — 다음 실행에는 성공 안내 0·_nav_flash 없음."""
+    at = _manual_open(monkeypatch, _ManualSOMock())
+    _save(at)
+    assert any("PO-T-9" in m for m in _succ(at))
+    at.run()
+    assert not [m for m in _succ(at) if "PO-T-9" in m]
+    assert "_nav_flash" not in at.session_state
+
+
+@pytest.mark.skipif(not streamlit_available, reason="streamlit 미설치 — AppTest 불가")
+@pytest.mark.parametrize("main", ["master", "cost", "report", "sales"])
+def test_admin_page_flash_shown_there_not_leaked(monkeypatch, main):
+    """② 관리자 4화면: 세운 flash 가 그 화면 제목 아래 1건, 다음 사용자 화면으로 옮겨 가면 0건."""
+    import db as _dbmod
+    from streamlit.testing.v1 import AppTest
+    from tests.conftest import goto
+    _ManualSOMock().install(monkeypatch, _dbmod)
+    at = AppTest.from_file(APP_FILE, default_timeout=90)
+    at.secrets["supabase"] = {"url": "https://mock.local", "anon_key": "a", "service_role_key": "s"}
+    at.secrets["auth"] = {"disabled": True}
+    at.run()
+    at.session_state["_nav_flash"] = {"msg": f"관리자 안내 {main}", "action": None}
+    goto(at, main)
+    assert _succ(at).count(f"관리자 안내 {main}") == 1, _succ(at)
+    goto(at, "so", "list")
+    assert f"관리자 안내 {main}" not in _succ(at)
+
+
+@pytest.mark.skipif(not streamlit_available, reason="streamlit 미설치 — AppTest 불가")
+def test_manual_so_header_fail_keeps_items(monkeypatch):
+    """③ 머리글 insert 실패 → 품목 3행 유지·오류 안내·성공 안내 0."""
+    class _M(_ManualSOMock):
+        def insert(self, table, records):
+            if table == "sales_orders":
+                raise RuntimeError("insert sales_orders 실패(시뮬레이션)")
+            return super().insert(table, records)
+    at = _manual_open(monkeypatch, _M())
+    _save(at)
+    assert len(at.session_state["m_so_items"]) == 3
+    assert any("저장 실패" in str(e.value) for e in at.error)
+    assert not [m for m in _succ(at) if "PO-T-9" in m]
+
+
+@pytest.mark.skipif(not streamlit_available, reason="streamlit 미설치 — AppTest 불가")
+def test_manual_so_line_fail_reports_saved_header(monkeypatch):
+    """④ 라인 2번째 insert 실패 → 머리글 1·라인 1(현재 동작 고정)·안내에 so_id·표 유지."""
+    class _M(_ManualSOMock):
+        n_lines = 0
+
+        def insert(self, table, records):
+            if table == "sales_order_items":
+                _M.n_lines += 1
+                if _M.n_lines == 2:
+                    raise RuntimeError("insert sales_order_items 실패(시뮬레이션)")
+            return super().insert(table, records)
+    mock = _M()
+    at = _manual_open(monkeypatch, mock)
+    _save(at)
+    hdr = [r for r in mock.tables["sales_orders"] if r.get("so_number") == "PO-T-9"]
+    assert len(hdr) == 1
+    assert len([r for r in mock.tables["sales_order_items"] if r.get("so_id") == hdr[0]["so_id"]]) == 1
+    err = " ".join(str(e.value) for e in at.error)
+    assert "머리글은 저장됨" in err and f"so_id={hdr[0]['so_id']}" in err
+    assert len(at.session_state["m_so_items"]) == 3
+    assert not [m for m in _succ(at) if "PO-T-9" in m]
+
+
+@pytest.mark.skipif(not streamlit_available, reason="streamlit 미설치 — AppTest 불가")
+def test_manual_so_delete_mismatch_or_out_of_range_no_change(monkeypatch):
+    """⑤ 렌더 뒤 목록이 바뀌어 (번호, 품번)이 맞지 않거나 범위 밖 → 아무 행도 지우지 않는다."""
+    at = _manual_open(monkeypatch, _ManualSOMock(), [_item(1, "AAA-1", 10), _item(2, "BBB-2", 20)])
+    # 불일치: so_item_1_del 은 (2, "BBB-2") 로 렌더됨 → 2번 자리가 CCC-3 로 바뀐 뒤 클릭
+    at.session_state["m_so_items"] = [_item(1, "AAA-1", 10), _item(2, "CCC-3", 30)]
+    at.button(key="so_item_1_del").click()
+    at.run()
+    assert [i["customer_part_no"] for i in at.session_state["m_so_items"]] == ["AAA-1", "CCC-3"]
+    # 범위 밖: 1행만 남은 상태에서 옛 2번째 행 버튼(같은 key, 이제 (2,"CCC-3")) — 목록에서 2번을 없앤 뒤 클릭
+    at.session_state["m_so_items"] = [_item(1, "AAA-1", 10)]
+    at.button(key="so_item_1_del").click()
+    at.run()
+    assert [i["customer_part_no"] for i in at.session_state["m_so_items"]] == ["AAA-1"]
+
+
+@pytest.mark.skipif(not streamlit_available, reason="streamlit 미설치 — AppTest 불가")
+def test_manual_so_delete_last_row_disables_save(monkeypatch):
+    """⑥ 마지막 행 삭제 → 빈 목록·[수주 저장] 비활성·삭제 버튼 0."""
+    at = _manual_open(monkeypatch, _ManualSOMock(), [_item(1, "AAA-1", 10)])
+    at.button(key="so_item_0_del").click()
+    at.run()
+    assert at.session_state["m_so_items"] == []
+    assert next(b for b in at.button if b.label == "수주 저장").disabled
+    assert not [b.key for b in at.button if (b.key or "").startswith("so_item_")]

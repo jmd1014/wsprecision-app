@@ -348,6 +348,23 @@ def test_template_rejects_unknown_assignee_and_new_code_format(dash_db, monkeypa
 
 # ─── 9. 로컬 읽기 모드 / Old DB ────────────────────────────────
 
+SUN_DAY = datetime(2026, 10, 25, 10, 0, tzinfo=KST)        # 일요일 주간(OFF)
+
+
+def test_holiday_notice_still_shown(dash_db, monkeypatch):
+    """r2 R3: 읽기 모드 계열 안내만 숨긴다 — 휴무일 안내와 카드 0 안내는 그대로 보인다."""
+    _fix_now(monkeypatch, SUN_DAY)
+    at = _open("김준오", "pw-day")
+    infos = [str(i.value) for i in at.info]
+    assert any("휴무일" in t for t in infos), infos
+    assert any("이 교대의 루틴 카드가 없습니다" in t for t in infos), infos
+    # 읽기 모드: 상단 배너 1개 + 카드 0 안내, 생성 안내(READONLY_GEN_MSG)는 숨김
+    import app.dash_page as dp
+    at2 = _open(None, None, readonly=True)
+    texts = [str(i.value) for i in at2.info] + [str(w.value) for w in at2.warning]
+    assert texts.count(dp.READONLY_MSG) == 1 and dp.READONLY_GEN_MSG not in texts, texts
+
+
 def test_local_readonly_mode_writes_nothing(dash_db, monkeypatch):
     _fix_now(monkeypatch, WED_DAY)
     at = _open(None, None, readonly=True)                  # auth.disabled → 테스트 관리자, 읽기 모드

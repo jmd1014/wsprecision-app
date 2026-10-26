@@ -28,7 +28,8 @@ def _tree():
 
 
 _NAMES = ("_TOKENS", "_token", "_BADGE_CSS", "_badge_css_html", "_badge_css_grid",
-          "_DANGER_KEY_SUFFIXES", "_DANGER_KEY_EXCLUDE", "_danger_btn_css", "_U1_CSS")
+          "_DANGER_KEY_SUFFIXES", "_DANGER_KEY_EXCLUDE", "_DANGER_KEY_PREFIXES", "_DANGER_KEYS",
+          "_DANGER_KEY_COMBOS", "_danger_btn_css", "_U1_CSS")
 
 
 def _design_ns():
@@ -157,3 +158,26 @@ def test_danger_suffix_rule_matches_selectors():
     lit, _ = _keys_in_source(src)
     hit = sorted(k for k in lit if k.endswith(sufs))
     assert hit == ["acct_del", "cf_cancel", "po_pending_cancel"], hit
+    # r2 R4: primary [실행 확정]의 파란 테두리까지 지운다
+    assert "border-color:transparent !important" in css
+
+
+def test_danger_extra_lists_match_real_keys():
+    """r2 R5: 접미 규칙 밖 파괴 버튼(접두·정확한 key·접두+접미)도 위험색 — key 는 그대로, 실제 key 와 대응."""
+    ns = _design_ns()
+    css = ns["_danger_btn_css"]()
+    src = _src()
+    lit, fpre = _keys_in_source(src)
+    assert ns["_DANGER_KEY_PREFIXES"] == ("bom_del_",)
+    assert set(ns["_DANGER_KEYS"]) == {"po_clear_all", "sc_clear"}
+    assert ns["_DANGER_KEY_COMBOS"] == (("sch_reset_", "_ok"),)
+    for p in ns["_DANGER_KEY_PREFIXES"]:
+        assert f'[class*="st-key-{p}"]' in css and p in fpre, p
+    for k in ns["_DANGER_KEYS"]:
+        assert f".st-key-{k}" in css and k in lit, k
+    for pre, suf in ns["_DANGER_KEY_COMBOS"]:
+        assert f'[class*="st-key-{pre}"][class*="{suf} "]' in css and pre in fpre
+    assert 'key=f"{_rk}_ok"' in src
+    # 회차 [삭제 확정] 은 primary(파랑)가 아니다 — 위험색이 덮을 대상이 일반 버튼이어야 한다
+    i = src.index('key=f"{_rk}_ok"')
+    assert 'button("삭제 확정",' in src[i - 200:i] and 'type="primary"' not in src[i - 200:i]

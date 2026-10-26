@@ -86,18 +86,27 @@ def _badge_css_grid():
 # 위젯 key 는 바꾸지 않는다. _cancel 이지만 안전한 선택인 버튼은 제외 목록에.
 _DANGER_KEY_SUFFIXES = ("_del", "_cancel", "_cfm_ok")
 _DANGER_KEY_EXCLUDE = ("po_pending_cancel",)   # "취소 (기존 품목 유지)" = 안전한 쪽
+# 접미 규칙 밖의 파괴 버튼(r2 R5, key 변경 없이 CSS 로만): 접두·정확한 key·접두+접미 조합
+_DANGER_KEY_PREFIXES = ("bom_del_",)                    # BOM [행 삭제] bom_del_{bom_id}
+_DANGER_KEYS = ("po_clear_all", "sc_clear")             # [표 비우기]·[판독 결과 비우기]
+_DANGER_KEY_COMBOS = (("sch_reset_", "_ok"),)           # 납품 스케줄 회차 [삭제 확정]
 
 
 def _danger_btn_css():
     _not = "".join(f":not(.st-key-{k})" for k in _DANGER_KEY_EXCLUDE)
-    sel = []
+    conts = []
     for suf in _DANGER_KEY_SUFFIXES:
-        for m in (f'[class*="{suf} "]', f'[class$="{suf}"]'):
-            sel.append(f'div[data-testid="stElementContainer"]{m}{_not} '
-                       f'div[data-testid="stButton"] button:not(:disabled)')
+        conts += [f'[class*="{suf} "]', f'[class$="{suf}"]']
+    conts += [f'[class*="st-key-{p}"]' for p in _DANGER_KEY_PREFIXES]
+    conts += [f".st-key-{k}" for k in _DANGER_KEYS]
+    for pre, suf in _DANGER_KEY_COMBOS:
+        conts += [f'[class*="st-key-{pre}"][class*="{suf} "]',
+                  f'[class*="st-key-{pre}"][class$="{suf}"]']
+    sel = [f'div[data-testid="stElementContainer"]{m}{_not} '
+           f'div[data-testid="stButton"] button:not(:disabled)' for m in conts]
     s = ",\n".join(sel)
     return (f"{s}{{background:transparent !important;color:var(--warn2) !important;"
-            f"box-shadow:none !important}}\n"
+            f"border-color:transparent !important;box-shadow:none !important}}\n"
             + ",\n".join(x + " p" for x in sel) + "{color:var(--warn2) !important}\n"
             + ",\n".join(x + ":hover" for x in sel)
             + "{background:var(--danger-bg) !important}\n"
@@ -115,8 +124,11 @@ _U1_CSS = """
 .ws-chip.ok::before,.ws-chip.err::before{content:"";width:6px;height:6px;border-radius:50%}
 .ws-chip.ok::before{background:var(--good)}
 .ws-chip.err::before{background:var(--warn2)}
-@media (max-width: 991.98px){
+/* 부제는 1200px 미만 숨김(1024 에서 말줄임으로 잘리던 것, r2 R6). 제목 축소는 992 미만 */
+@media (max-width: 1199.98px){
   .ws-hdr .sub{display:none}
+}
+@media (max-width: 991.98px){
   .ws-hdr .t{font-size:19px}
 }
 /* ② 사이드바: 1.66 은 버튼 안쪽 flex 래퍼가 가운데 정렬 → 모든 폭에서 왼쪽 정렬.
@@ -696,6 +708,7 @@ if DB_AVAILABLE and not st.session_state.get("auth_user"):
                 "name": _users[_uid].get("name") or _uid,
                 "email": _users[_uid].get("email") or None,
                 "role": _users[_uid].get("role") or "worker"}
+            st.session_state.pop("_nav_flash", None)   # 로그인 성공 = 옛 안내 버림(r2 R7)
             # 새 세션마다 토큰 재발급 — 앱을 계속 쓰는 한 14일
             # 만료가 매번 뒤로 밀린다 (sliding, 2026-09-01)
             st.session_state["auth_cookie_value"] = (
@@ -760,6 +773,7 @@ if DB_AVAILABLE and not st.session_state.get("auth_user"):
                         "email": _u.get("email") or None,
                         "role": _u.get("role") or "worker"}
                     st.session_state.pop("auth_skip_cookie", None)
+                    st.session_state.pop("_nav_flash", None)   # 세션 만료 전 안내가 로그인 뒤 뜨지 않게(r2 R7, QA L-3)
                     if _li_keep and _secret:
                         # 매 런 기록 방식 — 아래 지속 기록 블록이 처리
                         st.session_state["auth_cookie_value"] = (
@@ -1820,7 +1834,7 @@ with st.sidebar:
             st.session_state.pop("auth_cookie_value", None)
             # 다음 사람이 앞사람 화면·입력값으로 시작하지 않게 (2026-10-19)
             for _k in ("nav_page", "nav_sub", "_nav_prev", "_nav_flash",
-                       "nav_notice_closed", "ship_open_no"):
+                       "ship_open_no"):
                 st.session_state.pop(_k, None)
             for _k in [k for k in st.session_state if str(k).startswith("_kv_")]:
                 st.session_state.pop(_k, None)
@@ -1918,6 +1932,12 @@ def nav_flash_show():
     (U1b 2026-10-26 — 안 부르면 메시지가 다음 사용자 화면으로 새어 나간다)."""
     _fl = st.session_state.pop("_nav_flash", None)
     if _fl:
+        # 제목 아래 안내는 긴 화면·휴대폰에서 저장 지점과 멀다 → 화면 구석 toast 도 함께(r2 R1)
+        try:
+            _tm = str(_fl.get("msg") or "").replace("**", "")
+            st.toast(_tm if len(_tm) <= 80 else _tm[:79] + "…")
+        except Exception:
+            pass
         if _fl.get("action"):
             _fc1, _fc2 = st.columns([4, 1.2])
             _fc1.success(_fl["msg"])
@@ -1926,10 +1946,6 @@ def nav_flash_show():
                         use_container_width=True)
         else:
             st.success(_fl["msg"])
-
-
-def _nav_notice_close():
-    st.session_state["nav_notice_closed"] = True
 
 
 def _dash_ctx_make(dbmod):
@@ -1943,12 +1959,7 @@ def _dash_ctx_make(dbmod):
                    load_users=lambda: _dash_auth.load_users(dbmod), log_error=dbmod.log_error)
 
 
-# 첫 주 안내 — 닫을 수 있는 1회성(세션 단위) 안내 (§4-5)
-if not st.session_state.get("nav_notice_closed"):
-    _nn1, _nn2 = st.columns([6, 1])
-    _nn1.info("탭이 왼쪽 메뉴로 옮겨졌습니다. 이름은 그대로입니다.")
-    _nn2.button("닫기", key="nav_notice_close", on_click=_nav_notice_close,
-                use_container_width=True)
+# (메뉴 개편 첫 주 1회 안내 배너는 배포 1주 경과로 제거 — r2 R9, 2026-10-26)
 
 if page == "홈":
     # ── 업무 진행 대시보드 (2026-07-24 개편) — 수주→출고 전 단계 요약 ──
@@ -2871,7 +2882,7 @@ elif page == "마스터 관리":
                             "po_number": "직접 입고",
                             "vendor": _rsrc or "-",
                             "date": _rdate.isoformat()}
-                        st.success(
+                        nav_flash(
                             "입고 완료 — {} {:,.0f}{}".format(
                                 _rpick["raw_name"], _rqty,
                                 f" · 소재 LOT {_w}" if _w else
@@ -3052,7 +3063,7 @@ elif page == "마스터 관리":
                         try:
                             _ft_adj(_diff, _alot if _diff > 0 else None,
                                     _amemo.strip(), "실사 조정")
-                            st.success(
+                            nav_flash(
                                 "조정 완료 — {:+,.0f} (완성재고 {:,.0f} → "
                                 "{:,.0f})".format(_diff, _ft["stock"],
                                                   _real))
@@ -4466,7 +4477,7 @@ elif page == "마스터 관리":
                         if upd:
                             if _db.update("materials", f"material_id=eq.{_fq(orig['material_id'])}", upd):
                                 chg += 1
-                    if chg: st.success(f"{chg}건 update"); st.rerun()
+                    if chg: nav_flash(f"{chg}건 update"); st.rerun()
                     else: st.info("변경 사항 없음")
 
         # ── 신규 자재 등록 (2026-08-12 — 기능 공백 보완) ──
@@ -4557,7 +4568,7 @@ elif page == "마스터 관리":
                                 (_nm_sup or "").strip() or None,
                             "procurement_type": _nm_proc or None,
                         }])
-                        st.success(f"자재 등록: {_new_mid} | {_nn}"
+                        nav_flash(f"자재 등록: {_new_mid} | {_nn}"
                                    + (f" | {_nm_spec}"
                                       if (_nm_spec or "").strip()
                                       else "")
@@ -5050,7 +5061,7 @@ elif page == "마스터 관리":
                                              _sw_m["raw_name"]})
                                 except Exception:
                                     pass
-                            st.success(
+                            nav_flash(
                                 f"{len(_bupd)}개 항목 저장"
                                 + (f" · 자재 교체 → "
                                    f"{_sw_m['material_id']} "
@@ -5383,7 +5394,7 @@ elif page == "마스터 관리":
                                 record["process_vendor_id"] = _pvid
                         try:
                             _db.insert("bom", [record])
-                            st.success(
+                            nav_flash(
                                 f"공정행 추가: {proc_name.strip()} — "
                                 "순서는 아래 공정 순서에서 부여, "
                                 "단가는 원가 확인에서.")
@@ -5683,7 +5694,7 @@ elif page == "마스터 관리":
                             "role": _ROLE_EN[_an_role],
                             "pw": _auth.hash_pw(_an_pw)}
                         if _auth.save_users(_db, _ac_users):
-                            st.success(f"추가 완료 — {_an_id} "
+                            nav_flash(f"추가 완료 — {_an_id} "
                                        f"({_an_role}). 초기 비밀번호를 "
                                        "본인에게 전달하고, 첫 로그인 후 "
                                        "변경하도록 안내하세요.")
@@ -7242,13 +7253,17 @@ elif page == "수주 관리":
                 toss_df(df, use_container_width=True, hide_index=True)
                 # 행 삭제(U1b) — 콜백에서 지우고 번호를 다시 매긴다(저장은 line_no 사용).
                 # key 는 위치 기반이라 콜백 안에서만 지운다(렌더 뒤 rerun 없이 한 번에 반영).
-                def _m_so_item_del(_i):
+                def _m_so_item_del(_ln, _pn):
+                    # (번호, 품번) 이 맞는 행만 지운다 — 위치 인덱스는 연타·재렌더 사이에 밀릴 수 있다(r2 R7, QA L-1)
                     _its = list(st.session_state.get("m_so_items") or [])
-                    if 0 <= _i < len(_its):
-                        _its.pop(_i)
-                        for _n, _it in enumerate(_its, 1):
-                            _it["line_no"] = _n
-                        st.session_state.m_so_items = _its
+                    _hit = [k for k, _it in enumerate(_its)
+                            if _it.get("line_no") == _ln and _it.get("customer_part_no") == _pn]
+                    if not _hit:
+                        return
+                    _its.pop(_hit[0])
+                    for _n, _it in enumerate(_its, 1):
+                        _it["line_no"] = _n
+                    st.session_state.m_so_items = _its
                 import html as _html_soi
                 for _soi_i, _soi_it in enumerate(st.session_state.m_so_items):
                     _dc1, _dc2 = st.columns([5, 1])
@@ -7258,7 +7273,8 @@ elif page == "수주 관리":
                         f'{float(_soi_it.get("qty") or 0):,.0f} EA</div>',
                         unsafe_allow_html=True)
                     _dc2.button("삭제", key=f"so_item_{_soi_i}_del", on_click=_m_so_item_del,
-                                args=(_soi_i,), use_container_width=True)
+                                args=(_soi_it.get("line_no"), _soi_it.get("customer_part_no")),
+                                use_container_width=True)
                 total = sum(it["amount"] for it in st.session_state.m_so_items)
                 st.markdown(f"**총액**: ₩{total:,}")
 
@@ -7272,6 +7288,7 @@ elif page == "수주 관리":
                 if dup:
                     st.error(f"이미 등록됨: 수주 {m_so_no} / 거래처 {m_cust} (so_id={dup[0]['so_id']})")
                 else:
+                    _so_saved_id = None   # 머리글 저장 뒤 라인 실패 안내용(r2 R7, QA M-1 — 보상 삭제는 P3 트랜잭션)
                     try:
                         v = fetch("vendors", "vendor_id", f"name=ilike.*{_fq(m_cust)}*&limit=1", limit=1)
                         vendor_id = v[0]["vendor_id"] if v else None
@@ -7285,6 +7302,7 @@ elif page == "수주 관리":
                         so_row = _db.fetch_one("sales_orders",
                             f"so_number=eq.{_fq(m_so_no)}&customer=eq.{_fq(m_cust)}", "so_id")
                         if so_row:
+                            _so_saved_id = so_row["so_id"]
                             for it in st.session_state.m_so_items:
                                 _db.insert("sales_order_items", [{
                                     "so_id": so_row["so_id"], "line_no": it["line_no"],
@@ -7306,7 +7324,11 @@ elif page == "수주 관리":
                         st.session_state.m_so_items = []
                         nav_flash(f"수주 '{m_so_no}' 저장 완료")
                     except Exception as e:
-                        st.error(f"저장 실패: {e}")
+                        if _so_saved_id is not None:
+                            st.error(f"품목 저장 실패: {e} — 머리글은 저장됨(so_id={_so_saved_id}). "
+                                     "수주 목록에서 확인 후 삭제하거나 발주번호를 바꿔 저장하세요.")
+                        else:
+                            st.error(f"저장 실패: {e}")
                     else:
                         st.rerun()
 
@@ -8694,7 +8716,8 @@ elif page == "수주 관리":
                         if st.session_state.get(_rk):
                             sv2.warning("이 라인의 회차를 전부 지웁니다.")
                             rc1, rc2 = sv2.columns(2)
-                            if rc1.button("삭제 확정", type="primary",
+                            # 파괴 버튼 = 위험색(r2 R5) — primary(파랑) 제거, CSS 가 key 로 빨간 글자
+                            if rc1.button("삭제 확정",
                                           use_container_width=True,
                                           key=f"{_rk}_ok"):
                                 try:
@@ -10846,7 +10869,7 @@ elif page == "출고 관리":
                             _cf_pick["ship_no"],
                             [x.get("customer") for x in _cf_items],
                             _cf_ok, _cf_total, current_user_name()))
-                        st.success(
+                        nav_flash(
                             f"출고 확정 — {_cf_ok}개 라인 · "
                             f"{_cf_total:,.0f}개. 아래에서 거래명세서를 "
                             "발행하세요.")
@@ -11731,7 +11754,7 @@ elif page == "생산 계획":
                         "machine_id": m, "name": m,
                         "group_code": _os.machine_group(m) or "ETC"}
                         for m in _newm])
-                st.success("재산출 — 신규 {} · 갱신 {} · 설비 매트릭스 {}건 · "
+                nav_flash("재산출 — 신규 {} · 갱신 {} · 설비 매트릭스 {}건 · "
                            "새 설비 {}대 (실적 {}행)".format(
                                len(_ins), _n_upd, len(_mrows), len(_newm),
                                len(_logs)))
@@ -11878,7 +11901,7 @@ elif page == "생산 계획":
                                     _std_now.now().isoformat()})
                             if _rows_n:
                                 _db.insert("product_op_std", _rows_n)
-                                st.success("{} 작업 {}건 등록{}".format(
+                                nav_flash("{} 작업 {}건 등록{}".format(
                                     _pn_n, len(_rows_n),
                                     "" if _pid_n else " — 제품 미연결 "
                                     "(아래 상세에서 연결)"))
@@ -12817,7 +12840,7 @@ elif page == "생산 계획":
                         if _ins_rows:
                             _db.insert("production_schedule", _ins_rows)
                             _n_ins = len(_ins_rows)
-                        st.success("기간 저장 — 신규 {} · 덮어씀 {}{}".format(
+                        nav_flash("기간 저장 — 신규 {} · 덮어씀 {}{}".format(
                             _n_ins, _n_upd,
                             f" · 야간 미운영 건너뜀 {_n_skip}" if _n_skip
                             else ""))
@@ -14197,7 +14220,7 @@ elif page == "구매 관리":
                         _sk.notify(_sk.fmt_receipt_cancel(
                             _d9.get("식별 번호"), _d9.get("자재"),
                             _d9.get("입고"), current_user_name()))
-                        st.success(
+                        nav_flash(
                             "입고 취소 — 발주 미입고가 복구되었습니다."
                             + (f" 다음 입고는 W{_mx9c + 1:04d} 부터 "
                                "발급됩니다."
@@ -17870,7 +17893,7 @@ elif page == "공정 관리":
                         _sk.notify(_sk.fmt_input(
                             _pn_clean, _in_prod_qty, _sel_lot,
                             current_user_name()))
-                        st.success(
+                        nav_flash(
                             f"투입 등록: {_wo} · {_sel_lot} · 소재 "
                             f"{_in_qty:,.0f} → 제품 {_in_prod_qty:,.0f}"
                             f"EA → {_st0['step_name']}")
@@ -19474,7 +19497,7 @@ elif page == "공정 관리":
                                 float(_t.get("input_qty") or 0),
                                 current_user_name(),
                                 extra=f"소재 {_t.get('w_lot') or '-'} 복원"))
-                            st.success(
+                            nav_flash(
                                 f"투입 취소 완료 — {_t['wo_number']} 삭제, "
                                 f"소재 {_back:,.0f} 복원 "
                                 f"({_t.get('w_lot') or '-'})")
@@ -20670,7 +20693,7 @@ elif page == "생산 보고":
                         for i in range(0, len(_ins9), 200):
                             _db.insert("product_op_std", _ins9[i:i + 200])
                         st.session_state.pop("psh_preview", None)
-                        st.success("반영 완료 — 실적 {:,}행 추가 · 표준 신규 "
+                        nav_flash("반영 완료 — 실적 {:,}행 추가 · 표준 신규 "
                                    "{} · 갱신 {}. 생산 계획 > 공정 표준에서 "
                                    "재산출하세요.".format(
                                        _n_ins, len(_ins9), _upd9))
