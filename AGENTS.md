@@ -52,6 +52,7 @@ Reviewer 도구는 **Read·Grep·Glob 만**이다. Bash 는 읽기 전용이 아
 ## 5. 백업·복구
 
 - 야간 백업: `scripts/backup_tables.py`, Windows 작업 스케줄러 `wsapp-backup` 매일 02:30(주 개발 PC), `G:\내 드라이브\제품관리DB\backup\YYYYMMDD\`, 30일 보존, 읽기 전용. 손대지 않는다.
+- 복원: `scripts/restore_local.py` 가 야간 백업을 로컬 PostgreSQL `wsapp_restore` 에만 복원한다(localhost·DB 이름 고정 안전장치, 운영은 읽기 비교만). 절차·결과는 `docs/development/RESTORE_REHEARSAL.md`, 분기 1회.
 - 데이터 정정 전 스냅샷: 영향 행만 `G:\내 드라이브\제품관리DB\_<주제>_정정전백업_YYYYMMDD.json` 으로 저장하고 실제 생성·읽기 가능 여부를 확인한다. JSON 만으로 복구된다고 보지 않는다 — 계획서에 **역방향 SQL 또는 복구 스크립트**를 적는다.
 - `public.*_backup_MMDD` 임시 백업 테이블은 더 만들지 않는다(2026-09-17 정리).
 

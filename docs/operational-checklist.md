@@ -10,6 +10,7 @@
 - [ ] **A1. Supabase 자동 백업 활성화 확인**
   - 대시보드 → Database → Backups 에 최근 24시간 내 백업 존재.
   - Free 플랜은 7일 retention, Pro 플랜은 PITR 활성 여부 확인.
+  - 야간 백업(`backup/YYYYMMDD`) 복원 리허설: **분기 1회** `python scripts/restore_local.py` → 기록 `docs/development/RESTORE_REHEARSAL.md`(최근 2026-10-26, 79파일 무오류·47테이블 일치).
 
 - [ ] **A2. `_INITIAL_SETUP_ONLY_schema.sql` 직접 실행 금지 주지**
   - 이 파일은 신규 환경 구축 전용. 운영 DB 에 절대 붙여넣지 말 것.
