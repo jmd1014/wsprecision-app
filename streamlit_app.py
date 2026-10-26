@@ -23,23 +23,143 @@ except Exception as e:
     DB_ERROR = str(e)
 
 
+# ─── 디자인 토큰 — 값의 단일 출처 (docs/design/DESIGN_SYSTEM.md §2, 2026-10-26 U1) ───
+# :root CSS 변수는 이 표에서 만든다. AgGrid(iframe — CSS 변수가 상속되지 않음)는
+# _token() 으로 같은 값을 읽는다. 문서와 어긋나면 CSS 를 고친다(문서가 기준).
+_TOKENS = {
+    "--primary": "#3182f6", "--primary-hov": "#1b64da", "--link": "#1b64da",
+    "--bg": "#f9fafb", "--card": "#ffffff",
+    "--line": "#eef1f4", "--line2": "#f2f4f6", "--line3": "#f7f8fa",
+    "--ink": "#191f28", "--body": "#333d4b", "--dim": "#6b7684",
+    "--faint": "#8b95a1", "--mute": "#b0b8c1",
+    "--warn": "#dd6b02", "--warn2": "#f04452", "--warn-bg": "#fff3e0",
+    "--good": "#01a76b", "--good-bg": "#e6f9f1",
+    "--note": "#ffb331", "--note-txt": "#a86e00", "--note-bg": "#fff7e1",
+    "--primary-bg": "#e8f3ff", "--blue-bg": "#e8f3ff",
+    "--shadow": "0 1px 3px rgba(2,32,71,.05),0 5px 14px rgba(2,32,71,.06)",
+    # U1 추가 — 위험 배경·포커스 링·간격 스케일(값만, 적용은 새 CSS 부터)
+    "--danger-bg": "#fdecec", "--focus": "0 0 0 2px var(--primary)",
+    "--sp-1": "4px", "--sp-2": "8px", "--sp-3": "12px",
+    "--sp-4": "16px", "--sp-5": "24px", "--sp-6": "32px",
+}
+
+
+def _token(name):
+    """토큰 값(AgGrid 등 CSS 변수를 못 쓰는 곳 전용)."""
+    return _TOKENS[name]
+
+
+# 상태 배지 — 정의 한 곳(DESIGN_SYSTEM §3 StatusBadge: 높이 22, 12/600, 2px 10px, radius 7,
+# 배경+글자 쌍). HTML 표(.tt .badge)와 AgGrid(.tt-badge)가 이 상수를 같이 읽는다.
+_BADGE_CSS = {
+    "base": {"display": "inline-block", "font-size": "12px", "font-weight": "600",
+             "padding": "2px 10px", "border-radius": "7px", "line-height": "18px",
+             "white-space": "nowrap"},
+    "colors": {"b-red": ("--danger-bg", "--warn2"),
+               "b-green": ("--good-bg", "--good"),
+               "b-amber": ("--warn-bg", "--warn"),
+               "b-blue": ("--primary-bg", "--link"),
+               "b-gray": ("--line2", "--faint")},
+}
+
+
+def _badge_css_html():
+    """HTML 표용 배지 규칙 — 색은 var(--토큰)."""
+    base = ";".join(f"{k}:{v}" for k, v in _BADGE_CSS["base"].items())
+    out = [f".tt .badge{{{base}}}"]
+    for cls, (bg, fg) in _BADGE_CSS["colors"].items():
+        out.append(f".tt .{cls}{{background:var({bg});color:var({fg})}}")
+    return "\n".join(out)
+
+
+def _badge_css_grid():
+    """AgGrid custom_css 용 배지 규칙 — iframe 이라 토큰 값을 복제."""
+    out = {".tt-badge": dict(_BADGE_CSS["base"])}
+    for cls, (bg, fg) in _BADGE_CSS["colors"].items():
+        out[f".{cls}"] = {"background": _token(bg), "color": _token(fg)}
+    return out
+
+
+# 위험 버튼(DESIGN_SYSTEM §3 Button 위험 단계) — 위젯 key 가 이 접미로 끝나면 빨간 글자·투명 배경.
+# Streamlit 1.66 은 st-key-<key> 클래스 뒤에 emotion 클래스를 붙여 class 속성 끝 매칭($=)이
+# 듣지 않는다 → "접미 + 공백"(*=) 과 끝 매칭($=)을 함께 쓴다(2026-10-26 U1 구현 중 변경).
+# 위젯 key 는 바꾸지 않는다. _cancel 이지만 안전한 선택인 버튼은 제외 목록에.
+_DANGER_KEY_SUFFIXES = ("_del", "_cancel", "_cfm_ok")
+_DANGER_KEY_EXCLUDE = ("po_pending_cancel",)   # "취소 (기존 품목 유지)" = 안전한 쪽
+
+
+def _danger_btn_css():
+    _not = "".join(f":not(.st-key-{k})" for k in _DANGER_KEY_EXCLUDE)
+    sel = []
+    for suf in _DANGER_KEY_SUFFIXES:
+        for m in (f'[class*="{suf} "]', f'[class$="{suf}"]'):
+            sel.append(f'div[data-testid="stElementContainer"]{m}{_not} '
+                       f'div[data-testid="stButton"] button:not(:disabled)')
+    s = ",\n".join(sel)
+    return (f"{s}{{background:transparent !important;color:var(--warn2) !important;"
+            f"box-shadow:none !important}}\n"
+            + ",\n".join(x + " p" for x in sel) + "{color:var(--warn2) !important}\n"
+            + ",\n".join(x + ":hover" for x in sel)
+            + "{background:var(--danger-bg) !important}\n"
+            + ",\n".join(x + ":focus-visible" for x in sel)
+            + "{box-shadow:var(--focus) !important}")
+
+
+# U1 정돈 CSS (2026-10-26) — 토큰만 쓴다(hex 금지 — tests/test_uiux_static.py).
+_U1_CSS = """
+/* ① AppHeader 1줄: 회사명 + LIVE 점. 부제는 992px 미만 숨김(구분선은 코드에서 제거) */
+.ws-hdr{flex-wrap:nowrap;margin-bottom:var(--sp-3)}
+.ws-hdr .t{white-space:nowrap}
+.ws-hdr .sub{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.ws-chip{white-space:nowrap}
+.ws-chip.ok::before,.ws-chip.err::before{content:"";width:6px;height:6px;border-radius:50%}
+.ws-chip.ok::before{background:var(--good)}
+.ws-chip.err::before{background:var(--warn2)}
+@media (max-width: 991.98px){
+  .ws-hdr .sub{display:none}
+  .ws-hdr .t{font-size:19px}
+}
+/* ② 사이드바: 1.66 은 버튼 안쪽 flex 래퍼가 가운데 정렬 → 모든 폭에서 왼쪽 정렬.
+   현재 위치 강조는 사이드바 코드의 선택 style(세부가 있으면 세부만 배경+막대, 메인은 글자만). */
+section[data-testid="stSidebar"] [class*="st-key-nav_m_"] button > div,
+section[data-testid="stSidebar"] [class*="st-key-nav_s_"] button > div,
+section[data-testid="stSidebar"] [class*="st-key-nav_m_"] button > div > span,
+section[data-testid="stSidebar"] [class*="st-key-nav_s_"] button > div > span{
+  justify-content:flex-start;width:100%}
+@media (max-width: 991.98px){
+  section[data-testid="stSidebar"] [class*="st-key-nav_m_"] button,
+  section[data-testid="stSidebar"] [class*="st-key-nav_s_"] button{
+    padding-top:var(--sp-1);padding-bottom:var(--sp-1)}
+  section[data-testid="stSidebar"] [class*="st-key-nav_m_"],
+  section[data-testid="stSidebar"] [class*="st-key-nav_s_"]{margin-bottom:-14px}
+}
+/* ③ KPI 값: 1024px 미만 22px, 말줄임 대신 전체 표시 */
+div[data-testid="stMetricValue"] > div,
+div[data-testid="stMetricValue"] p{
+  overflow:visible !important;text-overflow:clip !important;white-space:nowrap}
+@media (max-width: 1023.98px){
+  div[data-testid="stMetricValue"]{font-size:22px !important}
+}
+/* ⑦ 세부 탭 바(nav_sc_*) 전용 — 필터용 segmented 와 구분되는 밑줄 탭 */
+[class*="st-key-nav_sc_"]{margin-bottom:var(--sp-3)}
+[class*="st-key-nav_sc_"] [role="radiogroup"]{
+  gap:0;flex-wrap:wrap;border-bottom:1px solid var(--line)}
+[class*="st-key-nav_sc_"] [role="radiogroup"] button{
+  background:transparent !important;border:none !important;border-radius:0 !important;
+  box-shadow:none;color:var(--dim);font-weight:600;
+  padding:var(--sp-2) var(--sp-3);min-height:0}
+[class*="st-key-nav_sc_"] [role="radiogroup"] button p{color:inherit !important}
+[class*="st-key-nav_sc_"] [role="radiogroup"] button[aria-checked="true"]{
+  color:var(--link) !important;box-shadow:inset 0 -2px 0 var(--primary)}
+"""
+
 # ─── 토스 스타일 리스타일 (design/toss-restyle, 2026-08-12) ───
 # 원칙: 테두리 대신 그림자+큰 라디우스, 색은 상태·버튼에만, Pretendard.
 # 상태 의미는 기존 규칙 유지 — 문제=danger, 대기=warn, 완료=good, 진행=primary
 st.markdown("""
 <style>
 @import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.min.css');
-:root{
-  --primary:#3182f6;--primary-hov:#1b64da;--link:#1b64da;
-  --bg:#f9fafb;--card:#ffffff;
-  --line:#eef1f4;--line2:#f2f4f6;--line3:#f7f8fa;
-  --ink:#191f28;--body:#333d4b;--dim:#6b7684;--faint:#8b95a1;--mute:#b0b8c1;
-  --warn:#dd6b02;--warn2:#f04452;--warn-bg:#fff3e0;
-  --good:#01a76b;--good-bg:#e6f9f1;
-  --note:#ffb331;--note-txt:#a86e00;--note-bg:#fff7e1;
-  --primary-bg:#e8f3ff;--blue-bg:#e8f3ff;
-  --shadow:0 1px 3px rgba(2,32,71,.05),0 5px 14px rgba(2,32,71,.06);
-}
+""" + ":root{" + ";".join(f"{k}:{v}" for k, v in _TOKENS.items()) + "}" + """
 /* AgGrid iframe — 탭 안에서 숨겨진 채 마운트되면 Streamlit 이 기본 300px
    폭으로 두고 갱신하지 않아 그리드가 접힌다. 항상 컨테이너 폭에 맞춤
    (2026-09-03 제품 편집 스크롤 불능 수정) */
@@ -104,11 +224,11 @@ section[data-testid="stSidebar"] [class*="st-key-nav_s_"] button p{
   text-align:left;width:100%;
 }
 section[data-testid="stSidebar"] [class*="st-key-nav_s_"] button{
-  padding-left:26px;font-size:13px;font-weight:500;color:var(--dim);
+  padding-left:26px;font-size:13px;font-weight:500;color:var(--body);
 }
 section[data-testid="stSidebar"] [class*="st-key-nav_m_"] button:hover,
 section[data-testid="stSidebar"] [class*="st-key-nav_s_"] button:hover{
-  background:#f2f4f6;color:var(--ink);
+  background:var(--line2);color:var(--ink);
 }
 section[data-testid="stSidebar"] [class*="st-key-nav_m_"],
 section[data-testid="stSidebar"] [class*="st-key-nav_s_"]{margin-bottom:-10px;}
@@ -341,13 +461,7 @@ div[data-testid="stDataFrame"]{
 .tt .dim{color:var(--mute)}
 .tt tr.hl td{background:#fef1f1}
 .tt .late{color:var(--warn2);font-weight:700}
-.tt .badge{display:inline-block;font-size:12px;font-weight:600;
-  padding:4px 10px;border-radius:7px;line-height:1.3}
-.tt .b-red{background:#fdecec;color:var(--warn2)}
-.tt .b-green{background:var(--good-bg);color:var(--good)}
-.tt .b-amber{background:var(--warn-bg);color:var(--warn)}
-.tt .b-blue{background:var(--primary-bg);color:#1b64da}
-.tt .b-gray{background:#f2f4f6;color:var(--faint)}
+/* 배지(.tt .badge·.b-*)는 _BADGE_CSS 에서 생성 — 아래 블록 끝에 붙는다 */
 
 /* ── 섹션 카드 (st.container border=True 공통) ── */
 div[data-testid="stVerticalBlockBorderWrapper"]{
@@ -369,6 +483,7 @@ div[data-testid="stVerticalBlockBorderWrapper"]{
 .unplan .d{font-size:12.5px;color:var(--body);margin-top:7px;
   line-height:1.75}
 .unplan .d b{font-weight:600;color:var(--ink)}
+""" + _badge_css_html() + "\n" + _danger_btn_css() + "\n" + _U1_CSS + """
 </style>
 """, unsafe_allow_html=True)
 
@@ -382,8 +497,7 @@ st.markdown(f"""
   <div class="ws-hdr-meta">{_db_chip}</div>
 </div>
 """, unsafe_allow_html=True)
-
-st.divider()
+# (구분선 제거 — U1 AppHeader 1줄, 2026-10-26)
 
 
 # ─── 로그인 (계정별 접근 · 2026-08-04) ───────────────────
@@ -860,14 +974,8 @@ _TOSS_GRID_CSS = {
     ".ag-header-cell.tt-num-h .ag-header-cell-label":
         {"justify-content": "flex-end"},
     ".ag-cell.tt-strong": {"font-weight": "700", "color": "#191f28"},
-    ".tt-badge": {"display": "inline-block", "font-size": "12px",
-                  "font-weight": "600", "padding": "2px 10px",
-                  "border-radius": "7px", "line-height": "1.7"},
-    ".b-red": {"background": "#fdecec", "color": "#f04452"},
-    ".b-green": {"background": "#e6f9f1", "color": "#01a76b"},
-    ".b-amber": {"background": "#fff3e0", "color": "#dd6b02"},
-    ".b-blue": {"background": "#e8f3ff", "color": "#1b64da"},
-    ".b-gray": {"background": "#f2f4f6", "color": "#8b95a1"},
+    # 배지(.tt-badge·.b-*)는 _BADGE_CSS 단일 정의 — HTML 표와 같은 값 (U1, 2026-10-26)
+    **_badge_css_grid(),
     # 탭 안에서 숨겨진 채 마운트되면 st_aggrid 컨테이너 폭이 0 으로
     # 굳어 그리드가 접힌 채(스크롤 높이 = 화면 높이) 남는다 — 폭을
     # iframe 에 맞춰 강제 (2026-09-03 제품 편집 스크롤 불능 원인)
@@ -1652,15 +1760,21 @@ with st.sidebar:
         for _nv_mk, _nv_ml in NAV_ADMIN:
             st.button(_nv_ml, key=f"nav_m_{_nv_mk}", on_click=nav_go, args=(_nv_mk,),
                       use_container_width=True)
-    # 선택 항목 강조 — 선택 키에만 거는 작은 style(토큰은 상단 CSS 블록, 이모지 없음)
-    _nav_sel = [f"nav_m_{nav_page}"] + ([f"nav_s_{nav_page}_{nav_sub}"] if nav_sub else [])
-    st.markdown("<style>" + ",".join(
-        f'section[data-testid="stSidebar"] .st-key-{k} button' for k in _nav_sel)
-        + "{background:#e8f3ff !important;color:#1b64da !important;"
-          "box-shadow:inset 3px 0 0 #1b64da;font-weight:700 !important;}"
-        + ",".join(f'section[data-testid="stSidebar"] .st-key-{k} button p'
-                   for k in _nav_sel)
-        + "{color:#1b64da !important;}</style>", unsafe_allow_html=True)
+    # 선택 항목 강조 — 현재 위치는 한 곳만(U1, DESIGN_SYSTEM §3 Sidebar nav): 세부가 있으면
+    # 세부 = 연한 주색 배경 + 왼쪽 막대, 메인 = 글자만(진하게). 세부가 없으면 메인이 배경+막대.
+    # 토큰만(hex 금지), 이모지 없음.
+    _nav_sb = 'section[data-testid="stSidebar"] .st-key-'
+    _nav_hl = f"nav_s_{nav_page}_{nav_sub}" if nav_sub else f"nav_m_{nav_page}"
+    _nav_css = (f"{_nav_sb}{_nav_hl} button{{background:var(--primary-bg) !important;"
+                "color:var(--link) !important;box-shadow:inset 3px 0 0 var(--link);"
+                "font-weight:700 !important;}"
+                f"{_nav_sb}{_nav_hl} button p{{color:var(--link) !important;}}")
+    if nav_sub:
+        _nav_css += (f"{_nav_sb}nav_m_{nav_page} button{{font-weight:700 !important;}}"
+                     f"{_nav_sb}nav_m_{nav_page} button:not(:hover){{background:transparent !important;}}"
+                     f"{_nav_sb}nav_m_{nav_page} button p{{color:var(--ink) !important;"
+                     "font-weight:700;}")
+    st.markdown("<style>" + _nav_css + "</style>", unsafe_allow_html=True)
     # 오류 기록(app_errors)에 붙일 화면(세부 포함)·사용자 — db.log_error 가 읽는다
     try:
         st.session_state["_err_ctx"] = {"page": page_title, "user": current_user_name()}
