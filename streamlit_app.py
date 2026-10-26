@@ -6607,13 +6607,20 @@ elif page == "수주 관리":
                     "DIC": "DIC (납품예정서등록 엑셀)",
                     "MJT_PDF": "(주)엠제이티 (PDF 발주서)",
                     "UNKNOWN_PDF": "알 수 없는 PDF — 수동 파서 선택 필요",
-                    "UNKNOWN_EXCEL": "알 수 없는 엑셀 양식 — 수동 파서 선택 필요",
+                    "UNKNOWN_EXCEL": ("알 수 없는 엑셀 양식입니다 — 지원 양식: HDX 발주, 미진정밀 "
+                                      "외주발주품목조회, DIC 납품예정서, MJT PDF. 파일 첫 줄 제목을 "
+                                      "확인해 주세요."),
                     "UNKNOWN": "인식 실패",
                 }
-                st.info(f"**양식 인식**: {fmt_labels.get(fmt, fmt)}")
+                if fmt == "MIJIN_DELIVERY":
+                    # 납품 실적 파일 — 수주 파일이 아니다. 수동 파서로 억지로 읽지 않게 선택지도 숨긴다
+                    st.warning("미진정밀 **외주납품품목조회**(납품 실적) 파일입니다 — 수주 입력에는 "
+                               "ERP 의 **외주발주품목조회**를 뽑아 올려 주세요.")
+                else:
+                    st.info(f"**양식 인식**: {fmt_labels.get(fmt, fmt)}")
 
-                # 인식 실패 → 수동 선택 fallback
-                if fmt.startswith("UNKNOWN") or not items:
+                # 인식 실패 → 수동 선택 fallback (납품 실적 파일은 제외)
+                if fmt != "MIJIN_DELIVERY" and (fmt.startswith("UNKNOWN") or not items):
                     manual = st.selectbox("수동 선택 (자동 인식 실패 시)",
                         ["선택 안 함", "HDX (엑셀)", "미진정밀 (엑셀)", "DIC (엑셀)",
                          "엠제이티 (PDF)"])

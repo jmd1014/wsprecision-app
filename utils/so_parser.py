@@ -364,7 +364,9 @@ def parse_mjt_pdf(file_bytes: bytes, filename: str = "") -> list[dict]:
 
 def detect_so_format(file_bytes: bytes, filename: str = "") -> str:
     """
-    파일 양식 자동 인식. 반환: 'HDX' / 'MIJIN' / 'DIC' / 'MJT_PDF' / 'UNKNOWN'
+    파일 양식 자동 인식. 반환: 'HDX' / 'MIJIN' / 'MIJIN_DELIVERY' / 'DIC' / 'MJT_PDF' / 'UNKNOWN'
+    'MIJIN_DELIVERY' = 미진정밀 ERP '외주납품품목조회'(납품 실적) — 수주 파일이 아니므로 파싱하지 않고
+    화면이 '외주발주품목조회'를 올리라고 안내한다(2026-10-26 사용자 요청).
     """
     fname_lower = filename.lower()
     # PDF
@@ -394,6 +396,9 @@ def detect_so_format(file_bytes: bytes, filename: str = "") -> str:
                 if v is not None: cells_top.append(str(v))
         text_block = " | ".join(cells_top)
 
+        # 미진정밀 납품 실적: 첫 행 "외주납품품목조회" — 수주(발주) 파일이 아니다(외주발주품목조회와 배타)
+        if '외주납품품목조회' in text_block:
+            return 'MIJIN_DELIVERY'
         # 미진정밀: 첫 행 "외주발주품목조회" 타이틀
         if '외주발주품목조회' in text_block:
             return 'MIJIN'
@@ -427,6 +432,7 @@ def parse_so_auto(file_bytes: bytes, filename: str = "") -> tuple[str, list[dict
         return fmt, parse_dic_excel(file_bytes, filename)
     if fmt == 'MJT_PDF':
         return fmt, parse_mjt_pdf(file_bytes, filename)
+    # MIJIN_DELIVERY(납품 실적)·UNKNOWN* 은 파싱하지 않는다 — 빈 목록, 사유는 fmt 로 화면이 안내
     return fmt, []
 
 

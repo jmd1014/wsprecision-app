@@ -149,3 +149,54 @@ def test_hdx_excel_reads_received_qty_as_pre_delivered():
     assert items[0]["qty"] == 500 and items[0]["received_qty"] == 0
     assert items[1]["qty"] == 100 and items[1]["received_qty"] == 40
     assert items[1]["unit_price"] == 51935
+
+
+# ─── 미진 외주납품품목조회(납품 실적) 판정 (2026-10-26) ───
+def _xlsx(rows):
+    import io
+    import openpyxl
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    for r in rows:
+        ws.append(r)
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def test_mijin_delivery_file_detected_and_not_parsed():
+    """미진 ERP '외주납품품목조회' — 수주 파일이 아니므로 별도 코드, 파싱하지 않는다."""
+    from utils.so_parser import detect_so_format, parse_so_auto
+    head = ["순번", "외주납품번호", "외주납품일", "외주거래처", "납품부서", "납품담당자", "납품구분",
+            "진행상태", "작업지시번호", "자재품번", "자재품명", "납품수량"] + [f"열{i}" for i in range(13, 38)]
+    raw = _xlsx([["외주납품품목조회"] + [None] * 36, head, [None, "TOTAL"] + [""] * 9 + [29059] + [""] * 25])
+    assert len(head) == 37
+    assert detect_so_format(raw, "외주납품품목조회_20261026.xlsx") == "MIJIN_DELIVERY"
+    assert parse_so_auto(raw, "외주납품품목조회_20261026.xlsx") == ("MIJIN_DELIVERY", [])
+
+
+def test_mijin_order_file_still_mijin_and_title_wins_over_filename():
+    from utils.so_parser import detect_so_format
+    raw = _xlsx([["외주발주품목조회"], ["순번", "외주발주번호", "자재품번", "발주수량"]])
+    assert detect_so_format(raw, "x.xlsx") == "MIJIN"
+    # 파일명에 '미진'이 있어도 제목이 납품 실적이면 납품 실적
+    raw2 = _xlsx([["외주납품품목조회"], ["순번", "외주납품번호"]])
+    assert detect_so_format(raw2, "미진_외주납품.xlsx") == "MIJIN_DELIVERY"
+
+
+def test_hdx_detection_regression():
+    from utils.so_parser import detect_so_format
+    raw = _xlsx([["수주번호", "업체자재코드", "납기요청일", "협력업체"], ["S1", "A", "2026-10-30", "우성"]])
+    assert detect_so_format(raw, "order.xlsx") == "HDX"
+    assert detect_so_format(_xlsx([["무엇", "인지"], [1, 2]]), "x.xlsx") == "UNKNOWN_EXCEL"
+
+
+def test_upload_screen_messages_for_delivery_and_unknown():
+    """수주 입력 화면 문구 — 납품 실적 파일 안내(수동 파서 선택지 없음)·알 수 없는 양식 안내."""
+    src = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "streamlit_app.py"),
+               encoding="utf-8").read()
+    assert 'if fmt == "MIJIN_DELIVERY":' in src and "외주납품품목조회**(납품 실적) 파일입니다" in src
+    assert "ERP 의 **외주발주품목조회**를 뽑아 올려 주세요." in src
+    assert 'if fmt != "MIJIN_DELIVERY" and (fmt.startswith("UNKNOWN") or not items):' in src
+    assert "알 수 없는 엑셀 양식입니다 — 지원 양식: HDX 발주, 미진정밀" in src
+    assert "수동 파서 선택 필요\"," not in src.split('"UNKNOWN_EXCEL"')[1][:200]
