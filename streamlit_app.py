@@ -209,6 +209,7 @@ div[class*="st-key-ph_go_"] button p{color:var(--link) !important}
 div[class*="st-key-wscard_"]{background:var(--card);border:none !important;
   border-radius:16px !important;box-shadow:var(--shadow);padding:16px 20px !important}
 div[class*="st-key-wscard_"] .tt-wrap{box-shadow:none;border-radius:0}
+div[class*="st-key-wscard_"] .ws-empty{box-shadow:none;background:var(--line3);margin:0}
 .ws-card-h{display:flex;align-items:center;gap:var(--sp-2);flex-wrap:wrap;min-height:24px}
 .ws-card-h .t{font-size:14.5px;font-weight:700;color:var(--ink)}
 .ws-card-h .s{font-size:13px;font-weight:500;color:var(--faint)}
@@ -220,9 +221,10 @@ div[class*="st-key-wscard_"] .tt-wrap{box-shadow:none;border-radius:0}
 }
 /* ActionBar — 좌 보조 1, 우 요약 + 주 버튼 1. 휴대폰은 요약 → 주(48) → 보조(44) 세로 적층 */
 .ws-ab-sum{text-align:right;font-size:13px;color:var(--faint);font-variant-numeric:tabular-nums}
+div[class*="st-key-wsab_"] div[data-testid="stMarkdownContainer"]{margin-bottom:0 !important}
 @media (max-width: 640px){
   div[class*="st-key-wsab_"] div[data-testid="stHorizontalBlock"]{flex-direction:column;gap:var(--sp-2)}
-  div[class*="st-key-wsab_"] div[data-testid="stColumn"]{width:100% !important;flex:1 1 100% !important}
+  div[class*="st-key-wsab_"] div[data-testid="stColumn"]{width:100% !important;flex:0 0 auto !important}
   div[class*="st-key-wsab_"] div[data-testid="stColumn"]:nth-child(2){order:1}
   div[class*="st-key-wsab_"] div[data-testid="stColumn"]:nth-child(3){order:2}
   div[class*="st-key-wsab_"] div[data-testid="stColumn"]:nth-child(1){order:3}
@@ -236,6 +238,19 @@ div[class*="st-key-wscard_"] .tt-wrap{box-shadow:none;border-radius:0}
 .stepper.ws-steps .step.wait{background:var(--line2);color:var(--faint);box-shadow:none}
 @media (max-width: 640px){
   .stepper.ws-steps .step .sm{display:none}
+}
+/* 수기 수주 담긴 품목(ListRow 모양) — 품번 14/600 + 보조 12/--faint */
+.so-item-row{display:flex;flex-direction:column;gap:2px;padding-top:0}
+.so-item-row b{font-size:14px;font-weight:600;color:var(--ink)}
+.so-item-row span{font-size:12px;color:var(--faint);font-variant-numeric:tabular-nums}
+/* 출고 등록 조건 줄(375: 날짜 2열 → 검색 → 체크) */
+@media (max-width: 640px){
+  div.st-key-ship_cond_row div[data-testid="stHorizontalBlock"]{flex-direction:row;flex-wrap:wrap;
+    gap:var(--sp-2)}
+  div.st-key-ship_cond_row div[data-testid="stColumn"]{width:auto !important;
+    min-width:calc(50% - var(--sp-2)) !important;flex:1 1 calc(50% - var(--sp-2)) !important}
+  div.st-key-ship_cond_row div[data-testid="stColumn"]:nth-child(n+3){min-width:100% !important;
+    flex-basis:100% !important}
 }
 /* ListRow — toss_table(mobile_cols=) 의 휴대폰 변형(992 미만에서 표 대신) */
 .tt-m{display:none}
@@ -1032,7 +1047,7 @@ def action_bar(secondary=None, summary="", primary=None, *, key):
     import html as _h
     _sc = _pc = False
     with st.container(key=f"wsab_{key}"):
-        c1, c2, c3 = st.columns([1.1, 2.3, 1.7], vertical_alignment="center")
+        c1, c2, c3 = st.columns([1.3, 1.2, 2.5], vertical_alignment="center")
         if secondary:
             _sc = c1.button(use_container_width=True, **secondary)
         c2.markdown(f'<div class="ws-ab-sum">{_h.escape(str(summary or ""))}</div>',
@@ -1900,7 +1915,7 @@ with st.sidebar:
     NAV_SUB_ADMIN = {("dash", "rate"), ("dash", "tmpl")}
 
     def _subs_for(main_key, is_admin):
-        """이 계정이 볼 수 있는 세부 목록 — nav_sub_of·사이드바·nav_page_head·_nav_sc_change·제목이 공통 사용."""
+        """이 계정이 볼 수 있는 세부 목록 — nav_sub_of·nav_page_head(탭 바)·_nav_sc_change·제목이 공통 사용."""
         _all = NAV_MAIN.get(main_key, ("", []))[1]
         if is_admin:
             return _all
@@ -6176,7 +6191,7 @@ elif page == "마스터 관리":
 
 
 elif page == "수주 관리":
-    nav_page_head()
+    nav_page_head(right=("수주 목록 보기", "so", "list") if _sub == "input" else None)
     if not DB_AVAILABLE: st.error("DB 연결 필요"); st.stop()
 
     from datetime import date as _date, timedelta as _td
@@ -6228,17 +6243,9 @@ elif page == "수주 관리":
                 _sk_late_qty += float(_r.get("pending_qty") or 0)
     except Exception:
         pass
-    sk1, sk2, sk3, sk4 = st.columns(4)
-    sk1.metric("미납 수량", f"{_sk_pend:,.0f}")
-    sk2.metric("진행 수주", f"{_sk_open:,}건")
-    sk3.metric("납기 지연", f"{_sk_late_n:,}건",
-               delta=f"-{_sk_late_qty:,.0f}" if _sk_late_qty else None,
-               delta_color="inverse" if _sk_late_qty else "off",
-               help="납품 스케줄 기준 — 지난 회차·지난 납기의 미납 잔량. "
-                    "부분 납품도 잔량이 남으면 지연으로 셉니다. "
-                    "상세는 '납품 스케줄' 화면의 지연 상세.")
-    sk4.metric("이번 달 수주", f"{_sk_month:,}건")
-    st.divider()
+    # U3(B-1): KPI 4장 → 1줄 요약 띠(SummaryStrip). 오른쪽 칩(제품 확인 필요·단가 변경)은
+    # 아래 두 패널을 계산한 뒤에 알 수 있어 자리만 먼저 만들고 패널 계산 뒤 채운다.
+    _so_strip = st.container()
 
     # ── 품번 정규화 헬퍼 (업로드 매칭·확인 패널 공용) ──
     def _so_mk(s):
@@ -6315,7 +6322,7 @@ elif page == "수주 관리":
     if _ck_groups:
         with st.expander(
                 f"제품 확인 필요 {len(_ck_groups)}건 — 미등록·휴면 제품에 "
-                "걸린 미납 수주 (진행 전 조치)", expanded=True):
+                "걸린 미납 수주 (진행 전 조치)", expanded=_sub != "input"):
             for _gi, (_gk, _g) in enumerate(sorted(
                     _ck_groups.items(), key=lambda x: (x[1]["due"] or "9999"))):
                 _p = _g["prod"]
@@ -6713,7 +6720,7 @@ elif page == "수주 관리":
     if _rp_groups:
         with st.expander(
                 f"단가 변동 감지 {len(_rp_groups)}개 품번 — 같은 품번의 미납 수주와 "
-                "단가가 다른 새 수주", expanded=True):
+                "단가가 다른 새 수주", expanded=_sub != "input"):
             for _gi, _g in enumerate(_rp_groups):
                 _n = _g["new"]
                 _np = float(_n.get("unit_price") or 0)
@@ -6782,766 +6789,862 @@ elif page == "수주 관리":
                                   tag_side="new",
                                   tag_kind=("CUSTOMER_MAT" if _kind == "사급 소재"
                                             else "PROJECT"))
+    with _so_strip:
+        kpi_strip(
+            [("미납 수량", f"{_sk_pend:,.0f}", None, None),
+             ("진행 수주", f"{_sk_open:,}건", None, None),
+             ("납기 지연", f"{_sk_late_n:,}건", "danger" if _sk_late_n else None,
+              "납품 스케줄 기준 — 지난 회차·지난 납기의 미납 잔량"
+              + (f" {_sk_late_qty:,.0f}" if _sk_late_qty else "")
+              + ". 부분 납품도 잔량이 남으면 지연으로 셉니다. 상세는 '납품 스케줄' 화면."),
+             ("이번 달 수주", f"{_sk_month:,}건", None, None)],
+            chips=([(f"제품 확인 필요 {len(_ck_groups)}", "b-amber")] if _ck_groups else [])
+            + ([(f"단가 변경 {len(_rp_groups)}", "b-gray")] if _rp_groups else []))
+
     # 세부 화면(사이드바 2단): 수주 입력 / 수주 목록 / 납품 스케줄 — _sub 로 분기
 
     # ════════ TAB 1: 수주 입력 ════════
     if _sub == "input":
-        mode = st.radio("입력 방식", ["파일 업로드 자동 파싱", "수기 입력"],
-                        horizontal=True, key="so_mode")
+        # U3(B-1): 입력 카드 → 결과 카드 → ActionBar. 결과·액션 자리(컨테이너)를 먼저 만들고
+        # 아래 처리 코드가 그 자리에 그린다 — 처리 순서는 그대로, 화면 순서만 바뀐다.
+        _SO_MODES = ["파일 업로드 자동 파싱", "수기 입력"]
+        _so_in = st.container(border=True, key="wscard_so_input")
+        _so_res = st.container()
+        _so_act = st.container()
+        with _so_in:
+            _soh1, _soh2 = st.columns([1, 1], vertical_alignment="center")
+            _soh1.markdown('<div class="ws-card-h"><span class="t">입력</span></div>',
+                           unsafe_allow_html=True)
+            # 값(옵션 문자열)은 그대로 — 그림자 키(_NAV_KEEP so_mode)·저장 분기 호환. 표시만 짧게
+            if st.session_state.get("so_mode") not in _SO_MODES:
+                st.session_state["so_mode"] = _SO_MODES[0]
+            with _soh2.container(horizontal_alignment="right"):
+                st.segmented_control(
+                    "입력 방식", _SO_MODES, key="so_mode", required=True,
+                    format_func=lambda v: "파일 업로드" if v == _SO_MODES[0] else v,
+                    label_visibility="collapsed")
+        mode = st.session_state.get("so_mode") or _SO_MODES[0]
 
-        if mode == "파일 업로드 자동 파싱":
-            st.caption("양식은 파일을 보고 자동으로 인식합니다 (HDX / 미진정밀 / 엠제이티 PDF)")
-            uploaded = st.file_uploader("파일 선택",
-                type=['xlsx','xls','pdf'],
-                help="여러 거래처 양식 자동 인식. 다른 화면에 다녀오면 파일을 다시 올려야 합니다")
+        def _so_up_reset():
+            # [초기화] — 올린 파일·체크 상태를 비운다(업로더는 key 를 바꿔야 비워진다)
+            st.session_state["so_up_nonce"] = st.session_state.get("so_up_nonce", 0) + 1
+            for _k in ("so_rev_ok", "so_up_keep_dups"):
+                st.session_state.pop(_k, None)
 
-            if uploaded:
-                file_bytes = uploaded.read()
-                filename = uploaded.name
-                from utils.so_parser import detect_so_format, parse_so_auto
-                with st.spinner("양식 인식 + 파싱 중..."):
-                    try:
-                        fmt, items = parse_so_auto(file_bytes, filename)
-                    except Exception as e:
-                        st.error(f"파싱 실패: {e}"); fmt = "ERR"; items = []
+        with _so_in:
+            if mode == "파일 업로드 자동 파싱":
+                uploaded = st.file_uploader("파일 선택",
+                    type=['xlsx','xls','pdf'], label_visibility="collapsed",
+                    key=f"so_up_file_{st.session_state.get('so_up_nonce', 0)}",
+                    help="여러 거래처 양식 자동 인식. 다른 화면에 다녀오면 파일을 다시 올려야 합니다")
+                ws_note("지원 양식: HDX 발주 · 미진정밀 외주발주품목조회 · DIC 납품예정서 · MJT PDF "
+                        "— 양식은 파일을 보고 자동으로 인식합니다")
+                if not uploaded:
+                    with _so_res:
+                        with section_card("미리보기", key="so_preview_empty"):
+                            _empty_state("파일을 올리면 여기에 미리보기가 뜹니다")
 
-                fmt_labels = {
-                    "HDX": "HDX (ERP 엑셀)",
-                    "MIJIN": "미진정밀 (외주발주품목조회)",
-                    "DIC": "DIC (납품예정서등록 엑셀)",
-                    "MJT_PDF": "(주)엠제이티 (PDF 발주서)",
-                    "UNKNOWN_PDF": "알 수 없는 PDF — 수동 파서 선택 필요",
-                    "UNKNOWN_EXCEL": ("알 수 없는 엑셀 양식입니다 — 지원 양식: HDX 발주, 미진정밀 "
-                                      "외주발주품목조회, DIC 납품예정서, MJT PDF. 파일 첫 줄 제목을 "
-                                      "확인해 주세요."),
-                    "UNKNOWN": "인식 실패",
-                }
-                if fmt == "MIJIN_DELIVERY":
-                    # 납품 실적 파일 — 수주 파일이 아니다. 수동 파서로 억지로 읽지 않게 선택지도 숨긴다
-                    st.warning("미진정밀 **외주납품품목조회**(납품 실적) 파일입니다 — 수주 입력에는 "
-                               "ERP 의 **외주발주품목조회**를 뽑아 올려 주세요.")
-                else:
-                    st.info(f"**양식 인식**: {fmt_labels.get(fmt, fmt)}")
-
-                # 인식 실패 → 수동 선택 fallback (납품 실적 파일은 제외)
-                if fmt != "MIJIN_DELIVERY" and (fmt.startswith("UNKNOWN") or not items):
-                    manual = st.selectbox("수동 선택 (자동 인식 실패 시)",
-                        ["선택 안 함", "HDX (엑셀)", "미진정밀 (엑셀)", "DIC (엑셀)",
-                         "엠제이티 (PDF)"])
-                    if manual == "HDX (엑셀)":
-                        try: items = parse_hdx_excel(file_bytes, filename)
-                        except Exception as e: st.error(e); items = []
-                    elif manual == "미진정밀 (엑셀)":
-                        try: items = parse_mijin_excel(file_bytes, filename)
-                        except Exception as e: st.error(e); items = []
-                    elif manual == "DIC (엑셀)":
-                        try: items = parse_dic_excel(file_bytes, filename)
-                        except Exception as e: st.error(e); items = []
-                    elif manual == "엠제이티 (PDF)":
-                        try: items = parse_mjt_pdf(file_bytes, filename)
-                        except Exception as e: st.error(e); items = []
-
-                if items:
-                    st.success(f"{len(items)}개 품목 파싱 완료")
-
-                    # 거래처 약칭 → 마스터 정식 명칭 (Migration 063 short_name).
-                    # HDX 파일은 거래처를 "HDX"로 파싱하지만 마스터 정식명은
-                    # 사업자등록 명칭(현대제뉴인(주)) — 수주·전표의 거래처
-                    # 문자열을 정식명으로 통일해야 중복 검증·명세서 조회가 맞는다
-                    # 한 파일에 거래처가 둘일 수 있다 (DIC 두 공장) — 거래처별로 처리
-                    for _cu0 in sorted({it["customer"] for it in items
-                                        if it.get("customer")}):
+                if uploaded:
+                    file_bytes = uploaded.read()
+                    filename = uploaded.name
+                    from utils.so_parser import detect_so_format, parse_so_auto
+                    with st.spinner("양식 인식 + 파싱 중..."):
                         try:
-                            _vsn = fetch("vendors", "vendor_id,name",
-                                         f"short_name=eq.{_fq(_cu0)}", limit=1)
-                            if _vsn:
-                                for it in items:
-                                    if it["customer"] == _cu0:
-                                        it["customer"] = _vsn[0]["name"]
-                        except Exception:
-                            pass
-                    _is_dic = items[0].get("_source") == "DIC_EXCEL"
-                    _up_custs = sorted({it["customer"] for it in items
-                                        if it.get("customer")})
-                    if _is_dic:
-                        try:
-                            _known9 = {v["name"] for v in fetch(
-                                "vendors", "name", "name=like.*디아이씨*", limit=50)}
-                        except Exception:
-                            _known9 = set(_up_custs)
-                        _unk9 = [c for c in _up_custs if c not in _known9]
-                        if _unk9:
-                            st.warning(
-                                "거래처 마스터에 없는 납품공장: "
-                                + ", ".join(_unk9)
-                                + " — 거래처 편집에 등록하거나 납품공장 연결을 "
-                                  "추가해야 명세서·마감 조회에 잡힙니다.")
-
-                    # ── 중복 수주번호 검증 (DB 기존 데이터 vs 파싱 결과) ──
-                    # 키 = (거래처, 수주번호)
-                    customer_name = items[0]["customer"]
-                    existing_keys = set()
-                    for _cu0 in _up_custs:
-                        _nums0 = sorted({it["so_number"] for it in items
-                                         if it["customer"] == _cu0
-                                         and it.get("so_number")})
-                        if not _nums0:
-                            continue
-                        try:
-                            for e in fetch(
-                                    "sales_orders", "so_number",
-                                    f"customer=eq.\"{_cu0}\"&"
-                                    f"so_number=in.({','.join(_nums0)})",
-                                    limit=500):
-                                existing_keys.add((_cu0, e["so_number"]))
-                        except Exception:
-                            pass
-
-                    new_items = [it for it in items
-                                 if (it["customer"], it.get("so_number"))
-                                 not in existing_keys]
-                    dup_items = [it for it in items
-                                 if (it["customer"], it.get("so_number"))
-                                 in existing_keys]
-                    dup_so_nums = sorted({it["so_number"] for it in dup_items})
-
-                    if dup_so_nums and _is_dic:
-                        # ── DIC 재업로드: 미납 조회 화면이라 같은 수주가 매번
-                        # 다시 나온다. 기존 수주에 없는 행번만 그 수주에 추가하고,
-                        # 이미 있는 라인은 건드리지 않는다 — 수주 등록에만 집중하고
-                        # 납품량은 앱의 출고 확정으로만 쌓는다 (2026-10-02 사용자
-                        # 결정: 파일 값으로 맞추면 이중 반영 위험)
-                        _dx_add = []
-                        try:
-                            _dx_so = {}
-                            for _cu0 in _up_custs:
-                                _n0 = sorted({it["so_number"] for it in dup_items
-                                              if it["customer"] == _cu0})
-                                if _n0:
-                                    for e in fetch(
-                                            "sales_orders", "so_id,so_number",
-                                            f"customer=eq.\"{_cu0}\"&so_number=in.("
-                                            + ",".join(_n0) + ")", limit=200):
-                                        _dx_so[(_cu0, e["so_number"])] = e["so_id"]
-                            _dx_lines = {}
-                            _ids0 = sorted(set(_dx_so.values()))
-                            for _i0 in range(0, len(_ids0), 80):
-                                for x in fetch(
-                                        "sales_order_items",
-                                        "soi_id,so_id,line_no,customer_part_no",
-                                        "so_id=in.({})".format(",".join(
-                                            str(v) for v in _ids0[_i0:_i0 + 80])),
-                                        limit=2000):
-                                    _dx_lines.setdefault(x["so_id"], []).append(x)
-                            for it in dup_items:
-                                _sid0 = _dx_so.get((it["customer"], it["so_number"]))
-                                _hit = next((
-                                    e for e in _dx_lines.get(_sid0, [])
-                                    if str(e.get("customer_part_no") or "").strip()
-                                    == str(it.get("customer_part_no") or "").strip()
-                                    and int(e.get("line_no") or 0)
-                                    == int(it.get("line_no") or 0)), None)
-                                if _hit is None:
-                                    it["_existing_so_id"] = _sid0
-                                    _dx_add.append(it)
+                            fmt, items = parse_so_auto(file_bytes, filename)
                         except Exception as e:
-                            st.warning(f"기존 수주 대조 실패: {e}")
-                        st.info(
-                            "이미 등록된 수주 **{}건** — 새 행번 {}개는 기존 수주에 "
-                            "추가하고, 이미 있는 라인은 그대로 둡니다.".format(
-                                len(dup_so_nums), len(_dx_add)))
-                        new_items = new_items + _dx_add
-                    elif dup_so_nums:
-                        st.warning(
-                            f"이미 등록된 수주 **{len(dup_so_nums)}건** 자동 제외:\n\n"
-                            + "\n".join(f"- `{s}`" for s in dup_so_nums[:10])
-                            + (f"\n... 외 {len(dup_so_nums)-10}건" if len(dup_so_nums) > 10 else "")
-                        )
-                        # ── 개정 발주 (2026-09-10): 같은 번호로 다시 온 발주가
-                        # 기존 라인과 단가·수량이 다르면 '-R2' 를 붙여 새 수주로
-                        # 등록 → 단가 변동 감지 패널에서 대체/별건 처리 ──
-                        _rev_diff = []
-                        try:
-                            _ex_so = fetch("sales_orders", "so_id,so_number",
-                                           f"customer=eq.\"{customer_name}\"&so_number=in.("
-                                           + ",".join(dup_so_nums) + ")", limit=100)
-                            _ex_map = {s["so_number"]: s["so_id"] for s in _ex_so}
-                            _ex_lines = {}
-                            if _ex_map:
-                                for x in fetch("sales_order_items",
-                                               "so_id,customer_part_no,qty,unit_price",
-                                               "so_id=in.({})".format(",".join(
-                                                   str(v) for v in _ex_map.values())),
-                                               limit=500):
-                                    _ex_lines.setdefault(x["so_id"], []).append(x)
-                            for it in dup_items:
-                                _els = _ex_lines.get(_ex_map.get(it.get("so_number")), [])
-                                _same = any(
-                                    str(e.get("customer_part_no") or "").strip()
-                                    == str(it.get("customer_part_no") or "").strip()
-                                    and abs(float(e.get("qty") or 0)
-                                            - float(it.get("qty") or 0)) < 0.5
-                                    and abs(float(e.get("unit_price") or 0)
-                                            - float(it.get("unit_price") or 0)) < 0.5
-                                    for e in _els)
-                                if not _same:
-                                    _rev_diff.append(it)
-                            _rev_nums = sorted({it["so_number"] for it in _rev_diff})
-                            _rev_existing = {s["so_number"] for s in fetch(
-                                "sales_orders", "so_number",
-                                f"customer=eq.\"{customer_name}\"&or=("
-                                + ",".join(f"so_number.like.{n}-R*" for n in _rev_nums)
-                                + ")", limit=200)} if _rev_nums else set()
-                        except Exception:
-                            _rev_diff, _rev_nums, _rev_existing = [], [], set()
-                        if _rev_diff:
-                            st.info("같은 번호의 기존 수주와 **단가·수량이 다른 라인 "
-                                    f"{len(_rev_diff)}개** — 고객이 단가 변경 등으로 "
-                                    "같은 번호로 재발주한 경우입니다.")
-                            if st.checkbox(
-                                    "개정 발주로 등록 — 번호에 '-R2' 를 붙여 새 수주로 "
-                                    "등록하고, 기존 수주는 저장 후 상단 '단가 변동 감지' "
-                                    "패널에서 [대체] 또는 [별건 유지]로 처리",
-                                    key="so_rev_ok"):
-                                for it in _rev_diff:
-                                    _base = it["so_number"]
-                                    _n = 2
-                                    while f"{_base}-R{_n}" in _rev_existing:
-                                        _n += 1
-                                    it["so_number"] = f"{_base}-R{_n}"
-                                    it["remark"] = ((it.get("remark") or "")
-                                                    + f" 개정(원 번호 {_base})").strip()
-                                new_items = new_items + _rev_diff
-                    if not new_items:
-                        st.error("모든 수주가 이미 등록되어 있습니다. 업로드 불필요.")
-                    items = new_items  # 이후 매칭/저장은 신규만 (비면 빈 목록)
+                            st.error(f"파싱 실패: {e}"); fmt = "ERR"; items = []
 
-                    # ── 파일 내 중복 라인 감지 ──
-                    # 실사례: G264220260 에 동일 라인 4종이 이중 등록됨 (import 중복).
-                    # 수주번호+품번+수량+단가+납기가 완전히 같으면 중복으로 판단.
-                    from collections import Counter as _Counter
-                    def _line_key(it):
-                        return (it.get("so_number"),
-                                str(it.get("customer_part_no")
-                                    or it.get("canonical_pn_hint") or ""),
-                                str(it.get("qty")), str(it.get("unit_price")),
-                                str(it.get("due_date")))
-                    _key_counts = _Counter(_line_key(it) for it in items)
-                    _dup_keys = {k for k, c in _key_counts.items() if c > 1}
-                    if _dup_keys:
-                        n_extra = sum(_key_counts[k] - 1 for k in _dup_keys)
-                        st.warning(
-                            f"**파일 내 동일 라인 중복 {len(_dup_keys)}종 "
-                            f"(초과 {n_extra}행)** — 수주번호·품번·수량·단가·납기가 "
-                            "완전히 같은 행입니다. 기본으로 1행만 저장합니다.")
-                        _dup_prev = [{"수주번호": k[0], "품번": k[1], "수량": k[2],
-                                      "단가": k[3], "납기": k[4],
-                                      "중복 행수": _key_counts[k]}
-                                     for k in sorted(_dup_keys)]
-                        toss_df(pd.DataFrame(_dup_prev),
-                                     use_container_width=True, hide_index=True)
-                        keep_dups = st.checkbox(
-                            "중복 행을 그대로 모두 저장 (실제로 같은 품목을 "
-                            "여러 라인으로 발주한 경우만 체크)",
-                            value=False, key="so_up_keep_dups")
-                        if not keep_dups:
-                            _seen_keys = set()
-                            _deduped = []
-                            for it in items:
-                                k = _line_key(it)
-                                if k in _dup_keys and k in _seen_keys:
-                                    continue
-                                _seen_keys.add(k)
-                                _deduped.append(it)
-                            items = _deduped
-                            st.caption(f"→ 중복 {n_extra}행 제외, "
-                                       f"**{len(items)}행** 저장 예정.")
+                    fmt_labels = {
+                        "HDX": "HDX (ERP 엑셀)",
+                        "MIJIN": "미진정밀 (외주발주품목조회)",
+                        "DIC": "DIC (납품예정서등록 엑셀)",
+                        "MJT_PDF": "(주)엠제이티 (PDF 발주서)",
+                        "UNKNOWN_PDF": "알 수 없는 PDF — 수동 파서 선택 필요",
+                        "UNKNOWN_EXCEL": ("알 수 없는 엑셀 양식입니다 — 지원 양식: HDX 발주, 미진정밀 "
+                                          "외주발주품목조회, DIC 납품예정서, MJT PDF. 파일 첫 줄 제목을 "
+                                          "확인해 주세요."),
+                        "UNKNOWN": "인식 실패",
+                    }
+                    if fmt == "MIJIN_DELIVERY":
+                        # 납품 실적 파일 — 수주 파일이 아니다. 수동 파서로 억지로 읽지 않게 선택지도 숨긴다
+                        st.warning("미진정밀 **외주납품품목조회**(납품 실적) 파일입니다 — 수주 입력에는 "
+                                   "ERP 의 **외주발주품목조회**를 뽑아 올려 주세요.")
+                    else:
+                        ws_note(f"양식 인식: {fmt_labels.get(fmt, fmt)}",
+                                warn=fmt.startswith("UNKNOWN") or fmt == "ERR")
 
-                    # 우성정밀 품번 매칭
-                    # 활성 제품 우선 (휴면 제품은 같은 키가 없을 때만) +
-                    # 수주 단계에서 확정한 거래처 품번 매핑 사전 우선
-                    # (2026-09-01: 휴면 제품에 미납 수주가 걸리던 원인 보정)
-                    products = fetch("products",
-                                     "product_id,pn,alias_list,archived_at,"
-                                     "archive_reason",
-                                     "order=product_id", limit=1500)
-                    products.sort(key=lambda p: bool(p.get("archived_at")))
-                    cm = {}
-                    _mk = _so_mk
-                    for p in products:
-                        # 4번째 = 접두사 통합으로 휴면된 품번(별칭 취급) —
-                        # 정확 일치라도 활성 본품으로 넘긴다 (2026-09-10:
-                        # '4S20AHYBV-03-X1413;PM' 별칭이 휴면 P0010 에 걸림)
-                        _v = (p['pn'], p['product_id'],
-                              bool(p.get('archived_at')),
-                              bool(p.get('archived_at'))
-                              and "통합" in str(p.get("archive_reason") or ""))
-                        cm.setdefault(_mk(p['pn']), _v)
-                        if p.get('alias_list'):
-                            for a in str(p['alias_list']).split(','):
-                                a = a.strip()
-                                if a: cm.setdefault(_mk(a), _v)
-                    _cpm = {}
-                    try:
-                        for _cu0 in sorted({it["customer"] for it in items}):
-                            for _m in fetch("customer_part_mapping",
-                                    "customer_part_no,product_id,canonical_pn",
-                                    f"customer=eq.{_fq(_cu0)}", limit=500):
-                                if _m.get("product_id"):
-                                    _cpm[_mk(_m["customer_part_no"])] = (
-                                        _m["canonical_pn"], _m["product_id"], False)
-                    except Exception:
-                        _cpm = {}
+                    # 인식 실패 → 수동 선택 fallback (납품 실적 파일은 제외)
+                    if fmt != "MIJIN_DELIVERY" and (fmt.startswith("UNKNOWN") or not items):
+                        manual = st.selectbox("수동 선택 (자동 인식 실패 시)",
+                            ["선택 안 함", "HDX (엑셀)", "미진정밀 (엑셀)", "DIC (엑셀)",
+                             "엠제이티 (PDF)"])
+                        if manual == "HDX (엑셀)":
+                            try: items = parse_hdx_excel(file_bytes, filename)
+                            except Exception as e: st.error(e); items = []
+                        elif manual == "미진정밀 (엑셀)":
+                            try: items = parse_mijin_excel(file_bytes, filename)
+                            except Exception as e: st.error(e); items = []
+                        elif manual == "DIC (엑셀)":
+                            try: items = parse_dic_excel(file_bytes, filename)
+                            except Exception as e: st.error(e); items = []
+                        elif manual == "엠제이티 (PDF)":
+                            try: items = parse_mjt_pdf(file_bytes, filename)
+                            except Exception as e: st.error(e); items = []
 
-                    def _strip_prefix(s):
-                        """4S/S 접두어 제거 (PMLib _getBasePn)"""
-                        if not s: return ""
-                        p = str(s).upper().strip()
-                        if p.startswith('4S') and len(p) > 2 and (p[2].isalnum()):
-                            return p[2:]
-                        if p.startswith('S') and len(p) > 1 and (p[1].isalnum()):
-                            excluded = ('SP-','SDF','SUS','SODV','SFB','SCM','SKD','SKH',
-                                        'S45','S20','S30','S304','S316','S630')
-                            if not any(p.startswith(e) for e in excluded):
-                                return p[1:]
-                        return p
+                    if items:
+                        # (파싱 완료 안내 → 결과 카드 머리 배지 '파싱 완료', U3)
 
-                    matched_count = 0
-                    for it in items:
-                        pn_hint = it.get("canonical_pn_hint") or it.get("customer_part_no") or ""
-                        base = pn_hint.split(';')[0].strip() if ';' in pn_hint else pn_hint
-                        # 시도 후보 4종
-                        candidates = [
-                            pn_hint,
-                            base,
-                            _strip_prefix(pn_hint),
-                            _strip_prefix(base),
-                        ]
-                        m = _cpm.get(_mk(pn_hint)) or _cpm.get(_mk(base))
-                        _merged_hit = None
-                        for _ci, c in enumerate(candidates):
-                            if m: break
-                            if not c: continue
-                            m = cm.get(_mk(c))
-                            # 접두사 통합으로 휴면된 품번에 정확히 닿으면
-                            # 그 품번은 별칭일 뿐 — 접두어를 뗀 활성 본품을
-                            # 계속 찾는다 (없으면 마지막에 이 휴면으로)
-                            if m and len(m) > 3 and m[3]:
-                                _merged_hit = _merged_hit or m
-                                m = None
+                        # 거래처 약칭 → 마스터 정식 명칭 (Migration 063 short_name).
+                        # HDX 파일은 거래처를 "HDX"로 파싱하지만 마스터 정식명은
+                        # 사업자등록 명칭(현대제뉴인(주)) — 수주·전표의 거래처
+                        # 문자열을 정식명으로 통일해야 중복 검증·명세서 조회가 맞는다
+                        # 한 파일에 거래처가 둘일 수 있다 (DIC 두 공장) — 거래처별로 처리
+                        for _cu0 in sorted({it["customer"] for it in items
+                                            if it.get("customer")}):
+                            try:
+                                _vsn = fetch("vendors", "vendor_id,name",
+                                             f"short_name=eq.{_fq(_cu0)}", limit=1)
+                                if _vsn:
+                                    for it in items:
+                                        if it["customer"] == _cu0:
+                                            it["customer"] = _vsn[0]["name"]
+                            except Exception:
+                                pass
+                        _is_dic = items[0].get("_source") == "DIC_EXCEL"
+                        _up_custs = sorted({it["customer"] for it in items
+                                            if it.get("customer")})
+                        if _is_dic:
+                            try:
+                                _known9 = {v["name"] for v in fetch(
+                                    "vendors", "name", "name=like.*디아이씨*", limit=50)}
+                            except Exception:
+                                _known9 = set(_up_custs)
+                            _unk9 = [c for c in _up_custs if c not in _known9]
+                            if _unk9:
+                                st.warning(
+                                    "거래처 마스터에 없는 납품공장: "
+                                    + ", ".join(_unk9)
+                                    + " — 거래처 편집에 등록하거나 납품공장 연결을 "
+                                      "추가해야 명세서·마감 조회에 잡힙니다.")
+
+                        # ── 중복 수주번호 검증 (DB 기존 데이터 vs 파싱 결과) ──
+                        # 키 = (거래처, 수주번호)
+                        customer_name = items[0]["customer"]
+                        existing_keys = set()
+                        for _cu0 in _up_custs:
+                            _nums0 = sorted({it["so_number"] for it in items
+                                             if it["customer"] == _cu0
+                                             and it.get("so_number")})
+                            if not _nums0:
                                 continue
-                            # 접두어를 뗀 후보(3·4번째)가 휴면 제품에만
-                            # 닿으면 미매칭으로 — 4S(304)/S(316) 계열 품번을
-                            # 다른 재질 제품에 붙이던 오매칭 방지 (2026-09-01).
-                            # 수주 단계 '제품 확인 필요'에서 사람이 정한다
-                            if m and _ci >= 2 and m[2]:
-                                m = None
-                        if not m and _merged_hit:
-                            m = _merged_hit
-                        if m:
-                            it["matched_pn"] = m[0]
-                            it["matched_pid"] = m[1]
-                            matched_count += 1
-                        else:
-                            it["matched_pn"] = None
-                            it["matched_pid"] = None
+                            try:
+                                for e in fetch(
+                                        "sales_orders", "so_number",
+                                        f"customer=eq.\"{_cu0}\"&"
+                                        f"so_number=in.({','.join(_nums0)})",
+                                        limit=500):
+                                    existing_keys.add((_cu0, e["so_number"]))
+                            except Exception:
+                                pass
 
-                    st.info(f"우성정밀 품번 매칭: **{matched_count}/{len(items)}** "
-                            f"({100*matched_count/max(len(items), 1):.1f}%)")
+                        new_items = [it for it in items
+                                     if (it["customer"], it.get("so_number"))
+                                     not in existing_keys]
+                        dup_items = [it for it in items
+                                     if (it["customer"], it.get("so_number"))
+                                     in existing_keys]
+                        dup_so_nums = sorted({it["so_number"] for it in dup_items})
 
-                    # 단가가 없는 양식(DIC)은 제품 마스터 판매단가로 채운다
-                    # (2026-10-02 사용자 확인). 마스터에도 없으면 비워 두고
-                    # 수주 관리에서 채운다
-                    _np_pids = sorted({it["matched_pid"] for it in items
-                                       if it.get("matched_pid")
-                                       and it.get("unit_price") in (None, "")})
-                    if _np_pids:
-                        _sp9 = {}
+                        if dup_so_nums and _is_dic:
+                            # ── DIC 재업로드: 미납 조회 화면이라 같은 수주가 매번
+                            # 다시 나온다. 기존 수주에 없는 행번만 그 수주에 추가하고,
+                            # 이미 있는 라인은 건드리지 않는다 — 수주 등록에만 집중하고
+                            # 납품량은 앱의 출고 확정으로만 쌓는다 (2026-10-02 사용자
+                            # 결정: 파일 값으로 맞추면 이중 반영 위험)
+                            _dx_add = []
+                            try:
+                                _dx_so = {}
+                                for _cu0 in _up_custs:
+                                    _n0 = sorted({it["so_number"] for it in dup_items
+                                                  if it["customer"] == _cu0})
+                                    if _n0:
+                                        for e in fetch(
+                                                "sales_orders", "so_id,so_number",
+                                                f"customer=eq.\"{_cu0}\"&so_number=in.("
+                                                + ",".join(_n0) + ")", limit=200):
+                                            _dx_so[(_cu0, e["so_number"])] = e["so_id"]
+                                _dx_lines = {}
+                                _ids0 = sorted(set(_dx_so.values()))
+                                for _i0 in range(0, len(_ids0), 80):
+                                    for x in fetch(
+                                            "sales_order_items",
+                                            "soi_id,so_id,line_no,customer_part_no",
+                                            "so_id=in.({})".format(",".join(
+                                                str(v) for v in _ids0[_i0:_i0 + 80])),
+                                            limit=2000):
+                                        _dx_lines.setdefault(x["so_id"], []).append(x)
+                                for it in dup_items:
+                                    _sid0 = _dx_so.get((it["customer"], it["so_number"]))
+                                    _hit = next((
+                                        e for e in _dx_lines.get(_sid0, [])
+                                        if str(e.get("customer_part_no") or "").strip()
+                                        == str(it.get("customer_part_no") or "").strip()
+                                        and int(e.get("line_no") or 0)
+                                        == int(it.get("line_no") or 0)), None)
+                                    if _hit is None:
+                                        it["_existing_so_id"] = _sid0
+                                        _dx_add.append(it)
+                            except Exception as e:
+                                st.warning(f"기존 수주 대조 실패: {e}")
+                            st.info(
+                                "이미 등록된 수주 **{}건** — 새 행번 {}개는 기존 수주에 "
+                                "추가하고, 이미 있는 라인은 그대로 둡니다.".format(
+                                    len(dup_so_nums), len(_dx_add)))
+                            new_items = new_items + _dx_add
+                        elif dup_so_nums:
+                            st.warning(
+                                f"이미 등록된 수주 **{len(dup_so_nums)}건** 자동 제외:\n\n"
+                                + "\n".join(f"- `{s}`" for s in dup_so_nums[:10])
+                                + (f"\n... 외 {len(dup_so_nums)-10}건" if len(dup_so_nums) > 10 else "")
+                            )
+                            # ── 개정 발주 (2026-09-10): 같은 번호로 다시 온 발주가
+                            # 기존 라인과 단가·수량이 다르면 '-R2' 를 붙여 새 수주로
+                            # 등록 → 단가 변동 감지 패널에서 대체/별건 처리 ──
+                            _rev_diff = []
+                            try:
+                                _ex_so = fetch("sales_orders", "so_id,so_number",
+                                               f"customer=eq.\"{customer_name}\"&so_number=in.("
+                                               + ",".join(dup_so_nums) + ")", limit=100)
+                                _ex_map = {s["so_number"]: s["so_id"] for s in _ex_so}
+                                _ex_lines = {}
+                                if _ex_map:
+                                    for x in fetch("sales_order_items",
+                                                   "so_id,customer_part_no,qty,unit_price",
+                                                   "so_id=in.({})".format(",".join(
+                                                       str(v) for v in _ex_map.values())),
+                                                   limit=500):
+                                        _ex_lines.setdefault(x["so_id"], []).append(x)
+                                for it in dup_items:
+                                    _els = _ex_lines.get(_ex_map.get(it.get("so_number")), [])
+                                    _same = any(
+                                        str(e.get("customer_part_no") or "").strip()
+                                        == str(it.get("customer_part_no") or "").strip()
+                                        and abs(float(e.get("qty") or 0)
+                                                - float(it.get("qty") or 0)) < 0.5
+                                        and abs(float(e.get("unit_price") or 0)
+                                                - float(it.get("unit_price") or 0)) < 0.5
+                                        for e in _els)
+                                    if not _same:
+                                        _rev_diff.append(it)
+                                _rev_nums = sorted({it["so_number"] for it in _rev_diff})
+                                _rev_existing = {s["so_number"] for s in fetch(
+                                    "sales_orders", "so_number",
+                                    f"customer=eq.\"{customer_name}\"&or=("
+                                    + ",".join(f"so_number.like.{n}-R*" for n in _rev_nums)
+                                    + ")", limit=200)} if _rev_nums else set()
+                            except Exception:
+                                _rev_diff, _rev_nums, _rev_existing = [], [], set()
+                            if _rev_diff:
+                                st.info("같은 번호의 기존 수주와 **단가·수량이 다른 라인 "
+                                        f"{len(_rev_diff)}개** — 고객이 단가 변경 등으로 "
+                                        "같은 번호로 재발주한 경우입니다.")
+                                if st.checkbox(
+                                        "개정 발주로 등록 — 번호에 '-R2' 를 붙여 새 수주로 "
+                                        "등록하고, 기존 수주는 저장 후 상단 '단가 변동 감지' "
+                                        "패널에서 [대체] 또는 [별건 유지]로 처리",
+                                        key="so_rev_ok"):
+                                    for it in _rev_diff:
+                                        _base = it["so_number"]
+                                        _n = 2
+                                        while f"{_base}-R{_n}" in _rev_existing:
+                                            _n += 1
+                                        it["so_number"] = f"{_base}-R{_n}"
+                                        it["remark"] = ((it.get("remark") or "")
+                                                        + f" 개정(원 번호 {_base})").strip()
+                                    new_items = new_items + _rev_diff
+                        if not new_items:
+                            st.error("모든 수주가 이미 등록되어 있습니다. 업로드 불필요.")
+                        items = new_items  # 이후 매칭/저장은 신규만 (비면 빈 목록)
+
+                        # ── 파일 내 중복 라인 감지 ──
+                        # 실사례: G264220260 에 동일 라인 4종이 이중 등록됨 (import 중복).
+                        # 수주번호+품번+수량+단가+납기가 완전히 같으면 중복으로 판단.
+                        from collections import Counter as _Counter
+                        def _line_key(it):
+                            return (it.get("so_number"),
+                                    str(it.get("customer_part_no")
+                                        or it.get("canonical_pn_hint") or ""),
+                                    str(it.get("qty")), str(it.get("unit_price")),
+                                    str(it.get("due_date")))
+                        _key_counts = _Counter(_line_key(it) for it in items)
+                        _dup_keys = {k for k, c in _key_counts.items() if c > 1}
+                        if _dup_keys:
+                            n_extra = sum(_key_counts[k] - 1 for k in _dup_keys)
+                            st.warning(
+                                f"**파일 내 동일 라인 중복 {len(_dup_keys)}종 "
+                                f"(초과 {n_extra}행)** — 수주번호·품번·수량·단가·납기가 "
+                                "완전히 같은 행입니다. 기본으로 1행만 저장합니다.")
+                            _dup_prev = [{"수주번호": k[0], "품번": k[1], "수량": k[2],
+                                          "단가": k[3], "납기": k[4],
+                                          "중복 행수": _key_counts[k]}
+                                         for k in sorted(_dup_keys)]
+                            toss_df(pd.DataFrame(_dup_prev),
+                                         use_container_width=True, hide_index=True)
+                            keep_dups = st.checkbox(
+                                "중복 행을 그대로 모두 저장 (실제로 같은 품목을 "
+                                "여러 라인으로 발주한 경우만 체크)",
+                                value=False, key="so_up_keep_dups")
+                            if not keep_dups:
+                                _seen_keys = set()
+                                _deduped = []
+                                for it in items:
+                                    k = _line_key(it)
+                                    if k in _dup_keys and k in _seen_keys:
+                                        continue
+                                    _seen_keys.add(k)
+                                    _deduped.append(it)
+                                items = _deduped
+                                st.caption(f"→ 중복 {n_extra}행 제외, "
+                                           f"**{len(items)}행** 저장 예정.")
+
+                        # 우성정밀 품번 매칭
+                        # 활성 제품 우선 (휴면 제품은 같은 키가 없을 때만) +
+                        # 수주 단계에서 확정한 거래처 품번 매핑 사전 우선
+                        # (2026-09-01: 휴면 제품에 미납 수주가 걸리던 원인 보정)
+                        products = fetch("products",
+                                         "product_id,pn,alias_list,archived_at,"
+                                         "archive_reason",
+                                         "order=product_id", limit=1500)
+                        products.sort(key=lambda p: bool(p.get("archived_at")))
+                        cm = {}
+                        _mk = _so_mk
+                        for p in products:
+                            # 4번째 = 접두사 통합으로 휴면된 품번(별칭 취급) —
+                            # 정확 일치라도 활성 본품으로 넘긴다 (2026-09-10:
+                            # '4S20AHYBV-03-X1413;PM' 별칭이 휴면 P0010 에 걸림)
+                            _v = (p['pn'], p['product_id'],
+                                  bool(p.get('archived_at')),
+                                  bool(p.get('archived_at'))
+                                  and "통합" in str(p.get("archive_reason") or ""))
+                            cm.setdefault(_mk(p['pn']), _v)
+                            if p.get('alias_list'):
+                                for a in str(p['alias_list']).split(','):
+                                    a = a.strip()
+                                    if a: cm.setdefault(_mk(a), _v)
+                        _cpm = {}
                         try:
-                            for _i0 in range(0, len(_np_pids), 80):
-                                for x in fetch(
-                                        "products", "product_id,sale_price",
-                                        "product_id=in.({})".format(",".join(
-                                            _fq(v) for v in _np_pids[_i0:_i0 + 80])),
-                                        limit=200):
-                                    if float(x.get("sale_price") or 0) > 0:
-                                        _sp9[x["product_id"]] = float(x["sale_price"])
+                            for _cu0 in sorted({it["customer"] for it in items}):
+                                for _m in fetch("customer_part_mapping",
+                                        "customer_part_no,product_id,canonical_pn",
+                                        f"customer=eq.{_fq(_cu0)}", limit=500):
+                                    if _m.get("product_id"):
+                                        _cpm[_mk(_m["customer_part_no"])] = (
+                                            _m["canonical_pn"], _m["product_id"], False)
                         except Exception:
-                            _sp9 = {}
-                        _filled9 = 0
+                            _cpm = {}
+
+                        def _strip_prefix(s):
+                            """4S/S 접두어 제거 (PMLib _getBasePn)"""
+                            if not s: return ""
+                            p = str(s).upper().strip()
+                            if p.startswith('4S') and len(p) > 2 and (p[2].isalnum()):
+                                return p[2:]
+                            if p.startswith('S') and len(p) > 1 and (p[1].isalnum()):
+                                excluded = ('SP-','SDF','SUS','SODV','SFB','SCM','SKD','SKH',
+                                            'S45','S20','S30','S304','S316','S630')
+                                if not any(p.startswith(e) for e in excluded):
+                                    return p[1:]
+                            return p
+
+                        matched_count = 0
                         for it in items:
-                            if it.get("unit_price") in (None, "") \
-                                    and it.get("matched_pid") in _sp9:
-                                it["unit_price"] = _sp9[it["matched_pid"]]
-                                it["amount"] = round(
-                                    float(it.get("qty") or 0) * it["unit_price"])
-                                _filled9 += 1
-                        _still9 = sum(1 for it in items
-                                      if it.get("unit_price") in (None, ""))
-                        st.caption(
-                            f"단가: 마스터 판매단가로 {_filled9}개 채움"
-                            + (f" · 단가 없음 {_still9}개 (저장 후 수주 관리에서 입력)"
-                               if _still9 else ""))
+                            pn_hint = it.get("canonical_pn_hint") or it.get("customer_part_no") or ""
+                            base = pn_hint.split(';')[0].strip() if ';' in pn_hint else pn_hint
+                            # 시도 후보 4종
+                            candidates = [
+                                pn_hint,
+                                base,
+                                _strip_prefix(pn_hint),
+                                _strip_prefix(base),
+                            ]
+                            m = _cpm.get(_mk(pn_hint)) or _cpm.get(_mk(base))
+                            _merged_hit = None
+                            for _ci, c in enumerate(candidates):
+                                if m: break
+                                if not c: continue
+                                m = cm.get(_mk(c))
+                                # 접두사 통합으로 휴면된 품번에 정확히 닿으면
+                                # 그 품번은 별칭일 뿐 — 접두어를 뗀 활성 본품을
+                                # 계속 찾는다 (없으면 마지막에 이 휴면으로)
+                                if m and len(m) > 3 and m[3]:
+                                    _merged_hit = _merged_hit or m
+                                    m = None
+                                    continue
+                                # 접두어를 뗀 후보(3·4번째)가 휴면 제품에만
+                                # 닿으면 미매칭으로 — 4S(304)/S(316) 계열 품번을
+                                # 다른 재질 제품에 붙이던 오매칭 방지 (2026-09-01).
+                                # 수주 단계 '제품 확인 필요'에서 사람이 정한다
+                                if m and _ci >= 2 and m[2]:
+                                    m = None
+                            if not m and _merged_hit:
+                                m = _merged_hit
+                            if m:
+                                it["matched_pn"] = m[0]
+                                it["matched_pid"] = m[1]
+                                matched_count += 1
+                            else:
+                                it["matched_pn"] = None
+                                it["matched_pid"] = None
 
-                    # 미리보기
-                    df = pd.DataFrame([{
-                        **({"거래처": it.get("customer")} if _is_dic else {}),
-                        "수주번호": it.get("so_number"),
-                        "라인": it.get("line_no"),
-                        "거래처 자재": it.get("customer_part_no"),
-                        "거래처 품명": (it.get("customer_item_name") or "")[:30],
-                        "우성정밀 품번": it.get("matched_pn") or "미매칭",
-                        "수량": int(it.get("qty") or 0),
-                        **({"기납품": int(it.get("received_qty") or 0)}
-                           if _is_dic else {}),
-                        "단가": int(it.get("unit_price") or 0),
-                        "금액": int(it.get("amount") or 0),
-                        "납기": it.get("due_date"),
-                    } for it in items])
-                    toss_df(df, use_container_width=True, hide_index=True,
-                        column_config={
-                            "수량": st.column_config.NumberColumn(format="%d"),
-                            "단가": st.column_config.NumberColumn(format="₩%d"),
-                            "금액": st.column_config.NumberColumn(format="₩%d"),
-                        })
+                        # (매칭 비율 안내 → 결과 카드 머리 배지 '품번 확인 n', U3)
 
-                    if matched_count < len(items):
-                        st.warning(f"매칭 안 된 {len(items) - matched_count}개 품목은 customer_part_no만 저장됩니다. 추후 마스터 관리에서 매핑 가능.")
-
-                    # DB 저장
-                    if st.button("수주 DB 저장", type="primary", use_container_width=True):
-                        # 기존 수주에 붙일 라인(DIC 재업로드의 새 행번)은 따로
-                        _append_items = [it for it in items
-                                         if it.get("_existing_so_id")]
-                        groups = group_by_so_number(
-                            [it for it in items if not it.get("_existing_so_id")])
-
-                        # 거래처 vendor_id 조회 — 거래처별 (DIC 는 두 공장)
-                        def _vendor_id_of(cust_name):
-                            # 정식명 정확 일치 → 약칭 → 법인 표기 뗀 부분 일치.
-                            # "(주)" 같은 PostgREST 예약 문자는 따옴표로 감싼다
-                            v = fetch("vendors", "vendor_id",
-                                      f'name=eq."{cust_name}"', limit=1)
-                            if not v:
-                                v = fetch("vendors", "vendor_id",
-                                          f"short_name=eq.{_fq(cust_name)}", limit=1)
-                            if not v:
-                                _ct = (cust_name.replace("㈜", "")
-                                       .replace("(주)", "").strip())
-                                v = fetch("vendors", "vendor_id",
-                                          f"name=ilike.*{_fq(_ct)}*", limit=1)
-                            return v[0]["vendor_id"] if v else None
-                        _vid_cache = {}
-
-                        def _line_payload(so_id, it):
-                            qty = float(it.get("qty") or 0)
-                            rcv = float(it.get("received_qty") or 0)
-                            return {
-                                "so_id": so_id,
-                                "line_no": it.get("line_no") or 1,
-                                "customer_part_no": it.get("customer_part_no"),
-                                "customer_item_name": it.get("customer_item_name"),
-                                "product_id": it.get("matched_pid"),
-                                "canonical_pn": it.get("matched_pn"),
-                                "qty": qty,
-                                "received_qty": rcv,
-                                "pending_qty": max(qty - rcv, 0),
-                                "unit": it.get("unit") or "EA",
-                                "unit_price": it.get("unit_price"),
-                                "amount": it.get("amount"),
-                                "vat": it.get("vat"),
-                                "total": it.get("total"),
-                                "due_date": it.get("due_date").isoformat() if it.get("due_date") else None,
-                                "mes_work_order": it.get("mes_work_order"),
-                                "remark": it.get("remark"),
-                                "status": ("DELIVERED" if qty and rcv >= qty
-                                           else "PARTIAL" if rcv > 0
-                                           else "PENDING"),
-                            }
-
-                        saved_so = 0; saved_items = 0
-                        _appended = 0
-                        for it in _append_items:
+                        # 단가가 없는 양식(DIC)은 제품 마스터 판매단가로 채운다
+                        # (2026-10-02 사용자 확인). 마스터에도 없으면 비워 두고
+                        # 수주 관리에서 채운다
+                        _np_pids = sorted({it["matched_pid"] for it in items
+                                           if it.get("matched_pid")
+                                           and it.get("unit_price") in (None, "")})
+                        if _np_pids:
+                            _sp9 = {}
                             try:
-                                _db.insert("sales_order_items",
-                                           [_line_payload(it["_existing_so_id"], it)])
-                                _appended += 1
-                            except Exception as e:
-                                st.warning(f"수주 {it.get('so_number')} 행 "
-                                           f"{it.get('line_no')} 추가 실패: {e}")
-                        for g in groups:
-                            try:
-                                # 헤더 INSERT
-                                header = g["header"]
-                                if header["customer"] not in _vid_cache:
-                                    _vid_cache[header["customer"]] = \
-                                        _vendor_id_of(header["customer"])
-                                vendor_id = _vid_cache[header["customer"]]
-                                header_payload = {
-                                    "so_number": header["so_number"],
-                                    "customer": header["customer"],
-                                    "vendor_id": vendor_id,
-                                    "so_date": header["so_date"].isoformat() if header["so_date"] else None,
-                                    "due_date": header["due_date"].isoformat() if header["due_date"] else None,
-                                    "total_amount": header["total_amount"] or 0,
-                                    "vat": header["vat"] or 0,
-                                    "source": header["source"],
-                                    "source_file": header["source_file"],
-                                    "delivery_address": header.get("delivery_address"),
-                                    "status": "DRAFT",
-                                    "created_by": current_user_name(),
+                                for _i0 in range(0, len(_np_pids), 80):
+                                    for x in fetch(
+                                            "products", "product_id,sale_price",
+                                            "product_id=in.({})".format(",".join(
+                                                _fq(v) for v in _np_pids[_i0:_i0 + 80])),
+                                            limit=200):
+                                        if float(x.get("sale_price") or 0) > 0:
+                                            _sp9[x["product_id"]] = float(x["sale_price"])
+                            except Exception:
+                                _sp9 = {}
+                            _filled9 = 0
+                            for it in items:
+                                if it.get("unit_price") in (None, "") \
+                                        and it.get("matched_pid") in _sp9:
+                                    it["unit_price"] = _sp9[it["matched_pid"]]
+                                    it["amount"] = round(
+                                        float(it.get("qty") or 0) * it["unit_price"])
+                                    _filled9 += 1
+                            _still9 = sum(1 for it in items
+                                          if it.get("unit_price") in (None, ""))
+                            ws_note(
+                                f"단가: 마스터 판매단가로 {_filled9}개 채움"
+                                + (f" · 단가 없음 {_still9}개 (저장 후 수주 관리에서 입력)"
+                                   if _still9 else ""))
+
+                        # 미리보기
+                        df = pd.DataFrame([{
+                            **({"거래처": it.get("customer")} if _is_dic else {}),
+                            "수주번호": it.get("so_number"),
+                            "라인": it.get("line_no"),
+                            "거래처 자재": it.get("customer_part_no"),
+                            "거래처 품명": (it.get("customer_item_name") or "")[:30],
+                            "우성정밀 품번": it.get("matched_pn") or "미매칭",
+                            "수량": int(it.get("qty") or 0),
+                            **({"기납품": int(it.get("received_qty") or 0)}
+                               if _is_dic else {}),
+                            "단가": int(it.get("unit_price") or 0),
+                            "금액": int(it.get("amount") or 0),
+                            "납기": it.get("due_date"),
+                        } for it in items])
+                        # 결과 카드(U3 B-1) — 명세 열(#·우성 품번·품명·수량·납기·단가·상태), 375 는 ListRow.
+                        # 거래처 자재·금액 등 나머지 열은 '전체 열 보기'에.
+                        _unm = len(items) - matched_count
+                        _so_nos = sorted({str(it.get("so_number") or "-") for it in items})
+                        with _so_res:
+                            with section_card(
+                                    "미리보기",
+                                    " · ".join(x for x in (
+                                        fmt_labels.get(fmt, fmt) if fmt in fmt_labels else "",
+                                        ", ".join(_up_custs[:2]),
+                                        (_so_nos[0] if len(_so_nos) == 1
+                                         else f"수주 {len(_so_nos)}건"),
+                                        f"{len(items)}줄") if x),
+                                    _bdg("파싱 완료", "b-blue")
+                                    + (_bdg(f"품번 확인 {_unm}", "b-amber") if _unm else ""),
+                                    key="so_preview"):
+                                toss_table([{
+                                    "#": _i + 1,
+                                    **({"수주번호": it.get("so_number")} if len(_so_nos) > 1 else {}),
+                                    "우성 품번": (it.get("matched_pn")
+                                                or it.get("customer_part_no") or "-"),
+                                    "품명": (it.get("customer_item_name") or "")[:30],
+                                    "수량": int(it.get("qty") or 0),
+                                    "납기": str(it.get("due_date") or "")[:10] or None,
+                                    "단가": int(it.get("unit_price") or 0) or None,
+                                    "상태": "매칭" if it.get("matched_pn") else "품번 확인",
+                                } for _i, it in enumerate(items)],
+                                    badge_cols=("상태",), num_cols=("#", "수량", "단가"),
+                                    strong_cols=("우성 품번",),
+                                    mobile_cols=("우성 품번", ("납기", "단가"), "수량", "상태"),
+                                    empty_msg="저장할 새 품목이 없습니다")
+                                if items:
+                                    with st.expander("전체 열 보기"):
+                                        toss_df(df, use_container_width=True, hide_index=True)
+
+                        # DB 저장 — ActionBar(U3): 좌 [초기화], 우 합계·미매칭 요약 + 주 버튼 1개
+                        with _so_act:
+                            _so_rst, _so_go = action_bar(
+                                {"label": "초기화", "key": "so_up_reset", "on_click": _so_up_reset},
+                                f"합계 {sum(float(it.get('qty') or 0) for it in items):,.0f} EA"
+                                + (f" · 미매칭 {_unm}줄은 저장 뒤 '제품 확인 필요'로" if _unm else ""),
+                                {"label": f"수주 저장 ({len(items)}줄)", "key": "so_up_save",
+                                 "disabled": not items},
+                                key="so_up")
+                        if _so_go:
+                            # 기존 수주에 붙일 라인(DIC 재업로드의 새 행번)은 따로
+                            _append_items = [it for it in items
+                                             if it.get("_existing_so_id")]
+                            groups = group_by_so_number(
+                                [it for it in items if not it.get("_existing_so_id")])
+
+                            # 거래처 vendor_id 조회 — 거래처별 (DIC 는 두 공장)
+                            def _vendor_id_of(cust_name):
+                                # 정식명 정확 일치 → 약칭 → 법인 표기 뗀 부분 일치.
+                                # "(주)" 같은 PostgREST 예약 문자는 따옴표로 감싼다
+                                v = fetch("vendors", "vendor_id",
+                                          f'name=eq."{cust_name}"', limit=1)
+                                if not v:
+                                    v = fetch("vendors", "vendor_id",
+                                              f"short_name=eq.{_fq(cust_name)}", limit=1)
+                                if not v:
+                                    _ct = (cust_name.replace("㈜", "")
+                                           .replace("(주)", "").strip())
+                                    v = fetch("vendors", "vendor_id",
+                                              f"name=ilike.*{_fq(_ct)}*", limit=1)
+                                return v[0]["vendor_id"] if v else None
+                            _vid_cache = {}
+
+                            def _line_payload(so_id, it):
+                                qty = float(it.get("qty") or 0)
+                                rcv = float(it.get("received_qty") or 0)
+                                return {
+                                    "so_id": so_id,
+                                    "line_no": it.get("line_no") or 1,
+                                    "customer_part_no": it.get("customer_part_no"),
+                                    "customer_item_name": it.get("customer_item_name"),
+                                    "product_id": it.get("matched_pid"),
+                                    "canonical_pn": it.get("matched_pn"),
+                                    "qty": qty,
+                                    "received_qty": rcv,
+                                    "pending_qty": max(qty - rcv, 0),
+                                    "unit": it.get("unit") or "EA",
+                                    "unit_price": it.get("unit_price"),
+                                    "amount": it.get("amount"),
+                                    "vat": it.get("vat"),
+                                    "total": it.get("total"),
+                                    "due_date": it.get("due_date").isoformat() if it.get("due_date") else None,
+                                    "mes_work_order": it.get("mes_work_order"),
+                                    "remark": it.get("remark"),
+                                    "status": ("DELIVERED" if qty and rcv >= qty
+                                               else "PARTIAL" if rcv > 0
+                                               else "PENDING"),
                                 }
-                                _db.insert("sales_orders", [header_payload])
-                                so_row = _db.fetch_one("sales_orders",
-                                    f"so_number=eq.{_fq(header['so_number'])}&customer=eq.{_fq(header['customer'])}",
-                                    "so_id")
-                                if not so_row: continue
 
-                                # 품목 INSERT
-                                for it in g["items"]:
+                            saved_so = 0; saved_items = 0
+                            _appended = 0
+                            for it in _append_items:
+                                try:
                                     _db.insert("sales_order_items",
-                                               [_line_payload(so_row["so_id"], it)])
-                                    saved_items += 1
-                                saved_so += 1
-                            except Exception as e:
-                                st.warning(f"수주 {header['so_number']} 저장 실패: {e}")
+                                               [_line_payload(it["_existing_so_id"], it)])
+                                    _appended += 1
+                                except Exception as e:
+                                    st.warning(f"수주 {it.get('so_number')} 행 "
+                                               f"{it.get('line_no')} 추가 실패: {e}")
+                            for g in groups:
+                                try:
+                                    # 헤더 INSERT
+                                    header = g["header"]
+                                    if header["customer"] not in _vid_cache:
+                                        _vid_cache[header["customer"]] = \
+                                            _vendor_id_of(header["customer"])
+                                    vendor_id = _vid_cache[header["customer"]]
+                                    header_payload = {
+                                        "so_number": header["so_number"],
+                                        "customer": header["customer"],
+                                        "vendor_id": vendor_id,
+                                        "so_date": header["so_date"].isoformat() if header["so_date"] else None,
+                                        "due_date": header["due_date"].isoformat() if header["due_date"] else None,
+                                        "total_amount": header["total_amount"] or 0,
+                                        "vat": header["vat"] or 0,
+                                        "source": header["source"],
+                                        "source_file": header["source_file"],
+                                        "delivery_address": header.get("delivery_address"),
+                                        "status": "DRAFT",
+                                        "created_by": current_user_name(),
+                                    }
+                                    _db.insert("sales_orders", [header_payload])
+                                    so_row = _db.fetch_one("sales_orders",
+                                        f"so_number=eq.{_fq(header['so_number'])}&customer=eq.{_fq(header['customer'])}",
+                                        "so_id")
+                                    if not so_row: continue
 
-                        st.success(
-                            f"수주 {saved_so}건 / 품목 {saved_items}개 저장 완료"
-                            + (f" · 기존 수주에 {_appended}개 라인 추가"
-                               if _appended else ""))
-                        if saved_so or _appended:
-                            # 수주 입력 슬랙 알림 (2026-10-21) — 출고·발주·입고와 같은 분기점 알림
-                            _sk.notify(_sk.fmt_so(
-                                [g["header"]["so_number"] for g in groups],
-                                [g["header"]["customer"] for g in groups]
-                                + [it.get("customer") for it in _append_items],
-                                saved_so, saved_items + _appended,
-                                sum(float(it.get("qty") or 0) for g in groups for it in g["items"])
-                                + sum(float(it.get("qty") or 0) for it in _append_items),
-                                current_user_name(), "업로드"))
+                                    # 품목 INSERT
+                                    for it in g["items"]:
+                                        _db.insert("sales_order_items",
+                                                   [_line_payload(so_row["so_id"], it)])
+                                        saved_items += 1
+                                    saved_so += 1
+                                except Exception as e:
+                                    st.warning(f"수주 {header['so_number']} 저장 실패: {e}")
 
-        else:  # 수기 입력
-            st.markdown("##### 수기 입력 — 단일 수주 1건")
-            mc1, mc2 = st.columns(2)
-            with mc1:
-                m_so_no = st.text_input("거래처 발주번호 *", placeholder="예: PO-2026-001", key="m_so_no")
-                m_cust = st.text_input("거래처명 *", placeholder="예: 신규 고객사", key="m_cust")
-                # 마스터에 같은 거래처가 있으면 마스터 표기로 저장 — '엠제이티'
-                # 와 '(주)엠제이티' 처럼 법인 표기만 다른 이름이 섞이면 명세서·
-                # 마감 조회에서 다른 거래처로 갈린다 (2026-10-01)
-                m_cust = (m_cust or "").strip()
-                if m_cust:
-                    def _vkey9(n):
-                        return (str(n or "").replace("(주)", "")
-                                .replace("㈜", "").replace("주식회사", "")
-                                .replace(" ", "").lower())
-                    try:
-                        _mv9 = [v["name"] for v in fetch(
-                            "vendors", "name,in_use",
-                            "name=ilike.*{}*".format(_fq(
-                                m_cust.replace("(주)", "").replace("㈜", "")
-                                .replace("주식회사", "").strip())), limit=20)
-                            if _vkey9(v.get("name")) == _vkey9(m_cust)]
-                    except Exception:
-                        _mv9 = []
-                    if _mv9 and m_cust not in _mv9:
-                        st.caption(f"거래처 마스터 표기로 저장됩니다: "
-                                   f"**{_mv9[0]}**")
-                        m_cust = _mv9[0]
-                m_so_date = st.date_input("수주일", value=keep_default("m_so_date", _date.today()), key="m_so_date")
-            with mc2:
-                m_due = st.date_input("납기일", value=keep_default("m_due", _date.today() + _td(days=14)), key="m_due")
-                m_addr = st.text_input("납품 주소", key="m_addr")
+                            st.success(
+                                f"수주 {saved_so}건 / 품목 {saved_items}개 저장 완료"
+                                + (f" · 기존 수주에 {_appended}개 라인 추가"
+                                   if _appended else ""))
+                            if saved_so or _appended:
+                                # 수주 입력 슬랙 알림 (2026-10-21) — 출고·발주·입고와 같은 분기점 알림
+                                _sk.notify(_sk.fmt_so(
+                                    [g["header"]["so_number"] for g in groups],
+                                    [g["header"]["customer"] for g in groups]
+                                    + [it.get("customer") for it in _append_items],
+                                    saved_so, saved_items + _appended,
+                                    sum(float(it.get("qty") or 0) for g in groups for it in g["items"])
+                                    + sum(float(it.get("qty") or 0) for it in _append_items),
+                                    current_user_name(), "업로드"))
 
-            if "m_so_items" not in st.session_state:
-                st.session_state.m_so_items = []
-
-            with st.expander("품목 추가", expanded=True):
-                # 수주는 등록된 품목만 가능 (2026-07-24 확정) — 오타
-                # 품번이 수주에 들어와 재고/산출 연동이 끊기는 것 방지.
-                # 미등록 품번은 아래 '신규 품목 등록'으로 먼저 추가.
-                _seed = st.session_state.pop("m_pn_q_seed", None)
-                if _seed is not None:
-                    st.session_state["m_pn_q"] = _seed
-                m_pn_q = st.text_input("품번 검색 (마스터)", key="m_pn_q",
-                    placeholder="품번 일부 입력 — 예: MRG4, 8HFDV")
-                _m_cands = []
-                if (m_pn_q or "").strip():
-                    try:
-                        _m_cands = fetch("products",
-                            "product_id,pn,alias_list",
-                            f"or=(pn.ilike.{_fql(m_pn_q.strip())},"
-                            f"alias_list.ilike.{_fql(m_pn_q.strip())},"
-                            f"item_name.ilike.{_fql(m_pn_q.strip())})"
-                            "&archived_at=is.null&order=pn", limit=30)
-                    except Exception:
-                        _m_cands = []
-                _m_prod = None
-                if _m_cands:
-                    m_pick = st.selectbox(
-                        f"품목 선택 ({len(_m_cands)}건 일치)",
-                        [p["pn"] for p in _m_cands], key="m_pn_pick")
-                    _m_prod = next(
-                        (p for p in _m_cands if p["pn"] == m_pick), None)
-                elif (m_pn_q or "").strip():
-                    st.warning("일치하는 등록 품목 없음 — 수주는 등록된 "
-                               "품목만 입력할 수 있습니다. 아래 '신규 "
-                               "품목 등록'으로 마스터에 추가 후 "
-                               "선택하세요.")
-                ic2, ic3, ic4 = st.columns(3)
-                m_qty = ic2.number_input("수량", 0, step=10, key="m_qty")
-                m_up = ic3.number_input("단가", 0, step=100, key="m_up")
-                m_due_item = ic4.date_input("품목 납기", value=_date.today() + _td(days=14), key="m_due_item")
-                if st.button("추가", key="m_add_item",
-                             disabled=not (_m_prod and m_qty)):
-                    st.session_state.m_so_items.append({
-                        "line_no": len(st.session_state.m_so_items) + 1,
-                        "customer_part_no": _m_prod["pn"], "qty": m_qty,
-                        "unit_price": m_up, "amount": m_qty * m_up,
-                        "due_date": m_due_item,
-                        "product_id": _m_prod["product_id"],
-                        "canonical_pn": _m_prod["pn"],
-                    })
-                    st.rerun()
-
-            with st.expander("신규 품목 등록 (마스터 미등록 품번)"):
-                nq1, nq2 = st.columns(2)
-                mq_pn = nq1.text_input("품번 *", key="mq_pn",
-                    placeholder="예: 4PDVN-02")
-                mq_mat = nq2.text_input("재질", key="mq_mat",
-                    placeholder="예: STS630, SCM440")
-                nq3, nq4 = st.columns(2)
-                mq_spec = nq3.text_input("제품 사이즈", key="mq_spec",
-                    placeholder="예: Ø40*23.5L (완성품 치수)")
-                mq_cust2 = nq4.text_input("거래처", key="mq_cust2",
-                    placeholder="비우면 위 거래처명 사용")
-                if st.button("품목 등록", key="mq_add",
-                             disabled=not (mq_pn or "").strip()):
-                    _mq_pn = mq_pn.strip()
-                    try:
-                        _mq_dup = _db.fetch_one("products",
-                            f"pn=eq.{_fq(_mq_pn)}", "product_id,archived_at")
-                    except Exception:
-                        _mq_dup = None
-                    if _mq_dup:
-                        st.error(f"품번 '{_mq_pn}' 이미 존재"
-                                 + (" (휴면 — 마스터 관리에서 활성 복귀)"
-                                    if _mq_dup.get("archived_at") else "")
-                                 + f" — product_id "
-                                 f"{_mq_dup['product_id']}")
-                    else:
+            else:  # 수기 입력 (단일 수주 1건 — 카드 머리 '입력' + 입력 방식이 제목을 대신)
+                mc1, mc2 = st.columns(2)
+                with mc1:
+                    m_so_no = st.text_input("거래처 발주번호 *", placeholder="예: PO-2026-001", key="m_so_no")
+                    m_cust = st.text_input("거래처명 *", placeholder="예: 신규 고객사", key="m_cust")
+                    # 마스터에 같은 거래처가 있으면 마스터 표기로 저장 — '엠제이티'
+                    # 와 '(주)엠제이티' 처럼 법인 표기만 다른 이름이 섞이면 명세서·
+                    # 마감 조회에서 다른 거래처로 갈린다 (2026-10-01)
+                    m_cust = (m_cust or "").strip()
+                    if m_cust:
+                        def _vkey9(n):
+                            return (str(n or "").replace("(주)", "")
+                                    .replace("㈜", "").replace("주식회사", "")
+                                    .replace(" ", "").lower())
                         try:
-                            _mq_latest = fetch("products", "product_id",
-                                "product_id=like.P*"
-                                "&order=product_id.desc", limit=1)
-                            _mq_n = (int(_mq_latest[0]["product_id"][1:])
-                                     + 1) if _mq_latest else 1
+                            _mv9 = [v["name"] for v in fetch(
+                                "vendors", "name,in_use",
+                                "name=ilike.*{}*".format(_fq(
+                                    m_cust.replace("(주)", "").replace("㈜", "")
+                                    .replace("주식회사", "").strip())), limit=20)
+                                if _vkey9(v.get("name")) == _vkey9(m_cust)]
                         except Exception:
-                            _mq_n = 9000
-                        _mq_pid = f"P{_mq_n:04d}"
+                            _mv9 = []
+                        if _mv9 and m_cust not in _mv9:
+                            st.caption(f"거래처 마스터 표기로 저장됩니다: "
+                                       f"**{_mv9[0]}**")
+                            m_cust = _mv9[0]
+                    m_so_date = st.date_input("수주일", value=keep_default("m_so_date", _date.today()), key="m_so_date")
+                with mc2:
+                    m_due = st.date_input("납기일", value=keep_default("m_due", _date.today() + _td(days=14)), key="m_due")
+                    m_addr = st.text_input("납품 주소", key="m_addr")
+
+                if "m_so_items" not in st.session_state:
+                    st.session_state.m_so_items = []
+
+                with st.expander("품목 추가", expanded=True):
+                    # 수주는 등록된 품목만 가능 (2026-07-24 확정) — 오타
+                    # 품번이 수주에 들어와 재고/산출 연동이 끊기는 것 방지.
+                    # 미등록 품번은 아래 '신규 품목 등록'으로 먼저 추가.
+                    _seed = st.session_state.pop("m_pn_q_seed", None)
+                    if _seed is not None:
+                        st.session_state["m_pn_q"] = _seed
+                    m_pn_q = st.text_input("품번 검색 (마스터)", key="m_pn_q",
+                        placeholder="품번 일부 입력 — 예: MRG4, 8HFDV")
+                    _m_cands = []
+                    if (m_pn_q or "").strip():
                         try:
-                            _db.insert("products", [{
-                                "product_id": _mq_pid, "pn": _mq_pn,
-                                "customer": (mq_cust2 or m_cust
-                                             or "").strip() or None,
-                                "material": (mq_mat or "").strip()
-                                            or None,
-                                "product_size":
-                                    (mq_spec or "").strip() or None,
-                                "active": "1",
-                            }])
-                            st.session_state["m_pn_q_seed"] = _mq_pn
-                            nav_flash(f"품목 등록: {_mq_pid} | "
-                                       f"{_mq_pn} — 위 검색에서 "
-                                       "선택하세요.")
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"등록 실패: {e}")
-
-            if st.session_state.m_so_items:
-                df = pd.DataFrame(st.session_state.m_so_items)
-                toss_df(df, use_container_width=True, hide_index=True)
-                # 행 삭제(U1b) — 콜백에서 지우고 번호를 다시 매긴다(저장은 line_no 사용).
-                # key 는 위치 기반이라 콜백 안에서만 지운다(렌더 뒤 rerun 없이 한 번에 반영).
-                def _m_so_item_del(_ln, _pn):
-                    # (번호, 품번) 이 맞는 행만 지운다 — 위치 인덱스는 연타·재렌더 사이에 밀릴 수 있다(r2 R7, QA L-1)
-                    _its = list(st.session_state.get("m_so_items") or [])
-                    _hit = [k for k, _it in enumerate(_its)
-                            if _it.get("line_no") == _ln and _it.get("customer_part_no") == _pn]
-                    if not _hit:
-                        return
-                    _its.pop(_hit[0])
-                    for _n, _it in enumerate(_its, 1):
-                        _it["line_no"] = _n
-                    st.session_state.m_so_items = _its
-                import html as _html_soi
-                for _soi_i, _soi_it in enumerate(st.session_state.m_so_items):
-                    _dc1, _dc2 = st.columns([5, 1])
-                    _dc1.markdown(
-                        f'<div class="so-item-row">{_soi_it["line_no"]}. '
-                        f'<b>{_html_soi.escape(str(_soi_it.get("customer_part_no") or ""))}</b> · '
-                        f'{float(_soi_it.get("qty") or 0):,.0f} EA</div>',
-                        unsafe_allow_html=True)
-                    _dc2.button("삭제", key=f"so_item_{_soi_i}_del", on_click=_m_so_item_del,
-                                args=(_soi_it.get("line_no"), _soi_it.get("customer_part_no")),
-                                use_container_width=True)
-                total = sum(it["amount"] for it in st.session_state.m_so_items)
-                st.markdown(f"**총액**: ₩{total:,}")
-
-            if st.button("수주 저장", type="primary",
-                         disabled=not (m_so_no and m_cust and st.session_state.m_so_items)):
-                # 중복 체크
-                try:
-                    dup = fetch("sales_orders", "so_id,so_number",
-                                f"so_number=eq.{_fq(m_so_no)}&customer=eq.{_fq(m_cust)}", limit=1)
-                except Exception: dup = []
-                if dup:
-                    st.error(f"이미 등록됨: 수주 {m_so_no} / 거래처 {m_cust} (so_id={dup[0]['so_id']})")
-                else:
-                    _so_saved_id = None   # 머리글 저장 뒤 라인 실패 안내용(r2 R7, QA M-1 — 보상 삭제는 P3 트랜잭션)
-                    try:
-                        v = fetch("vendors", "vendor_id", f"name=ilike.*{_fq(m_cust)}*&limit=1", limit=1)
-                        vendor_id = v[0]["vendor_id"] if v else None
-                        _db.insert("sales_orders", [{
-                            "so_number": m_so_no, "customer": m_cust, "vendor_id": vendor_id,
-                            "so_date": m_so_date.isoformat(), "due_date": m_due.isoformat(),
-                            "total_amount": total, "vat": int(total * 0.1),
-                            "source": "MANUAL", "delivery_address": m_addr,
-                            "status": "DRAFT", "created_by": current_user_name(),
-                        }])
-                        so_row = _db.fetch_one("sales_orders",
-                            f"so_number=eq.{_fq(m_so_no)}&customer=eq.{_fq(m_cust)}", "so_id")
-                        if so_row:
-                            _so_saved_id = so_row["so_id"]
-                            for it in st.session_state.m_so_items:
-                                _db.insert("sales_order_items", [{
-                                    "so_id": so_row["so_id"], "line_no": it["line_no"],
-                                    "customer_part_no": it["customer_part_no"],
-                                    "product_id": it.get("product_id"),
-                                    "canonical_pn": it.get("canonical_pn"),
-                                    "qty": it["qty"], "unit": "EA",
-                                    "received_qty": 0,
-                                    "pending_qty": it["qty"],
-                                    "unit_price": it["unit_price"], "amount": it["amount"],
-                                    "due_date": it["due_date"].isoformat() if it.get("due_date") else None,
-                                    "status": "PENDING",
-                                }])
-                        _sk.notify(_sk.fmt_so(
-                            [m_so_no], [m_cust], 1, len(st.session_state.m_so_items),
-                            sum(float(it.get("qty") or 0) for it in st.session_state.m_so_items),
-                            current_user_name(), "수기"))
-                        # 저장 뒤 품목표를 비우고 결과는 flash 로(U1b — 표가 남아 중복 저장을 부르던 P13)
-                        st.session_state.m_so_items = []
-                        nav_flash(f"수주 '{m_so_no}' 저장 완료")
-                    except Exception as e:
-                        if _so_saved_id is not None:
-                            st.error(f"품목 저장 실패: {e} — 머리글은 저장됨(so_id={_so_saved_id}). "
-                                     "수주 목록에서 확인 후 삭제하거나 발주번호를 바꿔 저장하세요.")
-                        else:
-                            st.error(f"저장 실패: {e}")
-                    else:
+                            _m_cands = fetch("products",
+                                "product_id,pn,alias_list",
+                                f"or=(pn.ilike.{_fql(m_pn_q.strip())},"
+                                f"alias_list.ilike.{_fql(m_pn_q.strip())},"
+                                f"item_name.ilike.{_fql(m_pn_q.strip())})"
+                                "&archived_at=is.null&order=pn", limit=30)
+                        except Exception:
+                            _m_cands = []
+                    _m_prod = None
+                    if _m_cands:
+                        m_pick = st.selectbox(
+                            f"품목 선택 ({len(_m_cands)}건 일치)",
+                            [p["pn"] for p in _m_cands], key="m_pn_pick")
+                        _m_prod = next(
+                            (p for p in _m_cands if p["pn"] == m_pick), None)
+                    elif (m_pn_q or "").strip():
+                        st.warning("일치하는 등록 품목 없음 — 수주는 등록된 "
+                                   "품목만 입력할 수 있습니다. 아래 '신규 "
+                                   "품목 등록'으로 마스터에 추가 후 "
+                                   "선택하세요.")
+                    ic2, ic3, ic4 = st.columns(3)
+                    m_qty = ic2.number_input("수량", 0, step=10, key="m_qty")
+                    m_up = ic3.number_input("단가", 0, step=100, key="m_up")
+                    m_due_item = ic4.date_input("품목 납기", value=_date.today() + _td(days=14), key="m_due_item")
+                    if st.button("추가", key="m_add_item",
+                                 disabled=not (_m_prod and m_qty)):
+                        st.session_state.m_so_items.append({
+                            "line_no": len(st.session_state.m_so_items) + 1,
+                            "customer_part_no": _m_prod["pn"], "qty": m_qty,
+                            "unit_price": m_up, "amount": m_qty * m_up,
+                            "due_date": m_due_item,
+                            "product_id": _m_prod["product_id"],
+                            "canonical_pn": _m_prod["pn"],
+                        })
                         st.rerun()
+
+                with st.expander("신규 품목 등록 (마스터 미등록 품번)"):
+                    nq1, nq2 = st.columns(2)
+                    mq_pn = nq1.text_input("품번 *", key="mq_pn",
+                        placeholder="예: 4PDVN-02")
+                    mq_mat = nq2.text_input("재질", key="mq_mat",
+                        placeholder="예: STS630, SCM440")
+                    nq3, nq4 = st.columns(2)
+                    mq_spec = nq3.text_input("제품 사이즈", key="mq_spec",
+                        placeholder="예: Ø40*23.5L (완성품 치수)")
+                    mq_cust2 = nq4.text_input("거래처", key="mq_cust2",
+                        placeholder="비우면 위 거래처명 사용")
+                    if st.button("품목 등록", key="mq_add",
+                                 disabled=not (mq_pn or "").strip()):
+                        _mq_pn = mq_pn.strip()
+                        try:
+                            _mq_dup = _db.fetch_one("products",
+                                f"pn=eq.{_fq(_mq_pn)}", "product_id,archived_at")
+                        except Exception:
+                            _mq_dup = None
+                        if _mq_dup:
+                            st.error(f"품번 '{_mq_pn}' 이미 존재"
+                                     + (" (휴면 — 마스터 관리에서 활성 복귀)"
+                                        if _mq_dup.get("archived_at") else "")
+                                     + f" — product_id "
+                                     f"{_mq_dup['product_id']}")
+                        else:
+                            try:
+                                _mq_latest = fetch("products", "product_id",
+                                    "product_id=like.P*"
+                                    "&order=product_id.desc", limit=1)
+                                _mq_n = (int(_mq_latest[0]["product_id"][1:])
+                                         + 1) if _mq_latest else 1
+                            except Exception:
+                                _mq_n = 9000
+                            _mq_pid = f"P{_mq_n:04d}"
+                            try:
+                                _db.insert("products", [{
+                                    "product_id": _mq_pid, "pn": _mq_pn,
+                                    "customer": (mq_cust2 or m_cust
+                                                 or "").strip() or None,
+                                    "material": (mq_mat or "").strip()
+                                                or None,
+                                    "product_size":
+                                        (mq_spec or "").strip() or None,
+                                    "active": "1",
+                                }])
+                                st.session_state["m_pn_q_seed"] = _mq_pn
+                                nav_flash(f"품목 등록: {_mq_pid} | "
+                                           f"{_mq_pn} — 위 검색에서 "
+                                           "선택하세요.")
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"등록 실패: {e}")
+
+                # 결과 카드(U3 B-1) — 담긴 품목 ListRow + 행 [삭제](위험색). 표(toss_df) 중복 제거.
+                _m_its = st.session_state.m_so_items
+                total = sum(it["amount"] for it in _m_its)
+
+                def _m_so_reset():
+                    st.session_state.m_so_items = []
+                with _so_res:
+                    # 행 삭제(U1b) — 콜백에서 지우고 번호를 다시 매긴다(저장은 line_no 사용).
+                    # key 는 위치 기반이라 콜백 안에서만 지운다(렌더 뒤 rerun 없이 한 번에 반영).
+                    def _m_so_item_del(_ln, _pn):
+                        # (번호, 품번) 이 맞는 행만 지운다 — 위치 인덱스는 연타·재렌더 사이에 밀릴 수 있다(r2 R7, QA L-1)
+                        _its = list(st.session_state.get("m_so_items") or [])
+                        _hit = [k for k, _it in enumerate(_its)
+                                if _it.get("line_no") == _ln and _it.get("customer_part_no") == _pn]
+                        if not _hit:
+                            return
+                        _its.pop(_hit[0])
+                        for _n, _it in enumerate(_its, 1):
+                            _it["line_no"] = _n
+                        st.session_state.m_so_items = _its
+                    import html as _html_soi
+                    with section_card(
+                            "담긴 품목",
+                            " · ".join(x for x in ((m_so_no or "").strip(), m_cust,
+                                                   f"{len(_m_its)}줄") if x),
+                            key="so_manual_items"):
+                        if not _m_its:
+                            _empty_state("품번을 검색해 [추가]하면 여기에 담깁니다")
+                        for _soi_i, _soi_it in enumerate(_m_its):
+                            _dc1, _dc2 = st.columns([5, 1], vertical_alignment="center")
+                            _dc1.markdown(
+                                f'<div class="so-item-row"><b>{_soi_it["line_no"]}. '
+                                f'{_html_soi.escape(str(_soi_it.get("customer_part_no") or ""))}</b>'
+                                f'<span>{float(_soi_it.get("qty") or 0):,.0f} EA'
+                                + (f' · 납기 {str(_soi_it.get("due_date"))[:10]}'
+                                   if _soi_it.get("due_date") else "")
+                                + f' · ₩{int(_soi_it.get("unit_price") or 0):,}</span></div>',
+                                unsafe_allow_html=True)
+                            _dc2.button("삭제", key=f"so_item_{_soi_i}_del",
+                                        on_click=_m_so_item_del,
+                                        args=(_soi_it.get("line_no"),
+                                              _soi_it.get("customer_part_no")),
+                                        use_container_width=True)
+
+                # ActionBar(U3): 좌 [초기화], 우 줄 수·합계 + [수주 저장 (n줄)]
+                with _so_act:
+                    _m_rst, _m_save = action_bar(
+                        {"label": "초기화", "key": "so_m_reset", "on_click": _m_so_reset,
+                         "disabled": not _m_its},
+                        f"{len(_m_its)}줄 · 합계 ₩{total:,} (부가세 별도)",
+                        {"label": f"수주 저장 ({len(_m_its)}줄)", "key": "so_m_save",
+                         "disabled": not (m_so_no and m_cust and _m_its)},
+                        key="so_m")
+                if _m_save:
+                    # 중복 체크
+                    try:
+                        dup = fetch("sales_orders", "so_id,so_number",
+                                    f"so_number=eq.{_fq(m_so_no)}&customer=eq.{_fq(m_cust)}", limit=1)
+                    except Exception: dup = []
+                    if dup:
+                        st.error(f"이미 등록됨: 수주 {m_so_no} / 거래처 {m_cust} (so_id={dup[0]['so_id']})")
+                    else:
+                        _so_saved_id = None   # 머리글 저장 뒤 라인 실패 안내용(r2 R7, QA M-1 — 보상 삭제는 P3 트랜잭션)
+                        try:
+                            v = fetch("vendors", "vendor_id", f"name=ilike.*{_fq(m_cust)}*&limit=1", limit=1)
+                            vendor_id = v[0]["vendor_id"] if v else None
+                            _db.insert("sales_orders", [{
+                                "so_number": m_so_no, "customer": m_cust, "vendor_id": vendor_id,
+                                "so_date": m_so_date.isoformat(), "due_date": m_due.isoformat(),
+                                "total_amount": total, "vat": int(total * 0.1),
+                                "source": "MANUAL", "delivery_address": m_addr,
+                                "status": "DRAFT", "created_by": current_user_name(),
+                            }])
+                            so_row = _db.fetch_one("sales_orders",
+                                f"so_number=eq.{_fq(m_so_no)}&customer=eq.{_fq(m_cust)}", "so_id")
+                            if so_row:
+                                _so_saved_id = so_row["so_id"]
+                                for it in st.session_state.m_so_items:
+                                    _db.insert("sales_order_items", [{
+                                        "so_id": so_row["so_id"], "line_no": it["line_no"],
+                                        "customer_part_no": it["customer_part_no"],
+                                        "product_id": it.get("product_id"),
+                                        "canonical_pn": it.get("canonical_pn"),
+                                        "qty": it["qty"], "unit": "EA",
+                                        "received_qty": 0,
+                                        "pending_qty": it["qty"],
+                                        "unit_price": it["unit_price"], "amount": it["amount"],
+                                        "due_date": it["due_date"].isoformat() if it.get("due_date") else None,
+                                        "status": "PENDING",
+                                    }])
+                            _sk.notify(_sk.fmt_so(
+                                [m_so_no], [m_cust], 1, len(st.session_state.m_so_items),
+                                sum(float(it.get("qty") or 0) for it in st.session_state.m_so_items),
+                                current_user_name(), "수기"))
+                            # 저장 뒤 품목표를 비우고 결과는 flash 로(U1b — 표가 남아 중복 저장을 부르던 P13)
+                            st.session_state.m_so_items = []
+                            nav_flash(f"수주 '{m_so_no}' 저장 완료")
+                        except Exception as e:
+                            if _so_saved_id is not None:
+                                st.error(f"품목 저장 실패: {e} — 머리글은 저장됨(so_id={_so_saved_id}). "
+                                         "수주 목록에서 확인 후 삭제하거나 발주번호를 바꿔 저장하세요.")
+                            else:
+                                st.error(f"저장 실패: {e}")
+                        else:
+                            st.rerun()
 
     # ════════ TAB 2: 수주 목록 (다중 뷰) ════════
     if _sub == "list":
@@ -9052,7 +9155,7 @@ elif page == "수주 관리":
 
 
 elif page == "출고 관리":
-    nav_page_head()
+    _ph_r = nav_page_head(right=_sub == "deliver")   # 출고 등록: 우측 "작성중 전표 n건 보기"(아래서 채움)
     if not DB_AVAILABLE:
         st.error("DB 연결이 활성화되지 않았습니다."); st.stop()
 
@@ -9069,20 +9172,28 @@ elif page == "출고 관리":
         # → 정정 반영 → [출고 확정] = 수주 반영·재고 차감·명세서 발행
         from datetime import date as _sh_dt
 
-        st.markdown("##### 출고 리스트 담기")
+        # U3(B-3): 입력 카드(조건 1줄) → 결과 카드(미납 회차) → ActionBar.
+        # 결과·액션 자리를 먼저 만들고 아래 처리 코드가 그 자리에 그린다.
+        _sh_card = section_card("출고 리스트 담기", key="ship_cond")
+        _sh_res = st.container()
+        _sh_act = st.container()
         # 회차 기준일(어떤 스케줄 잔량을 담을지)과 실제 납품일(전표·
         # 명세서 날짜)을 분리 — 스케줄보다 빠른/늦은 출고 지원
         # (2026-08-28 사용자 확정)
-        shc1, shc2, shc3 = st.columns([1, 1, 2])
+        # 1024 본문 폭(사이드바 포함 약 480px)에서 4칸 1줄은 날짜가 잘린다 → 날짜 2칸 + 지연 체크 1줄,
+        # 검색은 다음 줄 전체 폭(U3 구현 중 변경 — 06 §C 표)
+        shc1, shc2, shc3 = _sh_card.container(key="ship_cond_row").columns(
+            [1, 1, 1], vertical_alignment="bottom")
+        shc4 = _sh_card.container()
         _sh_d = shc1.date_input("회차 기준일", keep_default("bk_date", _sh_dt.today()),
                                 key="bk_date",
                                 help="이 날짜까지의 납품 회차 잔량을 "
                                      "리스트에 올립니다 — 스케줄보다 "
                                      "일찍 출고하려면 미래 날짜로")
-        _sh_ship_d = shc2.date_input("납품일 (전표·명세서)",
+        _sh_ship_d = shc2.date_input("납품일",
                                      keep_default("bk_ship_date", _sh_dt.today()),
                                      key="bk_ship_date",
-                                     help="실제 납품하는 날짜 — 전표와 "
+                                     help="실제 납품하는 날짜(전표·명세서) — 전표와 "
                                           "거래명세서에 이 날짜가 "
                                           "기록됩니다")
         _sh_late = shc3.checkbox("지연 회차 포함", value=keep_default("bk_late", True), key="bk_late",
@@ -9094,9 +9205,11 @@ elif page == "출고 관리":
         # 모두 확정하면 이중 출고가 되므로). 전표를 취소하면 다시 뜬다.
         _draft_sois = {}
         _open_drafts = []
+        _n_drafts_all = 0
         try:
             _open_drafts = fetch("shipments", "shipment_id,ship_no,ship_date",
                                  "status=eq.DRAFT&order=ship_no.desc", limit=50)
+            _n_drafts_all = len(_open_drafts)
             if _open_drafts:
                 _d_ids = ",".join(str(s["shipment_id"])
                                   for s in _open_drafts)
@@ -9130,6 +9243,9 @@ elif page == "출고 관리":
         except Exception:
             _draft_sois = {}
             _open_drafts = []
+        if _ph_r is not None and _n_drafts_all:
+            _ph_r.button(f"작성중 전표 {_n_drafts_all}건 보기", key="ph_go_ship_slip",
+                         type="tertiary", on_click=nav_go, args=("ship", "slip"))
 
         # 스케줄 자동 리스트업
         _sh_flt = ("due_date=lte." if _sh_late
@@ -9167,23 +9283,23 @@ elif page == "출고 관리":
             _sh_held = {r["soi_id"]: _draft_sois[r["soi_id"]]
                         for r in _sh_rounds_all
                         if r["soi_id"] in _draft_sois}
-            if _sh_held:
-                st.info("작성중 전표에 이미 담긴 {}개 라인은 목록에서 "
-                        "제외했습니다 ({}) — 수량 수정은 '출고 전표' 화면에서. "
-                        "다른 라인을 그 전표에 더 넣으려면 아래 "
-                        "'…에 추가' 버튼을 쓰세요.".format(
-                            len(_sh_held),
-                            ", ".join(sorted(set(_sh_held.values())))))
+            # (안내 → 결과 카드 안 한 줄 보조 설명, U3 — st.info 축소)
+            _sh_held_msg = ("작성중 전표에 이미 담긴 {}개 라인은 제외했습니다 ({}) — "
+                            "수량 수정은 '출고 전표' 화면에서".format(
+                                len(_sh_held), ", ".join(sorted(set(_sh_held.values()))))
+                            if _sh_held else "")
         except Exception as e:
             st.error(f"회차 조회 실패: {e}")
             _sh_rounds = []
+            _sh_held_msg = ""
 
-        # 품번 검색 → 리스트 추가
+        # 품번 검색 → 리스트 추가 (검색 칸은 조건 줄, 후보 선택·추가는 카드 안 다음 줄)
         _sh_manual = st.session_state.setdefault("ship_manual", [])
-        sq1, sq2 = st.columns([3, 1])
-        _sh_q = sq1.text_input(
-            "품번 · 품명 · 수주번호 검색 후 리스트에 추가", key="ship_q",
-            placeholder="예: 8HFDV, GLAND NUT, 202607")
+        _sh_q = shc4.text_input(
+            "품번 · 품명 · 수주번호 검색", key="ship_q",
+            placeholder="예: 8HFDV, GLAND NUT, 202607",
+            help="검색한 미납 라인을 출고 리스트에 추가합니다")
+        sq1, sq2 = _sh_card.columns([3, 1], vertical_alignment="bottom")
         _sh_cand = []
         if _sh_q.strip():
             _qq2 = _sh_q.strip()
@@ -9304,11 +9420,35 @@ elif page == "출고 관리":
                 "cap": _pend2,
             })
 
+        _sh_rc = _sh_res.container(border=True, key="wscard_ship_res")
+        _sh_hdr = _sh_rc.empty()          # 머리는 표(선택) 뒤에 채운다
+        _sh_scope = "기준일 {}{}".format(_sh_d.isoformat(), " 이하" if _sh_late else "")
+        if _sh_held_msg:
+            with _sh_rc:
+                ws_note(_sh_held_msg)
         if not _sh_items:
-            st.info("출고 리스트가 비어 있습니다 — 스케줄 회차가 없으면 "
-                    "품번 검색으로 추가하세요.")
+            _sh_hdr.markdown(card_head("미납 회차", f"{_sh_scope} 0건"),
+                             unsafe_allow_html=True)
+            with _sh_rc:
+                _empty_state("담을 회차가 없습니다 — 기준일을 바꿔 보세요")
         else:
             import pandas as _sh_pd
+
+            # 완성 재고(완성 LOT 잔여 합 — '완성 재고' 화면과 같은 기준)
+            _sh_stock = {}
+            _sh_pids = sorted({it["li"].get("product_id") for it in _sh_items
+                               if it["li"].get("product_id")})
+            try:
+                for _i0 in range(0, len(_sh_pids), 80):
+                    for _l in fetch("product_lot_stock_v", "product_id,remain_qty",
+                                    "remain_qty=gt.0&product_id=in.({})".format(",".join(
+                                        f'"{x}"' for x in _sh_pids[_i0:_i0 + 80])),
+                                    limit=1000):
+                        _sh_stock[_l["product_id"]] = (_sh_stock.get(_l["product_id"], 0.0)
+                                                       + float(_l.get("remain_qty") or 0))
+            except Exception:
+                _sh_stock = {}
+            _sh_today = _sh_dt.today().isoformat()
 
             # 행이 늘어나도 편집값(선택·출고 수량) 유지 (2026-08-07)
             _sh_edits = st.session_state.setdefault("ship_edits", {})
@@ -9321,7 +9461,8 @@ elif page == "출고 관리":
             _sh_df = _sh_pd.DataFrame([{
                 "선택": bool(_sh_edits.get(_sh_rowkey(it), {})
                             .get("선택", True)),
-                "구분": it["src"],
+                # 검색으로 추가한 라인 = 회차 없이 담김 → '회차 없음'(DESIGN_SYSTEM v2 §B-3)
+                "구분": "회차 없음" if it["src"] == "추가" else it["src"],
                 "품번": it["pn"],
                 "거래처": it["so"].get("customer") or "-",
                 "수주번호": it["so"].get("so_number") or "-",
@@ -9330,11 +9471,14 @@ elif page == "출고 관리":
                 "출고": min(float(_sh_edits.get(_sh_rowkey(it), {})
                                .get("출고", it["cap"])),
                            float(it["cap"])),
+                "완성 재고": float(_sh_stock.get(it["li"].get("product_id"), 0.0)),
             } for it in _sh_items])
             _sh_sig = "{}_{}_{}_{}".format(_sh_d, _sh_late,
                                            len(_sh_items),
                                            len(_sh_manual))
-            _sh_ed = st.data_editor(
+            if st.session_state.get("ship_ed_nonce"):       # [선택 해제] 뒤 편집기 새로
+                _sh_sig += "_{}".format(st.session_state["ship_ed_nonce"])
+            _sh_ed = _sh_rc.data_editor(
                 _sh_df, hide_index=True, use_container_width=True,
                 key=f"bk_ed_{_sh_sig}",
                 column_config={
@@ -9347,7 +9491,7 @@ elif page == "출고 관리":
                                   "납기")},
                     **{c: st.column_config.NumberColumn(
                         format="localized", disabled=True)
-                       for c in ("잔량",)},
+                       for c in ("잔량", "완성 재고")},
                 })
             _sh_sel = []
             for _bi, _brow in _sh_ed.iterrows():
@@ -9360,6 +9504,24 @@ elif page == "출고 관리":
                     continue
                 _sh_sel.append((_it, min(_bq, _it["cap"])))
             _sh_total = sum(q for _, q in _sh_sel)
+            _sh_late_n = sum(1 for it in _sh_items
+                             if it["due"] not in ("", "-") and it["due"] < _sh_today)
+            _sh_short_n = sum(1 for it in _sh_items
+                              if _sh_stock.get(it["li"].get("product_id"), 0.0) < it["cap"])
+            _sh_hdr.markdown(card_head(
+                "미납 회차", f"{_sh_scope} {len(_sh_items)}건 · 선택 {len(_sh_sel)}",
+                (_bdg(f"지연 {_sh_late_n}", "b-red") if _sh_late_n else "")
+                + (_bdg(f"완성 재고 부족 {_sh_short_n}", "b-amber") if _sh_short_n else "")),
+                unsafe_allow_html=True)
+            with _sh_rc:
+                ws_note("등록 시점에는 재고·수주를 차감하지 않습니다 — 차감은 출고 전표에서 "
+                        "확정할 때 한 번에")
+
+            def _sh_unsel():
+                # [선택 해제] — 모든 행 선택을 끄고 편집기를 새로 그린다(편집값 유지 규칙 그대로)
+                for _v in st.session_state.get("ship_edits", {}).values():
+                    _v["선택"] = False
+                st.session_state["ship_ed_nonce"] = st.session_state.get("ship_ed_nonce", 0) + 1
 
             # 품목 행 payload — 새 전표 생성과 작성중 전표 추가가 공유
             def _sh_build_items(_sid):
@@ -9393,7 +9555,8 @@ elif page == "출고 관리":
                           if str(d.get("ship_date") or "")
                           == _sh_ship_d.isoformat()]
             if _sh_add_tg:
-                _rg1, _rga, _rg2 = st.columns([1, 1, 1])
+                # 같은 날 작성중 전표에 추가 — 결과 카드 아래쪽 보조 동작(ActionBar 는 주 버튼 1개)
+                _rgx, _rga = _sh_rc.columns([2, 1], vertical_alignment="bottom")
                 if len(_sh_add_tg) > 1:
                     _sh_add_no = _rga.selectbox(
                         "추가할 작성중 전표",
@@ -9426,16 +9589,21 @@ elif page == "출고 관리":
                         st.rerun()
                     except Exception as e:
                         st.error(f"전표 추가 실패: {e}")
-            else:
-                _rg1, _rg2 = st.columns([1, 1])
-            if _rg1.button(
-                    f"출고 등록 — 전표 생성 ({_sh_total:,.0f} · "
-                    f"{len(_sh_sel)}건)",
-                    type="primary", key="ship_reg",
-                    use_container_width=True,
-                    help=("등록 시점에는 아무것도 차감되지 않습니다 — 확정('출고 전표' "
-                          "화면)에서 수주 반영·재고 차감·거래명세서 발행이 이루어집니다."),
-                    disabled=_sh_total <= 0):
+            # ActionBar(U3): 좌 [선택 해제], 우 선택 요약 + [출고 등록 — 전표 생성]
+            with _sh_act:
+                _sh_unsel_go, _ship_go = action_bar(
+                    {"label": "선택 해제", "key": "ship_unsel", "on_click": _sh_unsel,
+                     "disabled": not _sh_sel},
+                    f"선택 {len(_sh_sel)}건 · {_sh_total:,.0f} EA · "
+                    f"납품일 {_sh_ship_d.isoformat()}",
+                    {"label": f"출고 등록 — 전표 생성 ({_sh_total:,.0f} · "
+                              f"{len(_sh_sel)}건)",
+                     "key": "ship_reg",
+                     "help": ("등록 시점에는 아무것도 차감되지 않습니다 — 확정('출고 전표' "
+                              "화면)에서 수주 반영·재고 차감·거래명세서 발행이 이루어집니다."),
+                     "disabled": _sh_total <= 0},
+                    key="ship")
+            if _ship_go:
                 _sd = _sh_ship_d.isoformat()   # 전표 날짜 = 실제 납품일
                 # 이중 클릭 가드 — 화면 구성 시점의 제외 목록은 클릭
                 # 1.4초 간격의 두 번째 실행을 못 거른다 (2026-08-18
@@ -13556,7 +13724,7 @@ elif page == "생산 계획":
 
 
 elif page == "구매 관리":
-    nav_page_head()
+    _ph_r = nav_page_head(right=_sub == "new")      # 발주서 작성: 우측 = '작업 방식'(아래서 채움)
     if not DB_AVAILABLE:
         st.error("DB 연결 필요"); st.stop()
 
@@ -13901,16 +14069,17 @@ elif page == "구매 관리":
                     st.session_state["po_mode"] = _k
         # 위젯 생성 전에 세션 값으로 현재 모드를 맞춘다(default 인자 없음 → 경고 없음)
         st.session_state["po_mode_sc"] = dict(_PO_MODES)[_po_mode]
-        if hasattr(st, "segmented_control"):
-            st.segmented_control("작업 방식", [l for _, l in _PO_MODES], key="po_mode_sc",
-                                 on_change=_po_mode_change)
-        else:
-            st.radio("작업 방식", [l for _, l in _PO_MODES], key="po_mode_sc", horizontal=True,
-                     on_change=_po_mode_change)
+        with (_ph_r if _ph_r is not None else st.container()):   # U3: PageHeader 우측 '작업 방식'
+            if hasattr(st, "segmented_control"):
+                st.segmented_control("작업 방식", [l for _, l in _PO_MODES], key="po_mode_sc",
+                                     on_change=_po_mode_change)
+            else:
+                st.radio("작업 방식", [l for _, l in _PO_MODES], key="po_mode_sc", horizontal=True,
+                         on_change=_po_mode_change)
 
     # ════════════ 발주서 작성 › 부족 자재에서 담기 (옛 '발주 제안', 2026-09-11 생산 계획에서 이동) ════════════
     if _sub == "new" and _po_mode == "pick":
-        _sug_top = st.container()          # 자재별 발주 제안(아래 블록이 채움)
+        _sug_top = st.container(border=True, key="wscard_po_short")   # 자재별 발주 제안(아래 블록이 채움)
         with st.expander("제품별 자재 필요량 — 제안의 근거", expanded=False):
             # 설명은 ? 툴팁으로만 (2026-09-11 사용자: 화면 텍스트 과다)
             _mh1, _mh2 = st.columns([5, 1])
@@ -14106,8 +14275,10 @@ elif page == "구매 관리":
         # B1(2026-10-19): 아래 블록은 '부족 자재에서 담기' 모드에서만 실행 — 다른 모드·세부면 _sug_top 이 없다
     # ════════════ TAB: 발주 자동 제안 — 2026-09-11 생산 계획에서 이동 ════════════
         with _sug_top:
+            _sug_hdr = st.empty()          # 카드 머리(거래처·자재 수·미지정 배지) — 계산 뒤 채움
+            _sug_hdr.markdown(card_head("부족 자재"), unsafe_allow_html=True)
             if _mr.get("msg"):
-                st.info(_mr["msg"])
+                _empty_state(_mr["msg"])
             else:
                 sois, so_map = _mr["sois"], _mr["so_map"]
                 bom_by_pid, mat_map = _mr["bom_by_pid"], _mr["mat_map"]
@@ -14146,7 +14317,7 @@ elif page == "구매 관리":
                         })
 
                 if not shortage_list:
-                    st.success("자재 부족 없음 — 소재 재고와 미입고 발주로 충당됩니다.")
+                    _empty_state("부족 자재가 없습니다")
                 else:
                     # 최근 발주 이력에서 자재별 실제 거래처 역산 (2026-07-28)
                     # — materials.main_supplier 는 대부분 비어 있어(308중 88)
@@ -14192,13 +14363,17 @@ elif page == "구매 관리":
                         by_supplier[s["supplier"]].append(s)
 
                     _n_undef = len(by_supplier.get("(미정)", []))
-                    if _n_undef:
-                        st.info(
-                            f"거래처 미지정 자재 {_n_undef}건 — 마스터에 주공급사가 "
-                            "없고 발주 이력도 없는 자재입니다. 아래에서 거래처를 "
-                            "직접 고르면 그대로 발주서에 담깁니다. (자주 쓰는 "
-                            "자재는 마스터 관리 → 자재 편집에서 주공급사를 "
-                            "등록해 두세요.)")
+                    # (거래처 미지정 안내 → 카드 머리 배지 1개 + 마우스 올리면 설명, U3)
+                    _sug_hdr.markdown(card_head(
+                        "부족 자재",
+                        "거래처 {}곳 · 자재 {}개 (합 {:,.0f})".format(
+                            len(by_supplier), len(shortage_list),
+                            sum(x["shortage"] for x in shortage_list)),
+                        _bdg(f"거래처 미지정 {_n_undef}건은 아래에서 지정", "b-amber",
+                             tip="마스터에 주공급사가 없고 발주 이력도 없는 자재입니다. 아래에서 "
+                                 "거래처를 직접 고르면 그대로 발주서에 담깁니다. 자주 쓰는 자재는 "
+                                 "마스터 관리 → 자재 편집에서 주공급사를 등록해 두세요.")
+                        if _n_undef else None), unsafe_allow_html=True)
 
                     for supplier, mats in sorted(by_supplier.items(), key=lambda x: -sum(m["shortage"] for m in x[1])):
                         total_short = sum(m["shortage"] for m in mats)
@@ -14709,37 +14884,55 @@ elif page == "구매 관리":
             _ppc2.button("취소 (기존 품목 유지)", key="po_pending_cancel",
                          on_click=_po_pending_cancel, use_container_width=True)
 
-        if st.session_state.get("po_prefill_vendor_name") or \
-                st.session_state.get("po_prefill_items"):
+        def _po_reset_all():
+            # [모두 초기화] — ActionBar 좌측 보조 버튼(U3). 미리 담긴 데이터·품목표를 모두 비운다
+            st.session_state.pop("po_prefill_note", None)
+            st.session_state.pop("po_prefill_vendor_applied", None)
+            st.session_state.pop("po_prefill_pending", None)    # 보류 요청도 폐기 (Codex R2-M1)
+            st.session_state.po_prefill_vendor_name = None
+            st.session_state.po_prefill_items = None
+            st.session_state.po_prefill_source_so = None
+            st.session_state.po_items = []
+            st.session_state.pop("po_result", None)
+            st.session_state["po_step"] = 1
+
+        _po_has_pf = bool(st.session_state.get("po_prefill_vendor_name")
+                          or st.session_state.get("po_prefill_items"))
+        if _po_has_pf:
             pv = st.session_state.get("po_prefill_vendor_name", "")
             pi = st.session_state.get("po_prefill_items", [])
             src_so = st.session_state.get("po_prefill_source_so", "")
-            st.info(
-                f"**미리 담긴 발주 데이터**: 거래처 '{pv}', 품목 {len(pi)}개"
+            # (안내 → 한 줄 보조 설명, [모두 초기화]는 ActionBar 좌측으로 — U3 B-2)
+            ws_note(
+                f"미리 담긴 발주 데이터: 거래처 '{pv}', 품목 {len(pi)}개"
                 + (f" · 출처 수주: {src_so}" if src_so else "")
                 + (f" · {st.session_state.get('po_prefill_note')}"
                    if st.session_state.get("po_prefill_note") else ""))
-            if st.button("모두 초기화", help="미리 담긴 데이터와 품목표를 모두 비웁니다"):
-                st.session_state.pop("po_prefill_note", None)
-                st.session_state.pop("po_prefill_vendor_applied", None)
-                st.session_state.pop("po_prefill_pending", None)    # 보류 요청도 폐기 (Codex R2-M1)
-                st.session_state.po_prefill_vendor_name = None
-                st.session_state.po_prefill_items = None
-                st.session_state.po_prefill_source_so = None
-                st.session_state.po_items = []
-                st.session_state.pop("po_result", None)
-                st.rerun()
             if pi and not st.session_state.get("po_items"):
                 st.session_state.po_items = [
                     {**x, "_uid": str(_po_uuid.uuid4())[:8]} for x in pi]
+                st.session_state["po_step"] = 2          # 담긴 채로 왔으면 ② 품목 담기부터
             elif pi:
-                st.warning("품목표에 이미 줄이 있어 제안 품목을 넣지 않았습니다 "
-                           "— [표 비우기] 또는 [모두 초기화] 뒤 자동 제안에서 "
-                           "다시 누르세요.")
+                ws_note("품목표에 이미 줄이 있어 제안 품목을 넣지 않았습니다 "
+                        "— [전체 비우기] 또는 [모두 초기화] 뒤 자동 제안에서 "
+                        "다시 누르세요.", warn=True)
 
         _por = st.session_state.get("po_result")   # 방금 만든 발주서 → ③ 자리에 표시
 
-        st.markdown("##### ① 거래처")
+        # ── 스테퍼(U3 B-2): ① 거래처 ② 품목 담기 ③ 발주서 — 현재 단계만 펼친다.
+        # 지난·다음 단계 위젯은 그리되(상태·그림자 키 유지) CSS 로 숨긴다(아래 ActionBar 구간).
+        def _po_go_step(_n):
+            st.session_state["po_step"] = _n
+        if st.session_state.get("po_step") not in (1, 2, 3):
+            st.session_state["po_step"] = (2 if (st.session_state.get("po_items") or _po_has_pf)
+                                           else 1)
+        if (st.session_state["po_step"] == 3 and not st.session_state.get("po_items")
+                and not _por):
+            st.session_state["po_step"] = 2          # 품목이 비면 ③ 에 머물지 않는다
+        _po_step = st.session_state["po_step"]
+        _po_step_ph = st.empty()                     # 스테퍼(거래처 이름·품목 수는 아래서 채움)
+        _po_s1 = st.container(border=True, key="wscard_po_st1")
+        _po_s1.markdown(card_head("① 거래처"), unsafe_allow_html=True)
         # 발주 그룹은 3버킷 — 외주(가공·열처리·표면)는 공정 관리의
         # 의뢰서로 처리하므로 단독 발주 없음 (2026-08-20 사용자 확정)
         _PO_BUCKETS = {
@@ -14748,7 +14941,7 @@ elif page == "구매 관리":
             "소모성": ["MAT_CONSUMABLES"],
             "공구": ["TOOL"],
         }
-        vc1, vc2 = st.columns([1, 2])
+        vc1, vc2 = _po_s1.columns([1, 2])
         sel_bucket = vc1.radio("발주 그룹", list(_PO_BUCKETS),
                                horizontal=True, key="po_bucket",
                                label_visibility="collapsed")
@@ -14764,9 +14957,10 @@ elif page == "구매 관리":
         except Exception as e:
             st.error(f"거래처 로드 실패: {e}"); vendors = []
         if not vendors:
-            st.warning("해당 그룹에 거래처가 없습니다. 아래에서 신규 등록하세요.")
+            with _po_s1:
+                ws_note("해당 그룹에 거래처가 없습니다 — 아래에서 신규 등록하세요.", warn=True)
 
-        with st.expander("신규 거래처 등록 (수기 입력)"):
+        with _po_s1.expander("신규 거래처 등록 (수기 입력)"):
             with st.form("nv_form"):
                 ec1, ec2 = st.columns(2)
                 with ec1:
@@ -14873,7 +15067,7 @@ elif page == "구매 관리":
             sel = vc2.selectbox(f"거래처 선택 ({len(vendors)}개)",
                                 option_keys, index=default_idx, key="po_vendor")
             vendor = vendor_options[sel]
-            st.caption("사업자번호 {} · 결제조건 {} · 담당 {} · {}".format(
+            _po_s1.caption("사업자번호 {} · 결제조건 {} · 담당 {} · {}".format(
                 vendor.get("business_no") or "-",
                 vendor.get("payment_terms") or "-",
                 vendor.get("contact_person") or "-",
@@ -14982,578 +15176,583 @@ elif page == "구매 관리":
                     "unit": "EA",
                     "qty": vendor_qty or 0, "unit_price": upd, "memo": ""})
 
-            st.markdown("##### ② 품목 담기")
-            # 별칭(옛 품번·거래처 품번) → 활성 제품 품번
-            _po_alias_pn = {}
-            try:
-                for _ap in fetch("products", "pn,alias_list",
-                                 "archived_at=is.null&alias_list=not.is.null",
-                                 limit=1500):
-                    for _a in str(_ap.get("alias_list") or "").split(","):
-                        _a = _a.strip()
-                        if _a:
-                            _po_alias_pn.setdefault(_a, _ap["pn"])
-            except Exception:
+            # ── ② 품목 담기 — 카드(U3). 품목 구간: st.info/warning 대신 ws_note(정적 테스트 고정) ──
+            with st.container(border=True, key="wscard_po_st2"):
+                st.markdown(card_head("② 품목 담기", vendor["name"]), unsafe_allow_html=True)
+                # 별칭(옛 품번·거래처 품번) → 활성 제품 품번
                 _po_alias_pn = {}
-            # 이 거래처 발주 이력 — 품번(마스터 연결용)과, 품목별 최근 라인
-            # (마스터에 없는 직접 입력 품목도 이력으로 다시 담기 위해,
-            # 2026-09-22: 삼경O&T 습동유·절삭유처럼 소모품만 있는 거래처는
-            # 이력 검색이 항상 비던 문제)
-            _vh_pns = set()
-            _vh_hist = {}   # 품명 → 최근 라인 {material, spec, qty, unit_price, po_number, po_date}
-            _vh_lpn = {}    # 라인에 연결된 product_id → 활성 품번
-            _vh_lpn_arch = {}   # 연결 제품이 휴면이면 여기 (휴면 경고로)
-            _vh_lpn_fail = False
-            try:
-                _vh_pos = fetch("purchase_orders", "po_id,po_number,po_date",
-                                f"vendor_id=eq.{_fq(vendor['vendor_id'])}"
-                                "&order=po_date.desc,po_id.desc", limit=300)
-                if _vh_pos:
-                    _vh_pmap = {p["po_id"]: p for p in _vh_pos}
-                    _vh_rank = {p["po_id"]: i for i, p in enumerate(_vh_pos)}
-                    _vh_items = fetch("purchase_order_items",
-                                      "poi_id,po_id,item_name,material,spec,"
-                                      "qty,unit_price,material_id,unit,"
-                                      "product_id",
-                                      "po_id=in.(" + ",".join(
-                                          str(p["po_id"]) for p in _vh_pos)
-                                      + ")", limit=2000)
-                    _vh_items = [i for i in _vh_items if i.get("item_name")]
-                    # 라인에 제품이 연결돼 있으면 그 제품이 기준 — 옛 양식 품명
-                    # ('40BLD-APP (Ø140 * 16L)')은 이름으로 제품을 못 찾아 연결한
-                    # 뒤에도 '이력 행'으로 따로 떴다 (2026-10-12). 휴면 제품은
-                    # 따로 모아 '휴면 제품 제외' 경고로 보낸다.
-                    try:
-                        _vh_lpid = sorted({i["product_id"] for i in _vh_items
-                                           if i.get("product_id")})
-                        for _i0 in range(0, len(_vh_lpid), 80):
-                            for _p9 in fetch(
-                                    "products", "product_id,pn,archived_at",
-                                    "product_id=in.({})".format(
-                                        ",".join(f'"{x}"'
-                                                 for x in _vh_lpid[_i0:_i0 + 80])),
-                                    limit=200):
-                                if _p9.get("archived_at"):
-                                    _vh_lpn_arch[_p9["product_id"]] = _p9["pn"]
-                                else:
-                                    _vh_lpn[_p9["product_id"]] = _p9["pn"]
-                    except Exception:
-                        _vh_lpn, _vh_lpn_arch = {}, {}
-                        _vh_lpn_fail = True
-                    # 품명 → 품번: 'pn (사이즈)' 뿐 아니라 옛 발주의 'pn/품명',
-                    # 'pn(사이즈)' 도 제품으로 잇는다 (2026-10-05: 혜성철강 이력이
-                    # 'HA80-80092/유성 핀' 형식이라 제품 행이 안 나오고 미납 수주가
-                    # 0 으로 보이던 문제). 제품이 연결된 라인은 품명 유래 품번
-                    # 대신 그 제품 품번만 센다 (같은 제품이 '2종'으로 세이던 문제).
-                    _vh_unl = [i for i in _vh_items
-                               if i.get("product_id") not in _vh_lpn]
-                    _vh_pns = ({i["item_name"].split(" (")[0] for i in _vh_unl}
-                               | {po_hist_pn(i["item_name"]) for i in _vh_unl})
-                    # 이력이 옛 품번(휴면 쌍둥이)으로 적혀 있으면 그 품번을 별칭으로
-                    # 가진 활성 제품으로 잇는다 (2026-10-05: 혜성철강 이력 'D180223'
-                    # ↔ 활성 '4D180223-00' — '휴면 제품 제외' 경고만 뜨던 문제)
-                    _vh_pns |= {_po_alias_pn[x] for x in list(_vh_pns)
-                                if x in _po_alias_pn}
-                    _vh_pns |= set(_vh_lpn.values())
-                    # 최근 발주 순으로 훑으며 품목별 첫 라인만 보관
-                    for i in sorted(_vh_items, key=lambda x: (
-                            _vh_rank.get(x["po_id"], 9999),
-                            -int(x.get("poi_id") or 0))):
-                        _nm = i["item_name"].strip()
-                        if _nm in _vh_hist:
-                            continue
-                        _po9 = _vh_pmap.get(i["po_id"]) or {}
-                        _vh_hist[_nm] = {
-                            "material_id": i.get("material_id"),
-                            "product_id": i.get("product_id"),
-                            "unit": i.get("unit") or "EA",
-                            "material": i.get("material") or "",
-                            "spec": i.get("spec") or "",
-                            "qty": int(float(i.get("qty") or 0)),
-                            "unit_price": int(float(i.get("unit_price") or 0)),
-                            "po_number": _po9.get("po_number"),
-                            "po_date": str(_po9.get("po_date") or "")[:10]}
-            except Exception:
-                pass
-            with st.form("po_search_form"):
-                sq1, sq2, sq3 = st.columns([3, 1.4, 0.8])
-                search_q = sq1.text_input("품번 검색", key="po_q",
-                                          placeholder="예: 8HFDV, 4PDVN — "
-                                                      "비우면 이 거래처 이력 전체")
-                # key 에 거래처 ID — 하나의 key 를 쓰면 처음 본 거래처(이력
-                # 없음)의 '꺼짐'이 다음 거래처에도 남아 이력 검색이 안 됐다
-                # (2026-09-22 삼경O&T)
-                _vh_only = sq2.checkbox(
-                    f"이 거래처 이력만 ({len(_vh_pns)}종)",
-                    value=bool(_vh_pns),
-                    key=f"po_vh_only_{vendor['vendor_id']}")
-                _search_go = sq3.form_submit_button("검색",
-                                                    use_container_width=True)
-            _res = []
-            _mat_res = []   # 자재 마스터(C###) 검색 결과
-            if search_q and len(search_q.strip()) >= 2:
-                _q = search_q.strip()
                 try:
-                    _res = fetch("products",
-                                 "product_id,pn,raw_material_name,product_size,"
-                                 "material,bom_material_name,material_unit_price,"
-                                 "alias_list",
-                                 f"archived_at=is.null&or=(pn.ilike.{_fql(_q)},"
-                                 f"alias_list.ilike.{_fql(_q)},item_name.ilike.{_fql(_q)},"
-                                 f"bom_material_name.ilike.{_fql(_q)})&order=pn",
-                                 limit=40)
-                except Exception as e:
-                    st.error(f"검색 실패: {e}")
-                _all_n = len(_res)
-                if _vh_only and _vh_pns:
-                    _res = [p for p in _res if p["pn"] in _vh_pns]
-                # 검색어가 옛 품명('40BLD-APP')에만 맞고 제품 품번(4S40BLD-AP)
-                # 에는 안 맞으면 제품 행이 비어 이력 행으로 떨어졌다 — 연결된
-                # 제품을 제품 행에 보탠다 (2026-10-12 UX/QA 리뷰 H1)
-                if _vh_lpn and _vh_hist:
-                    _ql9 = _q.lower()
-                    _have9 = {p["product_id"] for p in _res}
-                    _add9 = sorted({h["product_id"] for n9, h in _vh_hist.items()
-                                    if h.get("product_id") in _vh_lpn
-                                    and h["product_id"] not in _have9
-                                    and (_ql9 in n9.lower()
-                                         or _ql9 in _vh_lpn[h["product_id"]].lower())})
-                    if _add9:
+                    for _ap in fetch("products", "pn,alias_list",
+                                     "archived_at=is.null&alias_list=not.is.null",
+                                     limit=1500):
+                        for _a in str(_ap.get("alias_list") or "").split(","):
+                            _a = _a.strip()
+                            if _a:
+                                _po_alias_pn.setdefault(_a, _ap["pn"])
+                except Exception:
+                    _po_alias_pn = {}
+                # 이 거래처 발주 이력 — 품번(마스터 연결용)과, 품목별 최근 라인
+                # (마스터에 없는 직접 입력 품목도 이력으로 다시 담기 위해,
+                # 2026-09-22: 삼경O&T 습동유·절삭유처럼 소모품만 있는 거래처는
+                # 이력 검색이 항상 비던 문제)
+                _vh_pns = set()
+                _vh_hist = {}   # 품명 → 최근 라인 {material, spec, qty, unit_price, po_number, po_date}
+                _vh_lpn = {}    # 라인에 연결된 product_id → 활성 품번
+                _vh_lpn_arch = {}   # 연결 제품이 휴면이면 여기 (휴면 경고로)
+                _vh_lpn_fail = False
+                try:
+                    _vh_pos = fetch("purchase_orders", "po_id,po_number,po_date",
+                                    f"vendor_id=eq.{_fq(vendor['vendor_id'])}"
+                                    "&order=po_date.desc,po_id.desc", limit=300)
+                    if _vh_pos:
+                        _vh_pmap = {p["po_id"]: p for p in _vh_pos}
+                        _vh_rank = {p["po_id"]: i for i, p in enumerate(_vh_pos)}
+                        _vh_items = fetch("purchase_order_items",
+                                          "poi_id,po_id,item_name,material,spec,"
+                                          "qty,unit_price,material_id,unit,"
+                                          "product_id",
+                                          "po_id=in.(" + ",".join(
+                                              str(p["po_id"]) for p in _vh_pos)
+                                          + ")", limit=2000)
+                        _vh_items = [i for i in _vh_items if i.get("item_name")]
+                        # 라인에 제품이 연결돼 있으면 그 제품이 기준 — 옛 양식 품명
+                        # ('40BLD-APP (Ø140 * 16L)')은 이름으로 제품을 못 찾아 연결한
+                        # 뒤에도 '이력 행'으로 따로 떴다 (2026-10-12). 휴면 제품은
+                        # 따로 모아 '휴면 제품 제외' 경고로 보낸다.
                         try:
-                            _res += fetch(
-                                "products",
-                                "product_id,pn,raw_material_name,product_size,"
-                                "material,bom_material_name,material_unit_price,"
-                                "alias_list",
-                                "archived_at=is.null&product_id=in.({})&order=pn"
-                                .format(",".join(f'"{x}"' for x in _add9)),
-                                limit=100)
+                            _vh_lpid = sorted({i["product_id"] for i in _vh_items
+                                               if i.get("product_id")})
+                            for _i0 in range(0, len(_vh_lpid), 80):
+                                for _p9 in fetch(
+                                        "products", "product_id,pn,archived_at",
+                                        "product_id=in.({})".format(
+                                            ",".join(f'"{x}"'
+                                                     for x in _vh_lpid[_i0:_i0 + 80])),
+                                        limit=200):
+                                    if _p9.get("archived_at"):
+                                        _vh_lpn_arch[_p9["product_id"]] = _p9["pn"]
+                                    else:
+                                        _vh_lpn[_p9["product_id"]] = _p9["pn"]
                         except Exception:
-                            pass
-                # 비생산 자재(C### — 소모품·공구·포장재)는 자재 마스터에서
-                # 이름·규격으로 검색 (2026-09-22: 수기 입력이 매핑되는 줄
-                # 알았다는 사용자 피드백 — 마스터 자재를 고르면 연결됨)
-                try:
-                    _mat_res = fetch(
-                        "materials",
-                        "material_id,raw_name,material_type,spec,main_supplier,unit",
-                        f"archived_at=is.null&material_id=not.like.M*"
-                        f"&or=(raw_name.ilike.{_fql(_q)},spec.ilike.{_fql(_q)})"
-                        "&order=raw_name", limit=40)
-                except Exception:
-                    _mat_res = []
-                if _vh_only and _vh_pns:
-                    _mat_res = [m for m in _mat_res
-                                if m["raw_name"] in _vh_pns]
-            else:
-                # 검색어 없이 [검색] → 이 거래처가 주공급사인 비생산 자재(C/T)
-                # 전체 — 두리T.M.S 처럼 앱 발주 이력은 없고 마스터에만 공구가
-                # 있는 거래처도 목록이 나오게 (2026-09-22 사용자: 조회 안 됨)
-                try:
-                    _mat_res = fetch(
-                        "materials",
-                        "material_id,raw_name,material_type,spec,main_supplier,unit",
-                        f"archived_at=is.null&material_id=not.like.M*"
-                        f"&main_supplier=eq.{_fq(vendor['name'])}"
-                        "&order=raw_name", limit=300)
-                except Exception:
-                    _mat_res = []
-                if len(_mat_res) >= 300:
-                    st.info("이 거래처 자재가 300건을 넘습니다 — 검색어로 좁히면 "
-                            "전부 찾을 수 있습니다.")
-            if not (search_q and len(search_q.strip()) >= 2) \
-                    and _vh_pns and _vh_only:
-                # 검색어 없이 [검색] → 이 거래처 이력 품번 전체
-                try:
-                    _pn_list = sorted(_vh_pns)
-                    for _i0 in range(0, len(_pn_list), 60):
-                        _res += fetch("products",
-                                      "product_id,pn,raw_material_name,"
-                                      "product_size,material,bom_material_name,"
-                                      "material_unit_price,alias_list",
-                                      "archived_at=is.null&pn=in.({})&order=pn"
-                                      .format(",".join(
-                                          f'"{x}"' for x in _pn_list[_i0:_i0 + 60])),
-                                      limit=100)
+                            _vh_lpn, _vh_lpn_arch = {}, {}
+                            _vh_lpn_fail = True
+                        # 품명 → 품번: 'pn (사이즈)' 뿐 아니라 옛 발주의 'pn/품명',
+                        # 'pn(사이즈)' 도 제품으로 잇는다 (2026-10-05: 혜성철강 이력이
+                        # 'HA80-80092/유성 핀' 형식이라 제품 행이 안 나오고 미납 수주가
+                        # 0 으로 보이던 문제). 제품이 연결된 라인은 품명 유래 품번
+                        # 대신 그 제품 품번만 센다 (같은 제품이 '2종'으로 세이던 문제).
+                        _vh_unl = [i for i in _vh_items
+                                   if i.get("product_id") not in _vh_lpn]
+                        _vh_pns = ({i["item_name"].split(" (")[0] for i in _vh_unl}
+                                   | {po_hist_pn(i["item_name"]) for i in _vh_unl})
+                        # 이력이 옛 품번(휴면 쌍둥이)으로 적혀 있으면 그 품번을 별칭으로
+                        # 가진 활성 제품으로 잇는다 (2026-10-05: 혜성철강 이력 'D180223'
+                        # ↔ 활성 '4D180223-00' — '휴면 제품 제외' 경고만 뜨던 문제)
+                        _vh_pns |= {_po_alias_pn[x] for x in list(_vh_pns)
+                                    if x in _po_alias_pn}
+                        _vh_pns |= set(_vh_lpn.values())
+                        # 최근 발주 순으로 훑으며 품목별 첫 라인만 보관
+                        for i in sorted(_vh_items, key=lambda x: (
+                                _vh_rank.get(x["po_id"], 9999),
+                                -int(x.get("poi_id") or 0))):
+                            _nm = i["item_name"].strip()
+                            if _nm in _vh_hist:
+                                continue
+                            _po9 = _vh_pmap.get(i["po_id"]) or {}
+                            _vh_hist[_nm] = {
+                                "material_id": i.get("material_id"),
+                                "product_id": i.get("product_id"),
+                                "unit": i.get("unit") or "EA",
+                                "material": i.get("material") or "",
+                                "spec": i.get("spec") or "",
+                                "qty": int(float(i.get("qty") or 0)),
+                                "unit_price": int(float(i.get("unit_price") or 0)),
+                                "po_number": _po9.get("po_number"),
+                                "po_date": str(_po9.get("po_date") or "")[:10]}
                 except Exception:
                     pass
-
-            # 마스터에 없는 이력 품목 — 검색어와 맞는(또는 검색어 없이 이력
-            # 전체) 이력 품명 중 활성 제품이 아닌 것. 휴면 제품은 기존처럼
-            # 경고만, 나머지는 이력 그대로 담을 수 있는 행으로.
-            _hist_rows = []
-            _hist_arch = []
-            _searched = bool(search_q and len(search_q.strip()) >= 2) or \
-                bool(_vh_pns and _vh_only) or bool(_mat_res)
-            if _searched and _vh_hist:
-                _q9 = (search_q or "").strip().lower()
-                _res_pns = {p["pn"] for p in _res}
-                _res_mats = {m["raw_name"] for m in _mat_res}
-                _cand = [n for n in sorted(_vh_hist)
-                         if n.split(" (")[0] not in _res_pns
-                         and po_hist_pn(n) not in _res_pns
-                         and _po_alias_pn.get(po_hist_pn(n)) not in _res_pns
-                         and _po_alias_pn.get(n.split(" (")[0]) not in _res_pns
-                         and n not in _res_mats
-                         and (not _q9 or _q9 in n.lower())]
-                if _cand:
-                    _known = {}
+                with st.form("po_search_form"):
+                    sq1, sq2, sq3 = st.columns([3, 1.4, 0.8])
+                    search_q = sq1.text_input("품번 검색", key="po_q",
+                                              placeholder="예: 8HFDV, 4PDVN — "
+                                                          "비우면 이 거래처 이력 전체")
+                    # key 에 거래처 ID — 하나의 key 를 쓰면 처음 본 거래처(이력
+                    # 없음)의 '꺼짐'이 다음 거래처에도 남아 이력 검색이 안 됐다
+                    # (2026-09-22 삼경O&T)
+                    _vh_only = sq2.checkbox(
+                        f"이 거래처 이력만 ({len(_vh_pns)}종)",
+                        value=bool(_vh_pns),
+                        key=f"po_vh_only_{vendor['vendor_id']}")
+                    _search_go = sq3.form_submit_button("검색",
+                                                        use_container_width=True)
+                _res = []
+                _mat_res = []   # 자재 마스터(C###) 검색 결과
+                if search_q and len(search_q.strip()) >= 2:
+                    _q = search_q.strip()
                     try:
-                        for _i0 in range(0, len(_cand), 60):
-                            for _p9 in fetch(
-                                    "products", "pn,archived_at",
-                                    "pn=in.({})".format(",".join(
-                                        f'"{x}"' for x in sorted(
-                                            {c.split(" (")[0]
-                                             for c in _cand[_i0:_i0 + 60]}
-                                            | {po_hist_pn(c)
-                                               for c in _cand[_i0:_i0 + 60]}))),
-                                    limit=200):
-                                _known[_p9["pn"]] = bool(_p9.get("archived_at"))
+                        _res = fetch("products",
+                                     "product_id,pn,raw_material_name,product_size,"
+                                     "material,bom_material_name,material_unit_price,"
+                                     "alias_list",
+                                     f"archived_at=is.null&or=(pn.ilike.{_fql(_q)},"
+                                     f"alias_list.ilike.{_fql(_q)},item_name.ilike.{_fql(_q)},"
+                                     f"bom_material_name.ilike.{_fql(_q)})&order=pn",
+                                     limit=40)
+                    except Exception as e:
+                        st.error(f"검색 실패: {e}")
+                    _all_n = len(_res)
+                    if _vh_only and _vh_pns:
+                        _res = [p for p in _res if p["pn"] in _vh_pns]
+                    # 검색어가 옛 품명('40BLD-APP')에만 맞고 제품 품번(4S40BLD-AP)
+                    # 에는 안 맞으면 제품 행이 비어 이력 행으로 떨어졌다 — 연결된
+                    # 제품을 제품 행에 보탠다 (2026-10-12 UX/QA 리뷰 H1)
+                    if _vh_lpn and _vh_hist:
+                        _ql9 = _q.lower()
+                        _have9 = {p["product_id"] for p in _res}
+                        _add9 = sorted({h["product_id"] for n9, h in _vh_hist.items()
+                                        if h.get("product_id") in _vh_lpn
+                                        and h["product_id"] not in _have9
+                                        and (_ql9 in n9.lower()
+                                             or _ql9 in _vh_lpn[h["product_id"]].lower())})
+                        if _add9:
+                            try:
+                                _res += fetch(
+                                    "products",
+                                    "product_id,pn,raw_material_name,product_size,"
+                                    "material,bom_material_name,material_unit_price,"
+                                    "alias_list",
+                                    "archived_at=is.null&product_id=in.({})&order=pn"
+                                    .format(",".join(f'"{x}"' for x in _add9)),
+                                    limit=100)
+                            except Exception:
+                                pass
+                    # 비생산 자재(C### — 소모품·공구·포장재)는 자재 마스터에서
+                    # 이름·규격으로 검색 (2026-09-22: 수기 입력이 매핑되는 줄
+                    # 알았다는 사용자 피드백 — 마스터 자재를 고르면 연결됨)
+                    try:
+                        _mat_res = fetch(
+                            "materials",
+                            "material_id,raw_name,material_type,spec,main_supplier,unit",
+                            f"archived_at=is.null&material_id=not.like.M*"
+                            f"&or=(raw_name.ilike.{_fql(_q)},spec.ilike.{_fql(_q)})"
+                            "&order=raw_name", limit=40)
                     except Exception:
-                        pass
-                    for n in _cand:
-                        _lp9 = _vh_hist[n].get("product_id")
-                        if _lp9 and _lp9 in _vh_lpn:
-                            continue   # 제품이 연결된 라인 — 제품 행이 대신한다
-                        if _lp9 and _lp9 in _vh_lpn_arch:
-                            _hist_arch.append(_vh_lpn_arch[_lp9])
-                            continue   # 연결 제품이 휴면 — 경고로
-                        _pn9 = n.split(" (")[0]
-                        if _pn9 not in _known:
-                            _pn9 = po_hist_pn(n)
-                        if _po_alias_pn.get(_pn9) or _po_alias_pn.get(po_hist_pn(n)):
-                            continue   # 옛 품번 — 활성 제품의 별칭 (검색에 안 걸린 것)
-                        if _pn9 in _known:
-                            if _known[_pn9]:
-                                _hist_arch.append(_pn9)
-                            continue   # 활성 제품인데 검색에 안 걸린 것 — 이력 행 아님
-                        _hist_rows.append((n, _vh_hist[n]))
-
-            if _vh_lpn_fail and _searched:
-                st.warning("발주 라인에 연결된 제품 조회에 실패해 일부 이력이 "
-                           "제품 행에 합쳐지지 않았을 수 있습니다 — 다시 검색하세요.")
-            if search_q and len(search_q.strip()) >= 2 and not _res \
-                    and not _mat_res and not _hist_rows:
-                _q = search_q.strip()
-                if _vh_only and _vh_pns and _all_n:
-                    st.info(f"이 거래처 이력에 없는 품번 — 전체 품목 "
-                            f"{_all_n}건 일치. 체크를 해제하고 다시 검색하세요.")
+                        _mat_res = []
+                    if _vh_only and _vh_pns:
+                        _mat_res = [m for m in _mat_res
+                                    if m["raw_name"] in _vh_pns]
                 else:
+                    # 검색어 없이 [검색] → 이 거래처가 주공급사인 비생산 자재(C/T)
+                    # 전체 — 두리T.M.S 처럼 앱 발주 이력은 없고 마스터에만 공구가
+                    # 있는 거래처도 목록이 나오게 (2026-09-22 사용자: 조회 안 됨)
                     try:
-                        arch = fetch("products", "pn",
-                                     f"pn=ilike.*{_fq(_q)}*&archived_at=not.is.null",
-                                     limit=5)
+                        _mat_res = fetch(
+                            "materials",
+                            "material_id,raw_name,material_type,spec,main_supplier,unit",
+                            f"archived_at=is.null&material_id=not.like.M*"
+                            f"&main_supplier=eq.{_fq(vendor['name'])}"
+                            "&order=raw_name", limit=300)
                     except Exception:
-                        arch = []
-                    if arch:
-                        st.warning("활성 품목 중 검색 결과 없음 — 휴면 품목 "
-                                   f"{len(arch)}건 일치: "
-                                   f"{', '.join(a['pn'] for a in arch)}. "
-                                   "마스터 관리에서 활성 복귀 후 발주하세요.")
-                    else:
-                        st.info("일치하는 품목 없음 — 아래 '마스터에 없는 자재 "
-                                "직접 입력'을 이용하세요.")
-            elif _hist_arch and not search_q:
-                st.warning("이력 중 휴면 제품 {}건은 제외: {} — 마스터 관리에서 "
-                           "활성 복귀 후 발주하세요.".format(
-                               len(_hist_arch), ", ".join(_hist_arch[:8])))
-            elif _search_go and not search_q and not _res and not _mat_res \
-                    and not _hist_rows:
-                st.info("이 거래처가 주공급사인 자재도, 앱 발주 이력도 없습니다 — "
-                        "품번·자재명으로 검색하거나 아래 '직접 입력'을 이용하세요.")
-
-            if _res or _mat_res or _hist_rows:
-                _in_cart = {it.get("product_id")
-                            for it in st.session_state.po_items}
-                _in_cart_names = {(it.get("item_name") or "").strip()
-                                  for it in st.session_state.po_items
-                                  if not it.get("product_id")}
-                _rows = []
-                # 열 구성: 소재 발주는 제품 기준(품번·재질·제품 사이즈·BOM 자재명),
-                # 소모성·공구 발주는 자재 마스터 기준(자재ID·자재명·구분·규격·
-                # 주공급사) — 표 내용이 마스터와 다르게 보이던 문제 (2026-09-22)
-                _mat_layout = sel_bucket != "소재"
-                # 2026-10-05 사용자: '구분'은 데이터가 쌓인 뒤엔 필요 없어 빼고,
-                # 그 자리에 '발주 필요'(미납 − 완성·재공·소재 재고·미입고 발주, 소재
-                # 단위). '최근 납기'는 지난 납기가 아니라 미납 수주의 가장 이른
-                # 납기라 '다음 납기'로 이름만 바꿈
-                _COLS_PROD = ("담기", "품번", "재질", "제품 사이즈", "소재 (BOM 자재명)",
-                              "미납 수주", "발주 필요", "다음 납기",
-                              "최근 단가", "최근 수량", "최근 발주", "담김")
-                # 제품 행의 현재 수주 — 미납 합계·가장 이른 납기 (2026-09-22 사용자:
-                # 발주서 작성 때 수주 정보를 참고하고 싶다)
-                _so_pend = _po_pending_map([p["product_id"] for p in _res])
-                # 이력 행(제품으로 이어지지 않은 옛 발주 품목)도 미납을 보여 준다:
-                # 그 라인의 제품 + 그 자재(M###)를 BOM 으로 쓰는 제품의 미납 합계
-                # (DIC 'D917137/THRUST WASHER' 처럼 품명으로는 제품을 못 찾는 경우)
-                _h_pids = {}
-                _h_mids = sorted({str(_h.get("material_id")) for _n, _h in _hist_rows
-                                  if str(_h.get("material_id") or "").startswith("M")})
-                _h_bom = {}
-                _h_fac = {}      # (자재, 제품) → 제품 1개당 소재 수량
-                if _h_mids:
+                        _mat_res = []
+                    if len(_mat_res) >= 300:
+                        ws_note("이 거래처 자재가 300건을 넘습니다 — 검색어로 좁히면 "
+                                "전부 찾을 수 있습니다.")
+                if not (search_q and len(search_q.strip()) >= 2) \
+                        and _vh_pns and _vh_only:
+                    # 검색어 없이 [검색] → 이 거래처 이력 품번 전체
                     try:
-                        for _i0 in range(0, len(_h_mids), 80):
-                            for _b in fetch(
-                                    "bom", "product_id,material_id,process_type,"
-                                           "qty_per_pc,shared_factor",
-                                    "material_id=in.({})".format(",".join(
-                                        f'"{x}"' for x in _h_mids[_i0:_i0 + 80])),
-                                    limit=2000):
-                                if (_b.get("process_type") or "MATERIAL") == "MATERIAL":
-                                    _h_bom.setdefault(_b["material_id"], set()).add(
-                                        _b["product_id"])
-                                    _h_fac[(_b["material_id"], _b["product_id"])] = \
-                                        po_mat_factor(_b)
-                    except Exception:
-                        _h_bom = {}
-                for _n, _h in _hist_rows:
-                    _ps = set(_h_bom.get(_h.get("material_id")) or ())
-                    if _h.get("product_id"):
-                        _ps.add(_h["product_id"])
-                    _h_pids[_n] = _ps
-                _h_pend = (_po_pending_map(sorted({x for v in _h_pids.values()
-                                                   for x in v}))
-                           if any(_h_pids.values()) else {})
-
-                def _hist_pend(nm):
-                    _q, _d = 0, None
-                    for _pid in _h_pids.get(nm, ()):
-                        _e = _h_pend.get(_pid)
-                        if not _e:
-                            continue
-                        _q += _e["qty"]
-                        if _e.get("due") and (_d is None or _e["due"] < _d):
-                            _d = _e["due"]
-                    return _q, _d or "-"
-
-                # 담을 때 기본 수량 = 미납 수주를 소재 수량으로 환산한 값
-                # (2026-10-05 사용자 요청). 봉재처럼 소재 1개에서 제품 여러 개가
-                # 나오면 BOM(EA/PC ÷ 공용계수)으로 나눠 올림한다. 미납이 없으면
-                # 종전대로 이 거래처 최근 발주 수량.
-                _p_fac = {}
-                _res_pids = [p["product_id"] for p in _res if _so_pend.get(p["product_id"])]
-                if _res_pids:
-                    try:
-                        for _i0 in range(0, len(_res_pids), 80):
-                            for _b in fetch(
-                                    "bom", "product_id,process_type,qty_per_pc,"
-                                           "shared_factor",
-                                    "product_id=in.({})".format(",".join(
-                                        f'"{x}"' for x in _res_pids[_i0:_i0 + 80])),
-                                    limit=2000):
-                                if (_b.get("process_type") or "MATERIAL") == "MATERIAL":
-                                    _p_fac.setdefault(_b["product_id"],
-                                                      po_mat_factor(_b))
-                    except Exception:
-                        _p_fac = {}
-
-                def _need_prod(pid):
-                    return po_need_qty([(
-                        (_so_pend.get(pid) or {}).get("qty") or 0,
-                        _p_fac.get(pid, 1.0))])
-
-                def _need_hist(nm, mid):
-                    return po_need_qty([(
-                        (_h_pend.get(_pid) or {}).get("qty") or 0,
-                        _h_fac.get((mid, _pid), 1.0))
-                        for _pid in _h_pids.get(nm, ())])
-                _COLS_MAT = ("담기", "자재ID", "자재명", "구분", "규격", "주공급사",
-                             "최근 단가", "최근 수량", "최근 발주", "담김")
-                _cols_use = _COLS_MAT if _mat_layout else _COLS_PROD
-                _PICK_NUM = ("미납 수주", "발주 필요", "최근 단가", "최근 수량")
-                # 발주 필요 — 발주 필요량 계산(_mr, 5분 캐시) 결과를 그대로 쓴다
-                _ps_short = (_mr or {}).get("prod_short") or {}
-                _ms_short = (_mr or {}).get("mat_short") or {}
-                _no_bom_pids = {x["product_id"] for x in
-                                ((_mr or {}).get("items_no_bom") or [])}
-                import math as _math8
-
-                def _short_prod(pid):
-                    if pid in _no_bom_pids:
-                        return None            # BOM 없음 — 계산 불가
-                    return int(_math8.ceil(float(_ps_short.get(pid, 0.0)) - 1e-9))
-
-                def _short_mat(mid):
-                    if not mid or mid not in _ms_short:
-                        return None
-                    return int(_math8.ceil(float(_ms_short.get(mid, 0.0)) - 1e-9))
-                # 자재 행의 최근 단가·수량: ① 이 거래처 앱 발주 이력 ② 매입 원장
-                # (matched_material_id) 최근 행 — 두리처럼 앱 발주가 없어도
-                # 원장 단가가 나오게. 행마다 REST 를 치지 않고 한 번에.
-                _lg_last = {}
-                _mat_ids = [m["material_id"] for m in _mat_res]
-                if _mat_ids:
-                    try:
-                        for _i0 in range(0, len(_mat_ids), 100):
-                            _chunk = ",".join(f'"{x}"' for x in _mat_ids[_i0:_i0 + 100])
-                            for _lr in fetch(
-                                    "purchase_ledger",
-                                    "matched_material_id,unit_price,qty,trade_date",
-                                    f"matched_material_id=in.({_chunk})"
-                                    "&order=trade_date.desc", limit=3000):
-                                _lg_last.setdefault(_lr["matched_material_id"], _lr)
+                        _pn_list = sorted(_vh_pns)
+                        for _i0 in range(0, len(_pn_list), 60):
+                            _res += fetch("products",
+                                          "product_id,pn,raw_material_name,"
+                                          "product_size,material,bom_material_name,"
+                                          "material_unit_price,alias_list",
+                                          "archived_at=is.null&pn=in.({})&order=pn"
+                                          .format(",".join(
+                                              f'"{x}"' for x in _pn_list[_i0:_i0 + 60])),
+                                          limit=100)
                     except Exception:
                         pass
-                for p in _res:
-                    vp, vq, vpo, vdt = _get_vendor_recent_line(
-                        vendor["vendor_id"], p["pn"],
-                        tuple(a.strip() for a in
-                              str(p.get("alias_list") or "").split(",")
-                              if a.strip()),
-                        pid=p["product_id"])
-                    _rows.append({
-                        "담기": False, "품번": p["pn"],
-                        "자재ID": p["product_id"], "자재명": p["pn"],
-                        "규격": p.get("product_size") or "-", "주공급사": "-",
-                        "재질": p.get("material") or "-",
-                        "제품 사이즈": p.get("product_size") or "-",
-                        "소재 (BOM 자재명)": (p.get("raw_material_name")
-                                            or p.get("bom_material_name") or "-"),
-                        "미납 수주": (_so_pend.get(p["product_id"]) or {}).get("qty", 0),
-                        "발주 필요": _short_prod(p["product_id"]),
-                        "다음 납기": (_so_pend.get(p["product_id"]) or {}).get("due") or "-",
-                        "최근 단가": vp or int(p.get("material_unit_price") or 0),
-                        "최근 수량": vq or 0,
-                        "최근 발주": (f"{vpo} · {str(vdt)[:10]}" if vpo else "-"),
-                        "구분": "제품" if _mat_layout else "마스터",
-                        "담김": "담김" if p["product_id"] in _in_cart else "",
-                        "_name": p["pn"], "_p": p, "_vp": vp, "_vq": vq,
-                        "_need": _need_prod(p["product_id"])})
-                for m in _mat_res:
-                    _h9 = _vh_hist.get(m["raw_name"])
-                    _l9 = _lg_last.get(m["material_id"])
-                    if _h9:
-                        vp, vq = _h9["unit_price"], _h9["qty"]
-                        _last = (f"{_h9['po_number']} · {_h9['po_date']}"
-                                 if _h9.get("po_number") else "-")
-                    elif _l9:
-                        vp = int(float(_l9.get("unit_price") or 0))
-                        vq = int(float(_l9.get("qty") or 0))
-                        _last = f"원장 · {str(_l9.get('trade_date') or '')[:10]}"
-                    else:
-                        vp, vq, _last = 0, 0, "-"
-                    _rows.append({
-                        "담기": False, "품번": m["raw_name"],
-                        "자재ID": m["material_id"], "자재명": m["raw_name"],
-                        "규격": m.get("spec") or "-",
-                        "주공급사": m.get("main_supplier") or "-",
-                        "재질": "-", "제품 사이즈": "-",
-                        "소재 (BOM 자재명)": m.get("spec") or "-",
-                        "미납 수주": 0, "발주 필요": _short_mat(m["material_id"]),
-                        "다음 납기": "-",
-                        "최근 단가": vp or 0, "최근 수량": vq or 0,
-                        "최근 발주": _last,
-                        "구분": ((m.get("material_type") or "자재") if _mat_layout
-                                 else f"자재 · {m.get('material_type') or '-'}"),
-                        "담김": "담김" if m["raw_name"] in _in_cart_names else "",
-                        "_name": m["raw_name"],
-                        "_adhoc": {"material_id": m["material_id"],
-                                   "unit": m.get("unit") or "EA",
-                                   "material": "", "spec": m.get("spec") or "",
-                                   "qty": vq or 0, "unit_price": vp or 0}})
-                for _nm, _h in _hist_rows:
-                    _rows.append({
-                        "담기": False, "품번": _nm,
-                        "자재ID": _h.get("material_id") or "-", "자재명": _nm,
-                        "규격": _h["spec"] or "-", "주공급사": vendor["name"],
-                        "재질": _h["material"] or "-",
-                        "제품 사이즈": "-",
-                        "소재 (BOM 자재명)": _h["spec"] or "-",
-                        "미납 수주": _hist_pend(_nm)[0],
-                        "발주 필요": _short_mat(_h.get("material_id")),
-                        "다음 납기": _hist_pend(_nm)[1],
-                        "최근 단가": _h["unit_price"],
-                        "최근 수량": _h["qty"],
-                        "최근 발주": (f"{_h['po_number']} · {_h['po_date']}"
-                                     if _h.get("po_number") else "-"),
-                        "구분": ("자재 이력" if _h.get("material_id")
-                                 else "직접 입력 이력"),
-                        "담김": "담김" if _nm in _in_cart_names else "",
-                        "_name": _nm, "_adhoc": _h,
-                        "_need": _need_hist(_nm, _h.get("material_id"))})
-                with st.form("po_pick_form"):
-                    _pick_ed = st.data_editor(
-                        pd.DataFrame([{c: r[c] for c in _cols_use}
-                                      for r in _rows]),
-                        hide_index=True, use_container_width=True,
-                        height=min(420, 46 + 36 * len(_rows)),
-                        key=f"po_pick_{vendor['vendor_id']}_{search_q}_{sel_bucket}",
-                        column_config={
-                            "담기": st.column_config.CheckboxColumn(),
-                            **{c: st.column_config.Column(disabled=True)
-                               for c in _cols_use
-                               if c not in ("담기",) + _PICK_NUM},
-                            # 숫자 열은 모두 자리표기 (2026-10-05 사용자: 발주
-                            # 필요만 되고 나머지는 안 됨)
-                            **{c: st.column_config.NumberColumn(
-                                c, disabled=True, format="localized")
-                               for c in _cols_use if c in _PICK_NUM}})
-                    _pick_go = st.form_submit_button("체크한 품목 담기",
-                                                     type="primary")
-                if _pick_go:
-                    _n_add = 0
-                    for _bi, _brow in _pick_ed.iterrows():
-                        if bool(_brow.get("담기")):
-                            r = _rows[int(_bi)]
-                            if r.get("_adhoc"):
-                                # 마스터 연결 없이 이력 그대로 (발주서에만 기재)
-                                _h = r["_adhoc"]
-                                st.session_state.po_items.append({
-                                    "_uid": str(_po_uuid.uuid4())[:8],
-                                    "product_id": None,
-                                    "material_id": _h.get("material_id"),
-                                    "item_name": r["_name"],
-                                    "unit": _h.get("unit") or "EA",
-                                    "material": _h["material"],
-                                    "spec": _h["spec"],
-                                    "qty": ((r.get("_need") or _h["qty"])
-                                            if sel_bucket == "소재" else _h["qty"]),
-                                    "unit_price": _h["unit_price"],
-                                    "memo": ""})
-                            else:
-                                _po_add(r["_p"], r["_vp"],
-                                        (r.get("_need") or r["_vq"])
-                                        if sel_bucket == "소재" else r["_vq"])
-                            _n_add += 1
-                    if _n_add:
-                        st.session_state["po_tbl_nonce"] = \
-                            st.session_state.get("po_tbl_nonce", 0) + 1
-                        st.rerun()
-                    else:
-                        st.warning("담을 품목을 체크하세요.")
 
-            # 최근 발주 복사·품번 일괄 추가는 제거 (2026-09-11 사용자 피드백:
-            # 발주서 단위라 품목을 알 수 없고, 일괄 추가는 오매칭). 거래처
-            # 이력 품번은 검색어 없이 [검색] 으로 본다.
-            with st.expander("마스터에 없는 자재 직접 입력 (발주서에만 기재)"):
-                with st.form("po_adhoc_form"):
-                    nx = st.text_input("품번/품명", key="nx_name")
-                    a1, a2, a3 = st.columns(3)
-                    if sel_bucket == "소재":
-                        nm = a1.text_input("재질", key="nx_mat")
-                        nu = "EA"
+                # 마스터에 없는 이력 품목 — 검색어와 맞는(또는 검색어 없이 이력
+                # 전체) 이력 품명 중 활성 제품이 아닌 것. 휴면 제품은 기존처럼
+                # 경고만, 나머지는 이력 그대로 담을 수 있는 행으로.
+                _hist_rows = []
+                _hist_arch = []
+                _searched = bool(search_q and len(search_q.strip()) >= 2) or \
+                    bool(_vh_pns and _vh_only) or bool(_mat_res)
+                if _searched and _vh_hist:
+                    _q9 = (search_q or "").strip().lower()
+                    _res_pns = {p["pn"] for p in _res}
+                    _res_mats = {m["raw_name"] for m in _mat_res}
+                    _cand = [n for n in sorted(_vh_hist)
+                             if n.split(" (")[0] not in _res_pns
+                             and po_hist_pn(n) not in _res_pns
+                             and _po_alias_pn.get(po_hist_pn(n)) not in _res_pns
+                             and _po_alias_pn.get(n.split(" (")[0]) not in _res_pns
+                             and n not in _res_mats
+                             and (not _q9 or _q9 in n.lower())]
+                    if _cand:
+                        _known = {}
+                        try:
+                            for _i0 in range(0, len(_cand), 60):
+                                for _p9 in fetch(
+                                        "products", "pn,archived_at",
+                                        "pn=in.({})".format(",".join(
+                                            f'"{x}"' for x in sorted(
+                                                {c.split(" (")[0]
+                                                 for c in _cand[_i0:_i0 + 60]}
+                                                | {po_hist_pn(c)
+                                                   for c in _cand[_i0:_i0 + 60]}))),
+                                        limit=200):
+                                    _known[_p9["pn"]] = bool(_p9.get("archived_at"))
+                        except Exception:
+                            pass
+                        for n in _cand:
+                            _lp9 = _vh_hist[n].get("product_id")
+                            if _lp9 and _lp9 in _vh_lpn:
+                                continue   # 제품이 연결된 라인 — 제품 행이 대신한다
+                            if _lp9 and _lp9 in _vh_lpn_arch:
+                                _hist_arch.append(_vh_lpn_arch[_lp9])
+                                continue   # 연결 제품이 휴면 — 경고로
+                            _pn9 = n.split(" (")[0]
+                            if _pn9 not in _known:
+                                _pn9 = po_hist_pn(n)
+                            if _po_alias_pn.get(_pn9) or _po_alias_pn.get(po_hist_pn(n)):
+                                continue   # 옛 품번 — 활성 제품의 별칭 (검색에 안 걸린 것)
+                            if _pn9 in _known:
+                                if _known[_pn9]:
+                                    _hist_arch.append(_pn9)
+                                continue   # 활성 제품인데 검색에 안 걸린 것 — 이력 행 아님
+                            _hist_rows.append((n, _vh_hist[n]))
+
+                if _vh_lpn_fail and _searched:
+                    ws_note_warn("발주 라인에 연결된 제품 조회에 실패해 일부 이력이 "
+                               "제품 행에 합쳐지지 않았을 수 있습니다 — 다시 검색하세요.")
+                if search_q and len(search_q.strip()) >= 2 and not _res \
+                        and not _mat_res and not _hist_rows:
+                    _q = search_q.strip()
+                    if _vh_only and _vh_pns and _all_n:
+                        ws_note(f"이 거래처 이력에 없는 품번 — 전체 품목 "
+                                f"{_all_n}건 일치. 체크를 해제하고 다시 검색하세요.")
                     else:
-                        nm = ""
-                        nu = a1.text_input("단위", value="EA", key="nx_unit")
-                    ns = a2.text_input("규격", key="nx_spec")
-                    np_ = a3.number_input("단가", min_value=0, step=100,
-                                          key="nx_price")
-                    if st.form_submit_button("담기") and nx:
-                        st.session_state.po_items.append({
-                            "_uid": str(_po_uuid.uuid4())[:8],
-                            "product_id": None, "item_name": nx,
-                            "material": nm, "spec": ns,
-                            "unit": (nu or "EA").strip() or "EA", "qty": 0,
-                            "unit_price": int(np_), "memo": ""})
-                        st.session_state["po_tbl_nonce"] =                             st.session_state.get("po_tbl_nonce", 0) + 1
-                        st.rerun()
+                        try:
+                            arch = fetch("products", "pn",
+                                         f"pn=ilike.*{_fq(_q)}*&archived_at=not.is.null",
+                                         limit=5)
+                        except Exception:
+                            arch = []
+                        if arch:
+                            ws_note_warn("활성 품목 중 검색 결과 없음 — 휴면 품목 "
+                                       f"{len(arch)}건 일치: "
+                                       f"{', '.join(a['pn'] for a in arch)}. "
+                                       "마스터 관리에서 활성 복귀 후 발주하세요.")
+                        else:
+                            ws_note("일치하는 품목 없음 — 아래 '마스터에 없는 자재 "
+                                    "직접 입력'을 이용하세요.")
+                elif _hist_arch and not search_q:
+                    ws_note_warn("이력 중 휴면 제품 {}건은 제외: {} — 마스터 관리에서 "
+                               "활성 복귀 후 발주하세요.".format(
+                                   len(_hist_arch), ", ".join(_hist_arch[:8])))
+                elif _search_go and not search_q and not _res and not _mat_res \
+                        and not _hist_rows:
+                    ws_note("이 거래처가 주공급사인 자재도, 앱 발주 이력도 없습니다 — "
+                            "품번·자재명으로 검색하거나 아래 '직접 입력'을 이용하세요.")
+
+                if _res or _mat_res or _hist_rows:
+                    _in_cart = {it.get("product_id")
+                                for it in st.session_state.po_items}
+                    _in_cart_names = {(it.get("item_name") or "").strip()
+                                      for it in st.session_state.po_items
+                                      if not it.get("product_id")}
+                    _rows = []
+                    # 열 구성: 소재 발주는 제품 기준(품번·재질·제품 사이즈·BOM 자재명),
+                    # 소모성·공구 발주는 자재 마스터 기준(자재ID·자재명·구분·규격·
+                    # 주공급사) — 표 내용이 마스터와 다르게 보이던 문제 (2026-09-22)
+                    _mat_layout = sel_bucket != "소재"
+                    # 2026-10-05 사용자: '구분'은 데이터가 쌓인 뒤엔 필요 없어 빼고,
+                    # 그 자리에 '발주 필요'(미납 − 완성·재공·소재 재고·미입고 발주, 소재
+                    # 단위). '최근 납기'는 지난 납기가 아니라 미납 수주의 가장 이른
+                    # 납기라 '다음 납기'로 이름만 바꿈
+                    _COLS_PROD = ("담기", "품번", "재질", "제품 사이즈", "소재 (BOM 자재명)",
+                                  "미납 수주", "발주 필요", "다음 납기",
+                                  "최근 단가", "최근 수량", "최근 발주", "담김")
+                    # 제품 행의 현재 수주 — 미납 합계·가장 이른 납기 (2026-09-22 사용자:
+                    # 발주서 작성 때 수주 정보를 참고하고 싶다)
+                    _so_pend = _po_pending_map([p["product_id"] for p in _res])
+                    # 이력 행(제품으로 이어지지 않은 옛 발주 품목)도 미납을 보여 준다:
+                    # 그 라인의 제품 + 그 자재(M###)를 BOM 으로 쓰는 제품의 미납 합계
+                    # (DIC 'D917137/THRUST WASHER' 처럼 품명으로는 제품을 못 찾는 경우)
+                    _h_pids = {}
+                    _h_mids = sorted({str(_h.get("material_id")) for _n, _h in _hist_rows
+                                      if str(_h.get("material_id") or "").startswith("M")})
+                    _h_bom = {}
+                    _h_fac = {}      # (자재, 제품) → 제품 1개당 소재 수량
+                    if _h_mids:
+                        try:
+                            for _i0 in range(0, len(_h_mids), 80):
+                                for _b in fetch(
+                                        "bom", "product_id,material_id,process_type,"
+                                               "qty_per_pc,shared_factor",
+                                        "material_id=in.({})".format(",".join(
+                                            f'"{x}"' for x in _h_mids[_i0:_i0 + 80])),
+                                        limit=2000):
+                                    if (_b.get("process_type") or "MATERIAL") == "MATERIAL":
+                                        _h_bom.setdefault(_b["material_id"], set()).add(
+                                            _b["product_id"])
+                                        _h_fac[(_b["material_id"], _b["product_id"])] = \
+                                            po_mat_factor(_b)
+                        except Exception:
+                            _h_bom = {}
+                    for _n, _h in _hist_rows:
+                        _ps = set(_h_bom.get(_h.get("material_id")) or ())
+                        if _h.get("product_id"):
+                            _ps.add(_h["product_id"])
+                        _h_pids[_n] = _ps
+                    _h_pend = (_po_pending_map(sorted({x for v in _h_pids.values()
+                                                       for x in v}))
+                               if any(_h_pids.values()) else {})
+
+                    def _hist_pend(nm):
+                        _q, _d = 0, None
+                        for _pid in _h_pids.get(nm, ()):
+                            _e = _h_pend.get(_pid)
+                            if not _e:
+                                continue
+                            _q += _e["qty"]
+                            if _e.get("due") and (_d is None or _e["due"] < _d):
+                                _d = _e["due"]
+                        return _q, _d or "-"
+
+                    # 담을 때 기본 수량 = 미납 수주를 소재 수량으로 환산한 값
+                    # (2026-10-05 사용자 요청). 봉재처럼 소재 1개에서 제품 여러 개가
+                    # 나오면 BOM(EA/PC ÷ 공용계수)으로 나눠 올림한다. 미납이 없으면
+                    # 종전대로 이 거래처 최근 발주 수량.
+                    _p_fac = {}
+                    _res_pids = [p["product_id"] for p in _res if _so_pend.get(p["product_id"])]
+                    if _res_pids:
+                        try:
+                            for _i0 in range(0, len(_res_pids), 80):
+                                for _b in fetch(
+                                        "bom", "product_id,process_type,qty_per_pc,"
+                                               "shared_factor",
+                                        "product_id=in.({})".format(",".join(
+                                            f'"{x}"' for x in _res_pids[_i0:_i0 + 80])),
+                                        limit=2000):
+                                    if (_b.get("process_type") or "MATERIAL") == "MATERIAL":
+                                        _p_fac.setdefault(_b["product_id"],
+                                                          po_mat_factor(_b))
+                        except Exception:
+                            _p_fac = {}
+
+                    def _need_prod(pid):
+                        return po_need_qty([(
+                            (_so_pend.get(pid) or {}).get("qty") or 0,
+                            _p_fac.get(pid, 1.0))])
+
+                    def _need_hist(nm, mid):
+                        return po_need_qty([(
+                            (_h_pend.get(_pid) or {}).get("qty") or 0,
+                            _h_fac.get((mid, _pid), 1.0))
+                            for _pid in _h_pids.get(nm, ())])
+                    _COLS_MAT = ("담기", "자재ID", "자재명", "구분", "규격", "주공급사",
+                                 "최근 단가", "최근 수량", "최근 발주", "담김")
+                    _cols_use = _COLS_MAT if _mat_layout else _COLS_PROD
+                    _PICK_NUM = ("미납 수주", "발주 필요", "최근 단가", "최근 수량")
+                    # 발주 필요 — 발주 필요량 계산(_mr, 5분 캐시) 결과를 그대로 쓴다
+                    _ps_short = (_mr or {}).get("prod_short") or {}
+                    _ms_short = (_mr or {}).get("mat_short") or {}
+                    _no_bom_pids = {x["product_id"] for x in
+                                    ((_mr or {}).get("items_no_bom") or [])}
+                    import math as _math8
+
+                    def _short_prod(pid):
+                        if pid in _no_bom_pids:
+                            return None            # BOM 없음 — 계산 불가
+                        return int(_math8.ceil(float(_ps_short.get(pid, 0.0)) - 1e-9))
+
+                    def _short_mat(mid):
+                        if not mid or mid not in _ms_short:
+                            return None
+                        return int(_math8.ceil(float(_ms_short.get(mid, 0.0)) - 1e-9))
+                    # 자재 행의 최근 단가·수량: ① 이 거래처 앱 발주 이력 ② 매입 원장
+                    # (matched_material_id) 최근 행 — 두리처럼 앱 발주가 없어도
+                    # 원장 단가가 나오게. 행마다 REST 를 치지 않고 한 번에.
+                    _lg_last = {}
+                    _mat_ids = [m["material_id"] for m in _mat_res]
+                    if _mat_ids:
+                        try:
+                            for _i0 in range(0, len(_mat_ids), 100):
+                                _chunk = ",".join(f'"{x}"' for x in _mat_ids[_i0:_i0 + 100])
+                                for _lr in fetch(
+                                        "purchase_ledger",
+                                        "matched_material_id,unit_price,qty,trade_date",
+                                        f"matched_material_id=in.({_chunk})"
+                                        "&order=trade_date.desc", limit=3000):
+                                    _lg_last.setdefault(_lr["matched_material_id"], _lr)
+                        except Exception:
+                            pass
+                    for p in _res:
+                        vp, vq, vpo, vdt = _get_vendor_recent_line(
+                            vendor["vendor_id"], p["pn"],
+                            tuple(a.strip() for a in
+                                  str(p.get("alias_list") or "").split(",")
+                                  if a.strip()),
+                            pid=p["product_id"])
+                        _rows.append({
+                            "담기": False, "품번": p["pn"],
+                            "자재ID": p["product_id"], "자재명": p["pn"],
+                            "규격": p.get("product_size") or "-", "주공급사": "-",
+                            "재질": p.get("material") or "-",
+                            "제품 사이즈": p.get("product_size") or "-",
+                            "소재 (BOM 자재명)": (p.get("raw_material_name")
+                                                or p.get("bom_material_name") or "-"),
+                            "미납 수주": (_so_pend.get(p["product_id"]) or {}).get("qty", 0),
+                            "발주 필요": _short_prod(p["product_id"]),
+                            "다음 납기": (_so_pend.get(p["product_id"]) or {}).get("due") or "-",
+                            "최근 단가": vp or int(p.get("material_unit_price") or 0),
+                            "최근 수량": vq or 0,
+                            "최근 발주": (f"{vpo} · {str(vdt)[:10]}" if vpo else "-"),
+                            "구분": "제품" if _mat_layout else "마스터",
+                            "담김": "담김" if p["product_id"] in _in_cart else "",
+                            "_name": p["pn"], "_p": p, "_vp": vp, "_vq": vq,
+                            "_need": _need_prod(p["product_id"])})
+                    for m in _mat_res:
+                        _h9 = _vh_hist.get(m["raw_name"])
+                        _l9 = _lg_last.get(m["material_id"])
+                        if _h9:
+                            vp, vq = _h9["unit_price"], _h9["qty"]
+                            _last = (f"{_h9['po_number']} · {_h9['po_date']}"
+                                     if _h9.get("po_number") else "-")
+                        elif _l9:
+                            vp = int(float(_l9.get("unit_price") or 0))
+                            vq = int(float(_l9.get("qty") or 0))
+                            _last = f"원장 · {str(_l9.get('trade_date') or '')[:10]}"
+                        else:
+                            vp, vq, _last = 0, 0, "-"
+                        _rows.append({
+                            "담기": False, "품번": m["raw_name"],
+                            "자재ID": m["material_id"], "자재명": m["raw_name"],
+                            "규격": m.get("spec") or "-",
+                            "주공급사": m.get("main_supplier") or "-",
+                            "재질": "-", "제품 사이즈": "-",
+                            "소재 (BOM 자재명)": m.get("spec") or "-",
+                            "미납 수주": 0, "발주 필요": _short_mat(m["material_id"]),
+                            "다음 납기": "-",
+                            "최근 단가": vp or 0, "최근 수량": vq or 0,
+                            "최근 발주": _last,
+                            "구분": ((m.get("material_type") or "자재") if _mat_layout
+                                     else f"자재 · {m.get('material_type') or '-'}"),
+                            "담김": "담김" if m["raw_name"] in _in_cart_names else "",
+                            "_name": m["raw_name"],
+                            "_adhoc": {"material_id": m["material_id"],
+                                       "unit": m.get("unit") or "EA",
+                                       "material": "", "spec": m.get("spec") or "",
+                                       "qty": vq or 0, "unit_price": vp or 0}})
+                    for _nm, _h in _hist_rows:
+                        _rows.append({
+                            "담기": False, "품번": _nm,
+                            "자재ID": _h.get("material_id") or "-", "자재명": _nm,
+                            "규격": _h["spec"] or "-", "주공급사": vendor["name"],
+                            "재질": _h["material"] or "-",
+                            "제품 사이즈": "-",
+                            "소재 (BOM 자재명)": _h["spec"] or "-",
+                            "미납 수주": _hist_pend(_nm)[0],
+                            "발주 필요": _short_mat(_h.get("material_id")),
+                            "다음 납기": _hist_pend(_nm)[1],
+                            "최근 단가": _h["unit_price"],
+                            "최근 수량": _h["qty"],
+                            "최근 발주": (f"{_h['po_number']} · {_h['po_date']}"
+                                         if _h.get("po_number") else "-"),
+                            "구분": ("자재 이력" if _h.get("material_id")
+                                     else "직접 입력 이력"),
+                            "담김": "담김" if _nm in _in_cart_names else "",
+                            "_name": _nm, "_adhoc": _h,
+                            "_need": _need_hist(_nm, _h.get("material_id"))})
+                    with st.form("po_pick_form"):
+                        _pick_ed = st.data_editor(
+                            pd.DataFrame([{c: r[c] for c in _cols_use}
+                                          for r in _rows]),
+                            hide_index=True, use_container_width=True,
+                            height=min(420, 46 + 36 * len(_rows)),
+                            key=f"po_pick_{vendor['vendor_id']}_{search_q}_{sel_bucket}",
+                            column_config={
+                                "담기": st.column_config.CheckboxColumn(),
+                                **{c: st.column_config.Column(disabled=True)
+                                   for c in _cols_use
+                                   if c not in ("담기",) + _PICK_NUM},
+                                # 숫자 열은 모두 자리표기 (2026-10-05 사용자: 발주
+                                # 필요만 되고 나머지는 안 됨)
+                                **{c: st.column_config.NumberColumn(
+                                    c, disabled=True, format="localized")
+                                   for c in _cols_use if c in _PICK_NUM}})
+                        # 주 버튼은 화면에 하나(ActionBar '③ 발주서로') — 담기는 보조 (U3)
+                        _pick_go = st.form_submit_button("체크한 품목 담기")
+                    if _pick_go:
+                        _n_add = 0
+                        for _bi, _brow in _pick_ed.iterrows():
+                            if bool(_brow.get("담기")):
+                                r = _rows[int(_bi)]
+                                if r.get("_adhoc"):
+                                    # 마스터 연결 없이 이력 그대로 (발주서에만 기재)
+                                    _h = r["_adhoc"]
+                                    st.session_state.po_items.append({
+                                        "_uid": str(_po_uuid.uuid4())[:8],
+                                        "product_id": None,
+                                        "material_id": _h.get("material_id"),
+                                        "item_name": r["_name"],
+                                        "unit": _h.get("unit") or "EA",
+                                        "material": _h["material"],
+                                        "spec": _h["spec"],
+                                        "qty": ((r.get("_need") or _h["qty"])
+                                                if sel_bucket == "소재" else _h["qty"]),
+                                        "unit_price": _h["unit_price"],
+                                        "memo": ""})
+                                else:
+                                    _po_add(r["_p"], r["_vp"],
+                                            (r.get("_need") or r["_vq"])
+                                            if sel_bucket == "소재" else r["_vq"])
+                                _n_add += 1
+                        if _n_add:
+                            st.session_state["po_tbl_nonce"] = \
+                                st.session_state.get("po_tbl_nonce", 0) + 1
+                            st.rerun()
+                        else:
+                            ws_note_warn("담을 품목을 체크하세요.")
+
+                # 최근 발주 복사·품번 일괄 추가는 제거 (2026-09-11 사용자 피드백:
+                # 발주서 단위라 품목을 알 수 없고, 일괄 추가는 오매칭). 거래처
+                # 이력 품번은 검색어 없이 [검색] 으로 본다.
+                with st.expander("마스터에 없는 자재 직접 입력 (발주서에만 기재)"):
+                    with st.form("po_adhoc_form"):
+                        nx = st.text_input("품번/품명", key="nx_name")
+                        a1, a2, a3 = st.columns(3)
+                        if sel_bucket == "소재":
+                            nm = a1.text_input("재질", key="nx_mat")
+                            nu = "EA"
+                        else:
+                            nm = ""
+                            nu = a1.text_input("단위", value="EA", key="nx_unit")
+                        ns = a2.text_input("규격", key="nx_spec")
+                        np_ = a3.number_input("단가", min_value=0, step=100,
+                                              key="nx_price")
+                        if st.form_submit_button("담기") and nx:
+                            st.session_state.po_items.append({
+                                "_uid": str(_po_uuid.uuid4())[:8],
+                                "product_id": None, "item_name": nx,
+                                "material": nm, "spec": ns,
+                                "unit": (nu or "EA").strip() or "EA", "qty": 0,
+                                "unit_price": int(np_), "memo": ""})
+                            st.session_state["po_tbl_nonce"] =                             st.session_state.get("po_tbl_nonce", 0) + 1
+                            st.rerun()
 
             # ─── ③ 발주서 한 장 — 표 편집 + 발주 정보 + 만들기 (폼 하나) ───
-            with st.container(border=True):
-                st.markdown("##### ③ 발주서")
+            with st.container(border=True, key="wscard_po_items"):
                 _items = st.session_state.po_items
+                st.markdown(card_head(
+                    "③ 발주서" if _por else "담긴 품목",
+                    None if _por else f"{len(_items)}개 · 발주 수량은 표에서 수정"),
+                    unsafe_allow_html=True)
                 if _por:
                     # 방금 만든 발주서는 그 자리(③)에 완료 카드로 — 위로 튀지 않게
                     # (2026-09-11 사용자 피드백)
@@ -15619,6 +15818,7 @@ elif page == "구매 관리":
                             st.success(f"{_por['po_no']} 메일 발송 완료로 기록됨")
                         if rb3.button("새 발주서 시작", use_container_width=True,
                                       key="po_new"):
+                            st.session_state["po_step"] = 1          # 스테퍼 처음부터(U3)
                             st.session_state.po_items = []
                             st.session_state.pop("po_result", None)
                             st.session_state.pop("po_prefill_pending", None)   # R2-M1
@@ -15627,7 +15827,7 @@ elif page == "구매 관리":
                             st.rerun()
                         st.caption("'발주 이력' 화면에서 언제든 다시 내려받을 수 있습니다.")
                 elif not _items:
-                    st.info("②에서 품목을 담으면 여기에 발주서 표가 나타납니다.")
+                    _empty_state("②에서 품목을 담으면 여기에 표가 나타납니다")
                 else:
                     for it in _items:
                         it.setdefault("_uid", str(_po_uuid.uuid4())[:8])
@@ -15687,19 +15887,18 @@ elif page == "구매 관리":
                         st.rerun()          # 합계 갱신
                     _total_now = sum(int(it.get("qty") or 0) * int(it.get("unit_price") or 0)
                                      for it in _items)
-                    tc1, tc3 = st.columns([4, 1])
-                    tc1.caption("셀을 클릭해 고치면 바로 반영되고, [삭제] 를 누르면 "
-                                "그 줄이 바로 빠집니다. "
-                                + ("단위는 수기 입력 (기본 EA). "
-                                   if _unit_layout else
-                                   "재질 = 제품 마스터, 규격 = BOM 자재명. ")
-                                + "합계 ₩{:,} (VAT 별도)".format(_total_now))
-                    if tc3.button("표 비우기", key="po_clear_all",
+                    tc1, tc3 = st.columns([4, 1], vertical_alignment="center")
+                    with tc1:
+                        ws_note("셀을 눌러 고치면 바로 반영 · [삭제] 체크 = 그 줄 빼기 · "
+                                + ("단위는 수기 입력(기본 EA)" if _unit_layout
+                                   else "재질 = 제품 마스터, 규격 = BOM 자재명"))
+                    if tc3.button("전체 비우기", key="po_clear_all",
                                   use_container_width=True):
                         st.session_state.po_items = []
                         st.session_state["po_tbl_nonce"] = _tbl_nonce + 1
                         st.rerun()
-                    with st.form("po_form"):
+                    # 발주 정보(발주일·납기·메모) + [발주서 만들기] — ③ 단계에서만 보인다(po_st3)
+                    with st.container(key="po_st3"), st.form("po_form"):
                         fc1, fc2, fc3 = st.columns(3)
                         po_date = fc1.date_input("발주일", value=_date.today(),
                                                  key="po_date")
@@ -15856,6 +16055,38 @@ elif page == "구매 관리":
                                 st.session_state["po_tbl_nonce"] = _tbl_nonce + 1
                                 st.session_state.pop("mr_cache", None)
                                 st.rerun()
+
+        # ── 스테퍼 채우기 · 단계별 숨김 · ActionBar (U3 B-2) ──
+        _po_n = len(st.session_state.get("po_items") or [])
+        _po_tot = sum(int(it.get("qty") or 0) * int(it.get("unit_price") or 0)
+                      for it in (st.session_state.get("po_items") or []))
+        _po_vname = vendor["name"] if vendors else None
+        with _po_step_ph:
+            stepper([("① 거래처", _po_vname),
+                     ("② 품목 담기", f"{_po_n}개" if _po_n else None),
+                     ("③ 발주서", _por["po_no"] if _por else None)],
+                    4 if _por else _po_step)
+        _po_hide = (("wscard_po_st1", "wscard_po_st2") if _por else
+                    {1: ("wscard_po_st2", "po_st3"), 2: ("wscard_po_st1", "po_st3"),
+                     3: ("wscard_po_st1", "wscard_po_st2")}[_po_step])
+        st.markdown("<style>" + ",".join(f".st-key-{k}" for k in _po_hide)
+                    + "{display:none !important}</style>", unsafe_allow_html=True)
+        if vendors and not _por:
+            _po_sec = ({"label": "모두 초기화", "key": "po_reset_all", "on_click": _po_reset_all,
+                        "help": "미리 담긴 데이터와 품목표를 모두 비웁니다"} if _po_has_pf else
+                       None if _po_step == 1 else
+                       {"label": "① 거래처 바꾸기" if _po_step == 2 else "② 품목으로",
+                        "key": "po_step_back", "on_click": _po_go_step,
+                        "args": (_po_step - 1,)})
+            _po_pri = ({"label": "② 품목 담기로", "key": "po_step_next", "on_click": _po_go_step,
+                        "args": (2,)} if _po_step == 1 else
+                       {"label": f"③ 발주서로 ({_po_n}품목)", "key": "po_step_next",
+                        "on_click": _po_go_step, "args": (3,), "disabled": not _po_n}
+                       if _po_step == 2 else None)   # ③ 은 폼의 [발주서 만들기]가 주 버튼
+            action_bar(_po_sec,
+                       (f"거래처 — {_po_vname}" if _po_step == 1 else
+                        f"합계 {_po_tot:,}원 (부가세 별도)"),
+                       _po_pri, key="po")
 
     # ════════════ TAB 2: 발주 이력 ════════════
     if _sub == "hist":
