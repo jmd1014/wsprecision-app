@@ -66,9 +66,10 @@ _BADGE_CSS = {
 def _badge_css_html():
     """HTML 표용 배지 규칙 — 색은 var(--토큰)."""
     base = ";".join(f"{k}:{v}" for k, v in _BADGE_CSS["base"].items())
-    out = [f".tt .badge{{{base}}}"]
+    out = [f".tt .badge{{{base}}}", f".ws-b{{{base}}}"]
     for cls, (bg, fg) in _BADGE_CSS["colors"].items():
         out.append(f".tt .{cls}{{background:var({bg});color:var({fg})}}")
+        out.append(f".ws-b.{cls}{{background:var({bg});color:var({fg})}}")   # U3 카드 머리 배지
     return "\n".join(out)
 
 
@@ -132,18 +133,14 @@ _U1_CSS = """
   .ws-hdr .t{font-size:19px}
 }
 /* ② 사이드바: 1.66 은 버튼 안쪽 flex 래퍼가 가운데 정렬 → 모든 폭에서 왼쪽 정렬.
-   현재 위치 강조는 사이드바 코드의 선택 style(세부가 있으면 세부만 배경+막대, 메인은 글자만). */
+   U3(2026-10-27): 사이드바는 메인만 — 세부는 본문 탭 바. 현재 메인 강조는 사이드바 코드의 선택 style. */
 section[data-testid="stSidebar"] [class*="st-key-nav_m_"] button > div,
-section[data-testid="stSidebar"] [class*="st-key-nav_s_"] button > div,
-section[data-testid="stSidebar"] [class*="st-key-nav_m_"] button > div > span,
-section[data-testid="stSidebar"] [class*="st-key-nav_s_"] button > div > span{
+section[data-testid="stSidebar"] [class*="st-key-nav_m_"] button > div > span{
   justify-content:flex-start;width:100%}
 @media (max-width: 991.98px){
-  section[data-testid="stSidebar"] [class*="st-key-nav_m_"] button,
-  section[data-testid="stSidebar"] [class*="st-key-nav_s_"] button{
+  section[data-testid="stSidebar"] [class*="st-key-nav_m_"] button{
     padding-top:var(--sp-1);padding-bottom:var(--sp-1)}
-  section[data-testid="stSidebar"] [class*="st-key-nav_m_"],
-  section[data-testid="stSidebar"] [class*="st-key-nav_s_"]{margin-bottom:-14px}
+  section[data-testid="stSidebar"] [class*="st-key-nav_m_"]{margin-bottom:-14px}
 }
 /* ③ KPI 값: 1024px 미만 22px, 말줄임 대신 전체 표시 */
 div[data-testid="stMetricValue"] > div,
@@ -152,17 +149,22 @@ div[data-testid="stMetricValue"] p{
 @media (max-width: 1023.98px){
   div[data-testid="stMetricValue"]{font-size:22px !important}
 }
-/* ⑦ 세부 탭 바(nav_sc_*) 전용 — 필터용 segmented 와 구분되는 밑줄 탭 */
-[class*="st-key-nav_sc_"]{margin-bottom:var(--sp-3)}
+/* ⑦ 세부 탭 바(nav_sc_*) 전용 — 필터용 segmented 와 구분되는 밑줄 탭.
+   U3: 모든 폭에서 표시(PageHeader), 선택 --link 700 + 2px --primary 밑줄, 비선택 --dim 500,
+   좁은 화면은 줄바꿈 없이 가로 스크롤 1줄(세부 5개 메인). */
+[class*="st-key-nav_sc_"]{margin-bottom:var(--sp-3);max-width:100%}
 [class*="st-key-nav_sc_"] [role="radiogroup"]{
-  gap:0;flex-wrap:wrap;border-bottom:1px solid var(--line)}
+  gap:0;flex-wrap:nowrap;overflow-x:auto;scrollbar-width:none;width:100%;
+  border-bottom:1px solid var(--line)}
+[class*="st-key-nav_sc_"] [role="radiogroup"]::-webkit-scrollbar{display:none}
 [class*="st-key-nav_sc_"] [role="radiogroup"] button{
   background:transparent !important;border:none !important;border-radius:0 !important;
-  box-shadow:none;color:var(--dim);font-weight:600;
+  box-shadow:none;color:var(--dim);font-weight:500;flex:none;white-space:nowrap;
   padding:var(--sp-2) var(--sp-3);min-height:0}
-[class*="st-key-nav_sc_"] [role="radiogroup"] button p{color:inherit !important}
+[class*="st-key-nav_sc_"] [role="radiogroup"] button p{color:inherit !important;
+  font-weight:inherit !important;white-space:nowrap}
 [class*="st-key-nav_sc_"] [role="radiogroup"] button[aria-checked="true"]{
-  color:var(--link) !important;box-shadow:inset 0 -2px 0 var(--primary)}
+  color:var(--link) !important;font-weight:700;box-shadow:inset 0 -2px 0 var(--primary)}
 /* U1b ⑤ 발주서 작성 '작업 방식' 컨트롤 — 세부 탭 바와 간격 */
 .st-key-po_mode_sc{margin-top:var(--sp-2);margin-bottom:var(--sp-2)}
 /* U1b 빈 상태 한 줄(EmptyState) */
@@ -171,6 +173,85 @@ div[data-testid="stMetricValue"] p{
   color:var(--faint);font-size:13px}
 /* U1b 수기 수주 품목 행(삭제 버튼 옆 한 줄) */
 .so-item-row{font-size:13px;color:var(--body);padding-top:var(--sp-2)}
+"""
+
+# U3 화면 재배치 CSS (2026-10-27, DESIGN_SYSTEM v2 §A) — 토큰만(hex 금지 — tests/test_uiux_static.py).
+_U3_CSS = """
+/* PageHeader 우측 보조 링크(tertiary 버튼, key ph_go_*) */
+div[class*="st-key-ph_go_"] button{background:transparent !important;color:var(--link);
+  font-size:13px;font-weight:600;padding:var(--sp-1) 0;min-height:0}
+div[class*="st-key-ph_go_"] button p{color:var(--link) !important}
+/* SummaryStrip — KPI 1줄 띠 */
+.kpi-strip{display:flex;align-items:center;gap:var(--sp-4);background:var(--card);
+  border-radius:16px;padding:12px 20px;box-shadow:var(--shadow);margin:var(--sp-1) 0 var(--sp-3)}
+.kpi-strip .ks-items{display:flex;align-items:center;min-width:0}
+.kpi-strip .ks-i{display:flex;flex-direction:column;gap:2px;padding:0 var(--sp-5);
+  border-left:1px solid var(--line)}
+.kpi-strip .ks-i:first-child{padding-left:0;border-left:none}
+.kpi-strip .k{font-size:12px;font-weight:500;color:var(--faint);white-space:nowrap}
+.kpi-strip .v{font-size:22px;font-weight:800;color:var(--ink);letter-spacing:-.4px;
+  line-height:1.2;font-variant-numeric:tabular-nums;white-space:nowrap}
+.kpi-strip .v.danger{color:var(--warn2)}
+.kpi-strip .v.warn{color:var(--warn)}
+.kpi-strip .ks-chips{margin-left:auto;display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}
+@media (max-width: 991.98px){
+  .kpi-strip{flex-direction:column;align-items:stretch;background:transparent;box-shadow:none;
+    padding:0;gap:var(--sp-2)}
+  .kpi-strip .ks-items{overflow-x:auto;gap:var(--sp-2);scrollbar-width:none;padding-bottom:2px}
+  .kpi-strip .ks-items::-webkit-scrollbar{display:none}
+  .kpi-strip .ks-i,.kpi-strip .ks-i:first-child{flex:none;background:var(--card);border-radius:12px;
+    padding:8px 12px;box-shadow:var(--shadow);border-left:none}
+  .kpi-strip .k{font-size:11px}
+  .kpi-strip .v{font-size:18px}
+  .kpi-strip .ks-chips{margin-left:0;justify-content:flex-start}
+}
+/* SectionCard — st.container(border=True, key=wscard_*) + 가벼운 HTML 머리 */
+div[class*="st-key-wscard_"]{background:var(--card);border:none !important;
+  border-radius:16px !important;box-shadow:var(--shadow);padding:16px 20px !important}
+div[class*="st-key-wscard_"] .tt-wrap{box-shadow:none;border-radius:0}
+.ws-card-h{display:flex;align-items:center;gap:var(--sp-2);flex-wrap:wrap;min-height:24px}
+.ws-card-h .t{font-size:14.5px;font-weight:700;color:var(--ink)}
+.ws-card-h .s{font-size:13px;font-weight:500;color:var(--faint)}
+.ws-card-h .r{margin-left:auto;display:flex;gap:6px;flex-wrap:wrap}
+.ws-note{font-size:12.5px;color:var(--faint);margin:var(--sp-1) 0}
+.ws-note.warn{color:var(--warn)}
+@media (max-width: 640px){
+  div[class*="st-key-wscard_"]{padding:14px 16px !important}
+}
+/* ActionBar — 좌 보조 1, 우 요약 + 주 버튼 1. 휴대폰은 요약 → 주(48) → 보조(44) 세로 적층 */
+.ws-ab-sum{text-align:right;font-size:13px;color:var(--faint);font-variant-numeric:tabular-nums}
+@media (max-width: 640px){
+  div[class*="st-key-wsab_"] div[data-testid="stHorizontalBlock"]{flex-direction:column;gap:var(--sp-2)}
+  div[class*="st-key-wsab_"] div[data-testid="stColumn"]{width:100% !important;flex:1 1 100% !important}
+  div[class*="st-key-wsab_"] div[data-testid="stColumn"]:nth-child(2){order:1}
+  div[class*="st-key-wsab_"] div[data-testid="stColumn"]:nth-child(3){order:2}
+  div[class*="st-key-wsab_"] div[data-testid="stColumn"]:nth-child(1){order:3}
+  div[class*="st-key-wsab_"] .ws-ab-sum{text-align:center;font-size:12px}
+  div[class*="st-key-wsab_"] div[data-testid="stColumn"]:nth-child(3) button{min-height:48px;width:100%}
+  div[class*="st-key-wsab_"] div[data-testid="stColumn"]:nth-child(1) button{min-height:44px;width:100%}
+}
+/* Stepper(발주서 작성) — 기존 .stepper .step 의 on/done 재사용, 대기는 회색 */
+.stepper.ws-steps .step{text-align:left;padding:9px 12px;white-space:nowrap;overflow:hidden;
+  text-overflow:ellipsis}
+.stepper.ws-steps .step.wait{background:var(--line2);color:var(--faint);box-shadow:none}
+@media (max-width: 640px){
+  .stepper.ws-steps .step .sm{display:none}
+}
+/* ListRow — toss_table(mobile_cols=) 의 휴대폰 변형(992 미만에서 표 대신) */
+.tt-m{display:none}
+.tt-m .r1{display:flex;align-items:center;gap:var(--sp-2);min-height:44px;padding:var(--sp-2) 0;
+  border-bottom:1px solid var(--line)}
+.tt-m .r1:last-child{border-bottom:none}
+.tt-m .a{display:flex;flex-direction:column;gap:2px;min-width:0;flex:1}
+.tt-m .a b{font-size:14px;font-weight:600;color:var(--ink);overflow:hidden;text-overflow:ellipsis;
+  white-space:nowrap}
+.tt-m .a span{font-size:12px;color:var(--faint);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tt-m .q{font-size:14px;font-weight:700;color:var(--ink);font-variant-numeric:tabular-nums;
+  white-space:nowrap}
+@media (max-width: 991.98px){
+  .tt-wrap.has-m{display:none}
+  .tt-m{display:block}
+}
 """
 
 # ─── 토스 스타일 리스타일 (design/toss-restyle, 2026-08-12) ───
@@ -231,31 +312,21 @@ div[data-testid="stExpander"]{
   border-radius:16px;box-shadow:var(--shadow);
 }
 
-/* ── 사이드바 2단 메뉴 (2026-10-19): 전역 버튼 스타일을 메뉴 키(nav_m_ · nav_s_)에서만 덮어쓴다 — 주석 안에 별표+슬래시를 쓰면 주석이 끊겨 첫 규칙이 깨진다.
+/* ── 사이드바 메뉴 (2026-10-19, U3 부터 메인만): 전역 버튼 스타일을 메뉴 키(nav_m_)에서만 덮어쓴다 — 주석 안에 별표+슬래시를 쓰면 주석이 끊겨 첫 규칙이 깨진다.
    선택 항목 강조는 사이드바 코드가 선택 키로 그리는 작은 style 블록(연한 주색 배경 + 왼쪽 막대). ── */
-section[data-testid="stSidebar"] [class*="st-key-nav_m_"] button,
-section[data-testid="stSidebar"] [class*="st-key-nav_s_"] button{
+section[data-testid="stSidebar"] [class*="st-key-nav_m_"] button{
   background:transparent;border:none;border-radius:8px;
   justify-content:flex-start;text-align:left;
   padding:6px 10px;min-height:0;font-weight:600;color:var(--body);
 }
-section[data-testid="stSidebar"] [class*="st-key-nav_m_"] button p,
-section[data-testid="stSidebar"] [class*="st-key-nav_s_"] button p{
+section[data-testid="stSidebar"] [class*="st-key-nav_m_"] button p{
   text-align:left;width:100%;
 }
-section[data-testid="stSidebar"] [class*="st-key-nav_s_"] button{
-  padding-left:26px;font-size:13px;font-weight:500;color:var(--body);
-}
-section[data-testid="stSidebar"] [class*="st-key-nav_m_"] button:hover,
-section[data-testid="stSidebar"] [class*="st-key-nav_s_"] button:hover{
+section[data-testid="stSidebar"] [class*="st-key-nav_m_"] button:hover{
   background:var(--line2);color:var(--ink);
 }
-section[data-testid="stSidebar"] [class*="st-key-nav_m_"],
-section[data-testid="stSidebar"] [class*="st-key-nav_s_"]{margin-bottom:-10px;}
-/* 본문 세부 컨트롤(nav_sc_*)은 좁은 화면에서만 — 데스크톱은 사이드바가 주 메뉴 */
-@media (min-width: 992px){
-  [class*="st-key-nav_sc_"]{display:none !important;}
-}
+section[data-testid="stSidebar"] [class*="st-key-nav_m_"]{margin-bottom:-10px;}
+/* 세부 화면은 본문 탭 바(nav_sc_*)가 모든 폭에서 맡는다 (U3 2026-10-27 — 사이드바는 메인만) */
 
 /* ── 버튼 (보조: 테두리 없는 회색 면 — 토스 스타일) ── */
 div[data-testid="stButton"] button,
@@ -503,7 +574,7 @@ div[data-testid="stVerticalBlockBorderWrapper"]{
 .unplan .d{font-size:12.5px;color:var(--body);margin-top:7px;
   line-height:1.75}
 .unplan .d b{font-weight:600;color:var(--ink)}
-""" + _badge_css_html() + "\n" + _danger_btn_css() + "\n" + _U1_CSS + """
+""" + _badge_css_html() + "\n" + _danger_btn_css() + "\n" + _U1_CSS + "\n" + _U3_CSS + """
 </style>
 """, unsafe_allow_html=True)
 
@@ -861,9 +932,19 @@ def status_style(df, cols=("상태",)):
         return df.style.applymap(_c, subset=_sub)
 
 
+# U3 화면 명세 배지(DESIGN_SYSTEM v2 §A StatusBadge) — 부분 일치보다 먼저 본다
+# ('미매칭' 이 '매칭'(초록)으로 잡히지 않게 정확히 같은 글자만).
+_ST_EXACT = {"매칭": "b-green", "미매칭": "b-amber", "품번 확인": "b-amber",
+             "스케줄": "b-blue", "회차 없음": "b-gray"}
+
+
 def _badge_class(v):
     """상태 텍스트 → 배지 색 클래스 (status_style 과 같은 색 규칙)"""
     s = str(v)
+    if s in _ST_EXACT:
+        return _ST_EXACT[s]
+    if s.startswith("지연"):                      # '지연 n' — 위험
+        return "b-red"
     if any(k in s for k in _ST_RED):
         return "b-red"
     if any(k in s for k in _ST_GREEN):
@@ -878,15 +959,108 @@ def _badge_class(v):
 EMPTY_MSG = "표시할 항목이 없습니다"
 
 
-def _empty_state(msg=EMPTY_MSG):
-    """빈 결과 한 줄 안내 — toss_table·toss_df·toss_grid 공용(DESIGN_SYSTEM §3 EmptyState, U1b)."""
+def _empty_state(msg=EMPTY_MSG, action=None):
+    """빈 결과 한 줄 안내 — toss_table·toss_df·toss_grid 공용(DESIGN_SYSTEM §3 EmptyState, U1b).
+    U3: 화면마다 맥락 문구(msg), action=(버튼 이름, 메인 키, 세부 키) 면 다음 행동 버튼."""
     import html as _h
     st.markdown(f'<div class="ws-empty">{_h.escape(str(msg))}</div>',
+                unsafe_allow_html=True)
+    if action:
+        _al, _am, _as = action
+        st.button(_al, key=f"empty_go_{_am}_{_as}", on_click=nav_go, args=(_am, _as))
+
+
+def _bdg(text, tone=None, tip=None):
+    """카드 머리·요약 띠용 단독 배지 HTML(.ws-b — _BADGE_CSS 같은 값). tone 없으면 _badge_class.
+    tip = 마우스를 올리면 보이는 설명(긴 안내 문단 대신, U3)."""
+    import html as _h
+    _t = f' title="{_h.escape(str(tip))}"' if tip else ""
+    return f'<span class="ws-b {tone or _badge_class(text)}"{_t}>{_h.escape(str(text))}</span>'
+
+
+def kpi_strip(items, chips=()):
+    """SummaryStrip(DESIGN_SYSTEM v2 §A) — KPI 를 1줄 띠로. 992 미만은 가로 스크롤 칩.
+    items = [(라벨, 값 문자열, 색 None|'danger'|'warn', 도움말 또는 None)],
+    chips = [(글자, 배지 클래스 'b-amber' 등)] — 띠 오른쪽 상태 칩 0~2개."""
+    import html as _h
+    _its = "".join(
+        '<div class="ks-i"{}><span class="k">{}</span><span class="v{}">{}</span></div>'.format(
+            f' title="{_h.escape(str(hp))}"' if hp else "", _h.escape(str(k)),
+            f" {tone}" if tone else "", _h.escape(str(v)))
+        for k, v, tone, hp in items)
+    _cs = "".join(_bdg(t, c) for t, c in chips)
+    st.markdown(f'<div class="kpi-strip"><div class="ks-items">{_its}</div>'
+                + (f'<div class="ks-chips">{_cs}</div>' if _cs else "") + "</div>",
+                unsafe_allow_html=True)
+
+
+def card_head(title, sub=None, right_html=None):
+    """SectionCard 머리 HTML — 제목 14.5/700 + 같은 줄 보조(--faint) + 우측 배지(호출부 escape)."""
+    import html as _h
+    return '<div class="ws-card-h"><span class="t">{}</span>{}{}</div>'.format(
+        _h.escape(str(title)),
+        f'<span class="s">{_h.escape(str(sub))}</span>' if sub else "",
+        f'<span class="r">{right_html}</span>' if right_html else "")
+
+
+def section_card(title, sub=None, right_html=None, *, key):
+    """SectionCard(§A) — st.container(border=True, key=wscard_<key>) + 가벼운 HTML 머리.
+    sub = 같은 줄 보조 설명(--faint), right_html = 우측 배지 등(호출부가 escape — _bdg 사용).
+    반환한 컨테이너 안(with)에 본문을 그린다. 머리를 나중에 채우려면 card_head + st.empty."""
+    c = st.container(border=True, key=f"wscard_{key}")
+    c.markdown(card_head(title, sub, right_html), unsafe_allow_html=True)
+    return c
+
+
+def ws_note(msg, warn=False):
+    """카드 안 한 줄 보조 설명(st.info/warning 대신, U3 — 안내 축소). 마크다운 강조(**, `)는 뗀다."""
+    import html as _h
+    _m = str(msg).replace("**", "").replace("`", "")
+    st.markdown(f'<div class="ws-note{" warn" if warn else ""}">{_h.escape(_m)}</div>',
+                unsafe_allow_html=True)
+
+
+def ws_note_warn(msg):
+    """ws_note 주의(주황 글자) — 사용자가 다음 행동을 바꿔야 하는 안내."""
+    ws_note(msg, warn=True)
+
+
+def action_bar(secondary=None, summary="", primary=None, *, key):
+    """ActionBar(§A) — 한 줄: 좌 보조 버튼 1개, 우 요약(13/--faint) + 주 버튼 1개.
+    secondary/primary = st.button 인자 dict(label 필수, key·on_click·disabled·help …) 또는 None.
+    휴대폰(640 미만)은 CSS 로 요약 → 주(48px) → 보조(44px) 세로 적층. 반환 (보조 클릭, 주 클릭)."""
+    import html as _h
+    _sc = _pc = False
+    with st.container(key=f"wsab_{key}"):
+        c1, c2, c3 = st.columns([1.1, 2.3, 1.7], vertical_alignment="center")
+        if secondary:
+            _sc = c1.button(use_container_width=True, **secondary)
+        c2.markdown(f'<div class="ws-ab-sum">{_h.escape(str(summary or ""))}</div>',
+                    unsafe_allow_html=True)
+        if primary:
+            _pc = c3.button(type="primary", use_container_width=True, **primary)
+    return _sc, _pc
+
+
+def stepper(steps, current):
+    """Stepper(§A) — 기존 .stepper .step CSS(on/done/wait) 재사용.
+    steps = [(라벨, 요약 또는 None)], current = 진행 중 단계 번호(1부터, 전부 끝났으면 len+1).
+    지난 단계 = done(✓ + 요약), 현재 = on, 다음 = wait(회색)."""
+    import html as _h
+    out = []
+    for i, (lbl, sm) in enumerate(steps, 1):
+        cls = "done" if i < current else ("on" if i == current else "wait")
+        mark = "✓ " if cls == "done" else ""
+        out.append('<div class="step {}">{}{}{}</div>'.format(
+            cls, mark, _h.escape(str(lbl)),
+            f'<span class="sm"> — {_h.escape(str(sm))}</span>' if sm else ""))
+    st.markdown('<div class="stepper ws-steps">' + "".join(out) + "</div>",
                 unsafe_allow_html=True)
 
 
 def toss_table(rows, columns=None, *, badge_cols=(), num_cols=(),
-               strong_cols=(), raw_cols=(), hl_rows=(), scroll=False):
+               strong_cols=(), raw_cols=(), hl_rows=(), scroll=False,
+               mobile_cols=None, empty_msg=EMPTY_MSG):
     """읽기 전용 표를 토스 스타일 HTML 테이블로 렌더 (.tt CSS).
 
     st.dataframe(글라이드 그리드)은 CSS 커스텀이 안 되므로, 배지·강조가
@@ -896,12 +1070,14 @@ def toss_table(rows, columns=None, *, badge_cols=(), num_cols=(),
     badge_cols: 상태 배지로 그릴 컬럼 / num_cols: 우측 정렬+콤마 /
     strong_cols: 굵게(품번 등) / raw_cols: 호출부가 만든 HTML 그대로
     (반드시 호출부에서 escape 책임) / hl_rows: 위험 행 인덱스(연빨강 배경).
+    mobile_cols=(품번 열, 보조 열 또는 열 튜플, 수량 열, 배지 열) — 992px 미만에서 표 대신
+    ListRow(DESIGN_SYSTEM v2 §A)로 보인다(U3). empty_msg: 빈 결과 맥락 문구.
     """
     import html as _h
     if hasattr(rows, "to_dict"):
         rows = rows.to_dict("records")
     if not rows:
-        _empty_state()
+        _empty_state(empty_msg)
         return
     cols = list(columns) if columns else list(rows[0].keys())
 
@@ -930,10 +1106,33 @@ def toss_table(rows, columns=None, *, badge_cols=(), num_cols=(),
             f"<td{_r if c in num_cols else ''}>{_fmt(c, r.get(c))}</td>"
             for c in cols)
         body.append(f"<tr{_hl if i in hl_rows else ''}>{tds}</tr>")
+    _mob = ""
+    if mobile_cols:
+        _mp, _ms, _mq, _mb = (tuple(mobile_cols) + (None,) * 4)[:4]
+        _ms = (_ms,) if isinstance(_ms, str) else tuple(_ms or ())
+
+        def _mv(r, c):
+            v = r.get(c) if c else None
+            if c in num_cols and isinstance(v, (int, float)):
+                return f"{v:,.0f}" if float(v).is_integer() else f"{v:,.2f}"
+            return "" if v in (None, "") else str(v)
+        _mrows = []
+        for r in rows:
+            _sub_t = " · ".join(x for x in (_mv(r, c) for c in _ms) if x)
+            _bv = _mv(r, _mb)
+            _mrows.append(
+                '<div class="r1"><div class="a"><b>{}</b>{}</div>'
+                '<div class="q">{}</div>{}</div>'.format(
+                    _h.escape(_mv(r, _mp)),
+                    f"<span>{_h.escape(_sub_t)}</span>" if _sub_t else "",
+                    _h.escape(_mv(r, _mq)),
+                    f'<span class="ws-b {_badge_class(_bv)}">{_h.escape(_bv)}</span>'
+                    if _bv else ""))
+        _mob = f'<div class="tt-m">{"".join(_mrows)}</div>'
     st.markdown(
-        f'<div class="tt-wrap{" scroll" if scroll else ""}">'
+        f'<div class="tt-wrap{" scroll" if scroll else ""}{" has-m" if mobile_cols else ""}">'
         f'<table class="tt"><thead><tr>{head}</tr></thead>'
-        f'<tbody>{"".join(body)}</tbody></table></div>',
+        f'<tbody>{"".join(body)}</tbody></table></div>' + _mob,
         unsafe_allow_html=True)
 
 
@@ -1675,7 +1874,8 @@ with st.sidebar:
     # 정비용 페이지 (TOP 정비 등 5종) 는 마스터 안정화 완료 후 코드 제거됨.
     # 필요 시 git 이력 (8421f1e 이전) 에서 복원 가능.
     # ── 메뉴 정의 (사이드바 2단, 2026-10-19 계획서 §4-2) ──
-    # 위젯 키는 ASCII 고정 키(nav_m_<메인>, nav_s_<메인>_<세부>), 화면 이름은 한글.
+    # 위젯 키는 ASCII 고정 키(nav_m_<메인>, 본문 탭 바 nav_sc_<메인>), 화면 이름은 한글.
+    # (사이드바 세부 버튼 nav_s_<메인>_<세부> 는 U3 2026-10-27 에 제거 — 탭 바가 모든 폭에서 맡는다)
     # 세부 화면 본문은 `if _sub == "<세부 키>":` 로 분기한다(관리자 영역은 지금처럼 탭).
     NAV = [
         ("home", "홈", []),
@@ -1778,36 +1978,27 @@ with st.sidebar:
         if _k not in st.session_state and f"_kv_{_k}" in st.session_state:
             st.session_state[_k] = st.session_state[f"_kv_{_k}"]
 
-    # ── 사이드바 2단 메뉴: 선택한 메인만 펼침. 버튼 + on_click 콜백(실행 1회) ──
+    # ── 사이드바 메뉴: 메인만(U3 2026-10-27 — 세부 화면은 본문 탭 바 nav_sc_* 가 모든 폭에서).
+    # 버튼 + on_click 콜백(실행 1회). nav_sub 상태·nav_go(main, sub) 구조는 그대로.
     # (루프 변수는 _nv_ 접두사 — 모듈 수준이라 _sk(slack_notify 별칭) 같은 이름을 덮어쓰면 안 된다)
     st.header("업무 진행")
     for _nv_mk, _nv_ml, _nv_subs in NAV:
         st.button(_nv_ml, key=f"nav_m_{_nv_mk}", on_click=nav_go, args=(_nv_mk,),
                   use_container_width=True)
-        if _nv_mk == nav_page and _nv_subs:
-            for _nv_sk, _nv_sl in _subs_for(_nv_mk, _is_admin):
-                st.button(_nv_sl, key=f"nav_s_{_nv_mk}_{_nv_sk}", on_click=nav_go,
-                          args=(_nv_mk, _nv_sk), use_container_width=True)
     if _is_admin:
         st.divider()
         st.caption("관리자")
         for _nv_mk, _nv_ml in NAV_ADMIN:
             st.button(_nv_ml, key=f"nav_m_{_nv_mk}", on_click=nav_go, args=(_nv_mk,),
                       use_container_width=True)
-    # 선택 항목 강조 — 현재 위치는 한 곳만(U1, DESIGN_SYSTEM §3 Sidebar nav): 세부가 있으면
-    # 세부 = 연한 주색 배경 + 왼쪽 막대, 메인 = 글자만(진하게). 세부가 없으면 메인이 배경+막대.
-    # 토큰만(hex 금지), 이모지 없음.
+    # 선택 항목 강조 — 현재 메인 한 곳(DESIGN_SYSTEM v2 §A Sidebar): 글자 --ink 700 +
+    # --primary-bg 배경, 왼쪽 막대 없음. 토큰만(hex 금지), 이모지 없음.
     _nav_sb = 'section[data-testid="stSidebar"] .st-key-'
-    _nav_hl = f"nav_s_{nav_page}_{nav_sub}" if nav_sub else f"nav_m_{nav_page}"
+    _nav_hl = f"nav_m_{nav_page}"
     _nav_css = (f"{_nav_sb}{_nav_hl} button{{background:var(--primary-bg) !important;"
-                "color:var(--link) !important;box-shadow:inset 3px 0 0 var(--link);"
+                "color:var(--ink) !important;box-shadow:none !important;"
                 "font-weight:700 !important;}"
-                f"{_nav_sb}{_nav_hl} button p{{color:var(--link) !important;}}")
-    if nav_sub:
-        _nav_css += (f"{_nav_sb}nav_m_{nav_page} button{{font-weight:700 !important;}}"
-                     f"{_nav_sb}nav_m_{nav_page} button:not(:hover){{background:transparent !important;}}"
-                     f"{_nav_sb}nav_m_{nav_page} button p{{color:var(--ink) !important;"
-                     "font-weight:700;}")
+                f"{_nav_sb}{_nav_hl} button p{{color:var(--ink) !important;font-weight:700;}}")
     st.markdown("<style>" + _nav_css + "</style>", unsafe_allow_html=True)
     # 오류 기록(app_errors)에 붙일 화면(세부 포함)·사용자 — db.log_error 가 읽는다
     try:
@@ -1905,10 +2096,22 @@ import time as _run_time
 _run_t0 = _run_time.perf_counter()
 
 
-def nav_page_head():
-    """사용자 영역 페이지 상단 — "메인 › 세부" 제목 줄(기존 subheader 자리) + 좁은 화면
-    세부 컨트롤(nav_sc_*, 넓은 화면은 CSS 로 숨김) + 화면 전환 안내(flash)."""
-    st.subheader(page_title)
+def nav_page_head(right=None):
+    """사용자 영역 페이지 상단(PageHeader, DESIGN_SYSTEM v2 §A) — "메인 › 세부" 제목 줄 +
+    세부 탭 바(nav_sc_*, U3 부터 모든 폭) + 화면 전환 안내(flash).
+    right: 제목 줄 우측 보조 슬롯. (이름, 메인 키, 세부 키) 면 그 화면으로 가는 링크 버튼을
+    그리고, True 면 빈 슬롯만 만든다. 슬롯 컨테이너를 반환해 화면이 나중에 채운다(없으면 None)."""
+    _slot = None
+    if right:
+        _tc, _rc = st.columns([3, 2], vertical_alignment="bottom")
+        _tc.subheader(page_title)
+        _slot = _rc.container(horizontal_alignment="right")
+        if isinstance(right, tuple):
+            _rl, _rm, _rs = right
+            _slot.button(_rl, key=f"ph_go_{_rm}_{_rs}", type="tertiary",
+                         on_click=nav_go, args=(_rm, _rs))
+    else:
+        st.subheader(page_title)
     _subs = _subs_for(nav_page, _is_admin)
     if len(_subs) > 1:          # 세부가 하나뿐이면(작업자의 업무 루틴) 컨트롤 생략 (D8)
         _labels = [l for _, l in _subs]
@@ -1924,6 +2127,7 @@ def nav_page_head():
                      on_change=_nav_sc_change, args=(nav_page,),
                      label_visibility="collapsed")
     nav_flash_show()
+    return _slot
 
 
 def nav_flash_show():
