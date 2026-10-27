@@ -231,6 +231,75 @@ def fetch(table: str, select: str = "*", filter_query: str = "",
     return rows
 
 
+# 페이지 반복 조회의 결정적 정렬·중복 제거에 쓰는 테이블별 기본 키(fetch_all).
+PK_OF = {
+    "so_delivery_schedule": "sched_id", "sales_order_items": "soi_id", "sales_orders": "so_id",
+    "inventory_transactions": "txn_id", "shipment_items": "si_id", "shipments": "shipment_id",
+    "shipment_allocations": "alloc_id", "purchase_order_items": "poi_id",
+    "purchase_orders": "po_id", "products": "product_id", "materials": "material_id",
+}
+FETCH_ALL_PAGE = 1000          # PostgREST 요청당 최대 행(Supabase 기본 db-max-rows)
+
+
+def fetch_all(table: str, select: str = "*", filter_query: str = "", *,
+              page: int = FETCH_ALL_PAGE, max_rows: int = 20000, order: str | None = None,
+              cache: bool | None = None, pk: str | None = None):
+    """offset 페이지 반복으로 끝까지 읽는다 → (rows, truncated).
+
+    PostgREST 는 요청당 최대 1,000행이라 `fetch(limit=2000)` 도 1,000 에서 잘리고 len < limit
+    라 절단도 감지되지 않는다(2026-10-27 출고 등록 회차 조회 사고, 핫픽스 ab824aa).
+    - 정렬: order(예 "due_date.asc,seq.asc") 뒤에 기본 키를 붙여 페이지 경계가 결정적이다.
+      order 가 없으면 기본 키 오름차순. filter_query 에 order= 를 넣지 말 것(order 인자로).
+    - 중복 제거: 기본 키가 select 에 없으면 붙여 읽고, 같은 키는 한 번만.
+    - max_rows 에 닿으면 truncated=True(호출자가 현장 안내). 이때만 관리자 상한 기록을 남기고,
+      끝까지 읽은 경우에는 페이지마다 fetch 가 남긴 상한 기록을 되돌린다.
+    - cache: fetch 와 같은 의미(None = 기본 캐시). 페이지별 filter 가 달라 캐시 키도 다르다.
+    """
+    assert "order=" not in (filter_query or ""), "fetch_all: 정렬은 order 인자로"
+    pk = pk or PK_OF.get(table)
+    sel = select
+    if pk and select.strip() != "*" and pk not in [c.strip() for c in select.split(",")]:
+        sel = f"{select},{pk}"
+    ords = [o.strip() for o in (order or "").split(",") if o.strip()]
+    if pk and not any(o.split(".")[0] == pk for o in ords):
+        ords.append(f"{pk}.asc")
+    base = "&".join(x for x in (filter_query, f"order={','.join(ords)}" if ords else "") if x)
+    try:
+        _prev = dict(st.session_state.get("_fetch_truncated") or {})
+    except Exception:
+        _prev = None
+    kw = {} if cache is None else {"cache": cache}
+    rows, seen, off, truncated = [], set(), 0, False
+    while True:
+        pg = fetch(table, sel, f"{base}&offset={off}" if base else f"offset={off}",
+                   limit=page, **kw)
+        for r in pg:
+            k = r.get(pk) if pk else None
+            if k is not None:
+                if k in seen:
+                    continue
+                seen.add(k)
+            rows.append(r)
+        if len(pg) < page:
+            break
+        off += page
+        if off >= max_rows:
+            truncated = True
+            break
+    if _prev is not None:
+        try:
+            _ft = st.session_state.setdefault("_fetch_truncated", {})
+            if truncated:
+                _ft[table] = max_rows
+            elif table in _prev:
+                _ft[table] = _prev[table]
+            else:
+                _ft.pop(table, None)
+        except Exception:
+            pass
+    return rows, truncated
+
+
 def fetch_one(table: str, filter_query: str, select: str = "*"):
     rows = fetch(table, select, filter_query, limit=1)
     return rows[0] if rows else None
