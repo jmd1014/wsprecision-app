@@ -126,7 +126,9 @@ def _scenario(rl, cfg, a_end, fail_while_locked=False):
         a = None
         tb.join(25)
         assert not tb.is_alive()
-        assert out["sec"] >= 1.4, out
+        # 대기 증거는 위 pg_stat_activity Lock 확인 — 시간은 여유를 둔다(A 가 1.5초 잡는 동안 B 연결·시작
+        # 지연이 있어 1.39초가 나온 적 있음, 2026-10-27 전체 pytest 두 벌 동시 실행 중)
+        assert out["sec"] >= 1.0, out
         chk = adm.cursor()
         chk.execute("select status from shipments where shipment_id = %s", (ids["sh"],))
         status = chk.fetchone()[0]
