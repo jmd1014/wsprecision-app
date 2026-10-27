@@ -13,7 +13,7 @@ st.set_page_config(
 
 # DB 연결 시도 (requests 기반)
 try:
-    from db import health_check, fetch, debug_check
+    from db import health_check, fetch, fetch_all, debug_check
     # PostgREST 필터 값 인용 (2026-09-17): 최상위 값 _fq, or=()/in.() 안 _fqo/_fql
     # (이름은 페이지 지역 변수와 충돌하지 않는 것으로 — _qv 는 수량 변수로 이미 사용)
     from db import qv as _fq, qo as _fqo, qol as _fql
@@ -2276,9 +2276,10 @@ if page == "홈":
         try:
             _h_sc_rows = []
             for _ids in _id_chunks:
-                _h_sc_rows += fetch("so_delivery_schedule",
+                # 1,000행 상한 넘어 끝까지(핫픽스 2) — 납기 오름차순 유지(가장 이른 열린 납기 setdefault)
+                _h_sc_rows += fetch_all("so_delivery_schedule",
                     "so_id,soi_id,due_date,qty,delivered_qty",
-                    f"so_id=in.({_ids})&order=due_date.asc", limit=1000)
+                    f"so_id=in.({_ids})", order="due_date.asc,seq.asc")[0]
             for _sc in _h_sc_rows:
                 if (float(_sc.get("qty") or 0)
                         - float(_sc.get("delivered_qty") or 0)) > 0:
@@ -6255,18 +6256,23 @@ elif page == "수주 관리":
     #  — 2026-08-06 확인)
     _sk_alive = {s["so_id"] for s in _so_kpi}
     _sk_late_n, _sk_late_qty = 0, 0.0
+    _sk_late_unk = False      # 회차가 안전 상한(2만 행)을 넘어 잘리면 지연 집계 '미확인'(핫픽스 2)
     try:
-        for _r in fetch("so_delivery_schedule",
-                "so_id,qty,delivered_qty",
-                f"due_date=lt.{_date.today().isoformat()}", limit=1000):
+        _sk_late_rows, _sk_tr1 = fetch_all(
+            "so_delivery_schedule", "so_id,qty,delivered_qty",
+            f"due_date=lt.{_date.today().isoformat()}")
+        for _r in _sk_late_rows:
             if _r["so_id"] in _sk_alive and (
                     float(_r.get("qty") or 0)
                     - float(_r.get("delivered_qty") or 0)) > 0:
                 _sk_late_n += 1
                 _sk_late_qty += (float(_r.get("qty") or 0)
                                  - float(_r.get("delivered_qty") or 0))
-        _sched_soi_all = {r["soi_id"] for r in fetch(
-            "so_delivery_schedule", "soi_id", "", limit=2000)}
+        # 전체 회차의 soi — limit 2000 은 서버 1,000행에서 잘려 회차 있는 라인을 '회차 없음'으로
+        # 오판(지연 이중 계산)할 수 있었다 → fetch_all(핫픽스 2)
+        _sc_soi_rows, _sk_tr2 = fetch_all("so_delivery_schedule", "soi_id", "")
+        _sched_soi_all = {r["soi_id"] for r in _sc_soi_rows}
+        _sk_late_unk = _sk_tr1 or _sk_tr2
         for _r in fetch("sales_order_items",
                 "so_id,soi_id,pending_qty",
                 f"pending_qty=gt.0&due_date=lt.{_date.today().isoformat()}",
@@ -6827,10 +6833,12 @@ elif page == "수주 관리":
         kpi_strip(
             [("미납 수량", f"{_sk_pend:,.0f}", None, None),
              ("진행 수주", f"{_sk_open:,}건", None, None),
-             ("납기 지연", f"{_sk_late_n:,}건", "danger" if _sk_late_n else None,
+             ("납기 지연", "미확인" if _sk_late_unk else f"{_sk_late_n:,}건",
+              "warn" if _sk_late_unk else ("danger" if _sk_late_n else None),
               "납품 스케줄 기준 — 지난 회차·지난 납기의 미납 잔량. 부분 납품도 잔량이 남으면 "
               "지연으로 셉니다. 상세는 '납품 스케줄' 화면.",
-              f"잔량 −{_sk_late_qty:,.0f}" if _sk_late_qty else None),
+              "회차가 너무 많아 집계 미확인" if _sk_late_unk else
+              (f"잔량 −{_sk_late_qty:,.0f}" if _sk_late_qty else None)),
              ("이번 달 수주", f"{_sk_month:,}건", None, None)],
             chips=([(f"제품 확인 필요 {len(_ck_groups)}", "b-amber")] if _ck_groups else [])
             + ([(f"단가 변경 {len(_rp_groups)}", "b-gray")] if _rp_groups else []))
@@ -8147,9 +8155,12 @@ elif page == "수주 관리":
 
         # ── 1) 데이터 적재 ──
         try:
-            _all_sc = fetch("so_delivery_schedule",
+            # limit 2000 은 서버 1,000행에서 잘려 최근 납기 회차가 빠졌다 → fetch_all(핫픽스 2)
+            _all_sc, _all_sc_tr = fetch_all("so_delivery_schedule",
                 "sched_id,so_id,soi_id,seq,due_date,qty,delivered_qty,note",
-                "order=due_date.asc", limit=2000)
+                "", order="due_date.asc,seq.asc")
+            if _all_sc_tr:
+                st.warning("회차가 너무 많아 일부만 표시됩니다 — 거래처·기간 필터로 좁혀 보세요.")
         except Exception as e:
             st.error(f"스케줄 조회 실패 (Migration 027 필요): {e}")
             _all_sc = []
@@ -8592,11 +8603,11 @@ elif page == "수주 관리":
                     _so_lbl = {s["so_id"]: s for s in _s_sos}
                     _sc_cnt = {}
                     try:
-                        for _r in fetch("so_delivery_schedule",
+                        for _r in fetch_all("so_delivery_schedule",          # 핫픽스 2
                             "soi_id,qty,delivered_qty",
                             "soi_id=in.("
                             + ",".join(str(i["soi_id"]) for i in _all_items)
-                            + ")", limit=1000):
+                            + ")")[0]:
                             _e = _sc_cnt.setdefault(_r["soi_id"],
                                                     {"n": 0, "q": 0.0,
                                                      "d": 0.0})
@@ -12870,11 +12881,10 @@ elif page == "생산 계획":
             _soi2pid = {i["soi_id"]: i.get("product_id") for i in sois}
             _soi_ids = list(_soi2pid)
             for _i0 in range(0, len(_soi_ids), 80):
-                for r in fetch("so_delivery_schedule",
+                for r in fetch_all("so_delivery_schedule",            # 핫픽스 2
                                "soi_id,due_date,qty,delivered_qty",
                                "soi_id=in.({})".format(",".join(
-                                   str(x) for x in _soi_ids[_i0:_i0 + 80])),
-                               limit=1000):
+                                   str(x) for x in _soi_ids[_i0:_i0 + 80])))[0]:
                     r["product_id"] = _soi2pid.get(r["soi_id"])
                     _sb_rounds.append(r)
             for _i0 in range(0, len(_sb_pids), 80):

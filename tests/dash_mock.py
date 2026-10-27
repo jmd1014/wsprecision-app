@@ -133,7 +133,13 @@ class DashMock:
         rows = self._rows(table, filter_query)
         if rows is None:
             return []
-        return [dict(r) for r in rows[:limit]]
+        # offset·요청당 상한(PostgREST 1,000행 모사, server_max) — db.fetch_all 페이지 테스트용(핫픽스 2)
+        off = 0
+        for part in (filter_query or "").split("&"):
+            if part.startswith("offset="):
+                off = int(part[7:] or 0)
+        cap = min(limit, self.server_max) if getattr(self, "server_max", None) else limit
+        return [dict(r) for r in rows[off:off + cap]]
 
     def fetch_one(self, table, filter_query="", select="*"):
         if table == "app_settings":
