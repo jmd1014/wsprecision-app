@@ -2273,13 +2273,16 @@ if page == "홈":
         except Exception:
             _h_lines = []
         _h_sched_line = {}
+        _h_sc_tr = False      # 회차가 안전 상한(2만 행)을 넘어 잘리면 '일부 미확인' 안내(핫픽스 2 r2 M2)
         try:
             _h_sc_rows = []
             for _ids in _id_chunks:
                 # 1,000행 상한 넘어 끝까지(핫픽스 2) — 납기 오름차순 유지(가장 이른 열린 납기 setdefault)
-                _h_sc_rows += fetch_all("so_delivery_schedule",
+                _h_pg, _h_tr = fetch_all("so_delivery_schedule",
                     "so_id,soi_id,due_date,qty,delivered_qty",
-                    f"so_id=in.({_ids})", order="due_date.asc,seq.asc")[0]
+                    f"so_id=in.({_ids})", order="due_date.asc,seq.asc")
+                _h_sc_rows += _h_pg
+                _h_sc_tr = _h_sc_tr or _h_tr
             for _sc in _h_sc_rows:
                 if (float(_sc.get("qty") or 0)
                         - float(_sc.get("delivered_qty") or 0)) > 0:
@@ -2360,6 +2363,8 @@ if page == "홈":
         # (선택 라디오는 타이틀 아래, 2026-08-19 정렬 개선)
         _h_view = st.session_state.get("home_so_view", "품번별")
         st.markdown(f"##### 수주 진행 ({_h_view} · 미납 · 납기순)")
+        if _h_sc_tr:
+            ws_note("회차 일부 미확인 — 회차가 너무 많아 일부 납기는 수주 납기로 표시합니다", warn=True)
         # 품번별 = 생산 일정 관리 단위 (같은 품번에 수주가 계속
         # 추가되므로 실무 기본값). 수주별은 문서 단위 확인용.
         _h_view = st.radio("수주 진행 보기", ["품번별", "수주별"],
@@ -8154,13 +8159,22 @@ elif page == "수주 관리":
     if _sub == "sched":
 
         # ── 1) 데이터 적재 ──
+        # 회차 기간(서버 조건, 핫픽스 2 r2 M1): 회차가 안전 상한(2만 행)을 넘으면 납기 오름차순 뒤쪽
+        # (최근)이 잘린다 → 오래된 회차를 서버에서 빼는 것이 복구 방법. 기본 '전체'(종전 동작).
+        _SCH_PERIODS = {"전체": 0, "최근 1년부터": 365, "최근 6개월부터": 182, "최근 3개월부터": 91}
+        _sch_pd = st.selectbox("회차 기간", list(_SCH_PERIODS), key="sch_period",
+                               help="납기가 이 날짜 이후인 회차만 읽습니다(그 전의 지난 미납 회차는 빠집니다)")
+        _sch_from = _SCH_PERIODS.get(_sch_pd) or 0
+        _sch_fq = (f"due_date=gte.{(_date.today() - _td(days=_sch_from)).isoformat()}"
+                   if _sch_from else "")
         try:
             # limit 2000 은 서버 1,000행에서 잘려 최근 납기 회차가 빠졌다 → fetch_all(핫픽스 2)
             _all_sc, _all_sc_tr = fetch_all("so_delivery_schedule",
                 "sched_id,so_id,soi_id,seq,due_date,qty,delivered_qty,note",
-                "", order="due_date.asc,seq.asc")
+                _sch_fq, order="due_date.asc,seq.asc")
             if _all_sc_tr:
-                st.warning("회차가 너무 많아 일부만 표시됩니다 — 거래처·기간 필터로 좁혀 보세요.")
+                st.warning("회차가 2만 행을 넘어 뒤쪽(최근 납기)은 표시되지 않습니다 — 위 '회차 기간'을 "
+                           "좁히세요.")
         except Exception as e:
             st.error(f"스케줄 조회 실패 (Migration 027 필요): {e}")
             _all_sc = []
@@ -8602,12 +8616,14 @@ elif page == "수주 관리":
                 else:
                     _so_lbl = {s["so_id"]: s for s in _s_sos}
                     _sc_cnt = {}
+                    _sc_tr = False     # 잘린 집계로 '납기 미입력' 확정값을 보이지 않는다(핫픽스 2 r2 M2)
                     try:
-                        for _r in fetch_all("so_delivery_schedule",          # 핫픽스 2
+                        _sc_rows, _sc_tr = fetch_all("so_delivery_schedule",          # 핫픽스 2
                             "soi_id,qty,delivered_qty",
                             "soi_id=in.("
                             + ",".join(str(i["soi_id"]) for i in _all_items)
-                            + ")")[0]:
+                            + ")")
+                        for _r in _sc_rows:
                             _e = _sc_cnt.setdefault(_r["soi_id"],
                                                     {"n": 0, "q": 0.0,
                                                      "d": 0.0})
@@ -8628,11 +8644,14 @@ elif page == "수주 관리":
                     _tot_pend = sum(float(i.get("pending_qty") or 0)
                                     for i in _all_items)
                     _tot_un = sum(_unplanned(i) for i in _all_items)
+                    if _sc_tr:
+                        st.warning("회차가 너무 많아 일부만 집계했습니다 — 납기 입력됨·미입력 수량은 "
+                                   "표시하지 않습니다. 검색으로 라인을 좁혀 다시 보세요.")
                     sm1, sm2, sm3, sm4 = st.columns(4)
                     sm1.metric("조회 라인", f"{len(_all_items):,}건")
                     sm2.metric("미납 합계", f"{_tot_pend:,.0f}")
-                    sm3.metric("납기 입력됨", f"{_tot_pend - _tot_un:,.0f}")
-                    sm4.metric("납기 미입력", f"{_tot_un:,.0f}",
+                    sm3.metric("납기 입력됨", "미확인" if _sc_tr else f"{_tot_pend - _tot_un:,.0f}")
+                    sm4.metric("납기 미입력", "미확인" if _sc_tr else f"{_tot_un:,.0f}",
                                help="이 수량만큼 일정을 더 넣어야 합니다")
 
                     # 라인별 계획 현황 (어디에 일정을 넣어야 하는지)
@@ -8649,16 +8668,19 @@ elif page == "수주 관리":
                     } for i in _all_items]
                     _st_df = pd.DataFrame(_st_rows).sort_values(
                         "납기 미입력", ascending=False)
-                    toss_df(
-                        _st_df.style.map(
+                    if _sc_tr:      # 불완전 집계 — 라인별 입력됨·미입력 열을 빼고 보인다
+                        _st_view = _st_df.drop(columns=["납기 입력됨", "납기 미입력"]).style.format(
+                            {"미납": "{:,.0f}"})
+                    else:
+                        _st_view = _st_df.style.map(
                             lambda v: ("color:#f04452;font-weight:700"
                                        if isinstance(v, (int, float))
                                        and v > 0 else "color:#8b95a1"),
                             subset=["납기 미입력"]).format(
                             {c: "{:,.0f}" for c in
-                             ["미납", "납기 입력됨", "납기 미입력"]}),
-                        use_container_width=True, hide_index=True,
-                        height=min(320, 60 + len(_st_df) * 35))
+                             ["미납", "납기 입력됨", "납기 미입력"]})
+                    toss_df(_st_view, use_container_width=True, hide_index=True,
+                            height=min(320, 60 + len(_st_df) * 35))
 
                     # ── 대상 라인 선택 — 행 클릭 = 아래에 납기 편집기
                     # (2026-08-19 공통 문법)
@@ -8692,8 +8714,8 @@ elif page == "수주 관리":
                     lm1.metric("미납 (계획 대상)", f"{_li_pend:,.0f}",
                                help=f"수주 {_li_qty:,.0f} − 기납품 "
                                     f"{_li_rcv:,.0f}")
-                    lm2.metric("납기 입력됨", f"{_li_planned:,.0f}")
-                    lm3.metric("납기 미입력", f"{_li_unplan:,.0f}")
+                    lm2.metric("납기 입력됨", "미확인" if _sc_tr else f"{_li_planned:,.0f}")
+                    lm3.metric("납기 미입력", "미확인" if _sc_tr else f"{_li_unplan:,.0f}")
                     lm4.metric("수주 / 기납품",
                                f"{_li_qty:,.0f} / {_li_rcv:,.0f}")
 
@@ -12877,14 +12899,17 @@ elif page == "생산 계획":
                       "pn": i.get("canonical_pn"),
                       "pending_qty": i.get("pending_qty")} for i in sois]
         _sb_rounds, _sb_stock, _sb_wip, _sb_stds, _sb_cap = [], {}, {}, [], {}
+        _sb_rounds_tr = False   # 회차 절단 시 큐 머리 경고(핫픽스 2 r2 M2)
         try:
             _soi2pid = {i["soi_id"]: i.get("product_id") for i in sois}
             _soi_ids = list(_soi2pid)
             for _i0 in range(0, len(_soi_ids), 80):
-                for r in fetch_all("so_delivery_schedule",            # 핫픽스 2
+                _sb_pg, _sb_tr1 = fetch_all("so_delivery_schedule",            # 핫픽스 2
                                "soi_id,due_date,qty,delivered_qty",
                                "soi_id=in.({})".format(",".join(
-                                   str(x) for x in _soi_ids[_i0:_i0 + 80])))[0]:
+                                   str(x) for x in _soi_ids[_i0:_i0 + 80])))
+                _sb_rounds_tr = _sb_rounds_tr or _sb_tr1
+                for r in _sb_pg:
                     r["product_id"] = _soi2pid.get(r["soi_id"])
                     _sb_rounds.append(r)
             for _i0 in range(0, len(_sb_pids), 80):
@@ -12937,6 +12962,9 @@ elif page == "생산 계획":
             st.warning("근무 체계가 아직 반영되지 않은 구버전 모듈로 그렸습니다(토요일도 평일 시간). "
                        "계획 데이터는 그대로입니다 — Streamlit Cloud 에서 앱을 Reboot 하면 "
                        "정상 반영됩니다.")
+        if _sb_rounds_tr:
+            st.warning("회차가 너무 많아 일부 회차를 읽지 못했습니다 — 생산 대기 큐의 납기·수량이 "
+                       "불완전할 수 있습니다.")
         _sb_gl = _sch.group_load(_sb_act, _sb_load)
         _sb_unassigned = [q for q in _sb_queue
                           if not q["no_std"] and q["alloc"] < q["net"] - 1e-9]

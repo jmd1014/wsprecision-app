@@ -113,6 +113,15 @@ class SOMock(DashMock):
 
     def _rows(self, table, filter_query):
         out = super()._rows(table, filter_query)
+        if out is not None and getattr(self, "sort_orders", False):
+            # opt-in: PostgREST 처럼 order=열.asc|desc,… 적용(핫픽스 2 r2 L1 — 열린 납기 역순 시험용)
+            keys = next((p[6:] for p in (filter_query or "").split("&") if p.startswith("order=")), "")
+            for key in reversed([k for k in keys.split(",") if k]):
+                col, _, d = key.partition(".")
+                out.sort(key=lambda r, c=col: (r.get(c) is None, _num(r.get(c)) is None,
+                                               _num(r.get(c)) or 0, str(r.get(c) or "")),
+                         reverse=(d == "desc"))
+            return out
         if out is not None and "order=soi_id" in (filter_query or ""):
             out.sort(key=lambda r: int(r.get("soi_id") or 0))
         return out
