@@ -8930,10 +8930,32 @@ elif page == "출고 관리":
         # 스케줄 자동 리스트업
         _sh_flt = ("due_date=lte." if _sh_late
                    else "due_date=eq.") + _sh_d.isoformat()
+        _sh_trunc = False
         try:
-            _sh_rounds_all = [r for r in fetch("so_delivery_schedule",
-                "sched_id,soi_id,so_id,seq,due_date,qty,delivered_qty",
-                _sh_flt + "&order=due_date.asc,seq.asc", limit=500)
+            # 핫픽스(2026-10-27): limit=500 한 번 조회는 기준일 이하 회차가 500행을 넘으면
+            # 납기 오름차순 끝(가장 최근 납기)이 잘려 열린 회차가 안 떴다(509행, 10/28 회차 9건).
+            # PostgREST 는 요청당 최대 1,000행이라 상한만 올리면 다시 잘린다 → 1,000행씩 끝까지
+            # 읽고(안정 정렬 + sched_id 중복 제거), 안전 상한 10,000행에 닿으면 현장에 경고한다.
+            _sh_raw, _sh_seen, _sh_off = [], set(), 0
+            while True:
+                _sh_pg = fetch("so_delivery_schedule",
+                               "sched_id,soi_id,so_id,seq,due_date,qty,delivered_qty",
+                               _sh_flt + "&order=due_date.asc,seq.asc,sched_id.asc"
+                               f"&offset={_sh_off}", limit=1000)
+                for r in _sh_pg:
+                    if r["sched_id"] not in _sh_seen:
+                        _sh_seen.add(r["sched_id"])
+                        _sh_raw.append(r)
+                if len(_sh_pg) < 1000:
+                    break
+                if _sh_off >= 9000:
+                    _sh_trunc = True
+                    break
+                _sh_off += 1000
+            if _sh_trunc:
+                st.warning("회차가 너무 많아 일부가 잘렸습니다 — 기준일을 좁히세요 "
+                           "(열린 회차가 목록에 없으면 아래 품번 검색으로 추가).")
+            _sh_rounds_all = [r for r in _sh_raw
                 if (float(r.get("qty") or 0)
                     - float(r.get("delivered_qty") or 0)) > 0]
             _sh_rounds = [r for r in _sh_rounds_all
