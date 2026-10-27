@@ -178,3 +178,35 @@ def test_dic_upload_two_customers_append_and_price(dic_db, monkeypatch):
     d = next(x for x in lines if x["so_id"] == 701)
     assert d["product_id"] == "P0575" and d["unit_price"] == 618
     assert d["status"] == "PENDING"
+
+
+def test_header_refetch_none_is_failure_not_success(dic_db, monkeypatch):
+    """U3 r2 S1(Codex M1): 머리글 INSERT 뒤 재조회가 None 이면 품목은 저장되지 않았다 —
+    '저장 완료' flash·업로더 비움(성공 분기)을 타지 않고 결과 카드 하단 경고, 업로더·저장 버튼 유지."""
+    import utils.slack_notify as _sn
+    monkeypatch.setattr(_sn, "notify", lambda text, sync=False: True)
+
+    def _fo(table, filter_query="", select="*"):
+        if table == "sales_orders" and "PO2610000000999" in filter_query:
+            return None                                   # 이 수주만 머리글 재조회 실패
+        return _fetch_one(table, filter_query, select)
+    monkeypatch.setattr(dic_db, "fetch_one", _fo)
+    import streamlit as st
+    from streamlit.testing.v1 import AppTest
+    for _c in (st.cache_data, st.cache_resource):
+        try:
+            _c.clear()
+        except Exception:
+            pass
+    at = AppTest.from_file(APP_FILE, default_timeout=60)
+    at.secrets["supabase"] = {"url": "https://mock.local", "anon_key": "a", "service_role_key": "s"}
+    at.secrets["auth"] = {"disabled": True}
+    at.run()
+    goto(at, "so", "input")
+    at.get("file_uploader")[0].upload("납품예정서등록-DIC.xls", _workbook()).run()
+    next(b for b in at.button if b.key == "so_up_save").click().run()
+    assert not at.exception, [str(e.value) for e in at.exception]
+    assert any("PO2610000000999" in str(w.value) and "머리글만 저장됨" in str(w.value)
+               for w in at.warning), [w.value for w in at.warning]
+    assert "so_up_nonce" not in at.session_state or at.session_state["so_up_nonce"] == 0
+    assert [b for b in at.button if b.key == "so_up_save"], "실패면 업로더·저장 버튼 유지"

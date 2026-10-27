@@ -241,13 +241,17 @@ div[class*="st-key-wsab_"] div[data-testid="stMarkdownContainer"]{margin-bottom:
 @media (max-width: 640px){
   .stepper.ws-steps .step .sm{display:none}
 }
-/* 수기 수주 담긴 품목 카드 — 640 미만에서도 행(품번 | [삭제])·머리(제목 | [초기화])를 한 줄로(r2 F8) */
+/* 640 미만에서도 한 줄: 수기 수주 품목 행(품번 | [삭제], key so_mrow_*)과 카드 머리(제목 | 위험 버튼,
+   key wshead_*). 카드 안 다른 columns(confirm_gate 의 [실행 확정]/[돌아가기])에는 걸지 않는다(r2 S2) */
 @media (max-width: 640px){
-  div.st-key-wscard_so_manual_items div[data-testid="stHorizontalBlock"]{flex-direction:row;
+  div[class*="st-key-so_mrow_"] div[data-testid="stHorizontalBlock"],
+  div[class*="st-key-wshead_"] div[data-testid="stHorizontalBlock"]{flex-direction:row;
     flex-wrap:nowrap;align-items:center}
-  div.st-key-wscard_so_manual_items div[data-testid="stColumn"]{width:auto !important;
+  div[class*="st-key-so_mrow_"] div[data-testid="stColumn"],
+  div[class*="st-key-wshead_"] div[data-testid="stColumn"]{width:auto !important;
     min-width:0 !important;flex:1 1 auto !important}
-  div.st-key-wscard_so_manual_items div[data-testid="stColumn"]:last-child{flex:0 0 72px !important}
+  div[class*="st-key-so_mrow_"] div[data-testid="stColumn"]:last-child{flex:0 0 72px !important}
+  div[class*="st-key-wshead_"] div[data-testid="stColumn"]:last-child{flex:0 0 auto !important}
 }
 /* 수기 수주 담긴 품목(ListRow 모양) — 품번 14/600 + 보조 12/--faint */
 .so-item-row{display:flex;flex-direction:column;gap:2px;padding-top:0}
@@ -1040,7 +1044,7 @@ def card_head_btn(title, sub=None, right_html=None, btn=None):
     if not btn:
         st.markdown(card_head(title, sub, right_html), unsafe_allow_html=True)
         return False
-    _h1, _h2 = st.columns([4, 1.2], vertical_alignment="center")
+    _h1, _h2 = st.container(key=f"wshead_{btn['key']}").columns([4, 1.2], vertical_alignment="center")
     _h1.markdown(card_head(title, sub, right_html), unsafe_allow_html=True)
     with _h2.container(horizontal_alignment="right"):
         return st.button(type="tertiary", **btn)
@@ -7421,7 +7425,13 @@ elif page == "수주 관리":
                                     so_row = _db.fetch_one("sales_orders",
                                         f"so_number=eq.{_fq(header['so_number'])}&customer=eq.{_fq(header['customer'])}",
                                         "so_id")
-                                    if not so_row: continue
+                                    if not so_row:
+                                        # 머리글 재조회 실패 = 품목 미저장 — 성공 분기(flash·업로더 비움)를
+                                        # 타지 않게 실패로 남긴다(U3 r2 S1, Codex M1)
+                                        _so_fails.append(
+                                            f"수주 {header['so_number']} 머리글만 저장됨 — 품목은 저장되지 "
+                                            "않았습니다. 수주 목록에서 확인하세요")
+                                        continue
 
                                     # 품목 INSERT
                                     for it in g["items"]:
@@ -7630,7 +7640,8 @@ elif page == "수주 관리":
                         if not _m_its:
                             _empty_state("품번을 검색해 [추가]하면 여기에 담깁니다")
                         for _soi_i, _soi_it in enumerate(_m_its):
-                            _dc1, _dc2 = st.columns([5, 1], vertical_alignment="center")
+                            _dc1, _dc2 = st.container(key=f"so_mrow_{_soi_i}").columns(
+                                [5, 1], vertical_alignment="center")
                             _dc1.markdown(
                                 f'<div class="so-item-row"><b>{_soi_it["line_no"]}. '
                                 f'{_html_soi.escape(str(_soi_it.get("customer_part_no") or ""))}</b>'
@@ -9573,7 +9584,8 @@ elif page == "출고 관리":
                     "선택": st.column_config.CheckboxColumn(
                         "선택", width="small"),
                     "출고": st.column_config.NumberColumn(
-                        "출고", min_value=0, step=1, width="small"),
+                        "출고", min_value=0, step=1, width="small",
+                        format="localized"),
                     "품번": st.column_config.Column(disabled=True, width="medium"),
                     **{c: st.column_config.Column(disabled=True)
                        for c in ("구분", "거래처", "수주번호", "납기")},
@@ -9601,10 +9613,16 @@ elif page == "출고 관리":
                     _sh_need[_pid9] = _sh_need.get(_pid9, 0.0) + float(it["cap"])
             _sh_short_n = sum(1 for _pid9, _nd in _sh_need.items() if _sh_stock[_pid9] < _nd)
             _sh_unk_n = sum(1 for it in _sh_items if it["li"].get("product_id") in _sh_unk)
-            if _sh_unk_n:
+            _sh_nolink_n = sum(1 for it in _sh_items if not it["li"].get("product_id"))
+            if _sh_unk_n or _sh_nolink_n:
+                # 조회 실패와 제품 미연결은 원인이 달라 문구를 나눈다(U3 r2 S4, Codex M2)
                 with _sh_rc:
-                    st.warning(f"완성 재고 {_sh_unk_n}건 미확인 — 다시 시도(새로고침)하세요. "
-                               "미확인 품목은 부족 계산에서 뺐습니다.")
+                    st.warning("완성 재고 미확인 — "
+                               + " · ".join(x for x in (
+                                   f"조회 실패 {_sh_unk_n}건(새로고침)" if _sh_unk_n else "",
+                                   f"제품 미연결 {_sh_nolink_n}건(수주 라인에 제품 연결 필요)"
+                                   if _sh_nolink_n else "") if x)
+                               + ". 미확인 품목은 부족 계산에서 뺐습니다.")
             _sh_hdr.markdown(card_head(
                 "미납 회차", f"{_sh_scope} {len(_sh_items)}건 · 선택 {len(_sh_sel)}",
                 (_bdg(f"지연 {_sh_late_n}", "b-red") if _sh_late_n else "")
@@ -14992,7 +15010,7 @@ elif page == "구매 관리":
                          on_click=_po_pending_cancel, use_container_width=True)
 
         def _po_reset_all():
-            # [모두 초기화] — ActionBar 좌측 보조 버튼(U3). 미리 담긴 데이터·품목표를 모두 비운다
+            # [모두 초기화] — 담긴 품목 카드 머리 우측 위험 버튼 + 2단계 확인(U3 r2 D1). 미리 담긴 데이터·품목표를 모두 비운다
             st.session_state.pop("po_prefill_note", None)
             st.session_state.pop("po_prefill_vendor_applied", None)
             st.session_state.pop("po_prefill_pending", None)    # 보류 요청도 폐기 (Codex R2-M1)
@@ -15009,7 +15027,7 @@ elif page == "구매 관리":
             pv = st.session_state.get("po_prefill_vendor_name", "")
             pi = st.session_state.get("po_prefill_items", [])
             src_so = st.session_state.get("po_prefill_source_so", "")
-            # (안내 → 한 줄 보조 설명, [모두 초기화]는 ActionBar 좌측으로 — U3 B-2)
+            # (안내 → 한 줄 보조 설명, [모두 초기화]는 담긴 품목 카드 머리 우측 — U3 r2 D1)
             ws_note(
                 f"미리 담긴 발주 데이터: 거래처 '{pv}', 품목 {len(pi)}개"
                 + (f" · 출처 수주: {src_so}" if src_so else "")
@@ -15021,8 +15039,7 @@ elif page == "구매 관리":
                 st.session_state["po_step"] = 2          # 담긴 채로 왔으면 ② 품목 담기부터
             elif pi:
                 ws_note("품목표에 이미 줄이 있어 제안 품목을 넣지 않았습니다 "
-                        "— [전체 비우기] 또는 [모두 초기화] 뒤 자동 제안에서 "
-                        "다시 누르세요.", warn=True)
+                        "— [모두 초기화] 뒤 다시 담으세요.", warn=True)
 
         _por = st.session_state.get("po_result")   # 방금 만든 발주서 → ③ 자리에 표시
 
