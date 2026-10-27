@@ -10,7 +10,7 @@ DB 는 mock — 실제 Supabase 접근 없음.
 import sys, os
 import importlib.util
 import pytest
-from tests.conftest import goto
+from tests.conftest import goto, msg_texts
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
@@ -157,7 +157,7 @@ def test_adhoc_history_listed_without_query(mocked_db):
     _search_btn(at).click().run()
     assert not at.exception, [str(e.value) for e in at.exception]
 
-    assert not any("일치하는 품목 없음" in i.value for i in at.info), \
+    assert not any("일치하는 품목 없음" in t for t in msg_texts(at)), \
         "이력 품목이 있는데 '없음' 안내가 나옴"
     assert any(b.label == "체크한 품목 담기" for b in at.button), \
         "결과 표(담기 폼)가 렌더되지 않음"
@@ -239,7 +239,7 @@ def test_query_finds_master_material_and_dedups_history(mocked_db):
     q[0].set_value("절삭")
     _search_btn(at).click().run()
     assert not at.exception, [str(e.value) for e in at.exception]
-    assert not any("일치하는 품목 없음" in i.value for i in at.info)
+    assert not any("일치하는 품목 없음" in t for t in msg_texts(at))
     assert any(b.label == "체크한 품목 담기" for b in at.button)
     txt = _grid_texts(at)
     assert txt
@@ -253,7 +253,7 @@ def test_query_with_no_match_still_says_none(mocked_db):
     [t for t in at.text_input if t.key == "po_q"][0].set_value("ZZZZ")
     _search_btn(at).click().run()
     assert not at.exception, [str(e.value) for e in at.exception]
-    assert any("일치하는 품목 없음" in i.value for i in at.info)
+    assert any("일치하는 품목 없음" in t for t in msg_texts(at))
     assert not any(b.label == "체크한 품목 담기" for b in at.button)
 
 
@@ -364,8 +364,8 @@ def test_linked_line_to_archived_product_warns(mocked_db, monkeypatch):
     assert not at.exception, [str(e.value) for e in at.exception]
     txt = _grid_texts(at)
     assert "40BLD-APP" not in txt and "4S40BLD-AP" not in txt
-    assert any("휴면 제품" in w.value and "4S40BLD-AP" in w.value
-               for w in at.warning), [w.value for w in at.warning]
+    assert any("휴면 제품" in t and "4S40BLD-AP" in t
+               for t in msg_texts(at)), msg_texts(at)
 
 
 def test_linked_product_lookup_failure_falls_back(mocked_db, monkeypatch):
@@ -377,4 +377,4 @@ def test_linked_product_lookup_failure_falls_back(mocked_db, monkeypatch):
     assert not at.exception, [str(e.value) for e in at.exception]
     txt = _grid_texts(at)
     assert "40BLD-APP" in txt, "폴백: 이력 행으로 표시"
-    assert any("연결된 제품 조회에 실패" in w.value for w in at.warning)
+    assert any("연결된 제품 조회에 실패" in t for t in msg_texts(at))

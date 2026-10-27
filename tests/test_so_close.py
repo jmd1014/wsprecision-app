@@ -688,7 +688,17 @@ SCREENS = [("home", None, "홈 미납 수주·수주 진행"), ("so", "list", "�
 
 
 def _metric(at, label):
-    return next((str(x.value) for x in at.metric if (x.label or "") == label), None)
+    """KPI 값 — st.metric 또는 U3 요약 띠(kpi-strip, 수주 세부 3화면)."""
+    import re as _re
+    v = next((str(x.value) for x in at.metric if (x.label or "") == label), None)
+    if v is not None:
+        return v
+    for m in at.markdown:
+        hit = _re.search(r'<span class="k">' + _re.escape(label) + r'</span><span class="v[^"]*">([^<]+)</span>',
+                         str(m.value or ""))
+        if hit:
+            return hit.group(1)
+    return None
 
 
 @app_test

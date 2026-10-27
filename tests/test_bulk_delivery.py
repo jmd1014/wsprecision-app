@@ -297,8 +297,8 @@ def test_draft_items_excluded_from_new_cart(ship_db):
     assert not any(getattr(b, "key", None) == "ship_reg"
                    for b in at2.button)
     # 제외 안내에 전표 번호 노출
-    assert any("작성중 전표에 이미 담긴" in (i.value or "")
-               for i in at2.info)
+    from tests.conftest import msg_texts
+    assert any("작성중 전표에 이미 담긴" in t for t in msg_texts(at2))   # U3: 결과 카드 한 줄 보조 설명
     # 전표는 여전히 1건 — 중복 생성되지 않음
     assert len(SHIPMENTS) == 1
 

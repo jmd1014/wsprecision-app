@@ -15,7 +15,7 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from tests.conftest import (goto, nav_menu_labels, nav_sub_labels, nav_title,   # noqa: E402
+from tests.conftest import (goto, msg_texts, nav_menu_labels, nav_sub_labels, nav_title,   # noqa: E402
                             NAV_LABELS, NAV_ADMIN_LABELS)
 from tests.test_bulk_delivery import (ship_db, _open_shipping, _register,       # noqa: E402,F401
                                       SHIPMENTS, UPDATED as SHIP_UPDATED)
@@ -146,8 +146,9 @@ def test_main_switch_keeps_last_sub_and_button_click_is_single_run(ship_db, monk
     goto(at, "ship")                                 # 세부 없이 복귀
     assert _has_title(at, "ship", "slip"), "마지막 세부(출고 전표) 유지"
     assert at.session_state["nav_sub"]["ship"] == "slip"
-    # 사이드바 버튼 직접 클릭 경로 — 세부 버튼
-    at.sidebar.button(key="nav_s_ship_fstock").click()
+    # 본문 탭 바 직접 선택 경로 — 세부(U3: 사이드바 세부 버튼 제거, 탭 바가 모든 폭)
+    assert not [b for b in at.sidebar.button if str(b.key or "").startswith("nav_s_")]
+    at.segmented_control(key="nav_sc_ship").set_value("완성 재고")
     at.run()
     assert not at.exception, [str(e.value) for e in at.exception]
     assert _has_title(at, "ship", "fstock")
@@ -307,7 +308,7 @@ def test_po_suggestion_button_switches_to_edit_mode(hist_db, st_log):
     assert n >= 1 and len(at.session_state["po_items"]) == n
     assert at.radio(key="po_bucket").value == "소재"            # MAT_CARBON → 소재
     assert "혜성철강" in str(at.selectbox(key="po_vendor").value)
-    assert any("미리 담긴 발주 데이터" in str(i.value) for i in at.info)
+    assert any("미리 담긴 발주 데이터" in t for t in msg_texts(at))
     assert not [b for b in at.button if str(b.key or "").startswith("go_po_")], "편집 모드엔 제안 블록 없음"
     assert not [m for m in st_log.msgs if "default value" in m], st_log.msgs
 
@@ -479,7 +480,7 @@ def test_prefill_vendor_applied_once_then_user_choice_wins(hist_db2, st_log):
     at.session_state["po_mode"] = "edit"; at.run()
     assert "테스트철강" in _vendor_value(at), "모드 왕복 뒤에도 B 유지"
     assert at.radio(key="po_bucket").value == "소재"
-    assert any("미리 담긴 발주 데이터" in str(i.value) for i in at.info)   # 안내는 그대로
+    assert any("미리 담긴 발주 데이터" in t for t in msg_texts(at))   # 안내는 그대로(한 줄 보조 설명)
     assert not [m for m in st_log.msgs if "default value" in m], st_log.msgs
 
 

@@ -477,7 +477,7 @@ def test_static_nav_and_subs_for_consumers():
     src = open(APP_FILE, encoding="utf-8").read()
     assert '("dash", "업무 루틴", [("today", "오늘 루틴"), ("rate", "완료율"),' in src
     assert 'NAV_SUB_ADMIN = {("dash", "rate"), ("dash", "tmpl")}' in src
-    assert src.count("_subs_for(") >= 6          # 정의 1 + 소비자 5
+    assert src.count("_subs_for(") >= 5          # 정의 1 + 소비자 4 (U3: 사이드바 세부 버튼 제거)
     a = src.index('elif page == "업무 루틴":'); b = src.index('elif page == "생산 보고":')
     assert set(re.findall(r'^    if _sub == "(\w+)"', src[a:b], re.M)) == {"today", "rate", "tmpl"}
     assert not re.search(r"탭(에서|의|에 )", src[a:b])

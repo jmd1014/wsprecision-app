@@ -82,13 +82,13 @@ def test_flash_rendered_on_pages_without_page_head():
     """flash 를 쓰는 관리자 화면은 제목 아래에서 nav_flash_show() — 안 그리면 다음 사용자 화면으로 샌다."""
     src = _read(APP_FILE)
     assert "def nav_flash_show():" in src
-    a = src.index("def nav_page_head():"); b = src.index("def nav_flash_show():")
+    a = src.index("def nav_page_head("); b = src.index("def nav_flash_show():")
     assert "nav_flash_show()" in src[a:b]                       # 사용자 영역은 nav_page_head 가
     heads = [(m.start(), m.group(1)) for m in re.finditer(r'^(?:el)?if page == "([^"]+)":', src, re.M)]
     heads.append((len(src), None))
     for (s0, lbl), (s1, _) in zip(heads, heads[1:]):
         blk = src[s0:s1]
-        if "nav_flash(" in blk and "nav_page_head()" not in blk:
+        if "nav_flash(" in blk and "nav_page_head(" not in blk:     # U3: nav_page_head(right=…)
             first = blk.split("\n")[1:4]
             assert any("nav_flash_show()" in x for x in first), f"{lbl}: 제목 아래 nav_flash_show() 없음"
 
@@ -100,7 +100,7 @@ def test_empty_state_shared_by_three_helpers():
     fns = {n.name: n for n in tree.body if isinstance(n, ast.FunctionDef)}
     for name in ("toss_table", "toss_df", "toss_grid"):
         body = ast.get_source_segment(src, fns[name])
-        assert "_empty_state()" in body, name
+        assert "_empty_state(" in body, name                # U3: toss_table 은 맥락 문구 인자
     assert '"표시할 데이터 없음"' not in src                     # 옛 toss_df 문구 제거
 
 
@@ -126,7 +126,7 @@ def test_po_mode_label_and_ship_caption_moved_to_help():
     src = _read(APP_FILE)
     assert 'st.segmented_control("작업 방식", [l for _, l in _PO_MODES], key="po_mode_sc",' in src
     assert '_rg2.caption("등록 시점에는' not in src
-    i = src.index('key="ship_reg"')
+    i = src.index('"key": "ship_reg"')                     # U3: ActionBar 주 버튼 인자 dict
     assert "등록 시점에는 아무것도 차감되지 않습니다" in src[i:i + 400]
 
 
@@ -197,7 +197,7 @@ def test_manual_so_row_delete_then_save_clears_and_flashes(monkeypatch):
     at.secrets["auth"] = {"disabled": True}
     at.run()
     goto(at, "so", "input")
-    next(r for r in at.radio if r.label == "입력 방식").set_value("수기 입력")
+    at.segmented_control(key="so_mode").set_value("수기 입력")      # U3: 입력 방식 segmented
     at.run()
     at.session_state["m_so_items"] = [_item(1, "AAA-1", 10), _item(2, "BBB-2", 20), _item(3, "CCC-3", 30)]
     at.text_input(key="m_so_no").set_value("PO-T-1")
@@ -213,7 +213,7 @@ def test_manual_so_row_delete_then_save_clears_and_flashes(monkeypatch):
     assert [(i["line_no"], i["customer_part_no"]) for i in its] == [(1, "AAA-1"), (2, "CCC-3")]
     assert "so_item_2_del" not in {b.key for b in at.button}
     # 저장 → 품목표 비움 + flash + 삭제 버튼 사라짐
-    next(b for b in at.button if b.label == "수주 저장").click()
+    at.button(key="so_m_save").click()                              # U3: ActionBar [수주 저장 (n줄)]
     at.run()
     assert not at.exception, [str(e.value) for e in at.exception]
     assert at.session_state["m_so_items"] == []
@@ -238,7 +238,7 @@ def _manual_open(monkeypatch, mock, items=None):
     at.secrets["auth"] = {"disabled": True}
     at.run()
     goto(at, "so", "input")
-    next(r for r in at.radio if r.label == "입력 방식").set_value("수기 입력")
+    at.segmented_control(key="so_mode").set_value("수기 입력")      # U3: 입력 방식 segmented
     at.run()
     at.session_state["m_so_items"] = items if items is not None else \
         [_item(1, "AAA-1", 10), _item(2, "BBB-2", 20), _item(3, "CCC-3", 30)]
@@ -250,7 +250,7 @@ def _manual_open(monkeypatch, mock, items=None):
 
 
 def _save(at):
-    next(b for b in at.button if b.label == "수주 저장").click()
+    at.button(key="so_m_save").click()                              # U3: ActionBar [수주 저장 (n줄)]
     at.run()
     assert not at.exception, [str(e.value) for e in at.exception]
 
@@ -351,5 +351,5 @@ def test_manual_so_delete_last_row_disables_save(monkeypatch):
     at.button(key="so_item_0_del").click()
     at.run()
     assert at.session_state["m_so_items"] == []
-    assert next(b for b in at.button if b.label == "수주 저장").disabled
+    assert at.button(key="so_m_save").disabled
     assert not [b.key for b in at.button if (b.key or "").startswith("so_item_")]

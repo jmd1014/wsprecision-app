@@ -189,11 +189,23 @@ def nav_menu_labels(at):
 
 
 def nav_sub_labels(at, main):
-    """선택된 메인의 세부 화면 이름 순서 — 개편 전은 페이지 탭 라벨, 개편 후는 사이드바
-    세부 버튼 라벨."""
+    """선택된 메인의 세부 화면 이름 순서 — 개편 전은 페이지 탭 라벨, 개편 후(U3 2026-10-27)는
+    본문 탭 바(nav_sc_<메인>) 옵션. 세부가 하나뿐이면 탭 바가 없어 제목 줄 "메인 › 세부" 에서 읽는다."""
     mk = _nav_main_key(main)
     if _nav_is_new(at):
-        pref = f"nav_s_{mk}_"
-        return [b.label for b in at.sidebar.button
-                if str(b.key or "").startswith(pref)]
+        sc = [w for w in at.segmented_control if w.key == f"nav_sc_{mk}"]
+        if sc:
+            return [o.content for o in sc[0].proto.options]
+        for h in at.subheader:
+            v = str(getattr(h, "value", "") or "")
+            if " › " in v and v.split(" › ")[0] == NAV_LABELS.get(mk, ("",))[0]:
+                return [v.split(" › ", 1)[1]]
+        return []
     return [t.label for t in at.tabs]
+
+
+def msg_texts(at):
+    """화면 안내 글 — st.info·warning·error + 한 줄 보조 설명(ws_note, U3 에서 info/warning 대체)."""
+    out = [str(x.value) for x in list(at.info) + list(at.warning) + list(at.error)]
+    out += [str(m.value) for m in at.markdown if "ws-note" in str(m.value or "")]
+    return out

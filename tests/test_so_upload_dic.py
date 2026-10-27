@@ -138,7 +138,8 @@ def test_dic_upload_two_customers_append_and_price(dic_db, monkeypatch):
     up[0].upload("납품예정서등록-DIC.xls", _workbook()).run()
     assert not at.exception, [str(e.value) for e in at.exception]
 
-    infos = " ".join(str(i.value) for i in at.info)
+    from tests.conftest import msg_texts
+    infos = " ".join(msg_texts(at))                  # U3: 양식 인식 = 한 줄 보조 설명
     assert "DIC (납품예정서등록 엑셀)" in infos
     # 기존 수주(…712): 새 행번 1개는 추가, 이미 있는 행번 3은 그대로
     assert "이미 등록된 수주 **1건**" in infos and "새 행번 1개" in infos
@@ -146,7 +147,7 @@ def test_dic_upload_two_customers_append_and_price(dic_db, monkeypatch):
     # 마스터에 없는 납품공장 경고
     assert any("신공장" in str(w.value) for w in at.warning)
 
-    save = [b for b in at.button if b.label == "수주 DB 저장"]
+    save = [b for b in at.button if b.key == "so_up_save"]   # U3: ActionBar [수주 저장 (n줄)]
     assert save
     save[0].click().run()
     # 수주 입력 슬랙 알림 (2026-10-21): 업로드 저장 뒤 [수주] 한 건
