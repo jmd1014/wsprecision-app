@@ -159,7 +159,7 @@ def test_static_sites_use_fetch_all():
     src = open(APP_FILE, encoding="utf-8").read()
     assert '"so_delivery_schedule", "soi_id", "", limit=2000' not in src
     assert '"order=due_date.asc", limit=2000)' not in src
-    for frag in ('fetch_all("so_delivery_schedule", "soi_id", "")',
+    for frag in ('fetch_all("so_delivery_schedule", _SC_ALL_SEL, "")',
                  'f"so_id=in.({_ids})", order="due_date.asc,seq.asc")\n',
                  '"회차가 2만 행을 넘어 뒤쪽(최근 납기)은 표시되지 않습니다',
                  '"미확인" if _sk_late_unk'):
@@ -193,6 +193,64 @@ def test_schedule_warns_over_20000_and_period_filter_recovers(monkeypatch):
     assert any(fq.startswith(f"due_date=gte.{since}&") for fq in _sched_reads(m)), _sched_reads(m)[:3]
     assert not any("2만 행을 넘어" in str(w.value) for w in at.warning)
     assert '<span class="gq">333</span>' in (_gantt_html(at) or "")
+    # r3 M1: 판정용 전체 회차는 여전히 2만 행 초과 → 계획률·미계획·상단 합계 '미확인'(숫자 대신)
+    mds = [str(x.value) for x in at.markdown]
+    assert any("계획률·미계획·상단 합계는 미확인" in t for t in mds)
+    assert any('<div class="v">미확인</div>' in t for t in mds)
+    assert not any('class="unplan"' in t for t in mds)
+    assert "계획률 미확인" in (_gantt_html(at) or "")
+
+
+def _unplan_banner(at):
+    return next((str(x.value) for x in at.markdown if 'class="unplan"' in str(x.value)), "")
+
+
+def _period(at, label):
+    at.selectbox(key="sch_period").set_value(label).run()
+    assert not at.exception, [str(e.value) for e in at.exception]
+
+
+def test_period_does_not_turn_out_of_range_rounds_into_single(monkeypatch):
+    """r3 M1 ①: 기간 이전 회차만 있는 미납 라인 — '최근 3개월부터'에서 단발(라인 미납 777) 칩으로 바뀌지
+    않고, 미계획(777−333=444)은 '전체'와 같다."""
+    from tests.test_delivery_schedule_gantt import _gantt_html
+    m = _mock(target_due=(TODAY - timedelta(days=200)).isoformat(), target_qty=777, line_pending=777, filler=5)
+    m.tables["so_delivery_schedule"][-1]["qty"] = 333
+    at = _open(monkeypatch, m, "so", "sched")
+    assert '<span class="gq">333</span>' in (_gantt_html(at) or "")
+    assert "444개" in _unplan_banner(at), _unplan_banner(at)[:200]
+    _period(at, "최근 3개월부터")
+    html = _gantt_html(at) or ""
+    assert '<span class="gq">777</span>' not in html and '<span class="gq">333</span>' not in html
+    assert "TAIL-PN-01" not in html                             # 기간 밖 회차뿐 → 표시에서 제외
+    assert "444개" in _unplan_banner(at), _unplan_banner(at)[:200]   # r2: 단발 777 계획으로 배너 사라짐
+
+
+def test_period_keeps_out_of_range_plan_out_of_unplanned(monkeypatch):
+    """r3 M1 ②: 기간 이전(333)·이후(300) 회차가 함께 있는 라인 — 미계획은 777−633=144 그대로
+    (r2: 기간 내 300만 빼서 477)."""
+    from tests.test_delivery_schedule_gantt import _gantt_html
+    m = _mock(target_due=(TODAY - timedelta(days=200)).isoformat(), target_qty=777, line_pending=777, filler=5)
+    m.tables["so_delivery_schedule"][-1]["qty"] = 333
+    m.tables["so_delivery_schedule"].append(
+        {"sched_id": 9000, "so_id": 102, "soi_id": 601, "due_date": (TODAY + timedelta(days=7)).isoformat(),
+         "seq": 2, "qty": 300, "delivered_qty": 0, "note": None})
+    at = _open(monkeypatch, m, "so", "sched")
+    assert "144개" in _unplan_banner(at), _unplan_banner(at)[:200]
+    _period(at, "최근 3개월부터")
+    html = _gantt_html(at) or ""
+    assert '<span class="gq">300</span>' in html and '<span class="gq">333</span>' not in html
+    assert "144개" in _unplan_banner(at), _unplan_banner(at)[:200]
+    assert not any("미확인" in str(x.value) for x in at.markdown if "ws-note" in str(x.value))
+
+
+def test_home_without_open_orders_renders(monkeypatch):
+    """r3: 미납 수주 0건이면 회차 조회 블록을 건너뛴다 — 절단 플래그가 정의돼 있어야(r2 NameError 회귀)."""
+    from tests.so_mock import SOMock
+    m = SOMock()
+    m.seed(so_id=103, so_status="CONFIRMED", lines=[(701, 5, 5, 0, "DELIVERED")], pn="DONE-PN", product_id="P701")
+    at = _open(monkeypatch, m, "home")
+    assert not any("회차 일부 미확인" in str(x.value) for x in at.markdown)
 
 
 def test_home_note_when_rounds_over_20000(monkeypatch):
@@ -208,10 +266,30 @@ def test_due_input_hides_counts_when_over_20000(monkeypatch):
     at.run()
     assert not at.exception, [str(e.value) for e in at.exception]
     assert any("일부만 집계" in str(w.value) for w in at.warning), [str(w.value) for w in at.warning]
-    vals = {mt.label: mt.value for mt in at.metric}
-    assert vals.get("납기 입력됨") == "미확인" and vals.get("납기 미입력") == "미확인", vals
+    # r3 L1: 같은 라벨 지표(상단 sm·라인 lm) 전부
+    for lbl in ("납기 입력됨", "납기 미입력"):
+        got = [mt.value for mt in at.metric if mt.label == lbl]
+        assert len(got) == 2 and all(v == "미확인" for v in got), (lbl, got)
+    # r3 M2: 현황 표·선택 그리드에 부분 집계 회차 수가 없다
+    assert at.dataframe
     for d in at.dataframe:
-        assert "납기 미입력" not in list(d.value.columns), list(d.value.columns)
+        cols = list(d.value.columns)
+        assert not {"회차", "납기 입력됨", "납기 미입력"} & set(cols), cols
+    from tests.test_so_close import GRIDS
+    grids = [df for k, df in GRIDS.items() if "sch_line_grid" in str(k)]
+    assert grids and all("회차" not in list(df.columns) for df in grids), [list(df.columns) for df in grids]
+
+
+def test_due_input_shows_round_counts_when_complete(monkeypatch):
+    """대조: 절단이 없으면 회차 열·입력 수량은 그대로(2,501 회차)."""
+    m = _mock(target_due=(TODAY + timedelta(days=30)).isoformat(), filler_soi=601)
+    at = _open(monkeypatch, m, "so", "sched")
+    at.session_state["sch_view"] = "납기 입력"
+    at.run()
+    assert not any("미확인" == mt.value for mt in at.metric)
+    from tests.test_so_close import GRIDS
+    grids = [df for k, df in GRIDS.items() if "sch_line_grid" in str(k)]
+    assert grids and "회차" in list(grids[0].columns) and 2501 in list(grids[0]["회차"])
 
 
 def test_plan_board_warns_when_rounds_over_20000(monkeypatch):

@@ -147,6 +147,68 @@ def test_pages_never_use_page_cache_and_result_cached_once(raw, monkeypatch):
     assert len(r.calls) == n1 * 3                                       # cache=False 는 우회
 
 
+def test_same_due_and_seq_across_page_boundary_exact(raw):
+    """r3 L1: 정렬 열(납기·seq)이 모두 같은 2,500행이 페이지 경계를 가로질러도 기본 키로 결정 — 정확한 집합·순서."""
+    rows = [{"sched_id": 2500 - i, "soi_id": 1, "due_date": "2026-11-01", "seq": 1, "qty": 1} for i in range(2500)]
+    r = raw(rows, dup_shift=2)
+    got, truncated = db.fetch_all("so_delivery_schedule", "soi_id,due_date,seq", "", order="due_date.asc,seq.asc",
+                                  cache=False)
+    assert not truncated
+    assert [x["sched_id"] for x in got] == list(range(1, 2501))
+    assert all("order=due_date.asc,seq.asc,sched_id.asc" in fq for _, fq, _ in r.calls)
+
+
+def test_cache_key_covers_all_seven_arguments(raw):
+    """r3 L1: 전체 결과 캐시 키 = table·select·filter·page·max_rows·order·pk — 하나만 바꿔도 다시 읽고,
+    같은 인자 재호출은 DB 0회."""
+    r = raw(_rows(30))
+    db.clear_cache()
+    base = dict(table="so_delivery_schedule", select="soi_id", filter_query="", page=1000, max_rows=20000,
+                order=None, pk=None)
+
+    def call(**over):
+        a = {**base, **over}
+        return db.fetch_all(a.pop("table"), a.pop("select"), a.pop("filter_query"), **a)
+
+    call()
+    n = len(r.calls)
+    call()
+    assert len(r.calls) == n                                  # 적중
+    for over in ({"table": "no_such_table", "pk": "sched_id"}, {"select": "soi_id,qty"},
+                 {"filter_query": "qty=gt.0"}, {"page": 500}, {"max_rows": 10000},
+                 {"order": "due_date.asc"}, {"pk": "soi_id"}):
+        call(**over)
+        assert len(r.calls) > n, over                         # 이 인자로 키가 갈린다
+        n = len(r.calls)
+        call(**over)
+        assert len(r.calls) == n, over                        # 같은 인자 재호출은 적중
+
+
+def test_cache_hit_restores_truncation_note(raw, monkeypatch):
+    """r3 L1: 캐시 적중 때도 절단 기록을 만들고(절단), 같은 테이블 기존 기록을 되돌리며(비절단), 다른 테이블 기록은 둔다."""
+    import streamlit as st
+    db.clear_cache()
+    r = raw(_rows(25000))
+    ss = {"_fetch_truncated": {}}
+    monkeypatch.setattr(st, "session_state", ss, raising=False)
+    db.fetch_all("so_delivery_schedule", "soi_id", "")               # 채움(절단)
+    n = len(r.calls)
+    ss["_fetch_truncated"] = {"products": 1000}                       # 다른 실행(새 세션 상태)
+    rows, truncated = db.fetch_all("so_delivery_schedule", "soi_id", "")
+    assert len(r.calls) == n and truncated                            # 적중
+    assert ss["_fetch_truncated"] == {"products": 1000, "so_delivery_schedule": 20000}
+    # 비절단 결과의 적중 — 같은 테이블의 기존(일반 fetch 상한) 기록은 그대로, 다른 테이블도 그대로
+    raw(_rows(10))
+    db.fetch_all("so_delivery_schedule", "qty", "")                   # 채움
+    ss["_fetch_truncated"] = {"products": 1000, "so_delivery_schedule": 1000}
+    _, truncated = db.fetch_all("so_delivery_schedule", "qty", "")    # 적중
+    assert not truncated
+    assert ss["_fetch_truncated"] == {"products": 1000, "so_delivery_schedule": 1000}
+    ss["_fetch_truncated"] = {"products": 1000}
+    db.fetch_all("so_delivery_schedule", "qty", "")                   # 적중, 기존 기록 없음 → 만들지 않는다
+    assert ss["_fetch_truncated"] == {"products": 1000}
+
+
 def test_truncation_note_only_when_truncated_and_other_tables_kept(raw, monkeypatch):
     """끝까지 읽으면 페이지마다 fetch 가 남긴 관리자 상한 기록을 되돌린다 — 실제 절단 때만, 다른 테이블 기록은 유지."""
     import streamlit as st

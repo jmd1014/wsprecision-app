@@ -2248,6 +2248,7 @@ if page == "홈":
         _h_so = []
     # 수주별 대표 품번 + 분납 스케줄 납기 (미납 라인 기준)
     _h_pn, _h_sched, _h_lines = {}, {}, []
+    _h_sc_tr = False      # 회차가 안전 상한(2만 행)을 넘어 잘리면 '일부 미확인' 안내(핫픽스 2 r2 M2)
     _open_ids = [s["so_id"] for s in _h_so
                  if float(s.get("total_pending_qty") or 0) > 0]
     if _open_ids:
@@ -2273,7 +2274,6 @@ if page == "홈":
         except Exception:
             _h_lines = []
         _h_sched_line = {}
-        _h_sc_tr = False      # 회차가 안전 상한(2만 행)을 넘어 잘리면 '일부 미확인' 안내(핫픽스 2 r2 M2)
         try:
             _h_sc_rows = []
             for _ids in _id_chunks:
@@ -6262,6 +6262,9 @@ elif page == "수주 관리":
     _sk_alive = {s["so_id"] for s in _so_kpi}
     _sk_late_n, _sk_late_qty = 0, 0.0
     _sk_late_unk = False      # 회차가 안전 상한(2만 행)을 넘어 잘리면 지연 집계 '미확인'(핫픽스 2)
+    # 전체 회차 — 수주 KPI(회차 있는 라인 판정)와 납품 스케줄(기간 선택 시 판정 기준)이 같은 인자로
+    # 읽어 fetch_all 전체 결과 캐시를 공유한다(핫픽스 2 r3)
+    _SC_ALL_SEL = "so_id,soi_id,seq,due_date,qty,delivered_qty"
     try:
         _sk_late_rows, _sk_tr1 = fetch_all(
             "so_delivery_schedule", "so_id,qty,delivered_qty",
@@ -6275,7 +6278,7 @@ elif page == "수주 관리":
                                  - float(_r.get("delivered_qty") or 0))
         # 전체 회차의 soi — limit 2000 은 서버 1,000행에서 잘려 회차 있는 라인을 '회차 없음'으로
         # 오판(지연 이중 계산)할 수 있었다 → fetch_all(핫픽스 2)
-        _sc_soi_rows, _sk_tr2 = fetch_all("so_delivery_schedule", "soi_id", "")
+        _sc_soi_rows, _sk_tr2 = fetch_all("so_delivery_schedule", _SC_ALL_SEL, "")
         _sched_soi_all = {r["soi_id"] for r in _sc_soi_rows}
         _sk_late_unk = _sk_tr1 or _sk_tr2
         for _r in fetch("sales_order_items",
@@ -8163,7 +8166,8 @@ elif page == "수주 관리":
         # (최근)이 잘린다 → 오래된 회차를 서버에서 빼는 것이 복구 방법. 기본 '전체'(종전 동작).
         _SCH_PERIODS = {"전체": 0, "최근 1년부터": 365, "최근 6개월부터": 182, "최근 3개월부터": 91}
         _sch_pd = st.selectbox("회차 기간", list(_SCH_PERIODS), key="sch_period",
-                               help="납기가 이 날짜 이후인 회차만 읽습니다(그 전의 지난 미납 회차는 빠집니다)")
+                               help="납기가 이 날짜 이후인 회차만 간트에 표시합니다. 기간은 표시 범위만 "
+                                    "바꿉니다(회차 유무·계획률·미계획·상단 합계는 전체 회차 기준)")
         _sch_from = _SCH_PERIODS.get(_sch_pd) or 0
         _sch_fq = (f"due_date=gte.{(_date.today() - _td(days=_sch_from)).isoformat()}"
                    if _sch_from else "")
@@ -8178,6 +8182,22 @@ elif page == "수주 관리":
         except Exception as e:
             st.error(f"스케줄 조회 실패 (Migration 027 필요): {e}")
             _all_sc = []
+        # 판정 기준(r3 M1): 기간을 고르면 표시(간트 칩)만 좁히고, 회차 유무·계획량·상단 합계는 전체
+        # 회차로 — 기간 밖 회차만 있는 라인을 단발로 바꾸거나 기간 밖 계획을 '미계획'으로 세지 않게.
+        # 전체를 다 못 읽으면(2만 행 초과) 판정 숫자는 '미확인'.
+        _sch_base, _sch_unk = _all_sc, False
+        if _sch_fq:
+            try:
+                _sch_full, _sch_full_tr = fetch_all("so_delivery_schedule", _SC_ALL_SEL, "")
+            except Exception:
+                _sch_full, _sch_full_tr = [], True
+            if _sch_full_tr:
+                _sch_unk = True
+                _sch_base = list({r["sched_id"]: r for r in _sch_full + _all_sc}.values())
+                ws_note("기간 선택 중 — 전체 회차가 너무 많아 계획률·미계획·상단 합계는 미확인입니다",
+                        warn=True)
+            else:
+                _sch_base = _sch_full
         try:  # 미납이 남은 전 라인 — 계획률·미계획 물량 산출 기준
             _open_li = fetch("sales_order_items",
                 "soi_id,so_id,canonical_pn,customer_part_no,qty,"
@@ -8186,9 +8206,10 @@ elif page == "수주 관리":
         except Exception:
             _open_li = []
 
-        _so_ids = ({r["so_id"] for r in _all_sc}
+        _so_ids = ({r["so_id"] for r in _sch_base}
+                   | {r["so_id"] for r in _all_sc}
                    | {l["so_id"] for l in _open_li}) or {0}
-        _soi_more = ({r["soi_id"] for r in _all_sc}
+        _soi_more = (({r["soi_id"] for r in _sch_base} | {r["soi_id"] for r in _all_sc})
                      - {l["soi_id"] for l in _open_li})
         try:
             _sc_som = {s["so_id"]: s for s in fetch("sales_orders",
@@ -8220,26 +8241,34 @@ elif page == "수주 관리":
                     or (_l or {}).get("customer_part_no") or "-")
 
         # ── 2) 회차 칩 목록 (분납 = 스케줄 행, 단발 = 스케줄 없는 라인) ──
-        _sched_soi = {r["soi_id"] for r in _all_sc}
-        _g = []
-        for r in _all_sc:
-            if r["so_id"] in _dead:
-                continue
-            _l = _li_by_soi.get(r["soi_id"], {})
-            _q = float(r.get("qty") or 0)
-            _dq = float(r.get("delivered_qty") or 0)
-            _rem = _q - _dq
-            _due = _date.fromisoformat(str(r["due_date"])[:10])
-            _g.append({
-                "품번": _pn_of(_l),
-                "거래처": _sc_som.get(r["so_id"], {}).get("customer", "-"),
-                "수주번호": _sc_som.get(r["so_id"], {}).get("so_number", "-"),
-                "구분": "분납", "회차": int(r.get("seq") or 0),
-                "납기": _due, "수량": _q, "완료": _dq,
-                "잔량": max(_rem, 0.0),
-                "상태": ("완료" if _rem <= 0 else
-                        "지연" if _due < _today_s else "예정"),
-            })
+        # 단발 판정은 전체 회차 기준(_sch_base) — 기간 밖 회차만 있는 라인은 단발로 대체하지 않고
+        # 표시에서 빠진다(r3 M1)
+        _sched_soi = {r["soi_id"] for r in _sch_base} | {r["soi_id"] for r in _all_sc}
+
+        def _round_chips(rows):
+            _out = []
+            for r in rows:
+                if r["so_id"] in _dead:
+                    continue
+                _l = _li_by_soi.get(r["soi_id"], {})
+                _q = float(r.get("qty") or 0)
+                _dq = float(r.get("delivered_qty") or 0)
+                _rem = _q - _dq
+                _due = _date.fromisoformat(str(r["due_date"])[:10])
+                _out.append({
+                    "품번": _pn_of(_l),
+                    "거래처": _sc_som.get(r["so_id"], {}).get("customer", "-"),
+                    "수주번호": _sc_som.get(r["so_id"], {}).get("so_number", "-"),
+                    "구분": "분납", "회차": int(r.get("seq") or 0),
+                    "납기": _due, "수량": _q, "완료": _dq,
+                    "잔량": max(_rem, 0.0),
+                    "상태": ("완료" if _rem <= 0 else
+                            "지연" if _due < _today_s else "예정"),
+                })
+            return _out
+
+        _g = _round_chips(_all_sc)           # 표시(간트) — 기간 내 회차
+        _singles = []
         for l in _open_li:
             # 납기 미협의 라인은 간트에 나타나지 않음 → 미계획 배너로 노출
             if (l["so_id"] in _dead or l["soi_id"] in _sched_soi
@@ -8247,7 +8276,7 @@ elif page == "수주 관리":
                 continue
             _rem = float(l.get("pending_qty") or 0)
             _due = _date.fromisoformat(str(l["due_date"])[:10])
-            _g.append({
+            _singles.append({
                 "품번": _pn_of(l),
                 "거래처": _sc_som.get(l["so_id"], {}).get("customer", "-"),
                 "수주번호": _sc_som.get(l["so_id"], {}).get("so_number", "-"),
@@ -8258,6 +8287,10 @@ elif page == "수주 관리":
                 "상태": ("완료" if _rem <= 0 else
                         "지연" if _due < _today_s else "예정"),
             })
+
+        _g += _singles
+        # 판정(계획률·미계획·상단 합계) — 기간 선택 시 전체 회차 칩, 아니면 표시와 같다
+        _g_all = (_round_chips(_sch_base) + _singles) if _sch_fq else _g
 
         # ── 3) 품번별 미납 / 계획 / 미계획 ──
         _pend_pn, _cust_pn = {}, {}
@@ -8270,7 +8303,7 @@ elif page == "수주 관리":
             _cust_pn.setdefault(
                 _p, _sc_som.get(l["so_id"], {}).get("customer", "-"))
         _plan_pn = {}
-        for c in _g:
+        for c in _g_all:
             if c["상태"] == "완료":
                 continue
             _plan_pn[c["품번"]] = _plan_pn.get(c["품번"], 0.0) + c["잔량"]
@@ -8282,9 +8315,9 @@ elif page == "수주 관리":
         _unplan.sort(key=lambda x: -x[1])
         _unplan_qty = sum(u for _, u in _unplan)
 
-        # ── 4) 상단 KPI 4카드 (border-top 3px) ──
-        _live = [c for c in _g if c["상태"] != "완료"]
-        if _g:
+        # ── 4) 상단 KPI 4카드 (border-top 3px) — 전체 회차 기준(r3 M1) ──
+        _live = [c for c in _g_all if c["상태"] != "완료"]
+        if _g_all:
             def _agg(rows):
                 return (sum(c["잔량"] for c in rows), len(rows),
                         len({c["품번"] for c in rows}))
@@ -8299,6 +8332,9 @@ elif page == "수주 관리":
             ]
             st.markdown(
                 '<div class="kpi-row">' + "".join(
+                    ('<div class="kpi warn"><div class="k">{k}</div>'
+                     '<div class="v">미확인</div><div class="s">전체 회차 미확인</div></div>'
+                     .format(k=k)) if _sch_unk else
                     '<div class="kpi {c}"><div class="k">{k}</div>'
                     '<div class="v">{v:,.0f}</div>'
                     '<div class="s">{n}회차 · {p}품번</div></div>'.format(
@@ -8414,7 +8450,10 @@ elif page == "수주 관리":
                 _sums = [0.0] * (_WEEKS + 1)
                 for _p in _pns:
                     _pd0 = _pend_pn.get(_p, 0.0)
-                    if _pd0 > 0:
+                    if _pd0 > 0 and _sch_unk:
+                        _rtxt = ('<div class="grate" style="color:#8b95a1">'
+                                 '계획률 미확인</div>')
+                    elif _pd0 > 0:
                         _rt = _plan_pn.get(_p, 0.0) / _pd0
                         _rc = ("#f04452" if _rt < 0.3 else
                                "#dd6b02" if _rt < 0.7 else "#01a76b")
@@ -8510,7 +8549,7 @@ elif page == "수주 관리":
                         t=sum(c["잔량"] for c in _live)))
 
         # ── 미계획 물량 배너 (간트 뷰에 상시 노출) ──
-        if _sv != "납기 입력" and _unplan:
+        if _sv != "납기 입력" and _unplan and not _sch_unk:
             _pend_all = sum(_pend_pn.values()) or 1
             st.markdown(
                 '<div class="unplan"><div class="t">납기 미협의 물량 '
@@ -8666,12 +8705,13 @@ elif page == "수주 관리":
                                      - _unplanned(i),
                         "납기 미입력": _unplanned(i),
                     } for i in _all_items]
-                    _st_df = pd.DataFrame(_st_rows).sort_values(
-                        "납기 미입력", ascending=False)
-                    if _sc_tr:      # 불완전 집계 — 라인별 입력됨·미입력 열을 빼고 보인다
-                        _st_view = _st_df.drop(columns=["납기 입력됨", "납기 미입력"]).style.format(
+                    if _sc_tr:      # 불완전 집계 — 회차·입력됨·미입력 열을 빼고 라인 순서(납기순) 그대로
+                        _st_df = pd.DataFrame(_st_rows)
+                        _st_view = _st_df.drop(columns=["회차", "납기 입력됨", "납기 미입력"]).style.format(
                             {"미납": "{:,.0f}"})
                     else:
+                        _st_df = pd.DataFrame(_st_rows).sort_values(
+                            "납기 미입력", ascending=False)
                         _st_view = _st_df.style.map(
                             lambda v: ("color:#f04452;font-weight:700"
                                        if isinstance(v, (int, float))
@@ -8686,7 +8726,7 @@ elif page == "수주 관리":
                     # (2026-08-19 공통 문법)
                     st.divider()
                     st.markdown("##### 납기 만들기")
-                    _li_i = toss_grid([{
+                    _li_rows = [{
                         "수주번호": _so_lbl.get(i["so_id"], {}
                                                 ).get("so_number", "-"),
                         "품번": (i.get("canonical_pn")
@@ -8694,9 +8734,13 @@ elif page == "수주 관리":
                         "미납": float(i.get("pending_qty") or 0),
                         "회차": (_sc_cnt.get(i["soi_id"], {}).get("n")
                                  or 0),
-                    } for i in _all_items],
+                    } for i in _all_items]
+                    if _sc_tr:      # 부분 집계 회차 수는 보이지 않는다(r3 M2)
+                        for _lr in _li_rows:
+                            _lr.pop("회차")
+                    _li_i = toss_grid(_li_rows,
                         key="sch_line_grid",
-                        num_cols=("미납", "회차"),
+                        num_cols=("미납",) if _sc_tr else ("미납", "회차"),
                         strong_cols=("품번",))
                     _li = _all_items[_li_i if _li_i is not None else 0]
                     _s_so = _so_lbl.get(_li["so_id"], {"so_id": _li["so_id"]})
