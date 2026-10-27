@@ -39,7 +39,7 @@ BOM_ROWS = [
 ]
 
 
-def _fetch(table, select="*", filter_query="", limit=1000):
+def _fetch(table, select="*", filter_query="", limit=1000, **kw):
     fq = unquote(filter_query or "")
     if table == "products" and "80092" in fq:
         return [dict(PRODUCT)]

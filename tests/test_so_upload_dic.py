@@ -47,7 +47,7 @@ def _workbook():
     return buf.getvalue()
 
 
-def _fetch(table, select="*", filter_query="", limit=1000):
+def _fetch(table, select="*", filter_query="", limit=1000, **kw):
     fq = unquote(filter_query or "")
     if table == "vendors":
         if "name=like.*디아이씨*" in fq:

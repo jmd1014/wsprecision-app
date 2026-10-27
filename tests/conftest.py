@@ -63,6 +63,12 @@ def _block_db_network(monkeypatch):
         return
     monkeypatch.setattr(db, "requests", _BlockedRequests())
     monkeypatch.setattr(db, "log_error", lambda *a, **k: False)
+    # fetch_all 결과 전체 캐시(st.cache_data, 프로세스 공용 — 핫픽스 2 r2)가 앞 테스트의 목 데이터를
+    # 다음 테스트로 넘기지 않게 매 테스트 시작에 비운다
+    try:
+        db.clear_cache()
+    except Exception:
+        pass
     yield
 
 

@@ -170,7 +170,7 @@ def test_over_pending_is_blocked_before_rpc(ship_db, monkeypatch):
     UPDATED.clear(); INSERTED.clear()
     monkeypatch.setattr(ship_db, "rpc", _rpc)
 
-    def _fetch(table, select="*", filter_query="", limit=1000):
+    def _fetch(table, select="*", filter_query="", limit=1000, **kw):
         rows = _base_fetch(table, select, filter_query, limit)
         # 확정 핸들러의 재조회(select 에 unit 포함)만 미납이 줄어든 값을 돌려준다
         if table == "sales_order_items" and "unit" in select:
@@ -287,7 +287,7 @@ def test_schedule_fetch_failure_aborts_before_rpc(ship_db, monkeypatch):
     UPDATED.clear(); INSERTED.clear()
     monkeypatch.setattr(ship_db, "rpc", _rpc)
 
-    def _fetch(table, select="*", filter_query="", limit=1000):
+    def _fetch(table, select="*", filter_query="", limit=1000, **kw):
         if table == "so_delivery_schedule" and "soi_id=eq." in filter_query:
             raise RuntimeError("mock: schedule fetch failed")
         return _base_fetch(table, select, filter_query, limit)

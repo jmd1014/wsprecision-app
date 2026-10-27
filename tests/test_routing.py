@@ -87,7 +87,7 @@ WO_BATCHES = list(WO_BATCHES_FULL)
 INSERTED = []
 
 
-def _fetch(table, select="*", filter_query="", limit=1000):
+def _fetch(table, select="*", filter_query="", limit=1000, **kw):
     if table == "product_routing":
         if "confirmed=eq.false" in filter_query:
             return [r for r in ROUTING if not r["confirmed"]]

@@ -70,7 +70,7 @@ SOS = [{"so_id": 90, "so_number": "G269920030", "customer": "현대제뉴인(주
         "customer": "(주)디아이씨두서공장", "status": "DRAFT"}]
 
 
-def _fetch(table, select="*", filter_query="", limit=1000):
+def _fetch(table, select="*", filter_query="", limit=1000, **kw):
     fq = unquote(filter_query or "")
     if table == "vendors":
         return [VENDOR]

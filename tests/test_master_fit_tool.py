@@ -48,7 +48,7 @@ MSTOCK = {"M110": {"material_id": "M110", "raw_name": "S304 Ø22*14",
 INSERTED = []
 
 
-def _fetch(table, select="*", filter_query="", limit=1000):
+def _fetch(table, select="*", filter_query="", limit=1000, **kw):
     if table == "products":
         return [PRODUCT]
     if table == "sales_order_items":

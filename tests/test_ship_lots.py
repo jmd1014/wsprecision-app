@@ -51,7 +51,7 @@ def test_fifo_preview_shortage_marker():
     assert fifo_preview(items, {})[1] == "(부족 2,000)"
 
 
-def _fake_fetch(table, select="*", filter_query="", limit=1000):
+def _fake_fetch(table, select="*", filter_query="", limit=1000, **kw):
     if table == "products":
         return [{"product_id": "P1", "sub_class": "PDV"}]
     if table == "inventory_transactions":

@@ -78,7 +78,7 @@ def test_safety_cap_warns_on_screen(ship_db, monkeypatch):
     _patch(monkeypatch, ship_db, _rounds(10500, date.today().isoformat()), calls)
     at = _open_shipping(ship_db)
     assert not at.exception, [str(e.value) for e in at.exception]
-    assert len(calls) == 10
+    assert len(calls) == 11            # 페이지 10 + 남은 행 탐색 1(핫픽스 2 r2 — 딱 상한이면 절단 아님)
     assert any("회차가 너무 많아 일부가 잘렸습니다 — 기준일을 좁히세요" in str(w.value) for w in at.warning)
 
 

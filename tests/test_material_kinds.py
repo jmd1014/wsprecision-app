@@ -39,7 +39,7 @@ ADHOC_POS = [{"po_id": 41, "po_number": "PO-202609-008", "po_date": "2026-09-29"
               "vendor_id": 206, "status": "DRAFT"}]
 
 
-def _mock_fetch(table, select="*", filter_query="", limit=1000):
+def _mock_fetch(table, select="*", filter_query="", limit=1000, **kw):
     if table == "materials":
         CALLS.append(filter_query)
         for pre in ("M", "C", "T"):

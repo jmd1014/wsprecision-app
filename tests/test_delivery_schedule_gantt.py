@@ -89,7 +89,7 @@ def _sched_row(t):
             "note": None}
 
 
-def _fetch(table, select="*", filter_query="", limit=1000):
+def _fetch(table, select="*", filter_query="", limit=1000, **kw):
     if table == "so_delivery_schedule":
         return [_sched_row(t) for t in SCHED]
     if table == "sales_order_items":

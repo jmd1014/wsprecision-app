@@ -305,7 +305,7 @@ def test_created_by_uses_logged_in_name(auth_db):
     """작업자 계정으로 직접 입고 → 원장 created_by 에 실명이 남는다"""
     import json as _json
 
-    def _fetch(table, select="*", filter_query="", limit=1000):
+    def _fetch(table, select="*", filter_query="", limit=1000, **kw):
         if table == "products":
             return [{"product_id": 1, "pn": "4PDVN-02", "customer": "미진"}]
         if table == "bom":

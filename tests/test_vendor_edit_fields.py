@@ -27,7 +27,7 @@ VENDOR = {"vendor_id": 205, "name": "삼경O&T", "short_name": None,
 UPDATES = []
 
 
-def _mock_fetch(table, select="*", filter_query="", limit=1000):
+def _mock_fetch(table, select="*", filter_query="", limit=1000, **kw):
     if table == "vendors":
         if "normalized_name=eq." in filter_query:
             return []          # 이름 중복 없음

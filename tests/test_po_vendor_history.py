@@ -62,7 +62,7 @@ SOS = [{"so_id": 90, "so_number": "202606190003", "customer": "미진정밀", "s
        {"so_id": 91, "so_number": "202609020001", "customer": "미진정밀", "status": "DRAFT"}]
 
 
-def _mock_fetch(table, select="*", filter_query="", limit=1000):
+def _mock_fetch(table, select="*", filter_query="", limit=1000, **kw):
     from urllib.parse import unquote
     if table == "vendors":
         return [VENDOR]
@@ -301,7 +301,7 @@ def _linked_fetch(product=LINKED_PRODUCT, items=LINKED_ITEMS, *,
     """
     from urllib.parse import unquote
 
-    def _fetch(table, select="*", filter_query="", limit=1000):
+    def _fetch(table, select="*", filter_query="", limit=1000, **kw):
         fq = unquote(filter_query)
         if table == "purchase_order_items":
             if "or=(" in fq:

@@ -49,7 +49,7 @@ def _goto(at, page, sub=None):
 # + `import db as _db` 를 사용. 모듈 attribute 를 미리 교체해 두면
 # 앱이 import 할 때 mock 이 바인딩된다.
 
-def _mock_fetch(table, select="*", filter_query="", limit=1000):
+def _mock_fetch(table, select="*", filter_query="", limit=1000, **kw):
     return []
 
 
