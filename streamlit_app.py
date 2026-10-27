@@ -89,7 +89,8 @@ _DANGER_KEY_SUFFIXES = ("_del", "_cancel", "_cfm_ok")
 _DANGER_KEY_EXCLUDE = ("po_pending_cancel",)   # "취소 (기존 품목 유지)" = 안전한 쪽
 # 접미 규칙 밖의 파괴 버튼(r2 R5, key 변경 없이 CSS 로만): 접두·정확한 key·접두+접미 조합
 _DANGER_KEY_PREFIXES = ("bom_del_",)                    # BOM [행 삭제] bom_del_{bom_id}
-_DANGER_KEYS = ("po_clear_all", "sc_clear")             # [표 비우기]·[판독 결과 비우기]
+_DANGER_KEYS = ("po_clear_all", "sc_clear",             # [전체 비우기]·[판독 결과 비우기]
+                "po_reset_all", "so_up_reset", "so_m_reset")   # U3 r2 D1: 카드 머리 [모두 초기화]·[초기화]
 _DANGER_KEY_COMBOS = (("sch_reset_", "_ok"),)           # 납품 스케줄 회차 [삭제 확정]
 
 
@@ -193,6 +194,7 @@ div[class*="st-key-ph_go_"] button p{color:var(--link) !important}
   line-height:1.2;font-variant-numeric:tabular-nums;white-space:nowrap}
 .kpi-strip .v.danger{color:var(--warn2)}
 .kpi-strip .v.warn{color:var(--warn)}
+.kpi-strip .s{font-size:11.5px;font-weight:600;color:var(--warn2);font-variant-numeric:tabular-nums}
 .kpi-strip .ks-chips{margin-left:auto;display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}
 @media (max-width: 991.98px){
   .kpi-strip{flex-direction:column;align-items:stretch;background:transparent;box-shadow:none;
@@ -238,6 +240,14 @@ div[class*="st-key-wsab_"] div[data-testid="stMarkdownContainer"]{margin-bottom:
 .stepper.ws-steps .step.wait{background:var(--line2);color:var(--faint);box-shadow:none}
 @media (max-width: 640px){
   .stepper.ws-steps .step .sm{display:none}
+}
+/* 수기 수주 담긴 품목 카드 — 640 미만에서도 행(품번 | [삭제])·머리(제목 | [초기화])를 한 줄로(r2 F8) */
+@media (max-width: 640px){
+  div.st-key-wscard_so_manual_items div[data-testid="stHorizontalBlock"]{flex-direction:row;
+    flex-wrap:nowrap;align-items:center}
+  div.st-key-wscard_so_manual_items div[data-testid="stColumn"]{width:auto !important;
+    min-width:0 !important;flex:1 1 auto !important}
+  div.st-key-wscard_so_manual_items div[data-testid="stColumn"]:last-child{flex:0 0 72px !important}
 }
 /* 수기 수주 담긴 품목(ListRow 모양) — 품번 14/600 + 보조 12/--faint */
 .so-item-row{display:flex;flex-direction:column;gap:2px;padding-top:0}
@@ -995,14 +1005,19 @@ def _bdg(text, tone=None, tip=None):
 
 def kpi_strip(items, chips=()):
     """SummaryStrip(DESIGN_SYSTEM v2 §A) — KPI 를 1줄 띠로. 992 미만은 가로 스크롤 칩.
-    items = [(라벨, 값 문자열, 색 None|'danger'|'warn', 도움말 또는 None)],
+    items = [(라벨, 값 문자열, 색 None|'danger'|'warn', 도움말 또는 None[, 보조 텍스트])],
+    보조 텍스트는 값 아래 작은 글자로 보인다(휴대폰에서 못 보는 툴팁 대신, U3 r2 F13).
     chips = [(글자, 배지 클래스 'b-amber' 등)] — 띠 오른쪽 상태 칩 0~2개."""
     import html as _h
-    _its = "".join(
-        '<div class="ks-i"{}><span class="k">{}</span><span class="v{}">{}</span></div>'.format(
-            f' title="{_h.escape(str(hp))}"' if hp else "", _h.escape(str(k)),
-            f" {tone}" if tone else "", _h.escape(str(v)))
-        for k, v, tone, hp in items)
+
+    def _one(it):
+        k, v, tone, hp = it[:4]
+        sub = it[4] if len(it) > 4 else None
+        return ('<div class="ks-i"{}><span class="k">{}</span><span class="v{}">{}</span>{}</div>'
+                .format(f' title="{_h.escape(str(hp))}"' if hp else "", _h.escape(str(k)),
+                        f" {tone}" if tone else "", _h.escape(str(v)),
+                        f'<span class="s">{_h.escape(str(sub))}</span>' if sub else ""))
+    _its = "".join(_one(it) for it in items)
     _cs = "".join(_bdg(t, c) for t, c in chips)
     st.markdown(f'<div class="kpi-strip"><div class="ks-items">{_its}</div>'
                 + (f'<div class="ks-chips">{_cs}</div>' if _cs else "") + "</div>",
@@ -1018,12 +1033,27 @@ def card_head(title, sub=None, right_html=None):
         f'<span class="r">{right_html}</span>' if right_html else "")
 
 
-def section_card(title, sub=None, right_html=None, *, key):
+def card_head_btn(title, sub=None, right_html=None, btn=None):
+    """카드 머리 + 우측 파괴 동작 버튼 1개(tertiary — key 를 _DANGER_KEYS 에 넣어 위험색).
+    ActionBar 좌측은 비파괴만(DESIGN_SYSTEM v2 §A, U3 r2 D1) — [초기화]·[전체 비우기] 는 여기.
+    호출부는 클릭 뒤 confirm_gate 2단계를 거친다. 반환 = 이번 실행 클릭 여부."""
+    if not btn:
+        st.markdown(card_head(title, sub, right_html), unsafe_allow_html=True)
+        return False
+    _h1, _h2 = st.columns([4, 1.2], vertical_alignment="center")
+    _h1.markdown(card_head(title, sub, right_html), unsafe_allow_html=True)
+    with _h2.container(horizontal_alignment="right"):
+        return st.button(type="tertiary", **btn)
+
+
+def section_card(title, sub=None, right_html=None, *, key, btn=None):
     """SectionCard(§A) — st.container(border=True, key=wscard_<key>) + 가벼운 HTML 머리.
-    sub = 같은 줄 보조 설명(--faint), right_html = 우측 배지 등(호출부가 escape — _bdg 사용).
+    sub = 같은 줄 보조 설명(--faint), right_html = 우측 배지 등(호출부가 escape — _bdg 사용),
+    btn = 머리 우측 파괴 버튼 인자(card_head_btn — 클릭은 st.session_state[btn key]).
     반환한 컨테이너 안(with)에 본문을 그린다. 머리를 나중에 채우려면 card_head + st.empty."""
     c = st.container(border=True, key=f"wscard_{key}")
-    c.markdown(card_head(title, sub, right_html), unsafe_allow_html=True)
+    with c:
+        card_head_btn(title, sub, right_html, btn)
     return c
 
 
@@ -1053,7 +1083,7 @@ def action_bar(secondary=None, summary="", primary=None, *, key):
         c2.markdown(f'<div class="ws-ab-sum">{_h.escape(str(summary or ""))}</div>',
                     unsafe_allow_html=True)
         if primary:
-            _pc = c3.button(type="primary", use_container_width=True, **primary)
+            _pc = c3.button(**{"type": "primary", "use_container_width": True, **primary})
     return _sc, _pc
 
 
@@ -6719,7 +6749,7 @@ elif page == "수주 관리":
         st.success(st.session_state.pop("rp_flash"))
     if _rp_groups:
         with st.expander(
-                f"단가 변동 감지 {len(_rp_groups)}개 품번 — 같은 품번의 미납 수주와 "
+                f"단가 변경 {len(_rp_groups)}개 품번 — 같은 품번의 미납 수주와 "
                 "단가가 다른 새 수주", expanded=_sub != "input"):
             for _gi, _g in enumerate(_rp_groups):
                 _n = _g["new"]
@@ -6794,9 +6824,9 @@ elif page == "수주 관리":
             [("미납 수량", f"{_sk_pend:,.0f}", None, None),
              ("진행 수주", f"{_sk_open:,}건", None, None),
              ("납기 지연", f"{_sk_late_n:,}건", "danger" if _sk_late_n else None,
-              "납품 스케줄 기준 — 지난 회차·지난 납기의 미납 잔량"
-              + (f" {_sk_late_qty:,.0f}" if _sk_late_qty else "")
-              + ". 부분 납품도 잔량이 남으면 지연으로 셉니다. 상세는 '납품 스케줄' 화면."),
+              "납품 스케줄 기준 — 지난 회차·지난 납기의 미납 잔량. 부분 납품도 잔량이 남으면 "
+              "지연으로 셉니다. 상세는 '납품 스케줄' 화면.",
+              f"잔량 −{_sk_late_qty:,.0f}" if _sk_late_qty else None),
              ("이번 달 수주", f"{_sk_month:,}건", None, None)],
             chips=([(f"제품 확인 필요 {len(_ck_groups)}", "b-amber")] if _ck_groups else [])
             + ([(f"단가 변경 {len(_rp_groups)}", "b-gray")] if _rp_groups else []))
@@ -6810,6 +6840,7 @@ elif page == "수주 관리":
         _SO_MODES = ["파일 업로드 자동 파싱", "수기 입력"]
         _so_in = st.container(border=True, key="wscard_so_input")
         _so_res = st.container()
+        _so_msg = st.container()     # 저장 실패·부분 실패 안내 = 결과 카드 하단, ActionBar 바로 위(r2 D7)
         _so_act = st.container()
         with _so_in:
             _soh1, _soh2 = st.columns([1, 1], vertical_alignment="center")
@@ -6833,8 +6864,8 @@ elif page == "수주 관리":
 
         with _so_in:
             if mode == "파일 업로드 자동 파싱":
-                uploaded = st.file_uploader("파일 선택",
-                    type=['xlsx','xls','pdf'], label_visibility="collapsed",
+                uploaded = st.file_uploader("파일",
+                    type=['xlsx','xls','pdf'],
                     key=f"so_up_file_{st.session_state.get('so_up_nonce', 0)}",
                     help="여러 거래처 양식 자동 인식. 다른 화면에 다녀오면 파일을 다시 올려야 합니다")
                 ws_note("지원 양식: HDX 발주 · 미진정밀 외주발주품목조회 · DIC 납품예정서 · MJT PDF "
@@ -6870,8 +6901,10 @@ elif page == "수주 관리":
                         st.warning("미진정밀 **외주납품품목조회**(납품 실적) 파일입니다 — 수주 입력에는 "
                                    "ERP 의 **외주발주품목조회**를 뽑아 올려 주세요.")
                     else:
-                        ws_note(f"양식 인식: {fmt_labels.get(fmt, fmt)}",
-                                warn=fmt.startswith("UNKNOWN") or fmt == "ERR")
+                        if fmt.startswith("UNKNOWN") or fmt == "ERR":     # 실패류는 경고 그대로(r2 D8)
+                            st.warning(f"양식 인식: {fmt_labels.get(fmt, fmt)}")
+                        else:
+                            ws_note(f"양식 인식: {fmt_labels.get(fmt, fmt)}")
 
                     # 인식 실패 → 수동 선택 fallback (납품 실적 파일은 제외)
                     if fmt != "MIJIN_DELIVERY" and (fmt.startswith("UNKNOWN") or not items):
@@ -7262,7 +7295,15 @@ elif page == "수주 관리":
                                         f"{len(items)}줄") if x),
                                     _bdg("파싱 완료", "b-blue")
                                     + (_bdg(f"품번 확인 {_unm}", "b-amber") if _unm else ""),
-                                    key="so_preview"):
+                                    key="so_preview",
+                                    btn={"label": "초기화", "key": "so_up_reset",
+                                         "help": "올린 파일·미리보기를 비웁니다"}):
+                                if st.session_state.get("so_up_reset"):
+                                    st.session_state["cfm_so_up_reset"] = True
+                                if st.session_state.get("cfm_so_up_reset") and confirm_gate(
+                                        "so_up_reset", "올린 파일과 미리보기를 비웁니다 — 저장하지 않은 내용은 사라집니다."):
+                                    _so_up_reset()
+                                    st.rerun()
                                 toss_table([{
                                     "#": _i + 1,
                                     **({"수주번호": it.get("so_number")} if len(_so_nos) > 1 else {}),
@@ -7284,14 +7325,17 @@ elif page == "수주 관리":
 
                         # DB 저장 — ActionBar(U3): 좌 [초기화], 우 합계·미매칭 요약 + 주 버튼 1개
                         with _so_act:
+                            # 좌측은 비파괴만(r2 D1) — [초기화]는 미리보기 카드 머리 우측
                             _so_rst, _so_go = action_bar(
-                                {"label": "초기화", "key": "so_up_reset", "on_click": _so_up_reset},
+                                None,
                                 f"합계 {sum(float(it.get('qty') or 0) for it in items):,.0f} EA"
-                                + (f" · 미매칭 {_unm}줄은 저장 뒤 '제품 확인 필요'로" if _unm else ""),
+                                + (f" · 품번 확인 {_unm}줄은 저장 뒤 '제품 확인 필요'에서"
+                                   if _unm else ""),
                                 {"label": f"수주 저장 ({len(items)}줄)", "key": "so_up_save",
                                  "disabled": not items},
                                 key="so_up")
                         if _so_go:
+                            _so_fails = []   # 행·수주별 실패 — 하나라도 있으면 rerun 없이 결과 카드 하단에
                             # 기존 수주에 붙일 라인(DIC 재업로드의 새 행번)은 따로
                             _append_items = [it for it in items
                                              if it.get("_existing_so_id")]
@@ -7349,8 +7393,8 @@ elif page == "수주 관리":
                                                [_line_payload(it["_existing_so_id"], it)])
                                     _appended += 1
                                 except Exception as e:
-                                    st.warning(f"수주 {it.get('so_number')} 행 "
-                                               f"{it.get('line_no')} 추가 실패: {e}")
+                                    _so_fails.append(f"수주 {it.get('so_number')} 행 "
+                                                     f"{it.get('line_no')} 추가 실패: {e}")
                             for g in groups:
                                 try:
                                     # 헤더 INSERT
@@ -7386,12 +7430,11 @@ elif page == "수주 관리":
                                         saved_items += 1
                                     saved_so += 1
                                 except Exception as e:
-                                    st.warning(f"수주 {header['so_number']} 저장 실패: {e}")
+                                    _so_fails.append(f"수주 {header['so_number']} 저장 실패: {e}")
 
-                            st.success(
-                                f"수주 {saved_so}건 / 품목 {saved_items}개 저장 완료"
-                                + (f" · 기존 수주에 {_appended}개 라인 추가"
-                                   if _appended else ""))
+                            _so_done = (f"수주 {saved_so}건 / 품목 {saved_items}개 저장 완료"
+                                        + (f" · 기존 수주에 {_appended}개 라인 추가"
+                                           if _appended else ""))
                             if saved_so or _appended:
                                 # 수주 입력 슬랙 알림 (2026-10-21) — 출고·발주·입고와 같은 분기점 알림
                                 _sk.notify(_sk.fmt_so(
@@ -7402,6 +7445,16 @@ elif page == "수주 관리":
                                     sum(float(it.get("qty") or 0) for g in groups for it in g["items"])
                                     + sum(float(it.get("qty") or 0) for it in _append_items),
                                     current_user_name(), "업로드"))
+                            if not _so_fails:
+                                # 성공 = 다음 실행 제목 아래 flash + 업로더 비움(버튼이 계속 살아 있던 것, r2 D7)
+                                nav_flash(_so_done)
+                                _so_up_reset()
+                                st.rerun()
+                            with _so_msg:
+                                for _f in _so_fails:
+                                    st.warning(_f)
+                                if saved_so or _appended:
+                                    st.success(_so_done + " — 실패한 줄은 위 안내를 확인하세요")
 
             else:  # 수기 입력 (단일 수주 1건 — 카드 머리 '입력' + 입력 방식이 제목을 대신)
                 mc1, mc2 = st.columns(2)
@@ -7565,7 +7618,15 @@ elif page == "수주 관리":
                             "담긴 품목",
                             " · ".join(x for x in ((m_so_no or "").strip(), m_cust,
                                                    f"{len(_m_its)}줄") if x),
-                            key="so_manual_items"):
+                            key="so_manual_items",
+                            btn={"label": "초기화", "key": "so_m_reset", "disabled": not _m_its,
+                                 "help": "담긴 품목을 모두 뺍니다"}):
+                        if st.session_state.get("so_m_reset"):
+                            st.session_state["cfm_so_m_reset"] = True
+                        if st.session_state.get("cfm_so_m_reset") and confirm_gate(
+                                "so_m_reset", f"담긴 품목 {len(_m_its)}줄을 모두 뺍니다."):
+                            _m_so_reset()
+                            st.rerun()
                         if not _m_its:
                             _empty_state("품번을 검색해 [추가]하면 여기에 담깁니다")
                         for _soi_i, _soi_it in enumerate(_m_its):
@@ -7584,12 +7645,11 @@ elif page == "수주 관리":
                                               _soi_it.get("customer_part_no")),
                                         use_container_width=True)
 
-                # ActionBar(U3): 좌 [초기화], 우 줄 수·합계 + [수주 저장 (n줄)]
+                # ActionBar(U3): 우 줄 수·합계 + [수주 저장 (n줄)]
                 with _so_act:
                     _m_rst, _m_save = action_bar(
-                        {"label": "초기화", "key": "so_m_reset", "on_click": _m_so_reset,
-                         "disabled": not _m_its},
-                        f"{len(_m_its)}줄 · 합계 ₩{total:,} (부가세 별도)",
+                        None,                       # 좌측은 비파괴만(r2 D1) — [초기화]는 카드 머리
+                        f"{len(_m_its)}줄 · 합계 {total:,}원 (부가세 별도)",
                         {"label": f"수주 저장 ({len(_m_its)}줄)", "key": "so_m_save",
                          "disabled": not (m_so_no and m_cust and _m_its)},
                         key="so_m")
@@ -7600,7 +7660,7 @@ elif page == "수주 관리":
                                     f"so_number=eq.{_fq(m_so_no)}&customer=eq.{_fq(m_cust)}", limit=1)
                     except Exception: dup = []
                     if dup:
-                        st.error(f"이미 등록됨: 수주 {m_so_no} / 거래처 {m_cust} (so_id={dup[0]['so_id']})")
+                        _so_msg.error(f"이미 등록됨: 수주 {m_so_no} / 거래처 {m_cust} (so_id={dup[0]['so_id']})")
                     else:
                         _so_saved_id = None   # 머리글 저장 뒤 라인 실패 안내용(r2 R7, QA M-1 — 보상 삭제는 P3 트랜잭션)
                         try:
@@ -7639,10 +7699,10 @@ elif page == "수주 관리":
                             nav_flash(f"수주 '{m_so_no}' 저장 완료")
                         except Exception as e:
                             if _so_saved_id is not None:
-                                st.error(f"품목 저장 실패: {e} — 머리글은 저장됨(so_id={_so_saved_id}). "
+                                _so_msg.error(f"품목 저장 실패: {e} — 머리글은 저장됨(so_id={_so_saved_id}). "
                                          "수주 목록에서 확인 후 삭제하거나 발주번호를 바꿔 저장하세요.")
                             else:
-                                st.error(f"저장 실패: {e}")
+                                _so_msg.error(f"저장 실패: {e}")
                         else:
                             st.rerun()
 
@@ -9248,6 +9308,7 @@ elif page == "출고 관리":
                          type="tertiary", on_click=nav_go, args=("ship", "slip"))
 
         # 스케줄 자동 리스트업
+        _sh_round_err = ""
         _sh_flt = ("due_date=lte." if _sh_late
                    else "due_date=eq.") + _sh_d.isoformat()
         _sh_trunc = False
@@ -9289,7 +9350,8 @@ elif page == "출고 관리":
                                 len(_sh_held), ", ".join(sorted(set(_sh_held.values()))))
                             if _sh_held else "")
         except Exception as e:
-            st.error(f"회차 조회 실패: {e}")
+            # 실패는 결과 카드 안에 오류로(ActionBar 아래로 밀리지 않게, r2 D8)
+            _sh_round_err = f"회차 조회 실패: {e}"
             _sh_rounds = []
             _sh_held_msg = ""
 
@@ -9381,7 +9443,7 @@ elif page == "출고 관리":
                     "soi_id=in.({})".format(
                         ",".join(map(str, _sh_sois))), limit=500)}
             except Exception as e:
-                st.error(f"수주 조회 실패: {e}")
+                _sh_round_err = f"수주 조회 실패: {e}"
 
         _sh_items = []
         for r in _sh_rounds:
@@ -9426,28 +9488,48 @@ elif page == "출고 관리":
         if _sh_held_msg:
             with _sh_rc:
                 ws_note(_sh_held_msg)
+        if _sh_round_err:
+            with _sh_rc:
+                st.error(_sh_round_err)
         if not _sh_items:
             _sh_hdr.markdown(card_head("미납 회차", f"{_sh_scope} 0건"),
                              unsafe_allow_html=True)
             with _sh_rc:
-                _empty_state("담을 회차가 없습니다 — 기준일을 바꿔 보세요")
+                if _sh_round_err:
+                    _empty_state("회차를 불러오지 못했습니다 — 새로고침")
+                else:
+                    _empty_state("담을 회차가 없습니다 — 기준일을 바꾸거나 품번 검색으로 추가하세요",
+                                 action=("납품 스케줄 보기", "so", "sched"))
         else:
             import pandas as _sh_pd
 
-            # 완성 재고(완성 LOT 잔여 합 — '완성 재고' 화면과 같은 기준)
-            _sh_stock = {}
+            # 완성 재고(완성 LOT 잔여 합 — '완성 재고' 화면과 같은 기준, r2 D6):
+            # 80품번 묶음마다 1,000행 페이지를 끝까지 읽는다. 묶음 조회가 실패하면 그 품번은
+            # '미확인'(값 비움) — 0 으로 보이거나 부족으로 세지 않는다.
+            _sh_stock, _sh_unk = {}, set()
             _sh_pids = sorted({it["li"].get("product_id") for it in _sh_items
                                if it["li"].get("product_id")})
-            try:
-                for _i0 in range(0, len(_sh_pids), 80):
-                    for _l in fetch("product_lot_stock_v", "product_id,remain_qty",
-                                    "remain_qty=gt.0&product_id=in.({})".format(",".join(
-                                        f'"{x}"' for x in _sh_pids[_i0:_i0 + 80])),
-                                    limit=1000):
-                        _sh_stock[_l["product_id"]] = (_sh_stock.get(_l["product_id"], 0.0)
-                                                       + float(_l.get("remain_qty") or 0))
-            except Exception:
-                _sh_stock = {}
+            for _i0 in range(0, len(_sh_pids), 80):
+                _grp = _sh_pids[_i0:_i0 + 80]
+                _acc = {}
+                try:
+                    _off = 0
+                    while True:
+                        _pg = fetch("product_lot_stock_v", "product_id,remain_qty",
+                                    "remain_qty=gt.0&product_id=in.({})&order=product_id.asc,"
+                                    "lot_number.asc&offset={}".format(
+                                        ",".join(f'"{x}"' for x in _grp), _off),
+                                    limit=1000)
+                        for _l in _pg:
+                            _acc[_l["product_id"]] = (_acc.get(_l["product_id"], 0.0)
+                                                      + float(_l.get("remain_qty") or 0))
+                        if len(_pg) < 1000:
+                            break
+                        _off += 1000
+                    for _p9 in _grp:
+                        _sh_stock[_p9] = _acc.get(_p9, 0.0)
+                except Exception:
+                    _sh_unk.update(_grp)
             _sh_today = _sh_dt.today().isoformat()
 
             # 행이 늘어나도 편집값(선택·출고 수량) 유지 (2026-08-07)
@@ -9471,7 +9553,8 @@ elif page == "출고 관리":
                 "출고": min(float(_sh_edits.get(_sh_rowkey(it), {})
                                .get("출고", it["cap"])),
                            float(it["cap"])),
-                "완성 재고": float(_sh_stock.get(it["li"].get("product_id"), 0.0)),
+                "완성 재고": (_sh_stock.get(it["li"].get("product_id"))
+                            if it["li"].get("product_id") in _sh_stock else None),   # 미확인 = 빈칸
             } for it in _sh_items])
             _sh_sig = "{}_{}_{}_{}".format(_sh_d, _sh_late,
                                            len(_sh_items),
@@ -9481,14 +9564,17 @@ elif page == "출고 관리":
             _sh_ed = _sh_rc.data_editor(
                 _sh_df, hide_index=True, use_container_width=True,
                 key=f"bk_ed_{_sh_sig}",
+                # 편집할 '출고'를 품번 바로 옆에(1024 본문 폭에서도 보이게, r2 D4)
+                column_order=("선택", "품번", "출고", "잔량", "완성 재고", "납기", "거래처",
+                              "수주번호", "구분"),
                 column_config={
                     "선택": st.column_config.CheckboxColumn(
                         "선택", width="small"),
                     "출고": st.column_config.NumberColumn(
-                        "출고 수량", min_value=0, step=1),
+                        "출고", min_value=0, step=1, width="small"),
+                    "품번": st.column_config.Column(disabled=True, width="medium"),
                     **{c: st.column_config.Column(disabled=True)
-                       for c in ("구분", "품번", "거래처", "수주번호",
-                                  "납기")},
+                       for c in ("구분", "거래처", "수주번호", "납기")},
                     **{c: st.column_config.NumberColumn(
                         format="localized", disabled=True)
                        for c in ("잔량", "완성 재고")},
@@ -9506,8 +9592,17 @@ elif page == "출고 관리":
             _sh_total = sum(q for _, q in _sh_sel)
             _sh_late_n = sum(1 for it in _sh_items
                              if it["due"] not in ("", "-") and it["due"] < _sh_today)
-            _sh_short_n = sum(1 for it in _sh_items
-                              if _sh_stock.get(it["li"].get("product_id"), 0.0) < it["cap"])
+            _sh_need = {}
+            for it in _sh_items:
+                _pid9 = it["li"].get("product_id")
+                if _pid9 in _sh_stock:
+                    _sh_need[_pid9] = _sh_need.get(_pid9, 0.0) + float(it["cap"])
+            _sh_short_n = sum(1 for _pid9, _nd in _sh_need.items() if _sh_stock[_pid9] < _nd)
+            _sh_unk_n = sum(1 for it in _sh_items if it["li"].get("product_id") in _sh_unk)
+            if _sh_unk_n:
+                with _sh_rc:
+                    st.warning(f"완성 재고 {_sh_unk_n}건 미확인 — 다시 시도(새로고침)하세요. "
+                               "미확인 품목은 부족 계산에서 뺐습니다.")
             _sh_hdr.markdown(card_head(
                 "미납 회차", f"{_sh_scope} {len(_sh_items)}건 · 선택 {len(_sh_sel)}",
                 (_bdg(f"지연 {_sh_late_n}", "b-red") if _sh_late_n else "")
@@ -9516,6 +9611,12 @@ elif page == "출고 관리":
             with _sh_rc:
                 ws_note("등록 시점에는 재고·수주를 차감하지 않습니다 — 차감은 출고 전표에서 "
                         "확정할 때 한 번에")
+
+            def _sh_selall():
+                # [전체 선택] — 모든 행 선택(비파괴), 편집기를 새로 그린다
+                for _v in st.session_state.get("ship_edits", {}).values():
+                    _v["선택"] = True
+                st.session_state["ship_ed_nonce"] = st.session_state.get("ship_ed_nonce", 0) + 1
 
             def _sh_unsel():
                 # [선택 해제] — 모든 행 선택을 끄고 편집기를 새로 그린다(편집값 유지 규칙 그대로)
@@ -9589,14 +9690,15 @@ elif page == "출고 관리":
                         st.rerun()
                     except Exception as e:
                         st.error(f"전표 추가 실패: {e}")
-            # ActionBar(U3): 좌 [선택 해제], 우 선택 요약 + [출고 등록 — 전표 생성]
+            # ActionBar(U3): 좌 [선택 해제]/[전체 선택](비파괴 토글), 우 선택 요약 + [출고 등록 — 전표 생성]
             with _sh_act:
                 _sh_unsel_go, _ship_go = action_bar(
-                    {"label": "선택 해제", "key": "ship_unsel", "on_click": _sh_unsel,
-                     "disabled": not _sh_sel},
+                    ({"label": "선택 해제", "key": "ship_unsel", "on_click": _sh_unsel}
+                     if _sh_sel else
+                     {"label": "전체 선택", "key": "ship_selall", "on_click": _sh_selall}),
                     f"선택 {len(_sh_sel)}건 · {_sh_total:,.0f} EA · "
                     f"납품일 {_sh_ship_d.isoformat()}",
-                    {"label": f"출고 등록 — 전표 생성 ({_sh_total:,.0f} · "
+                    {"label": f"출고 등록 — 전표 생성 ({_sh_total:,.0f} EA · "
                               f"{len(_sh_sel)}건)",
                      "key": "ship_reg",
                      "help": ("등록 시점에는 아무것도 차감되지 않습니다 — 확정('출고 전표' "
@@ -14278,7 +14380,10 @@ elif page == "구매 관리":
             _sug_hdr = st.empty()          # 카드 머리(거래처·자재 수·미지정 배지) — 계산 뒤 채움
             _sug_hdr.markdown(card_head("부족 자재"), unsafe_allow_html=True)
             if _mr.get("msg"):
-                _empty_state(_mr["msg"])
+                if "실패" in str(_mr["msg"]):
+                    st.warning(_mr["msg"])                  # 실패류는 경고 그대로(r2 D8)
+                else:
+                    _empty_state(_mr["msg"])
             else:
                 sois, so_map = _mr["sois"], _mr["so_map"]
                 bom_by_pid, mat_map = _mr["bom_by_pid"], _mr["mat_map"]
@@ -14931,6 +15036,12 @@ elif page == "구매 관리":
             st.session_state["po_step"] = 2          # 품목이 비면 ③ 에 머물지 않는다
         _po_step = st.session_state["po_step"]
         _po_step_ph = st.empty()                     # 스테퍼(거래처 이름·품목 수는 아래서 채움)
+        # 지난·다음 단계 숨김 — 카드를 그리기 전에 주입(깜빡임·중간 예외 노출 방지, r2 F7)
+        _po_hide = (("wscard_po_st1", "wscard_po_st2") if _por else
+                    {1: ("wscard_po_st2", "po_st3"), 2: ("wscard_po_st1", "po_st3"),
+                     3: ("wscard_po_st1", "wscard_po_st2")}[_po_step])
+        st.markdown("<style>" + ",".join(f".st-key-{k}" for k in _po_hide)
+                    + "{display:none !important}</style>", unsafe_allow_html=True)
         _po_s1 = st.container(border=True, key="wscard_po_st1")
         _po_s1.markdown(card_head("① 거래처"), unsafe_allow_html=True)
         # 발주 그룹은 3버킷 — 외주(가공·열처리·표면)는 공정 관리의
@@ -14959,6 +15070,12 @@ elif page == "구매 관리":
         if not vendors:
             with _po_s1:
                 ws_note("해당 그룹에 거래처가 없습니다 — 아래에서 신규 등록하세요.", warn=True)
+            if _po_step != 1:
+                # 거래처를 못 읽으면 ①(숨김 풀기)로 — ②③ 은 거래처가 있어야 그려진다(r2 D3)
+                _po_step = 1
+                st.session_state["po_step"] = 1
+                st.markdown("<style>.st-key-wscard_po_st1{display:block !important}</style>",
+                            unsafe_allow_html=True)
 
         with _po_s1.expander("신규 거래처 등록 (수기 입력)"):
             with st.form("nv_form"):
@@ -14997,6 +15114,9 @@ elif page == "구매 관리":
                 lr = st.session_state.po_last_registered
                 st.success(f"**{lr['name']}** 등록 완료 (ID: {lr['id']}, "
                            f"그룹: {lr['group']})")
+            if _nv_go and _po_step != 1:
+                # 숨은 단계(① 카드는 ②③ 에서 CSS 로 숨김)의 폼 제출은 무시 — 쓰기 없음(r2 C7 ⑨)
+                _nv_go = False
             if _nv_go:
                 if not nv_name or nv_group == "선택":
                     st.error("거래처명과 그룹은 필수입니다.")
@@ -15427,7 +15547,7 @@ elif page == "구매 관리":
                             _hist_rows.append((n, _vh_hist[n]))
 
                 if _vh_lpn_fail and _searched:
-                    ws_note_warn("발주 라인에 연결된 제품 조회에 실패해 일부 이력이 "
+                    st.warning("발주 라인에 연결된 제품 조회에 실패해 일부 이력이 "
                                "제품 행에 합쳐지지 않았을 수 있습니다 — 다시 검색하세요.")
                 if search_q and len(search_q.strip()) >= 2 and not _res \
                         and not _mat_res and not _hist_rows:
@@ -15686,8 +15806,10 @@ elif page == "구매 관리":
                                 **{c: st.column_config.NumberColumn(
                                     c, disabled=True, format="localized")
                                    for c in _cols_use if c in _PICK_NUM}})
-                        # 주 버튼은 화면에 하나(ActionBar '③ 발주서로') — 담기는 보조 (U3)
-                        _pick_go = st.form_submit_button("체크한 품목 담기")
+                        # 주 버튼은 하나(r2 D9): 담긴 품목 0 이면 담기가 주, 1 이상이면 ActionBar '③ 발주서로'
+                        _pick_go = st.form_submit_button(
+                            "체크한 품목 담기",
+                            type="secondary" if st.session_state.get("po_items") else "primary")
                     if _pick_go:
                         _n_add = 0
                         for _bi, _brow in _pick_ed.iterrows():
@@ -15749,16 +15871,37 @@ elif page == "구매 관리":
             # ─── ③ 발주서 한 장 — 표 편집 + 발주 정보 + 만들기 (폼 하나) ───
             with st.container(border=True, key="wscard_po_items"):
                 _items = st.session_state.po_items
-                st.markdown(card_head(
+                # 머리 우측 파괴 버튼(r2 D1): prefill 이 있으면 [모두 초기화], 아니면 [전체 비우기]
+                _po_kill = (None if _por else
+                            {"label": "모두 초기화", "key": "po_reset_all",
+                             "help": "미리 담긴 데이터와 품목표를 모두 비웁니다"} if _po_has_pf else
+                            {"label": "전체 비우기", "key": "po_clear_all",
+                             "help": "담긴 품목을 모두 뺍니다"} if _items else None)
+                card_head_btn(
                     "③ 발주서" if _por else "담긴 품목",
-                    None if _por else f"{len(_items)}개 · 발주 수량은 표에서 수정"),
-                    unsafe_allow_html=True)
+                    None if _por else (
+                        f"{len(_items)}개 · 거래처 — {vendor['name']}" if _po_step == 3
+                        else f"{len(_items)}개 · 발주 수량은 표에서 수정"),
+                    None, _po_kill)
+                for _kk, _msg9 in (("po_reset_all", "미리 담긴 발주 데이터와 담긴 품목을 모두 비웁니다."),
+                                   ("po_clear_all", f"담긴 품목 {len(_items)}개를 모두 뺍니다.")):
+                    if st.session_state.get(_kk):
+                        st.session_state[f"cfm_{_kk}"] = True
+                    if st.session_state.get(f"cfm_{_kk}") and confirm_gate(_kk, _msg9):
+                        if _kk == "po_reset_all":
+                            _po_reset_all()
+                        else:
+                            st.session_state.po_items = []
+                            st.session_state["po_step"] = 2
+                        st.session_state["po_tbl_nonce"] = \
+                            st.session_state.get("po_tbl_nonce", 0) + 1
+                        st.rerun()
                 if _por:
                     # 방금 만든 발주서는 그 자리(③)에 완료 카드로 — 위로 튀지 않게
                     # (2026-09-11 사용자 피드백)
                     with st.container(border=True):
-                        st.markdown("**{}** · {} · {} · {}개 품목 · 합계 ₩{:,} "
-                                    "(VAT 별도)".format(
+                        st.markdown("**{}** · {} · {} · {}개 품목 · 합계 {:,}원 "
+                                    "(부가세 별도)".format(
                                         _por["po_no"], _por["vendor"],
                                         _por.get("date") or "", _por["n"],
                                         _por["total"]))
@@ -15887,16 +16030,9 @@ elif page == "구매 관리":
                         st.rerun()          # 합계 갱신
                     _total_now = sum(int(it.get("qty") or 0) * int(it.get("unit_price") or 0)
                                      for it in _items)
-                    tc1, tc3 = st.columns([4, 1], vertical_alignment="center")
-                    with tc1:
-                        ws_note("셀을 눌러 고치면 바로 반영 · [삭제] 체크 = 그 줄 빼기 · "
-                                + ("단위는 수기 입력(기본 EA)" if _unit_layout
-                                   else "재질 = 제품 마스터, 규격 = BOM 자재명"))
-                    if tc3.button("전체 비우기", key="po_clear_all",
-                                  use_container_width=True):
-                        st.session_state.po_items = []
-                        st.session_state["po_tbl_nonce"] = _tbl_nonce + 1
-                        st.rerun()
+                    ws_note("셀을 눌러 고치면 바로 반영 · [삭제] 체크 = 그 줄 빼기 · "
+                            + ("단위는 수기 입력(기본 EA)" if _unit_layout
+                               else "재질 = 제품 마스터, 규격 = BOM 자재명"))
                     # 발주 정보(발주일·납기·메모) + [발주서 만들기] — ③ 단계에서만 보인다(po_st3)
                     with st.container(key="po_st3"), st.form("po_form"):
                         fc1, fc2, fc3 = st.columns(3)
@@ -15928,6 +16064,9 @@ elif page == "구매 관리":
                                      memo=str(it.get("memo") or "").strip())
                                 for it in st.session_state.po_items]
 
+                    if _po_make and _po_step != 3 and not _por:
+                        # ③ 이 아닐 때 숨은 발주 정보 폼의 제출은 무시 — 발주서·DB 쓰기 없음(r2 C7 ⑨)
+                        _po_make = False
                     if _po_make:
                         _final = _apply_table()
                         _zero = [it["item_name"] for it in _final if not it["qty"]]
@@ -16066,25 +16205,24 @@ elif page == "구매 관리":
                      ("② 품목 담기", f"{_po_n}개" if _po_n else None),
                      ("③ 발주서", _por["po_no"] if _por else None)],
                     4 if _por else _po_step)
-        _po_hide = (("wscard_po_st1", "wscard_po_st2") if _por else
-                    {1: ("wscard_po_st2", "po_st3"), 2: ("wscard_po_st1", "po_st3"),
-                     3: ("wscard_po_st1", "wscard_po_st2")}[_po_step])
-        st.markdown("<style>" + ",".join(f".st-key-{k}" for k in _po_hide)
-                    + "{display:none !important}</style>", unsafe_allow_html=True)
-        if vendors and not _por:
-            _po_sec = ({"label": "모두 초기화", "key": "po_reset_all", "on_click": _po_reset_all,
-                        "help": "미리 담긴 데이터와 품목표를 모두 비웁니다"} if _po_has_pf else
-                       None if _po_step == 1 else
+        if not _por:                                  # 거래처가 없어도 ActionBar 는 그린다(r2 D3)
+            # 좌측 = 단계 뒤로(비파괴) — prefill 여부와 무관(r2 D1·D2). [모두 초기화]·[전체 비우기] 는
+            # 담긴 품목 카드 머리 우측(위험색 + 2단계 확인).
+            _po_sec = (None if _po_step == 1 else
                        {"label": "① 거래처 바꾸기" if _po_step == 2 else "② 품목으로",
                         "key": "po_step_back", "on_click": _po_go_step,
                         "args": (_po_step - 1,)})
             _po_pri = ({"label": "② 품목 담기로", "key": "po_step_next", "on_click": _po_go_step,
-                        "args": (2,)} if _po_step == 1 else
+                        "args": (2,), "disabled": not vendors} if _po_step == 1 else
                        {"label": f"③ 발주서로 ({_po_n}품목)", "key": "po_step_next",
-                        "on_click": _po_go_step, "args": (3,), "disabled": not _po_n}
+                        "on_click": _po_go_step, "args": (3,), "disabled": not _po_n,
+                        # 담긴 품목 0 이면 주 버튼은 ② 의 [체크한 품목 담기](r2 D9)
+                        "type": "primary" if _po_n else "secondary"}
                        if _po_step == 2 else None)   # ③ 은 폼의 [발주서 만들기]가 주 버튼
             action_bar(_po_sec,
-                       (f"거래처 — {_po_vname}" if _po_step == 1 else
+                       (f"거래처 — {_po_vname}" if _po_step == 1 and _po_vname else
+                        "거래처를 고르세요" if _po_step == 1 else
+                        f"거래처 — {_po_vname} · 합계 {_po_tot:,}원 (부가세 별도)" if _po_step == 3 else
                         f"합계 {_po_tot:,}원 (부가세 별도)"),
                        _po_pri, key="po")
 
