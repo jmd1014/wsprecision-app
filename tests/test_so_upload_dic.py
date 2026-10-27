@@ -150,6 +150,10 @@ def test_dic_upload_two_customers_append_and_price(dic_db, monkeypatch):
     save = [b for b in at.button if b.key == "so_up_save"]   # U3: ActionBar [수주 저장 (n줄)]
     assert save
     save[0].click().run()
+    # U3 r2 D7: 성공 = flash(다음 실행 제목 아래) + 업로더 비움(nonce 증가) — 버튼이 살아 있지 않다
+    assert at.session_state["so_up_nonce"] >= 1
+    assert any("저장 완료" in str(s.value) for s in at.success), [s.value for s in at.success]
+    assert not [b for b in at.button if b.key == "so_up_save"], "업로더가 비워져 저장 버튼 없음"
     # 수주 입력 슬랙 알림 (2026-10-21): 업로드 저장 뒤 [수주] 한 건
     assert [t for t in NOTIFIED if t.startswith("[수주]")], NOTIFIED
     assert "업로드" in NOTIFIED[-1] and "수주 2건" in NOTIFIED[-1], NOTIFIED[-1]

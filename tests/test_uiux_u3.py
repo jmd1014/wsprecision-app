@@ -66,7 +66,7 @@ def test_u3_css_tokens_only_and_selectors_match_keys():
     css = _u3_css()
     assert not HEX.findall(css), HEX.findall(css)
     src = _src()
-    lit = set(re.findall(r'key="([A-Za-z0-9_]+)"', src))
+    lit = set(re.findall(r'key="([A-Za-z0-9_]+)"', src)) | set(re.findall(r'"key": "([A-Za-z0-9_]+)"', src))
     fpre = set(re.findall(r'key=f"([A-Za-z0-9_]*)\{', src))
     for p in set(re.findall(r'st-key-([A-Za-z0-9_]+)"', css)) | set(re.findall(r'\.st-key-([A-Za-z0-9_]+)', css)):
         ok = any(k.startswith(p) for k in lit) or any(f.startswith(p) or p.startswith(f) for f in fpre if f)
@@ -80,7 +80,8 @@ def test_u3_css_tokens_only_and_selectors_match_keys():
 def test_helpers_exist_with_spec_signatures():
     src = _src()
     for name, sig in (("kpi_strip", "def kpi_strip(items, chips=()):"),
-                      ("section_card", "def section_card(title, sub=None, right_html=None, *, key):"),
+                      ("section_card", "def section_card(title, sub=None, right_html=None, *, key, btn=None):"),
+                      ("card_head_btn", "def card_head_btn(title, sub=None, right_html=None, btn=None):"),
                       ("action_bar", "def action_bar(secondary=None, summary=\"\", primary=None, *, key):"),
                       ("stepper", "def stepper(steps, current):"),
                       ("card_head", "def card_head(title, sub=None, right_html=None):"),
@@ -119,18 +120,47 @@ def test_stepper_states_static():
     assert re.findall(r'class="step (\w+)"', ns["out"][-1]) == ["done", "done", "done"]
 
 
+def _guide_calls(seg):
+    """st.info/st.warning 호출 중 안내(실패류 제외 — r2 D8: '실패' 가 든 경고는 세지 않는다)."""
+    out = []
+    for m in re.finditer(r"\bst\.(?:info|warning)\(", seg):
+        if "실패" not in seg[m.end():m.end() + 160]:
+            out.append(seg[m.start():m.end() + 60])
+    return out
+
+
 def test_po_item_section_info_warning_at_most_one():
-    """발주서 작성 › ② 품목 담기 구간의 st.info/st.warning 은 1개 이하(U3 — 안내 6종 축소)."""
+    """발주서 작성 › ② 품목 담기 구간의 st.info/st.warning 은 1개 이하(U3 — 안내 6종 축소, 실패류 제외)."""
     src = _src()
     a = src.index('with st.container(border=True, key="wscard_po_st2"):')
     b = src.index("# ─── ③ 발주서 한 장", a)
     seg = src[a:b]
-    n = len(re.findall(r"\bst\.(?:info|warning)\(", seg))
-    assert n <= 1, n
+    assert len(_guide_calls(seg)) <= 1, _guide_calls(seg)
+    assert 'st.warning("발주 라인에 연결된 제품 조회에 실패' in seg       # 실패는 경고 그대로(D8)
     # 편집 모드 진입부(보류 prefill 경고 1개만 st.warning) 도 포함해 셈
     e0 = src.index('    if _sub == "new" and _po_mode == "edit":')
     pre = src[e0:src.index("_po_s1 = st.container(", e0)]
-    assert len(re.findall(r"\bst\.(?:info|warning)\(", pre)) <= 1
+    assert len(_guide_calls(pre)) <= 1
+
+
+def test_po_step_hide_style_before_cards_and_actionbar_nondestructive():
+    """r2 F7·D1: 단계 숨김 style 은 ① 카드보다 먼저, ActionBar 좌측에 파괴 버튼 key 없음."""
+    src = _src()
+    e0 = src.index('    if _sub == "new" and _po_mode == "edit":')
+    i_style = src.index('+ "{display:none !important}</style>"', e0)
+    i_card = src.index('_po_s1 = st.container(border=True, key="wscard_po_st1")', e0)
+    assert i_style < i_card
+    a = src.index("_po_sec = (None if _po_step == 1 else", e0)
+    b = src.index('_po_pri, key="po")', a)
+    for k in ("po_reset_all", "po_clear_all"):
+        assert k not in src[a:b], k
+    # 수주 ActionBar 좌측도 비파괴(None) — [초기화]는 카드 머리
+    for k in ("so_up_reset", "so_m_reset"):
+        i = src.index(f'"key": "{k}"')
+        assert "action_bar(" not in src[i - 300:i], k
+    # 숨은 단계 폼 제출 무시(⑨)
+    assert "if _po_make and _po_step != 3 and not _por:" in src
+    assert "if _nv_go and _po_step != 1:" in src
 
 
 # ── AppTest ─────────────────────────────────────────────────────────────
@@ -191,13 +221,15 @@ def test_so_manual_actionbar_single_primary_and_summary(monkeypatch):
     assert [b.key for b in prim] == ["so_m_save"], [b.key for b in prim]
     assert at.button(key="so_m_save").label == "수주 저장 (3줄)"
     summ = next(m for m in _md(at) if 'class="ws-ab-sum"' in m)
-    assert "3줄" in summ and "합계 ₩6,000" in summ, summ
+    assert "3줄" in summ and "합계 6,000원 (부가세 별도)" in summ, summ   # r2 D10 문구
     # 결과 카드(담긴 품목) → ActionBar 순서, 행 삭제 버튼은 위험색 key 접미(_del)
     p = _order(at, '<span class="t">담긴 품목</span>', 'class="ws-ab-sum"')
     assert p == sorted(p)
     assert {"so_item_0_del", "so_item_1_del", "so_item_2_del"} <= {b.key for b in at.button}
-    # [초기화] = 보조 → 품목 비움
+    # [초기화] = 카드 머리 위험 버튼 → 2단계 확인 뒤에만 비움(r2 D1)
     at.button(key="so_m_reset").click(); at.run()
+    assert len(at.session_state["m_so_items"]) == 3, "확인 전에는 그대로"
+    at.button(key="so_m_reset_cfm_ok").click(); at.run()
     assert at.session_state["m_so_items"] == []
     assert at.button(key="so_m_save").disabled
     assert any("품번을 검색해 [추가]하면" in m for m in _md(at))
@@ -218,11 +250,19 @@ def test_ship_deliver_result_card_and_actionbar(ship_db):
     assert any("확정할 때 한 번에" in m for m in md)
     prim = [b.key for b in at.button if getattr(b.proto, "type", "") == "primary"]
     assert prim == ["ship_reg"], prim
-    # [선택 해제] → 선택 0 · 등록 비활성
+    # [선택 해제] → 선택 0 · 등록 비활성 → 같은 자리 [전체 선택](비파괴 토글, r2 F12) → 다시 3
     at.button(key="ship_unsel").click(); at.run()
     assert not at.exception, [str(e.value) for e in at.exception]
     assert at.button(key="ship_reg").disabled
     assert any('<span class="t">미납 회차</span>' in m and "선택 0" in m for m in _md(at))
+    at.button(key="ship_selall").click(); at.run()
+    assert not at.exception, [str(e.value) for e in at.exception]
+    assert not at.button(key="ship_reg").disabled
+    assert any('<span class="t">미납 회차</span>' in m and "선택 3" in m for m in _md(at))
+    # 열 순서(r2 D4): 선택·품번·출고·잔량·완성 재고 … (data_editor column_order)
+    src = _src()
+    assert ('column_order=("선택", "품번", "출고", "잔량", "완성 재고", "납기", "거래처",\n'
+            '                              "수주번호", "구분")') in src
 
 
 @app_test
@@ -269,3 +309,165 @@ def test_po_stepper_current_step_only(monkeypatch):
     assert at.button(key="po_step_back").label == "② 품목으로"
     # 주 버튼은 폼의 [발주서 만들기] 하나(ActionBar 주 버튼 없음)
     assert not [b for b in at.button if b.key == "po_step_next"]
+
+
+# ── r2(2026-10-27) C7 ─────────────────────────────────────────────────
+
+def _po_db(monkeypatch, vendors=True, inserts=None):
+    from tests import test_po_vendor_history as PV
+    import db
+
+    def _f(table, select="*", filter_query="", limit=1000, **kw):
+        if table == "vendors" and not vendors:
+            return []
+        return PV._mock_fetch(table, select, filter_query, limit)
+    monkeypatch.setattr(db, "fetch", _f)
+    monkeypatch.setattr(db, "fetch_one", lambda *a, **k: None)
+    monkeypatch.setattr(db, "insert", lambda t, r: (inserts.append(t) if inserts is not None else None)
+                        or len(r))
+    monkeypatch.setattr(db, "update", lambda *a, **k: True)
+    monkeypatch.setattr(db, "health_check", lambda: {"status": "OK", "counts": {}})
+    monkeypatch.setattr(db, "debug_check", lambda: {"status": "mock"})
+    return PV
+
+
+def _steps(at):
+    h = next(m for m in _md(at) if "stepper ws-steps" in m)
+    return re.findall(r'class="step (\w+)"', h)
+
+
+@app_test
+def test_r2_prefill_path_always_has_step_back_and_reset_outside_actionbar(monkeypatch):
+    """① prefill(부족 자재 → 발주서 작성) 경로 ② → ③ 에서 [① 거래처 바꾸기]/[② 품목으로] 가 항상 있고,
+    [모두 초기화]는 담긴 품목 카드 머리(ActionBar 밖)에서 2단계 확인 뒤에만 비운다(D1·D2)."""
+    PV = _po_db(monkeypatch)
+    from streamlit.testing.v1 import AppTest
+    from tests.conftest import goto
+    at = AppTest.from_file(APP_FILE, default_timeout=30)
+    at.secrets["supabase"] = {"url": "https://mock.local", "anon_key": "a", "service_role_key": "s"}
+    at.secrets["auth"] = {"disabled": True}
+    at.run()
+    at.session_state["po_mode"] = "edit"
+    at.session_state["po_prefill_vendor_name"] = PV.VENDOR["name"]
+    at.session_state["po_prefill_items"] = [{"product_id": None, "item_name": "환봉 STS304",
+                                             "material": "STS304", "spec": "⌀45", "qty": 100,
+                                             "unit_price": 1000}]
+    goto(at, "po", "new")
+    assert not at.exception, [str(e.value) for e in at.exception]
+    assert _steps(at) == ["done", "on", "wait"]                 # prefill → ② 부터
+    assert at.button(key="po_step_back").label == "① 거래처 바꾸기"
+    assert at.button(key="po_reset_all").label == "모두 초기화"
+    at.button(key="po_step_next").click(); at.run()              # ③ 으로
+    assert _steps(at) == ["done", "done", "on"]
+    assert at.button(key="po_step_back").label == "② 품목으로"
+    # ③ 거래처명: 담긴 품목 카드 머리 + ActionBar 요약(D5)
+    import html as _html
+    _vn = _html.escape(PV.VENDOR["name"])                       # 화면은 HTML escape("O&T" → "O&amp;T")
+    assert any('<span class="t">담긴 품목</span>' in m and _vn in m for m in _md(at))
+    assert any('class="ws-ab-sum"' in m and _vn in m for m in _md(at))
+    # [모두 초기화] → 확인 전에는 그대로, 확인 뒤 비움 + ① 로
+    at.button(key="po_reset_all").click(); at.run()
+    assert len(at.session_state["po_items"]) == 1
+    at.button(key="po_reset_all_cfm_ok").click(); at.run()
+    assert at.session_state["po_items"] == [] and at.session_state["po_step"] == 1
+
+
+@app_test
+def test_r2_vendor_lookup_empty_shows_step1_card_and_actionbar(monkeypatch):
+    """② 거래처 조회가 비면 ① 카드가 보이고(숨김 해제) ActionBar 가 그려진다(D3)."""
+    PV = _po_db(monkeypatch, vendors=False)
+    at = PV._open_po_page()
+    at.session_state["po_step"] = 2
+    at.run()
+    assert not at.exception, [str(e.value) for e in at.exception]
+    assert at.session_state["po_step"] == 1
+    assert any(".st-key-wscard_po_st1{display:block !important}" in m for m in _md(at))
+    nxt = at.button(key="po_step_next")
+    assert nxt.label == "② 품목 담기로" and nxt.disabled
+    assert any('class="ws-ab-sum"' in m and "거래처를 고르세요" in m for m in _md(at))
+
+
+@app_test
+def test_r2_hidden_step_form_submit_writes_nothing(monkeypatch):
+    """⑨ ② 단계에서 숨은 ③ 발주 정보 폼을 제출해도 발주서·DB 쓰기 없음."""
+    inserts = []
+    PV = _po_db(monkeypatch, inserts=inserts)
+    at = PV._open_po_page()
+    at.session_state["po_items"] = [{"_uid": "u1", "product_id": None, "item_name": "TEST-1",
+                                     "material": "", "spec": "", "unit": "EA", "qty": 5,
+                                     "unit_price": 100, "memo": ""}]
+    at.session_state["po_step"] = 2
+    at.run()
+    mk = next(b for b in at.button if b.label == "발주서 만들기 (PDF)")
+    mk.click(); at.run()
+    assert not at.exception, [str(e.value) for e in at.exception]
+    assert inserts == [] and "po_result" not in at.session_state
+
+
+def _ship_stock(monkeypatch, ship_db, lots_fn):
+    real = ship_db.fetch
+
+    def _f(table, select="*", filter_query="", limit=1000, **kw):
+        if table == "product_lot_stock_v":
+            return lots_fn(filter_query, limit)
+        return real(table, select, filter_query, limit, **kw)
+    monkeypatch.setattr(ship_db, "fetch", _f)
+
+
+@app_test
+def test_r2_stock_lookup_failure_is_unknown_not_shortage(ship_db, monkeypatch):
+    from tests.test_bulk_delivery import _open_shipping
+
+    def _boom(fq, limit):
+        raise RuntimeError("view down")
+    _ship_stock(monkeypatch, ship_db, _boom)
+    at = _open_shipping(ship_db)
+    assert not at.exception, [str(e.value) for e in at.exception]
+    head = next(m for m in _md(at) if '<span class="t">미납 회차</span>' in m)
+    assert "완성 재고 부족" not in head, head
+    assert any("완성 재고" in str(w.value) and "미확인" in str(w.value) for w in at.warning)
+    ed = next(d.value for d in at.dataframe if "잔량" in d.value.columns and "출고" in d.value.columns)
+    assert ed["완성 재고"].isna().all()
+
+
+@app_test
+def test_r2_stock_paginates_and_shortage_is_cumulative_per_product(ship_db, monkeypatch):
+    """1,001 LOT(2페이지) 전량 합산 + 같은 품번 여러 회차는 잔량 합으로 부족 판정(D6)."""
+    from tests.test_bulk_delivery import _open_shipping
+    calls = []
+
+    def _pages(fq, limit):
+        calls.append(fq)
+        off = int(fq.split("offset=")[1].split("&")[0]) if "offset=" in fq else 0
+        # P1: 1,001개 LOT × 0.6 = 600.6 (회차 500 + 200 = 700 > 600.6 → 부족), P2: 300
+        rows = [{"product_id": "P1", "remain_qty": 0.6} for _ in range(1001)]
+        rows += [{"product_id": "P2", "remain_qty": 300}]
+        return rows[off:off + limit]
+    _ship_stock(monkeypatch, ship_db, _pages)
+    at = _open_shipping(ship_db)
+    assert not at.exception, [str(e.value) for e in at.exception]
+    assert len(calls) == 2 and "offset=1000" in calls[1], calls          # 2페이지
+    ed = next(d.value for d in at.dataframe if "잔량" in d.value.columns and "출고" in d.value.columns)
+    p1 = ed[ed["품번"] == "4PDVN-03"]["완성 재고"].tolist()
+    assert p1 and all(abs(v - 600.6) < 1e-6 for v in p1), p1
+    head = next(m for m in _md(at) if '<span class="t">미납 회차</span>' in m)
+    assert "완성 재고 부족 1" in head, head                            # 행별(500, 200 각각 < 600.6)이면 0
+
+
+@app_test
+def test_r2_so_mode_kept_across_mains_and_bad_value_fixed(monkeypatch):
+    """⑥ so_mode '수기 입력' → 다른 메인 → 복귀 유지(_kv_), 잘못된 값은 기본으로 보정."""
+    from tests.test_uiux_u1b import _manual_open, _ManualSOMock
+    from tests.conftest import goto
+    at = _manual_open(monkeypatch, _ManualSOMock())
+    goto(at, "ship", "deliver")
+    goto(at, "so", "input")
+    assert not at.exception, [str(e.value) for e in at.exception]
+    assert at.segmented_control(key="so_mode").value == "수기 입력"
+    assert at.text_input(key="m_so_no").value == "PO-T-9"
+    # 잘못된 값 보정 — AppTest 는 segmented 에 없는 값을 넣지 못해 정적으로 고정
+    src = _src()
+    i = src.index('"입력 방식", _SO_MODES, key="so_mode"')
+    blk = src[i - 500:i]
+    assert 'if st.session_state.get("so_mode") not in _SO_MODES:' in blk
+    assert 'st.session_state["so_mode"] = _SO_MODES[0]' in blk

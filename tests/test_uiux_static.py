@@ -115,6 +115,8 @@ def test_badge_single_definition_shared_by_html_and_grid():
 
 def _keys_in_source(src):
     lit = set(re.findall(r'key="([A-Za-z0-9_]+)"', src))
+    # U3: action_bar·card_head_btn 의 버튼 인자 dict("key": "...") 도 실제 key
+    lit |= set(re.findall(r'"key": "([A-Za-z0-9_]+)"', src))
     fpre = set(re.findall(r'key=f"([A-Za-z0-9_]*)\{', src))      # f"nav_m_{...}" → 접두 "nav_m_"
     # 변수로 만든 key(_sck = f"nav_sc_{...}" → key=_sck) — 이름이 k 로 끝나는 지역 변수만
     fpre |= set(re.findall(r'\b_\w*k\s*=\s*f"([A-Za-z0-9_]+)\{', src))
@@ -169,7 +171,9 @@ def test_danger_extra_lists_match_real_keys():
     src = _src()
     lit, fpre = _keys_in_source(src)
     assert ns["_DANGER_KEY_PREFIXES"] == ("bom_del_",)
-    assert set(ns["_DANGER_KEYS"]) == {"po_clear_all", "sc_clear"}
+    # U3 r2 D1: 카드 머리 [모두 초기화]·수주 [초기화] 2종 추가(ActionBar 밖, confirm_gate 2단계)
+    assert set(ns["_DANGER_KEYS"]) == {"po_clear_all", "sc_clear", "po_reset_all",
+                                       "so_up_reset", "so_m_reset"}
     assert ns["_DANGER_KEY_COMBOS"] == (("sch_reset_", "_ok"),)
     for p in ns["_DANGER_KEY_PREFIXES"]:
         assert f'[class*="st-key-{p}"]' in css and p in fpre, p
