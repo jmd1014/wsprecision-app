@@ -9333,9 +9333,7 @@ elif page == "출고 관리":
                     _sh_trunc = True
                     break
                 _sh_off += 1000
-            if _sh_trunc:
-                st.warning("회차가 너무 많아 일부가 잘렸습니다 — 기준일을 좁히세요 "
-                           "(열린 회차가 목록에 없으면 아래 품번 검색으로 추가).")
+            # (상한 경고는 U3 결과 카드 안에서 — ActionBar 아래로 밀리지 않게)
             _sh_rounds_all = [r for r in _sh_raw
                 if (float(r.get("qty") or 0)
                     - float(r.get("delivered_qty") or 0)) > 0]
@@ -9491,6 +9489,10 @@ elif page == "출고 관리":
         if _sh_round_err:
             with _sh_rc:
                 st.error(_sh_round_err)
+        if _sh_trunc:
+            with _sh_rc:
+                st.warning("회차가 너무 많아 일부가 잘렸습니다 — 기준일을 좁히세요 "
+                           "(열린 회차가 목록에 없으면 아래 품번 검색으로 추가).")
         if not _sh_items:
             _sh_hdr.markdown(card_head("미납 회차", f"{_sh_scope} 0건"),
                              unsafe_allow_html=True)
