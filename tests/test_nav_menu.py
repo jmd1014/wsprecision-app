@@ -555,7 +555,10 @@ def test_pending_prefill_discarded_by_reset_and_new_apply(hist_db2, st_log):
     btn = [b for b in at.button if str(b.key or "").startswith("go_po_")]
     btn[0].click(); at.run()                            # B 요청 → 품목표가 있어 보류
     assert at.button(key="po_pending_replace")
-    next(b for b in at.button if b.label == "모두 초기화").click(); at.run()
+    # U3 r2 D1: [모두 초기화] = 담긴 품목 카드 머리 위험 버튼 + 2단계 확인
+    at.button(key="po_reset_all").click(); at.run()
+    assert at.session_state["po_items"], "확인 전에는 그대로"
+    at.button(key="po_reset_all_cfm_ok").click(); at.run()
     assert not [b for b in at.button if b.key == "po_pending_replace"], "초기화 뒤 보류 안내 없음"
     assert "po_prefill_pending" not in at.session_state
     assert not at.session_state["po_items"]
