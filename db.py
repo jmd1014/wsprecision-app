@@ -191,7 +191,7 @@ def _fetch_cached_tx(table: str, select: str, filter_query: str, limit: int) -> 
 
 def clear_cache():
     """읽기 캐시 전체 비우기 (이 모듈의 모든 쓰기 후 자동, 외부 변경 시 수동)."""
-    for f in (_fetch_cached, _fetch_cached_tx, _fetch_all_cached):
+    for f in (_fetch_cached, _fetch_cached_tx, _fetch_all_cached, _fetch_all_cached_tx):
         try:
             f.clear()
         except Exception:
@@ -267,7 +267,13 @@ def _fetch_all_raw(table: str, sel: str, base: str, page: int, max_rows: int, pk
 
 @st.cache_data(ttl=CACHE_TTL, show_spinner=False)
 def _fetch_all_cached(table: str, sel: str, base: str, page: int, max_rows: int, pk: str):
-    """fetch_all 결과 전체를 한 단위로 캐시(핫픽스 2 r2 H1) — 페이지별 캐시는 쓰지 않는다."""
+    """fetch_all 결과 전체를 한 단위로 캐시(핫픽스 2 r2 H1) — 페이지별 캐시는 쓰지 않는다. 마스터 표 5분."""
+    return _fetch_all_raw(table, sel, base, page, max_rows, pk)
+
+
+@st.cache_data(ttl=CACHE_TTL_TX, show_spinner=False)
+def _fetch_all_cached_tx(table: str, sel: str, base: str, page: int, max_rows: int, pk: str):
+    """그 외 표는 fetch 와 같은 60초(r3 — 회차 등 원장이 외부 변경 뒤 5분 늦게 보이지 않게)."""
     return _fetch_all_raw(table, sel, base, page, max_rows, pk)
 
 
@@ -282,7 +288,7 @@ def fetch_all(table: str, select: str = "*", filter_query: str = "", *,
       order 가 없으면 기본 키 오름차순. filter_query 에 order= 를 넣지 말 것(order 인자로).
     - 중복 제거: 기본 키가 select 에 없으면 붙여 읽고, 같은 키는 한 번만.
     - 캐시(r2): 페이지 조회는 항상 cache=False, 결과 전체를 한 단위로 캐시(_fetch_all_cached,
-      CACHE_TTL). cache=False 면 우회. clear_cache() 가 함께 지운다.
+      TTL 은 fetch 와 같음 — 마스터 5분·그 외 60초). cache=False 면 우회. clear_cache() 가 함께 지운다.
     - **스냅샷 아님**: 페이지 사이에 행이 삽입·삭제되면 경계에서 누락이 생길 수 있다(중복은 제거).
       동시성은 P3 범위.
     - max_rows 를 넘는 행이 있으면 truncated=True(호출자가 현장 안내) + 관리자 상한 기록.
@@ -313,7 +319,8 @@ def fetch_all(table: str, select: str = "*", filter_query: str = "", *,
     if cache is False:
         rows, truncated = _fetch_all_raw(table, sel, base, page, max_rows, pk)
     else:
-        rows, truncated = _fetch_all_cached(table, sel, base, page, max_rows, pk)
+        _cf = _fetch_all_cached if table in CACHED_TABLES else _fetch_all_cached_tx
+        rows, truncated = _cf(table, sel, base, page, max_rows, pk)
     if _prev is not None:
         try:
             _ft = st.session_state.setdefault("_fetch_truncated", {})

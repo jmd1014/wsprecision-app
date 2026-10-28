@@ -397,6 +397,10 @@ def test_add_lines_to_open_draft(ship_db):
                  "due_date": None}
     ROUNDS.append({"sched_id": 4, "soi_id": 13, "so_id": 102, "seq": 1,
                    "due_date": TODAY, "qty": 100, "delivered_qty": 0})
+    # 목 데이터 직접 추가 = 앱 쓰기(수주·회차 등록) 대역 — 실제 쓰기는 db.clear_cache() 를 부른다
+    # (fetch_all 전체 결과 캐시, 핫픽스 2 r2)
+    import db as _dbm
+    _dbm.clear_cache()
     try:
         at2 = _open_shipping(ship_db)
         assert not any(getattr(b, "key", None) == "ship_reg" and b.disabled

@@ -184,6 +184,17 @@ def test_cache_key_covers_all_seven_arguments(raw):
         assert len(r.calls) == n, over                        # 같은 인자 재호출은 적중
 
 
+def test_cache_ttl_follows_fetch_rule(raw, monkeypatch):
+    """r3: 전체 결과 캐시 TTL 은 fetch 와 같다 — 마스터 표 5분, 그 외(회차 등) 60초."""
+    raw(_rows(5))
+    used = []
+    monkeypatch.setattr(db, "_fetch_all_cached", lambda *a: used.append("master") or ([], False))
+    monkeypatch.setattr(db, "_fetch_all_cached_tx", lambda *a: used.append("tx") or ([], False))
+    db.fetch_all("so_delivery_schedule", "soi_id", "")
+    db.fetch_all("products", "pn", "", pk="product_id")
+    assert used == ["tx", "master"]
+
+
 def test_cache_hit_restores_truncation_note(raw, monkeypatch):
     """r3 L1: 캐시 적중 때도 절단 기록을 만들고(절단), 같은 테이블 기존 기록을 되돌리며(비절단), 다른 테이블 기록은 둔다."""
     import streamlit as st
