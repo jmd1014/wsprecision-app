@@ -16,7 +16,8 @@ jobs:
   pytest:
     name: pytest (py${{ matrix.python-version }})
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    # 2026-10-28 실측: py3.14 89분(594 passed 뒤 90분 상한으로 취소, run 40620555996)·py3.11 52분 → 150분
+    timeout-minutes: 150
     strategy:
       # 3.11 = 로컬 개발·기존 기준, 3.14 = Streamlit Cloud 운영 런타임(2026-10-23 관리자 진단, P1-4).
       # 한쪽이 실패해도 다른 쪽 결과는 끝까지 본다.
