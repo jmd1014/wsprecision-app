@@ -259,7 +259,16 @@ class DashMock:
         monkeypatch.setattr(db, "health_check", lambda: {"status": "OK", "counts": {}})
         monkeypatch.setattr(db, "debug_check", lambda: {"status": "mock"})
         monkeypatch.setattr(db, "count_rows", lambda t, f="": 0)
-        monkeypatch.setattr(db, "clear_cache", lambda: None)
+        # 읽기 캐시 비우기는 진짜처럼 — fetch 는 목이라 캐시를 안 타지만 db.fetch_all 결과 전체 캐시
+        # (st.cache_data)는 그대로 쓰인다. no-op 이면 목 데이터를 바꾼 뒤 clear_cache() 를 불러도
+        # 이전 결과가 남는다(핫픽스 2 후속 BCD r3 전체 pytest, 완성 재고 종결 테스트)
+        def _clear():
+            for f in ("_fetch_cached", "_fetch_cached_tx", "_fetch_all_cached", "_fetch_all_cached_tx"):
+                try:
+                    getattr(db, f).clear()
+                except Exception:
+                    pass
+        monkeypatch.setattr(db, "clear_cache", _clear)
         return self
 
     # ── 조회 보조 ──
