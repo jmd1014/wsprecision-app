@@ -239,21 +239,39 @@ PK_OF = {
     "purchase_orders": "po_id", "products": "product_id", "materials": "material_id",
     # 뷰 — material_stock 은 materials 기준 GROUP BY material_id 라 유일(2026-10-28 SQL 확인 1,006/1,006)
     "material_stock": "material_id", "purchase_ledger": "ledger_id",
+    # 핫픽스 2 후속 C — 테이블은 실제 PK, 뷰는 2026-10-28 SQL 로 유일성 확인(행 수 = distinct 수)
+    "product_routing": "routing_id", "bom": "bom_id", "vendors": "vendor_id",
+    "product_op_std": "op_id", "production_log": "log_id", "wo_batches": "batch_id",
+    "product_op_machine": "pom_id", "production_schedule": "sched_id",
+    "purchase_item_map": "map_id",
+    "product_stock_v": "product_id", "product_cost_full_v": "product_id", "product_full": "product_id",
+    # 복합키 뷰 — tuple(정렬도 이 순서로 보강, 중복 제거 키 = 값 tuple)
+    "data_quality_v": ("code", "ref"),
+    "material_stock_by_lot": ("lot_number", "material_id"),       # material_id NULL 18행(lot 유일)
+    "product_lot_stock_v": ("product_id", "lot_number"),
+    "product_material_price_status_v": ("product_id", "material_id"),
 }
 FETCH_ALL_PAGE = 1000          # PostgREST 요청당 최대 행(Supabase 기본 db-max-rows)
 
 
-def _fetch_all_raw(table: str, sel: str, base: str, page: int, max_rows: int, pk: str):
+def _pk_cols(pk) -> tuple:
+    """pk 를 열 이름 tuple 로 — 단일 열 문자열 또는 복합키 tuple/list(핫픽스 2 후속 C)."""
+    return (pk,) if isinstance(pk, str) else tuple(pk)
+
+
+def _fetch_all_raw(table: str, sel: str, base: str, page: int, max_rows: int, pk):
     """페이지 반복 본체 — 페이지마다 cache=False(페이지별 캐시가 서로 다른 시점을 섞지 않게).
-    반환 (rows, truncated). max_rows 에 딱 닿으면 1행 탐색으로 실제 남은 행이 있는지 본다."""
+    반환 (rows, truncated). max_rows 에 딱 닿으면 1행 탐색으로 실제 남은 행이 있는지 본다.
+    복합키(tuple)면 키 값 tuple 로 중복 제거 — 값이 전부 None 이면 단일 열과 같이 제거하지 않는다."""
+    cols = _pk_cols(pk)
     rows, seen, off = [], set(), 0
     while True:
         n = min(page, max_rows - off)
         pg = fetch(table, sel, f"{base}&offset={off}" if base else f"offset={off}",
                    limit=n, cache=False)
         for r in pg:
-            k = r.get(pk)
-            if k is not None:
+            k = r.get(cols[0]) if len(cols) == 1 else tuple(r.get(c) for c in cols)
+            if k is not None and not (isinstance(k, tuple) and all(v is None for v in k)):
                 if k in seen:
                     continue
                 seen.add(k)
@@ -273,20 +291,20 @@ FETCH_ALL_TTL_TX = CACHE_TTL_TX
 
 
 @st.cache_data(ttl=FETCH_ALL_TTL, show_spinner=False)
-def _fetch_all_cached(table: str, sel: str, base: str, page: int, max_rows: int, pk: str):
+def _fetch_all_cached(table: str, sel: str, base: str, page: int, max_rows: int, pk):
     """fetch_all 결과 전체를 한 단위로 캐시(핫픽스 2 r2 H1) — 페이지별 캐시는 쓰지 않는다. 마스터 표 5분."""
     return _fetch_all_raw(table, sel, base, page, max_rows, pk)
 
 
 @st.cache_data(ttl=FETCH_ALL_TTL_TX, show_spinner=False)
-def _fetch_all_cached_tx(table: str, sel: str, base: str, page: int, max_rows: int, pk: str):
+def _fetch_all_cached_tx(table: str, sel: str, base: str, page: int, max_rows: int, pk):
     """그 외 표는 fetch 와 같은 60초(r3 — 회차 등 원장이 외부 변경 뒤 5분 늦게 보이지 않게)."""
     return _fetch_all_raw(table, sel, base, page, max_rows, pk)
 
 
 def fetch_all(table: str, select: str = "*", filter_query: str = "", *,
               page: int = FETCH_ALL_PAGE, max_rows: int = 20000, order: str | None = None,
-              cache: bool | None = None, pk: str | None = None):
+              cache: bool | None = None, pk: str | tuple | None = None):
     """offset 페이지 반복으로 끝까지 읽는다 → (rows, truncated).
 
     PostgREST 는 요청당 최대 1,000행이라 `fetch(limit=2000)` 도 1,000 에서 잘리고 len < limit
@@ -302,6 +320,8 @@ def fetch_all(table: str, select: str = "*", filter_query: str = "", *,
       끝까지 읽은 경우에는 페이지마다 fetch 가 남긴 상한 기록을 되돌린다.
     - 인자 검증(r2 M3·M4): 기본 키(PK_OF 또는 pk) 필수, 1 <= page <= 1000(1,000 초과는 서버 상한에
       잘려 절단 감지 불가), max_rows 양수.
+    - 복합키(후속 C): pk=("material_id", "lot_number") 처럼 tuple — 빠진 열을 select·정렬에 순서대로 붙이고
+      키 값 tuple 로 중복 제거. 단일 열 pk 동작은 그대로.
     """
     if "order=" in (filter_query or ""):
         raise ValueError("fetch_all: 정렬은 order 인자로(filter_query 에 order= 금지)")
@@ -312,12 +332,16 @@ def fetch_all(table: str, select: str = "*", filter_query: str = "", *,
         raise ValueError(f"fetch_all: page 는 1~{FETCH_ALL_PAGE} (받음 {page!r})")
     if not isinstance(max_rows, int) or max_rows <= 0:
         raise ValueError(f"fetch_all: max_rows 는 양수 (받음 {max_rows!r})")
+    if isinstance(pk, list):
+        pk = tuple(pk)                     # 캐시 키로 쓰이므로 hashable 하게
+    cols = _pk_cols(pk)
     sel = select
-    if select.strip() != "*" and pk not in [c.strip() for c in select.split(",")]:
-        sel = f"{select},{pk}"
+    if select.strip() != "*":
+        _have = [c.strip() for c in select.split(",")]
+        sel = ",".join([select] + [c for c in cols if c not in _have])
     ords = [o.strip() for o in (order or "").split(",") if o.strip()]
-    if not any(o.split(".")[0] == pk for o in ords):
-        ords.append(f"{pk}.asc")
+    _ord_cols = {o.split(".")[0] for o in ords}
+    ords += [f"{c}.asc" for c in cols if c not in _ord_cols]
     base = "&".join(x for x in (filter_query, f"order={','.join(ords)}") if x)
     try:
         _prev = dict(st.session_state.get("_fetch_truncated") or {})

@@ -644,6 +644,7 @@ from utils import slack_notify as _sk  # 업무 분기점 슬랙 알림 (fire-an
 from utils import so_close as _soc  # 수주 종결·취소·되돌리기 + 활성 수주 필터 상수 (2026-10-22)
 SO_INACTIVE = _soc.SO_INACTIVE          # 활성 수주 집합 = 이 상태들을 뺀 것 (D6, 한 곳)
 SO_INACTIVE_FQ = _soc.SO_INACTIVE_FQ
+TRUNC_MSG = "행이 너무 많아 일부만 조회됐습니다"      # fetch_all 절단 안내 공통(핫픽스 2 후속 C)
 
 # 미처리 예외를 app_errors 에 남기는 로깅 훅 (migration 067, 2026-10-13).
 # 라우팅을 try 로 감싸지 않는다 — db.install_uncaught_hook docstring 참고.
@@ -2307,9 +2308,11 @@ if page == "홈":
         _h_wo = []
     # 열린 배치 — 공정 진행 품번별/상태별 뷰용 (2026-08-29)
     try:
-        _h_bat = fetch("wo_batches",
+        _h_bat, _h_bat_tr = fetch_all("wo_batches",                             # 후속 C
             "pn,qty,step_name,step_code,step_status,location",
-            "status=eq.OPEN", limit=2000)
+            "status=eq.OPEN")
+        if _h_bat_tr:
+            ws_note(f"열린 배치 {TRUNC_MSG} — 공정 진행 현황이 일부입니다.", warn=True)
     except Exception:
         _h_bat = []
     try:
@@ -2718,12 +2721,13 @@ elif page == "마스터 관리":
             "소재 정보의 진실은 BOM(자재 연결), 제품의 소재 표기는 "
             "표시용(자동 동기화) · 품번의 진실은 product_id.")
         try:
-            _dq_rows = fetch("data_quality_v", "*", "order=code",
-                             limit=2000)
+            _dq_rows, _dq_tr = fetch_all("data_quality_v", "*", "", order="code")   # 후속 C
         except Exception as e:
             st.error(f"점검 조회 실패: {e}")
-            _dq_rows = []
-        if not _dq_rows:
+            _dq_rows, _dq_tr = [], False
+        if _dq_tr:
+            st.warning(f"점검 결과 {TRUNC_MSG} — 아래 목록은 일부입니다.")
+        if not _dq_rows and not _dq_tr:
             st.success("모든 점검 통과 — 발견된 문제가 없습니다.")
         else:
             _dq_by = {}
@@ -2781,8 +2785,10 @@ elif page == "마스터 관리":
                 # 사용 품번 — BOM 연결 제품으로 현장에서 소재를 빨리 식별
                 _pn_map = {}
                 try:
-                    _bl = _db.fetch("bom", "material_id,product_id",
-                                    "material_id=not.is.null", limit=2000)
+                    _bl, _bl_tr = _db.fetch_all("bom", "material_id,product_id",
+                                                "material_id=not.is.null")      # 후속 C
+                    if _bl_tr:
+                        st.warning(f"BOM {TRUNC_MSG} — '사용 품번' 표기가 일부 빠질 수 있습니다.")
                     _pids = {b["product_id"] for b in _bl}
                     _pm = {}
                     if _pids:
@@ -5150,9 +5156,11 @@ elif page == "마스터 관리":
                 pass
             _rt_pids = set()
             try:
-                _rt_pids = {r["product_id"] for r in fetch(
-                    "product_routing", "product_id",
-                    "order=product_id", limit=2000)}
+                _rt_rows, _rt_tr = fetch_all("product_routing", "product_id", "",
+                                             order="product_id")              # 후속 C
+                _rt_pids = {r["product_id"] for r in _rt_rows}
+                if _rt_tr:
+                    st.warning(f"공정 라우팅 {TRUNC_MSG} — 라우팅 표시가 일부 빠질 수 있습니다.")
             except Exception:
                 pass
             _bp_i = toss_grid([{
@@ -6297,11 +6305,11 @@ elif page == "수주 관리":
         # 오판(지연 이중 계산)할 수 있었다 → fetch_all(핫픽스 2)
         _sc_soi_rows, _sk_tr2 = fetch_all("so_delivery_schedule", _SC_ALL_SEL, "")
         _sched_soi_all = {r["soi_id"] for r in _sc_soi_rows}
-        _sk_late_unk = _sk_tr1 or _sk_tr2
-        for _r in fetch("sales_order_items",
+        _sk_late_li, _sk_tr3 = fetch_all("sales_order_items",                  # 후속 C
                 "so_id,soi_id,pending_qty",
-                f"pending_qty=gt.0&due_date=lt.{_date.today().isoformat()}",
-                limit=1000):
+                f"pending_qty=gt.0&due_date=lt.{_date.today().isoformat()}")
+        _sk_late_unk = _sk_tr1 or _sk_tr2 or _sk_tr3
+        for _r in _sk_late_li:
             if (_r["so_id"] in _sk_alive
                     and _r["soi_id"] not in _sched_soi_all):
                 _sk_late_n += 1
@@ -8007,10 +8015,14 @@ elif page == "수주 관리":
             if so_map:
                 ids_str = ",".join(str(x) for x in so_map.keys())
                 p_search = st.text_input("품목 검색", placeholder="품번 또는 자재명", key="so_item_q")
-                item_filter = f"so_id=in.({ids_str})&order=due_date.asc.nullslast"
+                item_filter = f"so_id=in.({ids_str})"
                 if p_search:
                     item_filter += f"&or=(canonical_pn.ilike.{_fql(p_search)},customer_part_no.ilike.{_fql(p_search)},customer_item_name.ilike.{_fql(p_search)})"
-                try: sitems = fetch("sales_order_items", "*", item_filter, limit=1000)
+                try:
+                    sitems, _si_tr = fetch_all("sales_order_items", "*", item_filter,     # 후속 C
+                                               order="due_date.asc.nullslast")
+                    if _si_tr:
+                        st.warning(f"수주 품목 {TRUNC_MSG} — 검색어나 기간을 좁히세요.")
                 except Exception as e: st.error(e); sitems = []
 
                 if sitems:
@@ -8235,10 +8247,13 @@ elif page == "수주 관리":
             else:
                 _sch_base = _sch_full
         try:  # 미납이 남은 전 라인 — 계획률·미계획 물량 산출 기준
-            _open_li = fetch("sales_order_items",
+            _open_li, _open_li_tr = fetch_all("sales_order_items",              # 후속 C
                 "soi_id,so_id,canonical_pn,customer_part_no,qty,"
                 "received_qty,pending_qty,due_date",
-                "pending_qty=gt.0", limit=2000)
+                "pending_qty=gt.0")
+            if _open_li_tr:
+                _sch_unk = True             # 미납 라인 일부 → 계획률·미계획·상단 합계 미확인
+                ws_note(f"미납 라인 {TRUNC_MSG} — 계획률·미계획·상단 합계는 미확인입니다", warn=True)
         except Exception:
             _open_li = []
 
@@ -9953,10 +9968,14 @@ elif page == "출고 관리":
                         "cancelled_at,cancel_reason")
             _cf_sq = (_cf_search or "").strip().replace(",", " ")
             if _cf_sq:
-                _cf_hit = {x["shipment_id"] for x in fetch(
+                _cf_hit_rows = fetch(
                     "shipment_items", "shipment_id",
                     f"or=(pn.ilike.{_fql(_cf_sq)},customer.ilike.{_fql(_cf_sq)},"
-                    f"customer_pn.ilike.{_fql(_cf_sq)})", limit=1000)}
+                    f"customer_pn.ilike.{_fql(_cf_sq)})", limit=1000)
+                _cf_hit = {x["shipment_id"] for x in _cf_hit_rows}
+                if len(_cf_hit_rows) >= 1000 or len(_cf_hit) > 300:
+                    # 검색 UI 는 300 전표 상한 그대로 — 넘치면 안내만(후속 C)
+                    st.info("검색 결과가 너무 많아 일부만 표시합니다 — 검색어를 좁히세요.")
                 _cf_ships = fetch("shipments", _cf_cols,
                     _cf_q + f"&or=(ship_no.ilike.{_fql(_cf_sq)},"
                     f"created_by.ilike.{_fql(_cf_sq)}"
@@ -11945,17 +11964,18 @@ elif page == "출고 관리":
             except (TypeError, ValueError):
                 return 0.0
         try:
-            _fs = fetch("product_stock_v",
+            _fs, _fs_tr = fetch_all("product_stock_v",                       # 후속 C
                         "product_id,pn,customer,current_stock,last_txn_date",
-                        "order=pn.asc", limit=2000)
+                        "", order="pn.asc")
         except Exception as e:
             st.error(f"완성 재고 조회 실패: {e}")
-            _fs = []
+            _fs, _fs_tr = [], False
         _fs_pend = {}
         try:
-            for _l in fetch("sales_order_items", "product_id,pending_qty",
-                            "pending_qty=gt.0&product_id=not.is.null",
-                            limit=1000):
+            _fs_pl, _fs_tr2 = fetch_all("sales_order_items", "product_id,pending_qty",
+                                        "pending_qty=gt.0&product_id=not.is.null")
+            _fs_tr = _fs_tr or _fs_tr2
+            for _l in _fs_pl:
                 _fs_pend[_l["product_id"]] = (
                     _fs_pend.get(_l["product_id"], 0.0)
                     + _fsf(_l.get("pending_qty")))
@@ -11963,15 +11983,18 @@ elif page == "출고 관리":
             pass
         _fs_lots = {}
         try:
-            for _l in fetch("product_lot_stock_v",
+            _fs_ll, _fs_tr3 = fetch_all("product_lot_stock_v",
                             "product_id,pn,lot_number,produced_qty,issued_qty,"
                             "remain_qty,first_output_date,tokusai_qty,"
                             "material_lot",
-                            "remain_qty=gt.0&order=pn.asc,first_output_date.asc",
-                            limit=1000):
+                            "remain_qty=gt.0", order="pn.asc,first_output_date.asc")
+            _fs_tr = _fs_tr or _fs_tr3
+            for _l in _fs_ll:
                 _fs_lots.setdefault(_l["product_id"], []).append(_l)
         except Exception:
             pass
+        if _fs_tr:
+            st.warning(f"완성 재고·미납·LOT 조회 {TRUNC_MSG} — 목록과 합계가 일부입니다.")
         _fs_q = st.text_input("품번 · 거래처 검색", key="fs_q",
                               label_visibility="collapsed",
                               placeholder="검색 — 품번 · 거래처")
@@ -12067,9 +12090,11 @@ elif page == "생산 계획":
     sois = []
     if _sub in ("std", "sb"):       # B3: 공정 표준·설비 스케줄만 쓴다 — 기본값 [] 먼저
       try:
-        sois = fetch("sales_order_items", "*",
-                     "pending_qty=gt.0&product_id=not.is.null"
-                     "&order=due_date.asc.nullslast", limit=1000)
+        sois, _sois_tr = fetch_all("sales_order_items", "*",                    # 후속 C
+                     "pending_qty=gt.0&product_id=not.is.null",
+                     order="due_date.asc.nullslast")
+        if _sois_tr:
+            st.warning(f"미납 수주 라인 {TRUNC_MSG} — 작업 큐·표준 대상이 일부입니다.")
         _so_ids = list({i["so_id"] for i in sois})
         _so_st = {}
         for _i0 in range(0, len(_so_ids), 100):
@@ -12398,15 +12423,15 @@ elif page == "생산 계획":
         import utils.op_std as _os
         from datetime import datetime as _std_now
 
-        def _std_fetch_all(table, cols, order):
-            out, off = [], 0
-            while True:
-                page_ = fetch(table, cols, f"order={order}&offset={off}",
-                              limit=1000)
-                out += page_
-                if len(page_) < 1000:
-                    return out
-                off += 1000
+        def _std_fetch_all(table, cols, order, strict=True):
+            """전수 조회 — db.fetch_all(PK 정렬 보강·중복 제거·절단 플래그, 후속 C). 재산출·저장 근거는
+            strict=True 로 절단 시 예외(일부 실적·표준으로 덮어쓰지 않게), 표시용은 strict=False + 경고."""
+            _rows, _tr = fetch_all(table, cols, "", order=order)
+            if _tr and strict:
+                raise RuntimeError(f"{table} {TRUNC_MSG} — 처리를 중단했습니다. 관리자에게 알려 주세요.")
+            if _tr:
+                st.warning(f"{table} {TRUNC_MSG} — 목록이 일부입니다.")
+            return _rows
 
         sc1, sc2 = st.columns([1, 3])
         if sc1.button("실적에서 자동값 재산출", key="std_recalc",
@@ -12508,7 +12533,7 @@ elif page == "생산 계획":
                 "uph_auto,uph_mean,uph_sheet,ct_sec,sample_n,hours_n,"
                 "machines_used,setup_min,std_status,std_source,active,"
                 "calc_at,first_date,last_date,confirmed_by,confirmed_at,note",
-                "pn,step,process")
+                "pn,step,process", strict=False)
         except Exception as e:
             st.error(f"표준 조회 실패: {e}")
             _stds = []
@@ -12896,14 +12921,12 @@ elif page == "생산 계획":
                 _sb_d0, _sb_d1, _sb_ws.isocalendar()[1]),
             unsafe_allow_html=True)
 
-        def _sb_all(table, cols, filt):
-            out, off = [], 0
-            while True:
-                pg = fetch(table, cols, f"{filt}&offset={off}", limit=1000)
-                out += pg
-                if len(pg) < 1000:
-                    return out
-                off += 1000
+        def _sb_all(table, cols, filt, order=None):
+            """전수 조회 — db.fetch_all(후속 C). 스케줄·부하 집계와 기존 배정 대조(저장 근거)라 절단 시 예외."""
+            _rows, _tr = fetch_all(table, cols, filt, order=order)
+            if _tr:
+                raise RuntimeError(f"{table} {TRUNC_MSG} — 기간을 좁히세요.")
+            return _rows
 
         try:
             _sb_mcs = fetch("machines",
@@ -12962,16 +12985,16 @@ elif page == "생산 계획":
                 "sched_id,machine_id,plan_date,shift,pn,process,product_id,"
                 "plan_qty,plan_hours,wo_number,worker,note,status",
                 f"plan_date=gte.{_sb_d0}&plan_date=lte.{_sb_d1}"
-                "&status=neq.CANCELLED&order=sched_id")
+                "&status=neq.CANCELLED", order="sched_id")
             _sb_logs = _sb_all(
                 "production_log",
                 "machine,log_date,shift,process,total_qty,run_flag,"
                 "stop_reason",
                 f"log_date=gte.{_sb_d0}&log_date=lte.{_sb_d1}"
-                "&source=eq.SHEET_DB&order=log_id")
+                "&source=eq.SHEET_DB", order="log_id")
             _sb_future = _sb_all(
                 "production_schedule", "pn,process,plan_qty",
-                f"plan_date=gte.{_sb_d0}&status=neq.CANCELLED&order=sched_id")
+                f"plan_date=gte.{_sb_d0}&status=neq.CANCELLED", order="sched_id")
         except Exception as e:
             st.error(f"스케줄 조회 실패: {e}")
             _sb_sched, _sb_logs, _sb_future = [], [], []
@@ -13550,7 +13573,7 @@ elif page == "생산 계획":
                         "sched_id,machine_id,plan_date,shift",
                         f"machine_id=eq.{_fq(_e_m)}&plan_date=gte.{_e_d0.isoformat()}"
                         f"&plan_date=lte.{_e_d1.isoformat()}"
-                        "&status=neq.CANCELLED&order=sched_id")}
+                        "&status=neq.CANCELLED", order="sched_id")}
                     _n_ins, _n_upd, _n_skip, _ins_rows = 0, 0, 0, []
                     _now_s = _sb_now.now().isoformat()
                     _d = _e_d0
@@ -14052,11 +14075,14 @@ elif page == "구매 관리":
     def _mr_compute():
         with st.spinner("미납 수주 조회 중..."):
             try:
-                sois = fetch("sales_order_items", "*",
-                             "pending_qty=gt.0&product_id=not.is.null"
-                             "&order=due_date.asc.nullslast", limit=1000)
+                sois, _mr_tr = fetch_all("sales_order_items", "*",              # 후속 C
+                             "pending_qty=gt.0&product_id=not.is.null",
+                             order="due_date.asc.nullslast")
             except Exception as e:
                 return {"msg": f"수주 조회 실패: {e}"}
+            if _mr_tr:
+                # 일부 수주만으로 소요량을 내면 발주 제안이 모자란다 — 확정 근거로 쓰지 않는다
+                return {"msg": f"미납 수주 {TRUNC_MSG} — 소요량을 계산하지 않았습니다. 관리자에게 알려 주세요."}
         if not sois:
             return {"msg": "미납 수주 품목이 없습니다. 모든 수주가 완납되었거나 "
                            "미납 품목이 매칭 안된 상태입니다."}
@@ -14558,9 +14584,11 @@ elif page == "구매 관리":
                     #   자동 제안이 전부 '(미정)' 으로 뭉치는 문제가 있었다.
                     _mid_vendor = {}
                     try:
-                        _po_hist = fetch("purchase_order_items",
+                        _po_hist, _po_hist_tr = fetch_all("purchase_order_items",    # 후속 C
                             "material_id,po_id",
-                            "material_id=not.is.null&order=poi_id.desc", limit=1000)
+                            "material_id=not.is.null", order="poi_id.desc")
+                        if _po_hist_tr:
+                            st.warning(f"발주 이력 {TRUNC_MSG} — 최근 공급사 제안이 일부입니다.")
                         _po_ids = list({x["po_id"] for x in _po_hist
                                         if x.get("po_id")})
                         if _po_ids:
@@ -14700,11 +14728,11 @@ elif page == "구매 관리":
         except Exception:
             _ms, _ms_tr = [], False
         try:
-            _lots = fetch("material_stock_by_lot",
+            _lots, _lots_tr = fetch_all("material_stock_by_lot",               # 후속 C
                           "material_id,lot_number,lot_balance,last_date",
-                          "order=lot_number.desc", limit=1000)
+                          "", order="lot_number.desc")
         except Exception:
-            _lots = []
+            _lots, _lots_tr = [], False
         try:
             _rcpts = fetch("inventory_transactions",
                 "txn_id,material_id,qty,unit,lot_number,ref_id,txn_date,"
@@ -14770,8 +14798,9 @@ elif page == "구매 관리":
                _rk("보유 소재", f"{len(_hold_pos)}종",
                    "총 {:,.0f}".format(sum(
                        float(m["current_stock"]) for m in _hold_pos)), "good"))
-            + _rk("투입 대기 LOT", f"{len(_lots_open)}건",
-                  "공정 관리 → 투입 등록")
+            + (_rk("투입 대기 LOT", "미확인", "LOT 조회 일부 누락", "warn") if _lots_tr else
+               _rk("투입 대기 LOT", f"{len(_lots_open)}건",
+                   "공정 관리 → 투입 등록"))
             + "</div>", unsafe_allow_html=True)
 
         # ── 보유 자재 (입고일 기준) — 라벨 재발행·입고 취소 ──
@@ -17222,17 +17251,14 @@ elif page == "구매 관리":
         # 매입내역 동기화 — 구글시트 → purchase_ledger + 자재 자동 매칭
         # (2026-08-31 신설. 확인 → 실행 2단계, 자동 overwrite 없음)
         # ════════════════════════════════════════════════
-        def _pl_fetch_pages(table, select, filt="", order_col="ledger_id"):
-            """PostgREST 1,000행 캡 대응 페이지네이션 (order 필수)"""
-            rows, off = [], 0
-            while True:
-                page = fetch(table, select,
-                             (filt + "&" if filt else "")
-                             + f"order={order_col}&offset={off}", limit=1000)
-                rows += page
-                if len(page) < 1000:
-                    return rows
-                off += 1000
+        def _pl_fetch_pages(table, select, filt="", order_col=None):
+            """전수 조회 — db.fetch_all(후속 C, 정렬 기본 = 표의 기본 키). 장부 동기화·매핑·판독 대조의
+            근거라 절단 시 예외(일부 장부로 중복 추가·오매핑하지 않게). 예전 기본 정렬 ledger_id 는
+            products 처럼 그 열이 없는 표에서 조회 오류였다."""
+            _rows, _tr = fetch_all(table, select, filt, order=order_col)
+            if _tr:
+                raise RuntimeError(f"{table} {TRUNC_MSG} — 처리를 중단했습니다. 관리자에게 알려 주세요.")
+            return _rows
 
         with st.expander("파일 업로드 · 시트 동기화 (구글시트 → 장부 → 소재 단가 자동 반영)",
                          expanded=False):
@@ -17250,7 +17276,9 @@ elif page == "구매 관리":
                 if _sc_files and st.button("판독", key="sc_go", type="primary") and click_guard("sc_go"):
                     try:
                         with st.spinner("판독 중… (장당 10~20초)"):
-                            _sc_v = fetch("vendors", "vendor_id,name,business_no", "", limit=1000)
+                            _sc_v, _sc_v_tr = fetch_all("vendors", "vendor_id,name,business_no", "")  # 후속 C
+                            if _sc_v_tr:
+                                st.warning(f"거래처 {TRUNC_MSG} — 사업자번호 대조가 일부 빠질 수 있습니다.")
                             _sc_biz = {_re_sc.sub(r"\D", "", v["business_no"]): v for v in _sc_v if v.get("business_no")}
                             _sc_known = _socr.build_known(_pl_fetch_pages(
                                 "purchase_ledger", "vendor,item,unit_price",
@@ -20641,10 +20669,12 @@ elif page == "공정 관리":
         # 2026-08-28 개편: 지시별 표와 중복되던 내용을 공정 축으로) ──
         st.markdown("##### 공정별 현황")
         try:
-            _bd_open = fetch("wo_batches",
+            _bd_open, _bd_tr = fetch_all("wo_batches",                         # 후속 C
                 "wo_number,pn,qty,step_code,step_name,"
                 "step_status,location",
-                "status=eq.OPEN", limit=2000)
+                "status=eq.OPEN")
+            if _bd_tr:
+                st.warning(f"열린 배치 {TRUNC_MSG} — 공정별 현황이 일부입니다.")
         except Exception:
             _bd_open = []
         if not _bd_open:
@@ -21438,30 +21468,20 @@ elif page == "생산 보고":
                         _tf.write(_psh_bytes)
                         _tf_path = _tf.name
                     _d_rows, _s_rows = _psh.load_workbook_tabs(_tf_path)
-                    _prods9 = []
-                    _off9 = 0
-                    while True:
-                        _pg9 = fetch("products",
-                                     "product_id,pn,alias_list,archived_at",
-                                     f"order=product_id&offset={_off9}",
-                                     limit=1000)
-                        _prods9 += _pg9
-                        if len(_pg9) < 1000:
-                            break
-                        _off9 += 1000
+                    # 전수 조회 — db.fetch_all(후속 C). 일부만 읽으면 품번 매칭·중복 판정이 틀려
+                    # 이미 올린 행을 다시 넣는다 → 절단이면 예외(아래 except 가 안내)
+                    _prods9, _tr9 = fetch_all("products", "product_id,pn,alias_list,archived_at",
+                                              "", order="product_id")
+                    if _tr9:
+                        raise RuntimeError(f"products {TRUNC_MSG}")
                     _pidx = _psh.build_pn_index(_prods9)
                     _recs, _pst = _psh.parse_data_rows(_d_rows, _pidx)
                     _stds9 = _psh.parse_std_rows(_s_rows, _pidx)
-                    _have = set()
-                    _off9 = 0
-                    while True:
-                        _pg9 = fetch("production_log", "sheet_key",
-                                     "sheet_key=not.is.null&order=log_id"
-                                     f"&offset={_off9}", limit=1000)
-                        _have |= {x["sheet_key"] for x in _pg9}
-                        if len(_pg9) < 1000:
-                            break
-                        _off9 += 1000
+                    _have9, _tr9 = fetch_all("production_log", "sheet_key",
+                                             "sheet_key=not.is.null", order="log_id")
+                    if _tr9:
+                        raise RuntimeError(f"production_log {TRUNC_MSG}")
+                    _have = {x["sheet_key"] for x in _have9}
                     _new = [r for r in _recs if r["sheet_key"] not in _have]
                     st.session_state["psh_preview"] = {
                         "new": _new, "stds": _stds9, "stats": _pst,
@@ -21501,18 +21521,12 @@ elif page == "생산 보고":
                                                  _pv["new"][i:i + 200])
                         # 표준: 있으면 시트값 갱신(확정은 uph_std 유지),
                         # 없으면 신규(AUTO, 출처 SHEET)
-                        _ex9 = {}
-                        _off9 = 0
-                        while True:
-                            _pg9 = fetch("product_op_std",
-                                         "op_id,pn,process,std_status",
-                                         f"order=op_id&offset={_off9}",
-                                         limit=1000)
-                            _ex9.update({(x["pn"], x["process"]): x
-                                         for x in _pg9})
-                            if len(_pg9) < 1000:
-                                break
-                            _off9 += 1000
+                        _ex9_rows, _tr9 = fetch_all("product_op_std",               # 후속 C
+                                                    "op_id,pn,process,std_status", "",
+                                                    order="op_id")
+                        if _tr9:
+                            raise RuntimeError(f"product_op_std {TRUNC_MSG}")
+                        _ex9 = {(x["pn"], x["process"]): x for x in _ex9_rows}
                         _ins9, _upd9 = [], 0
                         for k, v in _pv["stds"].items():
                             # PostgREST 일괄 insert 는 모든 행의 키가 같아야
@@ -21994,11 +22008,14 @@ elif page == "영업 보고":
         transaction_statements_html as _sr_stmt)
 
     def _sr_ships(cond):
-        return fetch(
+        _rows, _tr = fetch_all(                                                 # 후속 C
             "shipments",
             "shipment_id,ship_no,ship_date,status,created_by,confirmed_at,"
             "rev_no,revised_at",
-            cond + "&order=ship_date.asc,shipment_id.asc", limit=1000)
+            cond, order="ship_date.asc,shipment_id.asc")
+        if _tr:
+            st.warning(f"출고 전표 {TRUNC_MSG} — 합계가 일부입니다. 기간을 좁히세요.")
+        return _rows
 
     def _sr_items(ships):
         """전표 라인 조회 + ship_no/ship_date(=date) 부착."""
@@ -22499,6 +22516,13 @@ elif page == "원가 확인":
 
     SRC_TABLE = "product_cost_full_v" if USE_V2 else "product_full"
 
+    def _cost_rows_all(table, cols, filt):
+        """원가 후보 전수(매출 큰 순) — 클라이언트 필터 앞이라 끝까지 읽는다(후속 C, 예전 limit 2000)."""
+        _rows, _tr = fetch_all(table, cols, filt, order="total_sales_12m.desc.nullslast")
+        if _tr:
+            st.warning(f"원가 후보 {TRUNC_MSG} — 목록이 일부입니다.")
+        return _rows
+
     # 호환 alias (009 마이그레이션이 두 컬럼명 모두 제공) → 기존 필드 그대로 사용 가능
     COST_FIELDS = (
         "product_id,pn,item_name,customer,sub_class,"
@@ -22683,10 +22707,12 @@ elif page == "원가 확인":
                    "· 공정비 = BOM 공정행 LOT단가 기준. 매입내역 동기화 "
                    "때마다 최신 단가로 자동 갱신됩니다.")
         try:
-            _pm_stat = fetch(
+            _pm_stat, _pm_tr = fetch_all(                                       # 후속 C
                 "product_material_price_status_v",
                 "product_id,material_id,price_source",
-                "archived_at=is.null", limit=1000)
+                "archived_at=is.null")
+            if _pm_tr:
+                st.warning(f"소재 단가 상태 {TRUNC_MSG} — 단가 출처 집계가 일부입니다.")
         except Exception:
             _pm_stat = []
         if _pm_stat:
@@ -22702,7 +22728,7 @@ elif page == "원가 확인":
             _pk4.metric("사급(0원)", f"{_ps_cnt.get('NA_SAGEUP', 0)}행")
 
         try:
-            _pc_all = fetch(
+            _pc_all, _pc_tr = fetch_all(                                        # 후속 C
                 "product_cost_full_v",
                 "product_id,pn,item_name,customer,bom_cost_per_pc,"
                 "material_cost_per_pc,heat_cost_per_pc,"
@@ -22710,7 +22736,9 @@ elif page == "원가 확인":
                 "other_cost_per_pc,final_cost_per_pc,cost_source,"
                 "sale_price,recent_price,avg_unit_price,margin_pct_calc,"
                 "material_rows,rows_with_no_price",
-                "archived_at=is.null&order=pn", limit=1000)
+                "archived_at=is.null", order="pn")
+            if _pc_tr:
+                st.warning(f"제품 원가 {TRUNC_MSG} — 목록·집계가 일부입니다.")
         except Exception as _e:
             st.error(f"원가 로드 실패: {_e}")
             _pc_all = []
@@ -23439,18 +23467,16 @@ elif page == "원가 확인":
                     "archived_at=is.null&or=(estimated_cost_per_pc.is.null,estimated_cost_per_pc.eq.0)"
                     "&order=total_sales_12m.desc.nullslast", limit=int(ol_limit))
             elif outlier_kind.startswith("소재비 과다"):
-                rows = fetch(SRC_TABLE, COST_FIELDS,
-                    "archived_at=is.null&avg_unit_price=gt.0&material_unit_price=gt.0"
-                    "&order=total_sales_12m.desc.nullslast", limit=2000)
+                rows = _cost_rows_all(SRC_TABLE, COST_FIELDS,                   # 후속 C
+                    "archived_at=is.null&avg_unit_price=gt.0&material_unit_price=gt.0")
                 # 클라이언트 측 필터
                 rows = [r for r in rows if
                         (float(r.get("material_unit_price") or 0) >
                          float(r.get("avg_unit_price") or 0) * 0.5)]
                 rows = rows[:int(ol_limit)]
             else:  # 원가>판매가
-                rows = fetch(SRC_TABLE, COST_FIELDS,
-                    "archived_at=is.null&avg_unit_price=gt.0&estimated_cost_per_pc=gt.0"
-                    "&order=total_sales_12m.desc.nullslast", limit=2000)
+                rows = _cost_rows_all(SRC_TABLE, COST_FIELDS,                   # 후속 C
+                    "archived_at=is.null&avg_unit_price=gt.0&estimated_cost_per_pc=gt.0")
                 rows = [r for r in rows if
                         (float(r.get("estimated_cost_per_pc") or 0) >
                          float(r.get("avg_unit_price") or 0))]
@@ -23568,12 +23594,11 @@ elif page == "원가 확인":
 
             # 1) 의심 후보: 판매가 > 0, 소재비 > 판매가*0.5
             try:
-                cand = fetch(SRC_TABLE,
+                cand = _cost_rows_all(SRC_TABLE,                                # 후속 C
                     "product_id,pn,customer,material_kg_price,material_unit_price,"
                     "outsourcing_per_pc,heat_treat_per_pc,surface_per_pc,"
                     "estimated_cost_per_pc,avg_unit_price,margin_pct,total_sales_12m",
-                    "archived_at=is.null&avg_unit_price=gt.0&material_unit_price=gt.0"
-                    "&order=total_sales_12m.desc.nullslast", limit=2000)
+                    "archived_at=is.null&avg_unit_price=gt.0&material_unit_price=gt.0")
             except Exception as e:
                 st.error(f"제품 조회 실패: {e}"); cand = []
 

@@ -28,7 +28,8 @@ class Raw:
         rows = list(self.rows)
         for key in reversed([k for k in parts.get("order", "").split(",") if k]):
             col, _, d = key.partition(".")
-            rows.sort(key=lambda r: r.get(col), reverse=(d == "desc"))
+            rows.sort(key=lambda r: (r.get(col) is None, r.get(col) if r.get(col) is not None else 0),
+                      reverse=(d == "desc"))      # NULL 은 뒤로(후속 C 복합키 뷰)
         off = int(parts.get("offset", 0))
         if off and self.dup_shift:
             off = max(0, off - self.dup_shift)
@@ -271,7 +272,8 @@ class _Http:
         rows = list(self.rows)
         for key in reversed([k for k in q.get("order", "").split(",") if k]):
             col, _, d = key.partition(".")
-            rows.sort(key=lambda r: r.get(col), reverse=(d == "desc"))
+            rows.sort(key=lambda r: (r.get(col) is None, r.get(col) if r.get(col) is not None else 0),
+                      reverse=(d == "desc"))      # NULL 은 뒤로(후속 C 복합키 뷰)
         off, lim = int(q.get("offset", 0)), min(int(q.get("limit", 1000)), SERVER_MAX)
         cols = [c for c in q.get("select", "*").split(",")]
         out = rows[off:off + lim]
