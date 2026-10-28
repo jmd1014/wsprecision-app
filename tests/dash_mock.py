@@ -143,7 +143,12 @@ class DashMock:
             if part.startswith("offset="):
                 off = int(part[7:] or 0)
         cap = min(limit, self.server_max) if getattr(self, "server_max", None) else limit
-        return [dict(r) for r in rows[off:off + cap]]
+        page = rows[off:off + cap]
+        if getattr(self, "apply_select", False) and (select or "*").strip() != "*":
+            # opt-in: PostgREST 처럼 select 한 열만(핫픽스 2 후속 A r2 — fetch_all 의 PK 열 보강 검증용)
+            cols = [c.strip() for c in select.split(",") if c.strip()]
+            return [{c: r.get(c) for c in cols} for r in page]
+        return [dict(r) for r in page]
 
     def fetch_one(self, table, filter_query="", select="*"):
         if table == "app_settings":

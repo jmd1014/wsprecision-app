@@ -4876,6 +4876,10 @@ elif page == "마스터 관리":
                 st.error(f"자재 조회 실패: {e}"); _all_m, _all_m_tr = [], False
             if _all_m_tr:
                 st.warning("활성 자재가 너무 많아 일부만 조회됐습니다 — 일부 자재 미검사.")
+                # 이전 실행에서 남은 병합 확인 상태로 실행 분기를 우회하지 못하게(r2 H1)
+                for _k9 in [k for k in st.session_state.keys()
+                            if str(k).startswith("cfm_mg_go_")]:
+                    st.session_state.pop(_k9, None)
             _grp = {}
             for m in _all_m:
                 k = _mkey(m)
@@ -4905,8 +4909,8 @@ elif page == "마스터 관리":
                 except Exception:
                     pass
                 st.caption(f"중복 후보 {len(_dups)}쌍"
-                           + (" (일부 자재 미검사)" if _all_m_tr else "")
-                           + " — 한 쌍씩 확인하고 병합하세요.")
+                           + (" (일부 자재 미검사 — 병합은 전수 조회 뒤)" if _all_m_tr
+                              else " — 한 쌍씩 확인하고 병합하세요."))
                 for _k, _v in sorted(_dups.items()):
                     _lab = "{} · {} · {}".format(
                         _k[1], _k[0], "육각" if _k[2] == "HEX" else "환봉")
@@ -4931,10 +4935,12 @@ elif page == "마스터 관리":
                         st.caption("흡수될 자재: " + ", ".join(
                             "{} ({})".format(m["raw_name"], m["material_id"])
                             for m in _drop))
+                        # 일부만 조회됐으면 같은 규격의 누락 자재가 있을 수 있다 — 병합 확정 금지(r2 H1)
                         if st.button("병합 실행", type="primary",
-                                     key=f"mg_go_{_kk}"):
+                                     key=f"mg_go_{_kk}", disabled=_all_m_tr):
                             st.session_state[f"cfm_mg_go_{_kk}"] = True
-                        if st.session_state.get(f"cfm_mg_go_{_kk}") \
+                        if not _all_m_tr \
+                                and st.session_state.get(f"cfm_mg_go_{_kk}") \
                                 and confirm_gate(f"mg_go_{_kk}",
                                     "BOM·재고 원장·매입 매핑을 "
                                     f"{_keep['raw_name']} "
@@ -6390,7 +6396,8 @@ elif page == "수주 관리":
                 "관리자에게 알려 주세요.", warn=True)
     if _ck_groups:
         with st.expander(
-                f"제품 확인 필요 {len(_ck_groups)}건 — 미등록·휴면 제품에 "
+                ("제품 확인 필요(일부 미확인)" if _ck_tr else
+                 f"제품 확인 필요 {len(_ck_groups)}건") + " — 미등록·휴면 제품에 "
                 "걸린 미납 수주 (진행 전 조치)", expanded=_sub != "input"):
             for _gi, (_gk, _g) in enumerate(sorted(
                     _ck_groups.items(), key=lambda x: (x[1]["due"] or "9999"))):
@@ -6398,7 +6405,8 @@ elif page == "수주 관리":
                 _kid = f"sochk_{_gi}"
                 st.markdown(
                     f"**{_g['cpn']}** · {_g['customer']} · 미납 "
-                    f"{_g['qty']:,.0f} · 수주 {', '.join(sorted(_g['sos']))}"
+                    + ("미확인" if _ck_tr else f"{_g['qty']:,.0f}")
+                    + f" · 수주 {', '.join(sorted(_g['sos']))}"
                     + (f" · 납기 {_g['due']}" if _g["due"] else "")
                     + (f" · 수주 단가 {_g['price']:,.0f}원"
                        if _g["price"] else ""))
@@ -6580,6 +6588,11 @@ elif page == "수주 관리":
                                   plan_round_move as _rp_rounds)
     from datetime import date as _rp_date
     _rp_groups, _rp_hist = [], []
+    if _ck_tr:
+        # 일부 수주만으로 최신 라인·미납 합계를 고르면 대체(옛 미납 종료·회차 이관·마스터 단가)가
+        # 틀린 근거로 확정된다(r2 H3)
+        ws_note("단가 변동 감지 미확인 — 수주·제품 조회가 불완전합니다. 관리자에게 알려 주세요.",
+                warn=True)
     try:
         _rp_lines = []
         for _l in _ck_lines:
@@ -6600,7 +6613,8 @@ elif page == "수주 관리":
                          "order=repl_id.desc", limit=300)
         _rp_decided = {(r["old_soi_id"], r["new_soi_id"]) for r in _rp_hist
                        if not r.get("reverted_at")}
-        _rp_groups = _rp_detect(_rp_lines, _rp_decided)
+        _rp_groups = ([] if _ck_tr            # 감지 건너뜀 — 이력(_rp_hist)은 그대로 보인다
+                      else _rp_detect(_rp_lines, _rp_decided))
     except Exception as e:
         st.warning(f"단가 변동 감지 실패: {e}")
 
@@ -6869,7 +6883,8 @@ elif page == "수주 관리":
               "회차가 너무 많아 집계 미확인" if _sk_late_unk else
               (f"잔량 −{_sk_late_qty:,.0f}" if _sk_late_qty else None)),
              ("이번 달 수주", f"{_sk_month:,}건", None, None)],
-            chips=([(f"제품 확인 필요 {len(_ck_groups)}", "b-amber")] if _ck_groups else [])
+            chips=([("제품 확인 필요(일부 미확인)" if _ck_tr else f"제품 확인 필요 {len(_ck_groups)}",
+                     "b-amber")] if _ck_groups else [])
             + ([(f"단가 변경 {len(_rp_groups)}", "b-gray")] if _rp_groups else []))
 
     # 세부 화면(사이드바 2단): 수주 입력 / 수주 목록 / 납품 스케줄 — _sub 로 분기
@@ -22527,7 +22542,7 @@ elif page == "원가 확인":
                      "미확인" if cat_tr else f"{len(all_cats)}종",
                      "데이터 부재" if len(all_cats) == 0 else None,
                      delta_color="inverse" if len(all_cats) == 0 else "off")
-        st_c3.metric("MAT_* 종", f"{len(mat_default)}종")
+        st_c3.metric("MAT_* 종", "미확인" if cat_tr else f"{len(mat_default)}종")
         if cat_err:
             st.error(f"카테고리 로드 오류: {cat_err}")
         if len(all_cats) == 0 and not cat_err:
@@ -22548,7 +22563,7 @@ elif page == "원가 확인":
             st.warning("구분 목록 일부 미확인 — 매입 장부가 너무 많아 뒤쪽 구분이 빠졌을 수 있습니다.")
         if all_cats:
             pl_cats = st.multiselect(
-                f"카테고리 필터 (전체 {len(all_cats)}종, 기본=MAT_*)",
+                f"카테고리 필터 ({'조회된' if cat_tr else '전체'} {len(all_cats)}종, 기본=MAT_*)",
                 all_cats, default=mat_default, key="cost_pl_cats")
         else:
             pl_cats = []

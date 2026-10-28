@@ -21,10 +21,32 @@ N = 1005          # 1,000행 상한 뒤에 대상 행이 오도록
 
 
 def _mock():
+    """요청당 1,000행 + order= 적용 + select 한 열만(r2 REQUIRED 페이징) — PostgREST 에 가깝게."""
     from tests.so_mock import SOMock
     m = SOMock()
     m.server_max = 1000
+    m.sort_orders = True
+    m.apply_select = True
+    m.sel_calls = []
+    _orig = m.fetch
+
+    def _rec(table, select="*", filter_query="", limit=1000, cache=None):
+        m.sel_calls.append((table, select))
+        return _orig(table, select, filter_query, limit, cache)
+    m.fetch = _rec
     return m
+
+
+SHUFFLED = ("material_stock", "materials", "inventory_transactions", "purchase_ledger", "products")
+
+
+def _shuffle(m):
+    """입력 순서를 섞는다 — 화면 결과가 저장 순서가 아니라 order=·PK 에 기대는지 본다."""
+    import random
+    rnd = random.Random(20261028)
+    for t in SHUFFLED:
+        if m.tables.get(t):
+            rnd.shuffle(m.tables[t])
 
 
 def _force_truncated(monkeypatch, table, drop=None):
@@ -50,6 +72,7 @@ def _open(monkeypatch, m, main, sub=None):
     from tests.test_so_close import _hook_aggrid, GRIDS
     GRIDS.clear()
     _hook_aggrid(monkeypatch)
+    _shuffle(m)
     m.install(monkeypatch, _dbmod)
     at = AppTest.from_file(APP_FILE, default_timeout=120)
     at.secrets["supabase"] = {"url": "https://mock.local", "anon_key": "a", "service_role_key": "s"}
@@ -272,3 +295,154 @@ def test_product_check_truncated_notes_and_skips_unknown(monkeypatch):
     at = _open(monkeypatch, m, "so", "input")
     assert not _check_card(at), [x.label for x in _check_card(at)]
     assert "제품 확인 필요 — 수주·제품 조회가 너무 많아 일부 미확인" in _texts(at)
+
+
+# ════════ r2 (Codex A r1 H1·H2·H3·M1·REQUIRED) ════════
+
+def _keys(at):
+    out = set()
+    for coll in (at.button, at.text_input, at.selectbox, at.number_input, at.multiselect, at.checkbox):
+        out |= {w.key for w in coll if getattr(w, "key", None)}
+    return out
+
+
+def test_count_sheet_csv_includes_ids_past_1000(monkeypatch):
+    """실사표 CSV 본문에 1,000행 뒤 자재 ID 까지 들어 있다(전수 전제의 핵심)."""
+    import streamlit as _st
+    got = {}
+    _real = _st.download_button
+
+    def _cap(label, data=None, *a, **kw):
+        if "소재 실사 시트" in str(label):
+            got["csv"] = data.decode("utf-8-sig") if isinstance(data, bytes) else str(data)
+        return _real(label, data, *a, **kw)
+    monkeypatch.setattr(_st, "download_button", _cap)
+    m = _mock()
+    _seed_materials(m)
+    _open(monkeypatch, m, "master")
+    csv = got.get("csv") or ""
+    assert f"M{N - 1:04d}" in csv and "M0000" in csv, csv[:200]
+    assert csv.count("\n") == N + 1, csv.count("\n")              # 머리 1줄 + 자재 N줄
+    assert any(t == "materials" and "material_id" in s for t, s in m.sel_calls)
+
+
+def _scan_dups_truncated(monkeypatch):
+    m = _mock()
+    _seed_materials(m, dup_tail=True)
+    _force_truncated(monkeypatch, "materials")
+    return m, _scan(_open(monkeypatch, m, "master"))
+
+
+def test_duplicate_merge_disabled_when_truncated(monkeypatch):
+    """H1: 절단이면 후보는 참고로 보이되 '병합 실행' 버튼 disabled."""
+    m, at = _scan_dups_truncated(monkeypatch)
+    go = [b for b in at.button if str(b.key or "").startswith("mg_go_")]
+    assert go and all(b.disabled for b in go), [(b.key, b.disabled) for b in go]
+    assert "병합은 전수 조회 뒤" in _texts(at)
+
+
+def test_duplicate_merge_left_confirm_state_cannot_write(monkeypatch):
+    """H1: 이전 실행의 확인 상태(cfm_mg_go_*)가 남아 있어도 절단이면 쓰기 0건."""
+    m, at = _scan_dups_truncated(monkeypatch)
+    go = next(b for b in at.button if str(b.key or "").startswith("mg_go_"))
+    at.session_state["cfm_" + go.key] = True
+    at.run()
+    assert not at.exception, [str(e.value) for e in at.exception]
+    assert not m.writes, m.writes
+    assert ("cfm_" + go.key) not in at.session_state, "절단 상태에서 병합 확인 키가 남음"
+
+
+def test_duplicate_merge_enabled_when_complete(monkeypatch):
+    """대조: 끝까지 읽으면 병합 버튼은 열려 있다(차단이 절단에만 걸리는지)."""
+    m = _mock()
+    _seed_materials(m, dup_tail=True)
+    at = _scan(_open(monkeypatch, m, "master"))
+    go = [b for b in at.button if str(b.key or "").startswith("mg_go_")]
+    assert go and not any(b.disabled for b in go), [(b.key, b.disabled) for b in go]
+
+
+def test_input_truncated_has_no_form_and_no_writes(monkeypatch):
+    """W-LOT 절단: 투입 입력 위젯·등록 버튼이 없고 쓰기 0건. 대조로 절단 없으면 입력 위젯이 있다."""
+    m = _mock()
+    _seed_w_lots(m)
+    at = _open(monkeypatch, m, "proc", "in")
+    assert {"pe_in_submit"} & _keys(at) or "pe_in_pn" in _keys(at), sorted(_keys(at))[:40]
+    m2 = _mock()
+    _seed_w_lots(m2)
+    _force_truncated(monkeypatch, "inventory_transactions")
+    at2 = _open(monkeypatch, m2, "proc", "in")
+    k2 = _keys(at2)
+    assert not ({"pe_in_submit", "pe_in_pn", "pe_wo_no"} & k2), sorted(k2)[:40]
+    assert not m2.writes, m2.writes
+
+
+def test_cost_category_paging_order_and_pk(monkeypatch):
+    """category 동률(MAT_A 1,005건)이 페이지 경계를 걸치고 입력이 섞여 있어도 category.asc,ledger_id.asc 로
+    끝까지 읽고, select 에 PK(ledger_id)를 붙인다."""
+    m = _mock()
+    _seed_ledger(m)
+    at = _open(monkeypatch, m, "cost")
+    reads = _reads(m, "purchase_ledger")
+    assert any("order=category.asc,ledger_id.asc" in fq for fq in reads), reads
+    assert any(t == "purchase_ledger" and "ledger_id" in s.split(",") for t, s in m.sel_calls), m.sel_calls[:5]
+    assert _cats_metric(at) == "2종"
+
+
+def test_cost_category_truncated_mat_count_unknown(monkeypatch):
+    """M1: 조회 범위 밖에 MAT 구분이 있을 수 있으니 'MAT_* 종'도 미확인, 필터 문구 '조회된 N종'."""
+    m = _mock()
+    _seed_ledger(m)
+    m.tables["purchase_ledger"].append({"ledger_id": N + 2, "category": "MAT_Z"})
+    _force_truncated(monkeypatch, "purchase_ledger", drop=("category", "MAT_Z"))
+    at = _open(monkeypatch, m, "cost")
+    mat = next((x.value for x in at.metric if x.label == "MAT_* 종"), None)
+    assert mat == "미확인", mat
+    ms = next(x for x in at.multiselect if x.key == "cost_pl_cats")
+    assert "조회된" in ms.label and "전체" not in ms.label, ms.label
+
+
+def _seed_so_cards(m):
+    """제품 확인 카드 1개(미등록 라인 미납 10) + 단가 변경 묶음 1개(같은 제품 PRP 100원 → 120원)."""
+    m.seed(so_id=401, so_status="CONFIRMED", lines=[(911, 10, 0, 10, "PENDING")], pn="RP-PN", product_id="PRP")
+    m.seed(so_id=402, so_status="CONFIRMED", lines=[(912, 10, 0, 10, "PENDING")], pn="RP-PN", product_id="PRP")
+    m.seed(so_id=403, so_status="CONFIRMED", lines=[(913, 10, 0, 10, "PENDING")], pn="NEW-PN", product_id="PNEW")
+    for it in m.tables["sales_order_items"]:
+        if it["soi_id"] == 912:
+            it["unit_price"] = 120
+        if it["soi_id"] == 913:
+            it["product_id"] = None                     # 미등록 라인
+    m.tables["products"] = [p for p in m.tables["products"] if p["product_id"] != "PNEW"]
+    m.tables["so_line_replacements"] = []
+
+
+def _exp_labels(at):
+    return [str(x.label) for x in at.expander]
+
+
+def test_so_cards_complete_show_numbers(monkeypatch):
+    """대조: 끝까지 읽으면 제품 확인 '1건'·'미납 10', 단가 변경 카드 1개."""
+    m = _mock()
+    _seed_so_cards(m)
+    at = _open(monkeypatch, m, "so", "input")
+    labels = _exp_labels(at)
+    assert any(l.startswith("제품 확인 필요 1건") for l in labels), labels
+    assert any(l.startswith("단가 변경 1개 품번") for l in labels), labels
+    assert "CP-913** · (주)디아이씨두서공장 · 미납 10 ·" in _texts(at)
+
+
+@pytest.mark.parametrize("table", ["sales_order_items", "sales_orders"])
+def test_so_cards_truncated_hide_numbers_and_replacement(monkeypatch, table):
+    """H2·H3: 수주 라인 또는 머리글 조회가 잘리면 제품 확인은 숫자만 미확인(행동은 유지),
+    단가 변동 감지는 건너뛰어 대체·별건 카드가 없고 so_line_replacements 쓰기 0건."""
+    m = _mock()
+    _seed_so_cards(m)
+    _force_truncated(monkeypatch, table)
+    at = _open(monkeypatch, m, "so", "input")
+    labels = _exp_labels(at)
+    assert any(l.startswith("제품 확인 필요(일부 미확인)") for l in labels), labels
+    assert not any(l.startswith("제품 확인 필요 1건") for l in labels), labels
+    assert not any(l.startswith("단가 변경") for l in labels), labels
+    t = _texts(at)
+    assert "· 미납 미확인 ·" in t and "· 미납 10 ·" not in t
+    assert "단가 변동 감지 미확인" in t
+    assert not [w for w in m.writes if w[1] == "so_line_replacements"], m.writes
