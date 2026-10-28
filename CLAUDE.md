@@ -7,7 +7,7 @@
 
 ## 아키텍처
 
-- 앱: Streamlit 단일 파일 `streamlit_app.py` (~1만 줄) + `utils/`(문서 생성·파서) + `db.py`(Supabase REST 래퍼)
+- 앱: Streamlit 단일 파일 `streamlit_app.py` (~2.4만 줄, 2026-10 기준; 모듈 원칙은 AGENTS §6) + `utils/`(문서 생성·파서) + `db.py`(Supabase REST 래퍼)
 - DB: Supabase PostgreSQL (프로젝트 `iryhamvxpboumnrtajwb`, 서울 리전)
 - 배포: Streamlit Community Cloud — **main 브랜치 푸시 시 자동 배포** (https://wsprecision.streamlit.app)
 - DB 접속: **service_role 키만 사용** (RLS 우회). anon 키 경로는 전부 RLS로 차단되어 있음
@@ -33,6 +33,7 @@
 ## 디자인 시스템 (토스 스타일, 2026-08-12 확정)
 
 - **기준 문서: docs/design/DESIGN_SYSTEM.md** (토큰·컴포넌트 규격 단일 기준, 2026-10-22. 구버전 `docs/design/legacy/` 는 참고만)
+- 디자인 시스템 v2(`docs/design/DESIGN_SYSTEM.md`): 탭 바 모든 폭 상시·사이드바 메인만·요약 띠·카드·ActionBar(좌측 비파괴만)·스테퍼; 대표 화면 3개 안 B 재배치(U3)
 - 폰트 **Pretendard** / 주색 **#3182f6** (hover #1b64da) / 배경 #f9fafb
 - 카드: 테두리 없음 + radius 16px + `var(--shadow)` / 버튼: radius 10px, 보조는 회색 면 #f2f4f6
 - 상태 색 규칙(전 페이지 고정): 문제=#f04452 / 대기·부분=#dd6b02 / 완료=#01a76b / 진행·활성=#3182f6
