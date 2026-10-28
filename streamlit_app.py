@@ -8217,11 +8217,11 @@ elif page == "수주 관리":
                            "좁히세요.")
         except Exception as e:
             st.error(f"스케줄 조회 실패 (Migration 027 필요): {e}")
-            _all_sc = []
+            _all_sc, _all_sc_tr = [], False
         # 판정 기준(r3 M1): 기간을 고르면 표시(간트 칩)만 좁히고, 회차 유무·계획량·상단 합계는 전체
         # 회차로 — 기간 밖 회차만 있는 라인을 단발로 바꾸거나 기간 밖 계획을 '미계획'으로 세지 않게.
         # 전체를 다 못 읽으면(2만 행 초과) 판정 숫자는 '미확인'.
-        _sch_base, _sch_unk = _all_sc, False
+        _sch_base, _sch_unk = _all_sc, bool(not _sch_fq and _all_sc_tr)
         if _sch_fq:
             try:
                 _sch_full, _sch_full_tr = fetch_all("so_delivery_schedule", _SC_ALL_SEL, "")
@@ -8385,6 +8385,8 @@ elif page == "수주 관리":
                 key=lambda c: c["납기"])
             if _late_rows:
                 with st.expander(
+                        # 전체 회차를 다 못 읽었으면 총계 대신 '조회된 일부 회차'(r3 M1)
+                        "지연 상세 — 조회된 일부 회차 (총계 미확인)" if _sch_unk else
                         "지연 상세 {}건 · 잔량 {:,.0f} — 품번·회차·경과일"
                         .format(len(_late_rows),
                                 sum(c["잔량"] for c in _late_rows))):
@@ -8407,8 +8409,8 @@ elif page == "수주 관리":
                             format="localized")
                             for c in ("회차수량", "납품", "잔량")})
                     st.caption(
-                        "부분 납품이라도 잔량이 남으면 지연으로 셉니다. "
-                        "수주 관리 상단 KPI 도 같은 기준입니다.")
+                        "부분 납품이라도 잔량이 남으면 지연으로 셉니다."
+                        + ("" if _sch_unk else " 수주 관리 상단 KPI 도 같은 기준입니다."))
         else:
             st.info("등록된 납품 회차가 없습니다 — 아래 **납기 입력**에서 "
                     "수주 라인을 골라 회차를 만들면 여기에 표시됩니다.")
@@ -8577,12 +8579,13 @@ elif page == "수주 관리":
                 st.markdown("".join(_h), unsafe_allow_html=True)
                 st.caption(
                     "표시 품번 {n}종 합계 **{s:,.0f}** · 전 품목 계획 합계 "
-                    "**{t:,.0f}** — 지연 회차는 이번 주 칸에 붉은 칩으로 "
+                    "**{t}** — 지연 회차는 이번 주 칸에 붉은 칩으로 "
                     "모으고, **6주 밖 회차는 '이후' 열에 총량으로만** "
                     "표시합니다(칩에 마우스를 올리면 기간). 둥근 칩 = "
                     "반복(분납) · 각진 칩 = 단발.".format(
                         n=len(_pns), s=sum(_sums),
-                        t=sum(c["잔량"] for c in _live)))
+                        t="미확인" if _sch_unk else
+                        "{:,.0f}".format(sum(c["잔량"] for c in _live))))
 
         # ── 미계획 물량 배너 (간트 뷰에 상시 노출) ──
         if _sv != "납기 입력" and _unplan and not _sch_unk:

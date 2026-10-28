@@ -267,13 +267,18 @@ def _fetch_all_raw(table: str, sel: str, base: str, page: int, max_rows: int, pk
             return rows, bool(probe)
 
 
-@st.cache_data(ttl=CACHE_TTL, show_spinner=False)
+# 전체 결과 캐시 TTL — fetch 와 같은 규칙(마스터 5분·그 외 60초, r3-2). 테스트가 이 상수를 확인한다
+FETCH_ALL_TTL = CACHE_TTL
+FETCH_ALL_TTL_TX = CACHE_TTL_TX
+
+
+@st.cache_data(ttl=FETCH_ALL_TTL, show_spinner=False)
 def _fetch_all_cached(table: str, sel: str, base: str, page: int, max_rows: int, pk: str):
     """fetch_all 결과 전체를 한 단위로 캐시(핫픽스 2 r2 H1) — 페이지별 캐시는 쓰지 않는다. 마스터 표 5분."""
     return _fetch_all_raw(table, sel, base, page, max_rows, pk)
 
 
-@st.cache_data(ttl=CACHE_TTL_TX, show_spinner=False)
+@st.cache_data(ttl=FETCH_ALL_TTL_TX, show_spinner=False)
 def _fetch_all_cached_tx(table: str, sel: str, base: str, page: int, max_rows: int, pk: str):
     """그 외 표는 fetch 와 같은 60초(r3 — 회차 등 원장이 외부 변경 뒤 5분 늦게 보이지 않게)."""
     return _fetch_all_raw(table, sel, base, page, max_rows, pk)

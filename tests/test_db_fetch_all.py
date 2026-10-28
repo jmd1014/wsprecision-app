@@ -163,8 +163,9 @@ def test_cache_key_covers_all_seven_arguments(raw):
     같은 인자 재호출은 DB 0회."""
     r = raw(_rows(30))
     db.clear_cache()
+    # B(r3 L1): 기준 호출에도 pk 를 명시 — table 만 바꿔 키가 갈리는지 따로 본다
     base = dict(table="so_delivery_schedule", select="soi_id", filter_query="", page=1000, max_rows=20000,
-                order=None, pk=None)
+                order=None, pk="sched_id")
 
     def call(**over):
         a = {**base, **over}
@@ -174,7 +175,7 @@ def test_cache_key_covers_all_seven_arguments(raw):
     n = len(r.calls)
     call()
     assert len(r.calls) == n                                  # 적중
-    for over in ({"table": "no_such_table", "pk": "sched_id"}, {"select": "soi_id,qty"},
+    for over in ({"table": "no_such_table"}, {"select": "soi_id,qty"},
                  {"filter_query": "qty=gt.0"}, {"page": 500}, {"max_rows": 10000},
                  {"order": "due_date.asc"}, {"pk": "soi_id"}):
         call(**over)
@@ -184,8 +185,9 @@ def test_cache_key_covers_all_seven_arguments(raw):
         assert len(r.calls) == n, over                        # 같은 인자 재호출은 적중
 
 
-def test_cache_ttl_follows_fetch_rule(raw, monkeypatch):
-    """r3: 전체 결과 캐시 TTL 은 fetch 와 같다 — 마스터 표 5분, 그 외(회차 등) 60초."""
+def test_cache_branch_master_vs_tx(raw, monkeypatch):
+    """r3: 마스터 표(CACHED_TABLES)는 _fetch_all_cached, 그 외(회차 등)는 _fetch_all_cached_tx 로 간다(분기만 —
+    실제 TTL 값은 test_fetch_all_cache_ttl_values)."""
     raw(_rows(5))
     used = []
     monkeypatch.setattr(db, "_fetch_all_cached", lambda *a: used.append("master") or ([], False))
@@ -233,3 +235,68 @@ def test_truncation_note_only_when_truncated_and_other_tables_kept(raw, monkeypa
     db.fetch_all("so_delivery_schedule", "soi_id", "", cache=False)
     assert ss["_fetch_truncated"]["so_delivery_schedule"] == 20000
     assert ss["_fetch_truncated"]["products"] == 1000
+
+
+def test_fetch_all_cache_ttl_values():
+    """B(r3-2 LOW): 실제 데코레이터 TTL — 마스터 300초·그 외 60초, fetch 의 CACHE_TTL·CACHE_TTL_TX 와 같다.
+    시간 제어로 만료를 기다리는 대신 st.cache_data 가 가진 설정값(_info.ttl)을 읽는다(내부 속성이라 없으면
+    상수 검증만)."""
+    assert db.FETCH_ALL_TTL == db.CACHE_TTL == 300
+    assert db.FETCH_ALL_TTL_TX == db.CACHE_TTL_TX == 60
+    for f, want in ((db._fetch_all_cached, 300), (db._fetch_all_cached_tx, 60)):
+        info = getattr(f, "_info", None)
+        if info is not None and hasattr(info, "ttl"):
+            assert info.ttl == want, (f, info.ttl)
+
+
+class _Http:
+    """requests 대역 — PostgREST 의 GET(select·order·offset·limit, 요청당 1,000행)·POST(삽입)만.
+    db 모듈의 HTTP 만 바꾸고 db.fetch_all·db.insert·clear_cache 는 진짜를 쓴다."""
+
+    def __init__(self, rows):
+        self.rows = rows
+        self.gets = 0
+
+    class _R:
+        def __init__(self, code, body=None):
+            self.status_code, self._b, self.text = code, body, ""
+
+        def json(self):
+            return self._b
+
+    def get(self, url, headers=None, timeout=None):
+        from urllib.parse import urlsplit, parse_qsl
+        self.gets += 1
+        q = dict(parse_qsl(urlsplit(url).query, keep_blank_values=True))
+        rows = list(self.rows)
+        for key in reversed([k for k in q.get("order", "").split(",") if k]):
+            col, _, d = key.partition(".")
+            rows.sort(key=lambda r: r.get(col), reverse=(d == "desc"))
+        off, lim = int(q.get("offset", 0)), min(int(q.get("limit", 1000)), SERVER_MAX)
+        cols = [c for c in q.get("select", "*").split(",")]
+        out = rows[off:off + lim]
+        return self._R(200, [dict(r) if cols == ["*"] else {c: r.get(c) for c in cols} for r in out])
+
+    def post(self, url, headers=None, data=None, timeout=None):
+        import json as _json
+        self.rows.extend(_json.loads(data))
+        return self._R(201)
+
+
+def test_real_insert_invalidates_fetch_all_cache(monkeypatch):
+    """B(r3-2 REQUIRED ⑥): 회차 캐시를 채운 뒤 진짜 db.insert(HTTP 만 대역)로 회차를 추가하면, 수동
+    clear_cache() 없이 다음 fetch_all 이 새 행을 읽는다(쓰기 → 캐시 무효화 연결)."""
+    http = _Http(_rows(1500))
+    monkeypatch.setattr(db, "requests", http)
+    monkeypatch.setattr(db, "_url", lambda: "https://mock.local")
+    monkeypatch.setattr(db, "_headers", lambda role="service_role": {})
+    db.clear_cache()
+    rows, tr = db.fetch_all("so_delivery_schedule", "sched_id,qty", "")
+    assert len(rows) == 1500 and not tr
+    n = http.gets
+    db.fetch_all("so_delivery_schedule", "sched_id,qty", "")
+    assert http.gets == n                                         # 캐시 적중(HTTP 0회)
+    db.insert("so_delivery_schedule", [{"sched_id": 99999, "soi_id": 1, "qty": 7, "due_date": "2026-12-01"}])
+    rows2, _ = db.fetch_all("so_delivery_schedule", "sched_id,qty", "")
+    assert http.gets > n and len(rows2) == 1501
+    assert any(r["sched_id"] == 99999 and r["qty"] == 7 for r in rows2)
