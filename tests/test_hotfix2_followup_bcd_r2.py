@@ -104,6 +104,12 @@ def _allow(m, *tables):
             raise AssertionError(f"허용되지 않은 쓰기 ({op} {table})")
     m._assert_dash = _guard
 
+    def _delete(table, filter_query):          # 대역 delete 기록(공용 목은 delete 를 막아 둔다)
+        _guard("delete", table)
+        m.writes.append(("delete", table, filter_query))
+        return 1
+    m.delete = _delete
+
 
 @app_only
 def test_h2_schedule_truncated_blocks_saves(monkeypatch):
@@ -141,8 +147,8 @@ def test_h3a_sheet_apply_no_log_insert_when_std_truncated(monkeypatch):
     at.session_state["psh_preview"] = {
         "new": [{"sheet_key": "K1", "log_date": "2026-10-27", "pn": "PN1", "process": "선삭",
                  "total_qty": 10}],
-        "stds": {("PN1", "선삭"): {"uph_sheet": 30, "ct_sec": 120, "product_id": "P1", "pn": "PN1",
-                                    "process": "선삭"}},
+        "stds": {("PN1", "선삭"): {"uph_sheet": 30, "ct_sec": 120, "idle_sec": 0, "product_id": "P1",
+                                    "pn": "PN1", "process": "선삭", "step": 1}},
         "stats": {"rows": 1, "run": 1, "stop": 0, "matched": 1, "unmatched": {}}, "have": 0}
     at.run()
     assert not at.exception, [str(e.value) for e in at.exception]

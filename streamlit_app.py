@@ -11972,7 +11972,7 @@ elif page == "출고 관리":
                         "", order="pn.asc")
         except Exception as e:
             st.error(f"완성 재고 조회 실패: {e}")
-            _fs, _fs_tr = [], False
+            _fs, _fs_tr = [], True          # 실패도 불완전 — 집계 미확인(BCD r3)
         _fs_pend = {}
         try:
             _fs_pl, _fs_tr2 = fetch_all("sales_order_items", "product_id,pending_qty",
@@ -11983,7 +11983,7 @@ elif page == "출고 관리":
                     _fs_pend.get(_l["product_id"], 0.0)
                     + _fsf(_l.get("pending_qty")))
         except Exception:
-            pass
+            _fs_tr = True                   # 미납 조회 실패 — 여유·부족 판정 불가(BCD r3)
         _fs_lots = {}
         try:
             _fs_ll, _fs_tr3 = fetch_all("product_lot_stock_v",
@@ -11997,9 +11997,9 @@ elif page == "출고 관리":
             for _l in _fs_ll:
                 _fs_lots.setdefault(_l["product_id"], []).append(_l)
         except Exception:
-            pass
+            _fs_tr = True                   # LOT 조회 실패(BCD r3)
         if _fs_tr:
-            st.warning(f"완성 재고·미납·LOT 조회 {TRUNC_MSG} — 목록과 합계가 일부입니다.")
+            st.warning("완성 재고·미납·LOT 조회 실패 또는 일부만 조회 — 합계·상태는 미확인입니다.")
         _fs_q = st.text_input("품번 · 거래처 검색", key="fs_q",
                               label_visibility="collapsed",
                               placeholder="검색 — 품번 · 거래처")
@@ -12063,7 +12063,8 @@ elif page == "출고 관리":
                         f"미납 {_fr['미납']:,.0f} · 여유 {_fr['여유']:,.0f}"
                         + (f" · 장부 {_fr['장부 (참고)']:,.0f} (참고)"
                            if abs(_fr['장부 (참고)'] - _fr['완성 재고']) > 0.5
-                           else ""))
+                           else "")
+                        + (" (미확인 — 조회 불완전)" if _fs_tr else ""))
             if _fl:
                 toss_table([{
                     "완성 LOT (작업지시)": l["lot_number"],
@@ -17431,10 +17432,10 @@ elif page == "구매 관리":
                         for _m in out.values():
                             if _m.get("product_id"):
                                 _m["product_pn"] = _pids.get(_m["product_id"])
-                except Exception as _e:
-                    if TRUNC_MSG in str(_e):
-                        raise         # 절단은 '매핑 없음'이 아니다 — 매핑 없이 저장되지 않게(BCD r2 H4)
-                    return {}
+                except Exception:
+                    # 조회 실패·절단은 '매핑 없음'이 아니다 — 명시 매핑 없이 치수 매칭으로 다른 자재에
+                    # 붙지 않게 전부 올린다(BCD r3). 정상 빈 결과만 {}
+                    raise
                 return out
 
             def _pl_reevaluate():
@@ -17598,6 +17599,17 @@ elif page == "구매 관리":
                         # '제품 없음(빈 집합)'과 '조회 실패·절단'은 다르다 — 실패면 동기화 ② 중단(BCD r2 H4)
                         _pnset9 = None
                         _err9 = f"제품 조회 실패 — 동기화를 중단했습니다: {_e}"
+                    if _pnset9 is not None:
+                        # 재평가가 쓸 매핑표·자재도 insert 앞에서 한 번 확인(BCD r3) — 실패·절단이면 넣지
+                        # 않는다. fetch_all 전체 결과 캐시라 재평가의 두 번째 조회는 비용 없음
+                        try:
+                            _pl_item_map()
+                            _pl_fetch_pages("materials",
+                                            "material_id,raw_name,material_type,spec,archived_at",
+                                            "archived_at=is.null", order_col="material_id")
+                        except Exception as _e:
+                            _pnset9 = None
+                            _err9 = f"매핑표·자재 조회 실패 — 동기화를 중단했습니다: {_e}"
                     _payload9 = []
                     for _r9 in (_prev["new"] if _pnset9 is not None else []):
                         _rk9 = _r9.get("remark") or ""
@@ -22134,7 +22146,7 @@ elif page == "영업 보고":
                 + "</div>", unsafe_allow_html=True)
             _sr_missing_note(_d_agg)
 
-            st.markdown("##### 거래처별 합계")
+            st.markdown("##### 거래처별 합계" + (" (일부 — 합계 미확인)" if _d_tr else ""))
             toss_df(_sr_cust_df(_d_agg), use_container_width=True,
                          hide_index=True, column_config=_NUMCOL)
 
@@ -22156,7 +22168,7 @@ elif page == "영업 보고":
                 "일일 결산 리포트 인쇄", _sr.daily_report_html(
                     _d_iso, _d_rows, current_user_name()),
                 file_name=f"일일결산_{_d_iso}.html", mime="text/html",
-                key="sr_dl_day", type="primary")
+                key="sr_dl_day", type="primary", disabled=_d_tr)
 
     # ════════ TAB 2: 마감 조회 (기간) ════════
     # 거래처마다 마감일이 달라(말일·25일·15일/말일) 달력 월 고정 대신
@@ -22294,7 +22306,7 @@ elif page == "영업 보고":
                         customers=_cu_pick),
                     file_name=f"마감_{_ac_tag}.html", mime="text/html",
                     key="sr_dl_month", type="primary",
-                    use_container_width=True,
+                    use_container_width=True, disabled=_m_tr,
                     help="내부 영업보고용 — 거래처별·일자별·품번별 합계")
                 _ob2.download_button(
                     "거래내역서 인쇄", _sr_sg.account_statements_html(
@@ -22302,7 +22314,7 @@ elif page == "영업 보고":
                         issued_on=_today9.isoformat()),
                     file_name=f"거래내역서_{_ac_tag}.html",
                     mime="text/html", key="sr_dl_acct", type="primary",
-                    use_container_width=True,
+                    use_container_width=True, disabled=_m_tr,
                     help="거래처 확인용 — 조회된 거래처마다 1부씩, 납품 "
                          "내역과 합계 금액")
                 _ob3.download_button(
@@ -22311,17 +22323,17 @@ elif page == "영업 보고":
                     file_name=f"거래내역서_{_ac_tag}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument."
                          "spreadsheetml.sheet",
-                    key="sr_dl_acct_x", use_container_width=True,
+                    key="sr_dl_acct_x", use_container_width=True, disabled=_m_tr,
                     help="거래처 확인용 — 거래처마다 시트 1장")
 
             _mc1, _mc2 = st.columns(2)
             with _mc1:
-                st.markdown("##### 거래처별 합계")
+                st.markdown("##### 거래처별 합계" + (" (일부 — 합계 미확인)" if _m_tr else ""))
                 toss_df(_sr_cust_df(_m_agg),
                              use_container_width=True, hide_index=True,
                              column_config=_NUMCOL)
             with _mc2:
-                st.markdown("##### 일자별 합계")
+                st.markdown("##### 일자별 합계" + (" (일부 — 합계 미확인)" if _m_tr else ""))
                 _m_dt = [{"납품일": d, "수량": s["qty"],
                           "공급가액": s["supply"], "합계": s["total"]}
                          for d, s in sorted(_m_agg["by_date"].items())]
@@ -22329,7 +22341,7 @@ elif page == "영업 보고":
                              use_container_width=True, hide_index=True,
                              column_config=_NUMCOL)
 
-            st.markdown("##### 품번별 합계 (금액순)")
+            st.markdown("##### 품번별 합계 (금액순)" + (" (일부 — 합계 미확인)" if _m_tr else ""))
             _m_pn = [{"품번": pn, "거래처": cu, "납품 횟수": s["lines"],
                       "수량": s["qty"], "합계(VAT포함)": s["total"]}
                      for (pn, cu), s in sorted(
@@ -22389,10 +22401,14 @@ elif page == "영업 보고":
                 _mc_note = st.text_input(
                     "마감 메모 (선택)", key=f"sr_mc_note_{_lk_pick}",
                     placeholder="예: 세금계산서 발행 완료")
+                if _m_tr:
+                    # 집계가 미확인인 채로 잠그지 않는다(BCD r3) — 남은 확인 상태도 지운다
+                    st.session_state.pop("cfm_sr_mc_close", None)
+                    st.caption("조회가 불완전해 마감할 수 없습니다 — 기간을 나눠 확인하세요.")
                 if st.button("월 마감 확정 (잠금)", key="sr_mc_close",
-                             type="primary"):
+                             type="primary", disabled=_m_tr):
                     st.session_state["cfm_sr_mc_close"] = True
-                if st.session_state.get("cfm_sr_mc_close") \
+                if not _m_tr and st.session_state.get("cfm_sr_mc_close") \
                         and confirm_gate("sr_mc_close",
                             f"{_lk_pick} 를 마감합니다 — 이후 그 달의 "
                             "전표는 확정·정정·취소가 차단됩니다. "
