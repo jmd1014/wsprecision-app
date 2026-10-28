@@ -109,6 +109,10 @@ class DashMock:
             elif op == "is":
                 if (val == "null") != (cur is None):
                     return False
+            elif op == "like":      # PostgREST like — * 와일드카드(핫픽스 2 후속, W LOT 조회)
+                import fnmatch
+                if not fnmatch.fnmatchcase(s, val):
+                    return False
             else:
                 raise AssertionError(f"dash_mock: 지원하지 않는 연산자 {op}")
         return True

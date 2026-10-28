@@ -2772,11 +2772,12 @@ elif page == "마스터 관리":
                 "연결된 자재가 위쪽에 옵니다. 실사 이후의 입출고는 전부 "
                 "앱에만 입력합니다.")
             try:
-                _inv_rows = _db.fetch(
+                # limit 1000 은 활성 자재가 1,000 을 넘으면 뒤쪽이 빠진다 → fetch_all(핫픽스 2 후속)
+                _inv_rows, _inv_tr = _db.fetch_all(
                     "materials",
                     "material_id,raw_name,material_type,spec,unit,"
                     "main_supplier,stock_qty,applied_pn",
-                    "archived_at=is.null&order=material_id", limit=1000)
+                    "archived_at=is.null", order="material_id")
                 # 사용 품번 — BOM 연결 제품으로 현장에서 소재를 빨리 식별
                 _pn_map = {}
                 try:
@@ -2809,7 +2810,11 @@ elif page == "마스터 관리":
                     r["material_id"] not in _pn_map,
                     str(r.get("material_type") or "ZZZ"),
                     str(r.get("raw_name") or "")))
-                if _inv_rows:
+                if _inv_tr:
+                    # 실사 시트는 전수가 전제 — 일부만 담긴 시트는 내려주지 않는다
+                    st.error("활성 자재가 너무 많아 일부만 조회됐습니다 — 실사 시트는 "
+                             "전체 자재가 있어야 하므로 출력하지 않습니다. 관리자에게 알려 주세요.")
+                elif _inv_rows:
                     import csv as _csv
                     import io as _io
                     _buf = _io.StringIO()
@@ -4863,12 +4868,14 @@ elif page == "마스터 관리":
             st.session_state["mg_scan_on"] = True
         if st.session_state.get("mg_scan_on"):
             try:
-                _all_m = _db.fetch("materials",
+                _all_m, _all_m_tr = _db.fetch_all("materials",          # 핫픽스 2 후속
                     "material_id,raw_name,material_type,spec,stock_qty,"
                     "main_supplier,procurement_type",
-                    "archived_at=is.null&order=material_id", limit=1000)
+                    "archived_at=is.null", order="material_id")
             except Exception as e:
-                st.error(f"자재 조회 실패: {e}"); _all_m = []
+                st.error(f"자재 조회 실패: {e}"); _all_m, _all_m_tr = [], False
+            if _all_m_tr:
+                st.warning("활성 자재가 너무 많아 일부만 조회됐습니다 — 일부 자재 미검사.")
             _grp = {}
             for m in _all_m:
                 k = _mkey(m)
@@ -4876,7 +4883,10 @@ elif page == "마스터 관리":
                     _grp.setdefault(k, []).append(m)
             _dups = {k: v for k, v in _grp.items() if len(v) > 1}
             if not _dups:
-                st.success("동일 규격·재질의 중복 자재가 없습니다.")
+                if _all_m_tr:
+                    st.info("조회된 자재 안에서는 중복이 없습니다(일부 자재 미검사).")
+                else:
+                    st.success("동일 규격·재질의 중복 자재가 없습니다.")
             else:
                 # 참조 건수 — 어느 쪽을 남길지 판단 근거
                 _ids = [m["material_id"] for v in _dups.values() for m in v]
@@ -4894,8 +4904,9 @@ elif page == "마스터 관리":
                             t["material_id"], 0) + 1
                 except Exception:
                     pass
-                st.caption(f"중복 후보 {len(_dups)}쌍 — 한 쌍씩 확인하고 "
-                           "병합하세요.")
+                st.caption(f"중복 후보 {len(_dups)}쌍"
+                           + (" (일부 자재 미검사)" if _all_m_tr else "")
+                           + " — 한 쌍씩 확인하고 병합하세요.")
                 for _k, _v in sorted(_dups.items()):
                     _lab = "{} · {} · {}".format(
                         _k[1], _k[0], "육각" if _k[2] == "HEX" else "환봉")
@@ -6330,18 +6341,22 @@ elif page == "수주 관리":
     # ════════ 제품 확인 필요 — 미납 수주가 미등록·휴면 제품에 걸린 경우 ════════
     # 수주 = 진행 의사 (2026-09-01 사용자 확정). 마스터로 가지 않고 수주
     # 단계에서 바로 활성화 / 기존 제품 매핑 / 최소 정보로 신규 등록.
+    # 세 조회 모두 fetch_all(핫픽스 2 후속) — products 876행이라 limit 1000 이 곧 넘친다
+    _ck_tr = False
     try:
-        _ck_lines = fetch("sales_order_items",
+        _ck_lines, _ck_t1 = fetch_all("sales_order_items",
             "soi_id,so_id,line_no,customer_part_no,customer_item_name,"
             "product_id,canonical_pn,qty,received_qty,pending_qty,unit_price,"
             "due_date,status,remark,price_kind",
-            "pending_qty=gt.0&order=soi_id", limit=2000)
-        _ck_so = {s["so_id"]: s for s in fetch("sales_orders",
-            "so_id,so_number,customer,status,so_date",
-            SO_INACTIVE_FQ, limit=1000)}
-        _ck_prod = {p["product_id"]: p for p in fetch("products",
+            "pending_qty=gt.0", order="soi_id")
+        _ck_so_rows, _ck_t2 = fetch_all("sales_orders",
+            "so_id,so_number,customer,status,so_date", SO_INACTIVE_FQ)
+        _ck_so = {s["so_id"]: s for s in _ck_so_rows}
+        _ck_prod_rows, _ck_t3 = fetch_all("products",
             "product_id,pn,archived_at,archive_reason,sale_price,"
-            "customer,item_name,material", "order=product_id", limit=1000)}
+            "customer,item_name,material", "", order="product_id")
+        _ck_prod = {p["product_id"]: p for p in _ck_prod_rows}
+        _ck_tr = bool(_ck_t1 or _ck_t2 or _ck_t3)
     except Exception:
         _ck_lines, _ck_so, _ck_prod = [], {}, {}
     _ck_groups = {}
@@ -6351,6 +6366,9 @@ elif page == "수주 관리":
             continue
         _p = _ck_prod.get(_l.get("product_id") or "")
         if _p and not _p.get("archived_at"):
+            continue
+        if _ck_tr and _l.get("product_id") and not _p:
+            # 제품 조회가 잘려 못 찾은 것 — '미등록'으로 잘못 띄워 신규 등록(중복 제품)을 유도하지 않는다
             continue
         _gk = (_s.get("customer") or "-", _l.get("customer_part_no") or "-",
                (_p or {}).get("product_id") or "")
@@ -6367,6 +6385,9 @@ elif page == "수주 관리":
                                    or _l["due_date"] < _g["due"]):
             _g["due"] = _l["due_date"]
 
+    if _ck_tr:
+        ws_note("제품 확인 필요 — 수주·제품 조회가 너무 많아 일부 미확인입니다. "
+                "관리자에게 알려 주세요.", warn=True)
     if _ck_groups:
         with st.expander(
                 f"제품 확인 필요 {len(_ck_groups)}건 — 미등록·휴면 제품에 "
@@ -14652,13 +14673,14 @@ elif page == "구매 관리":
         except Exception as e:
             st.error(f"입고 현황 조회 실패: {e}"); _rs = []
         try:
-            _ms = fetch("material_stock",
+            # 1,006행(2026-10-28)이라 limit 1000 에서 T616~T621 이 빠졌다 → fetch_all(핫픽스 2 후속)
+            _ms, _ms_tr = fetch_all("material_stock",
                 "material_id,raw_name,material_type,spec,"
                 "main_supplier,current_stock,"
                 "total_received,total_consumed,last_txn_date",
-                "order=material_id", limit=1000)
+                "", order="material_id", pk="material_id")
         except Exception:
-            _ms = []
+            _ms, _ms_tr = [], False
         try:
             _lots = fetch("material_stock_by_lot",
                           "material_id,lot_number,lot_balance,last_date",
@@ -14719,14 +14741,17 @@ elif page == "구매 관리":
                     + (f'<div class="s">{sub}</div>' if sub else "")
                     + "</div>")
 
+        if _ms_tr:
+            st.warning(f"자재 {len(_ms):,}건 이상 — 뒤쪽은 표시되지 않습니다(보유 소재 미확인).")
         st.markdown(
             '<div class="kpi-row">'
             + _rk("입고 대기", _q_pend,
                   f"{len(_wait_rows)}개 라인 — '입고 처리' 화면", "warn")
             + _rk("최근 7일 입고", _wk_sum)
-            + _rk("보유 소재", f"{len(_hold_pos)}종",
-                  "총 {:,.0f}".format(sum(
-                      float(m["current_stock"]) for m in _hold_pos)), "good")
+            + (_rk("보유 소재", "미확인", "자재 조회 일부 누락", "warn") if _ms_tr else
+               _rk("보유 소재", f"{len(_hold_pos)}종",
+                   "총 {:,.0f}".format(sum(
+                       float(m["current_stock"]) for m in _hold_pos)), "good"))
             + _rk("투입 대기 LOT", f"{len(_lots_open)}건",
                   "공정 관리 → 투입 등록")
             + "</div>", unsafe_allow_html=True)
@@ -18286,15 +18311,21 @@ elif page == "공정 관리":
     if _sub == "in":
 
         # ── 잔여 있는 소재 식별 번호 목록 (RECEIPT − PROD_INPUT) ──
+        # limit 2000 은 서버 1,000행에서 잘려 RECEIPT−PROD_INPUT 잔여가 틀어진다 → fetch_all(핫픽스 2 후속)
         try:
-            _wtx = fetch("inventory_transactions",
+            _wtx, _wtx_tr = fetch_all("inventory_transactions",
                 "lot_number,material_id,qty,txn_type,ref_id",
                 "lot_number=like.W*&txn_type=in.(RECEIPT,PROD_INPUT)",
-                limit=2000)
+                order="txn_id", pk="txn_id")
         except Exception as e:
-            st.error(f"소재 LOT 조회 실패: {e}"); _wtx = []
+            st.error(f"소재 LOT 조회 실패: {e}"); _wtx, _wtx_tr = [], False
 
-        if not _wtx:
+        if _wtx_tr:
+            # 일부 원장만으로 잔여를 계산하면 이미 투입된 LOT 이 남은 것처럼 보인다 —
+            # 불완전 집계로 투입 등록을 받지 않는다(핫픽스 2 M2 와 같은 원칙)
+            st.error("소재 LOT 원장이 너무 많아 일부만 조회됐습니다 — 잔여 계산이 "
+                     "정확하지 않아 투입 등록을 막았습니다. 관리자에게 알려 주세요.")
+        elif not _wtx:
             st.info("잔여 소재 LOT(식별 번호)가 없습니다 — 구매 관리 → "
                     "입고 처리에서 입고하면 식별 번호가 발급됩니다.")
         else:
@@ -22478,12 +22509,13 @@ elif page == "원가 확인":
         from db import count_rows as _cnt_rows
         pl_total = _cnt_rows("purchase_ledger")
         try:
-            cat_rows = fetch("purchase_ledger", "category",
-                "category=not.is.null&order=category.asc", limit=2000)
+            # limit 2000 은 서버 1,000행에서 잘려 뒤쪽 구분이 빠진다 → fetch_all(핫픽스 2 후속)
+            cat_rows, cat_tr = fetch_all("purchase_ledger", "category",
+                "category=not.is.null", order="category.asc", pk="ledger_id")
             all_cats = sorted({r['category'] for r in cat_rows if r.get('category')})
             cat_err = None
         except Exception as e:
-            all_cats = []
+            all_cats, cat_tr = [], False
             cat_err = str(e)[:120]
         mat_default = [c for c in all_cats if c.upper().startswith('MAT')]
 
@@ -22492,7 +22524,7 @@ elif page == "원가 확인":
         st_c1.metric("매입 ledger 총 건수",
                      f"{pl_total:,}" if isinstance(pl_total, int) else "ERR")
         st_c2.metric("category 보유 종류",
-                     f"{len(all_cats)}종",
+                     "미확인" if cat_tr else f"{len(all_cats)}종",
                      "데이터 부재" if len(all_cats) == 0 else None,
                      delta_color="inverse" if len(all_cats) == 0 else "off")
         st_c3.metric("MAT_* 종", f"{len(mat_default)}종")
@@ -22512,6 +22544,8 @@ elif page == "원가 확인":
         with pql_c2:
             pl_limit = st.number_input("최근 N건", 3, 50, 15, 1, key="cost_pl_limit")
 
+        if cat_tr:
+            st.warning("구분 목록 일부 미확인 — 매입 장부가 너무 많아 뒤쪽 구분이 빠졌을 수 있습니다.")
         if all_cats:
             pl_cats = st.multiselect(
                 f"카테고리 필터 (전체 {len(all_cats)}종, 기본=MAT_*)",

@@ -237,6 +237,8 @@ PK_OF = {
     "inventory_transactions": "txn_id", "shipment_items": "si_id", "shipments": "shipment_id",
     "shipment_allocations": "alloc_id", "purchase_order_items": "poi_id",
     "purchase_orders": "po_id", "products": "product_id", "materials": "material_id",
+    # 뷰 — material_stock 은 materials 기준 GROUP BY material_id 라 유일(2026-10-28 SQL 확인 1,006/1,006)
+    "material_stock": "material_id", "purchase_ledger": "ledger_id",
 }
 FETCH_ALL_PAGE = 1000          # PostgREST 요청당 최대 행(Supabase 기본 db-max-rows)
 
