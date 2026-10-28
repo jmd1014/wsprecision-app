@@ -2721,7 +2721,10 @@ elif page == "마스터 관리":
             "소재 정보의 진실은 BOM(자재 연결), 제품의 소재 표기는 "
             "표시용(자동 동기화) · 품번의 진실은 product_id.")
         try:
-            _dq_rows, _dq_tr = fetch_all("data_quality_v", "*", "", order="code")   # 후속 C
+            # UNION ALL 진단 뷰 — 원본 행 ID 가 없어 (code, ref) 가 같은 행이 여럿일 수 있다(회차·라인 단위
+            # 진단). 키는 정렬용으로만, 중복 제거 안 함(BCD r2 H1). 뷰에 ID 를 넣으면 PK_OF 로 복귀.
+            _dq_rows, _dq_tr = fetch_all("data_quality_v", "*", "", order="code,ref,detail",
+                                         pk=("code", "ref", "detail"), dedupe=False)
         except Exception as e:
             st.error(f"점검 조회 실패: {e}")
             _dq_rows, _dq_tr = [], False
@@ -11987,7 +11990,9 @@ elif page == "출고 관리":
                             "product_id,pn,lot_number,produced_qty,issued_qty,"
                             "remain_qty,first_output_date,tokusai_qty,"
                             "material_lot",
-                            "remain_qty=gt.0", order="pn.asc,first_output_date.asc")
+                            "remain_qty=gt.0", order="pn.asc,first_output_date.asc",
+                            # 유일 키 없음(wo_tracking 조인) — 정렬용 키만, 중복 제거 안 함(BCD r2 H1)
+                            pk=("product_id", "lot_number", "material_lot"), dedupe=False)
             _fs_tr = _fs_tr or _fs_tr3
             for _l in _fs_ll:
                 _fs_lots.setdefault(_l["product_id"], []).append(_l)
@@ -12027,7 +12032,8 @@ elif page == "출고 관리":
                 "LOT": float(len(_lots9)),
                 "장부 (참고)": _book,
                 "최근 거래": str(r.get("last_txn_date") or "")[:10] or "-",
-                "상태": ("부족" if _stk - _pd9 < 0 else
+                "상태": ("미확인" if _fs_tr else             # 일부 LOT·미납 누락 — 판정 불가(BCD r2 M1)
+                       "부족" if _stk - _pd9 < 0 else
                        "미납 없음" if _pd9 <= 0 else "여유"),
                 "_pid": r["product_id"],
             })
@@ -12036,10 +12042,10 @@ elif page == "출고 관리":
             _fs_rows = [x for x in _fs_rows
                         if _q9 in (x["품번"] + " " + x["거래처"]).lower()]
         _fk1, _fk2, _fk3 = st.columns(3)
-        _fk1.metric("재고 보유 품목", f"{len(_fs_rows):,}")
-        _fk2.metric("완성 재고 합계",
+        _fk1.metric("재고 보유 품목", "미확인" if _fs_tr else f"{len(_fs_rows):,}")
+        _fk2.metric("완성 재고 합계", "미확인" if _fs_tr else
                     f"{sum(x['완성 재고'] for x in _fs_rows):,.0f}")
-        _fk3.metric("미납 대비 부족 품목",
+        _fk3.metric("미납 대비 부족 품목", "미확인" if _fs_tr else
                     f"{sum(1 for x in _fs_rows if x['여유'] < 0):,}",
                     help="완성 재고(실제 완성 LOT 잔여 합) − 미납 < 0 인 품목. "
                          "'장부 (참고)' 는 기초 조정·마이너스를 포함한 장부 합계로, "
@@ -12451,6 +12457,13 @@ elif page == "생산 계획":
                     "op_id")}
                 _pn2pid = {p["pn"]: p["product_id"] for p in _std_fetch_all(
                     "products", "pn,product_id", "product_id")}
+                # 전량 삭제 → 재삽입 — 중간 실패 시 옛 행 복원(2026-09-16 리뷰 A12). 조회 4건을 전부
+                # 끝낸 뒤 첫 쓰기(BCD r2 H3) — 설비 매트릭스 조회가 잘리면 표준도 건드리지 않는다
+                _old_pom = [{k: v for k, v in r.items() if k != "pom_id"}
+                            for r in _std_fetch_all(
+                                "product_op_machine",
+                                "pom_id,pn,process,machine_id,runs,hours,qty,"
+                                "uph_actual,last_date,calc_at", "pom_id")]
                 _now = _std_now.now().isoformat()
                 _ins, _n_upd = [], 0
                 for k, o in _agg["ops"].items():
@@ -12481,13 +12494,6 @@ elif page == "생산 계획":
                         _ins.append(rec)
                 for i in range(0, len(_ins), 200):
                     _db.insert("product_op_std", _ins[i:i + 200])
-                # 전량 삭제 → 재삽입 — 중간 실패 시 옛 행 복원
-                # (2026-09-16 리뷰 A12)
-                _old_pom = [{k: v for k, v in r.items() if k != "pom_id"}
-                            for r in _std_fetch_all(
-                                "product_op_machine",
-                                "pom_id,pn,process,machine_id,runs,hours,qty,"
-                                "uph_actual,last_date,calc_at", "pom_id")]
                 _db.delete("product_op_machine", "pom_id=gt.0")
                 _mrows = [{
                     "pn": m["pn"], "process": m["process"],
@@ -12979,6 +12985,7 @@ elif page == "생산 계획":
             dh, nh = _sb_hours(m, _sb_date.fromisoformat(str(d_iso)[:10]))
             return float(nh if shift == "야간" else dh)
         _sb_act = [m for m in _sb_mcs if m.get("active")]
+        _sb_bad = False         # 스케줄 조회 실패·절단 — 빈 계획으로 보고 저장하면 중복 계획(BCD r2 H2)
         try:
             _sb_sched = _sb_all(
                 "production_schedule",
@@ -12996,8 +13003,9 @@ elif page == "생산 계획":
                 "production_schedule", "pn,process,plan_qty",
                 f"plan_date=gte.{_sb_d0}&status=neq.CANCELLED", order="sched_id")
         except Exception as e:
-            st.error(f"스케줄 조회 실패: {e}")
+            st.error(f"스케줄 조회가 불완전해 저장을 막았습니다 — 기간을 좁히세요. ({e})")
             _sb_sched, _sb_logs, _sb_future = [], [], []
+            _sb_bad = True
 
         # ── 작업 큐 재료: 미납 라인(sois) · 회차 · 재고 · 재공 · 표준 ──
         _sb_pids = sorted({i["product_id"] for i in sois if i.get("product_id")})
@@ -13124,13 +13132,19 @@ elif page == "생산 계획":
         _line = " · ".join(
             f"{g} 부하 {(p / a * 100) if a else 0:.0f}%"
             for g, (p, a) in sorted(_sb_gl.items()))
-        wn5.markdown(
-            "<div style='padding-top:8px;font-size:12.5px;color:#4e5968'>{}"
-            "<br>미배정 {}건 · 납기 위험 <b style='color:{}'>{}</b>건 · "
-            "계획 {:,.0f} / 실적 {:,.0f}</div>".format(
-                _line, len(_sb_unassigned),
-                "#f04452" if _sb_late else "#01a76b", len(_sb_late),
-                _sb_plan_sum, _sb_act_sum), unsafe_allow_html=True)
+        if _sb_bad:
+            wn5.markdown(
+                "<div style='padding-top:8px;font-size:12.5px;color:#4e5968'>부하 미확인"
+                "<br>미배정·납기 위험·계획/실적 미확인 (스케줄 조회 불완전)</div>",
+                unsafe_allow_html=True)
+        else:
+            wn5.markdown(
+                "<div style='padding-top:8px;font-size:12.5px;color:#4e5968'>{}"
+                "<br>미배정 {}건 · 납기 위험 <b style='color:{}'>{}</b>건 · "
+                "계획 {:,.0f} / 실적 {:,.0f}</div>".format(
+                    _line, len(_sb_unassigned),
+                    "#f04452" if _sb_late else "#01a76b", len(_sb_late),
+                    _sb_plan_sum, _sb_act_sum), unsafe_allow_html=True)
 
         # ── 보드 컴포넌트 (components/schedule_board, 2026-09-09 현장 요청:
         # 캘린더에서 직접 넣고 빼고 한 번에) — 클릭 배치·드래그 이동/복사·
@@ -13225,7 +13239,9 @@ elif page == "생산 계획":
                     st.error("보드 저장이 적용되지 않았습니다 — 이 주의 계획이 "
                              "다른 곳에서 바뀌었습니다. 페이지를 새로고침한 뒤 "
                              "다시 입력하세요.")
-                if (st.session_state.get("sb_comp_applied") != _tag
+                if _sb_bad:
+                    st.error("스케줄 조회가 불완전해 보드 변경을 적용하지 않았습니다 — 기간을 좁히세요.")
+                elif (st.session_state.get("sb_comp_applied") != _tag
                         and _ret.get("nonce") == _sb_nonce_c):
                     st.session_state["sb_comp_applied"] = _tag
                     _cur = {(s["machine_id"], str(s["plan_date"])[:10],
@@ -13329,13 +13345,14 @@ elif page == "생산 계획":
                                for c in _sb_cols}})
                     gb1, gb2 = st.columns(2)
                     _g_save = gb1.form_submit_button("보드 저장", type="primary",
-                                                     use_container_width=True)
+                                                     use_container_width=True,
+                                                     disabled=_sb_bad)
                     _g_cancel = gb2.form_submit_button("편집 취소",
                                                        use_container_width=True)
                 if _g_cancel:
                     st.session_state["sb_nonce"] = _sb_nonce + 1
                     st.rerun()
-                if _g_save:
+                if _g_save and not _sb_bad:
                     _n_ins, _n_upd, _n_del, _n_skip, _bad = 0, 0, 0, 0, []
                     _ins_rows = []
                     _now_s = _sb_now.now().isoformat()
@@ -13552,8 +13569,9 @@ elif page == "생산 계획":
                 _e_qty = e7.number_input("계획 수량 (0 = 표준으로 자동)", 0,
                                          100000, 0, 10, key="sb_qty")
                 _e_wo = e8.text_input("작업지시 (선택)", key="sb_wo")
-                _sb_save = st.form_submit_button("기간 저장", type="primary")
-            if _sb_save:
+                _sb_save = st.form_submit_button("기간 저장", type="primary",
+                                                 disabled=_sb_bad)
+            if _sb_save and not _sb_bad:
                 _k2 = _sb_labels.get(_e_lbl) if _e_lbl else None
                 if not _k2 or not _e_m:
                     st.error("작업과 설비를 선택하세요.")
@@ -13567,17 +13585,22 @@ elif page == "생산 계획":
                     _qty9 = float(_e_qty) if _e_qty > 0 else float(
                         _sch.suggest_qty(_e_h, _std9.get("uph_std"),
                                          _std9.get("setup_min") or 0))
-                    _exist = {(s["machine_id"], str(s["plan_date"])[:10],
-                               s["shift"]): s for s in _sb_all(
-                        "production_schedule",
-                        "sched_id,machine_id,plan_date,shift",
-                        f"machine_id=eq.{_fq(_e_m)}&plan_date=gte.{_e_d0.isoformat()}"
-                        f"&plan_date=lte.{_e_d1.isoformat()}"
-                        "&status=neq.CANCELLED", order="sched_id")}
+                    try:
+                        _exist = {(s["machine_id"], str(s["plan_date"])[:10],
+                                   s["shift"]): s for s in _sb_all(
+                            "production_schedule",
+                            "sched_id,machine_id,plan_date,shift",
+                            f"machine_id=eq.{_fq(_e_m)}&plan_date=gte.{_e_d0.isoformat()}"
+                            f"&plan_date=lte.{_e_d1.isoformat()}"
+                            "&status=neq.CANCELLED", order="sched_id")}
+                    except Exception as e:
+                        # 기존 배정을 모르면 덮어쓸 행을 신규로 넣어 중복 계획이 된다 — 저장 안 함
+                        _exist = None
+                        st.error(f"기존 계획 조회가 불완전해 저장하지 않았습니다 — {e}")
                     _n_ins, _n_upd, _n_skip, _ins_rows = 0, 0, 0, []
                     _now_s = _sb_now.now().isoformat()
                     _d = _e_d0
-                    while _d <= _e_d1:
+                    while _exist is not None and _d <= _e_d1:
                         for sh in _sch.SHIFTS:
                             if sh not in _e_sh:
                                 continue
@@ -13603,17 +13626,18 @@ elif page == "생산 계획":
                                             "created_by": current_user_name()})
                                 _ins_rows.append(rec)
                         _d += _sb_td(days=1)
-                    try:
-                        if _ins_rows:
-                            _db.insert("production_schedule", _ins_rows)
-                            _n_ins = len(_ins_rows)
-                        nav_flash("기간 저장 — 신규 {} · 덮어씀 {}{}".format(
-                            _n_ins, _n_upd,
-                            f" · 야간 미운영 건너뜀 {_n_skip}" if _n_skip
-                            else ""))
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"저장 실패: {e}")
+                    if _exist is not None:
+                        try:
+                            if _ins_rows:
+                                _db.insert("production_schedule", _ins_rows)
+                                _n_ins = len(_ins_rows)
+                            nav_flash("기간 저장 — 신규 {} · 덮어씀 {}{}".format(
+                                _n_ins, _n_upd,
+                                f" · 야간 미운영 건너뜀 {_n_skip}" if _n_skip
+                                else ""))
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"저장 실패: {e}")
 
         if _sb_sched:
             with st.expander("수량·메모 조정 (이번 주 셀 {}개)".format(
@@ -17407,7 +17431,9 @@ elif page == "구매 관리":
                         for _m in out.values():
                             if _m.get("product_id"):
                                 _m["product_pn"] = _pids.get(_m["product_id"])
-                except Exception:
+                except Exception as _e:
+                    if TRUNC_MSG in str(_e):
+                        raise         # 절단은 '매핑 없음'이 아니다 — 매핑 없이 저장되지 않게(BCD r2 H4)
                     return {}
                 return out
 
@@ -17564,13 +17590,16 @@ elif page == "구매 관리":
                                "일치합니다.")
                 elif st.button(f"② 동기화 실행 — {len(_prev['new']):,}건 추가",
                                type="primary", key="cost_sync_go"):
+                    _err9 = None
                     try:
                         _pnset9 = {p9["pn"] for p9 in _pl_fetch_pages(
                             "products", "product_id,pn")}
-                    except Exception:
-                        _pnset9 = set()
+                    except Exception as _e:
+                        # '제품 없음(빈 집합)'과 '조회 실패·절단'은 다르다 — 실패면 동기화 ② 중단(BCD r2 H4)
+                        _pnset9 = None
+                        _err9 = f"제품 조회 실패 — 동기화를 중단했습니다: {_e}"
                     _payload9 = []
-                    for _r9 in _prev["new"]:
+                    for _r9 in (_prev["new"] if _pnset9 is not None else []):
                         _rk9 = _r9.get("remark") or ""
                         _pn9 = _rk9.split()[0].strip() if _rk9 else ""
                         _payload9.append({
@@ -17588,7 +17617,6 @@ elif page == "구매 관리":
                             "source": "SHEET",
                         })
                     _ins9 = 0
-                    _err9 = None
                     try:
                         for _i9 in range(0, len(_payload9), 200):
                             _ins9 += _db.insert("purchase_ledger",
@@ -17597,6 +17625,8 @@ elif page == "구매 관리":
                         _err9 = str(_e)
                     # 자동 매칭 (기존 미매칭 행 포함 전체 재평가)
                     try:
+                        if _pnset9 is None:
+                            raise RuntimeError(_err9)
                         _upd9, _mset9, _fail9 = _pl_reevaluate()
                         if _fail9:
                             _err9 = _err9 or f"재평가 중 {_fail9}행 갱신 실패"
@@ -21515,18 +21545,19 @@ elif page == "생산 보고":
                              disabled=not (_pv["new"] or _pv["stds"])) \
                         and click_guard("psh_apply"):
                     try:
-                        _n_ins = 0
-                        for i in range(0, len(_pv["new"]), 200):
-                            _n_ins += _db.insert("production_log",
-                                                 _pv["new"][i:i + 200])
-                        # 표준: 있으면 시트값 갱신(확정은 uph_std 유지),
-                        # 없으면 신규(AUTO, 출처 SHEET)
+                        # 조회를 전부 끝낸 뒤 첫 쓰기(BCD r2 H3) — 표준 조회가 잘리면 실적도 넣지 않는다
                         _ex9_rows, _tr9 = fetch_all("product_op_std",               # 후속 C
                                                     "op_id,pn,process,std_status", "",
                                                     order="op_id")
                         if _tr9:
                             raise RuntimeError(f"product_op_std {TRUNC_MSG}")
                         _ex9 = {(x["pn"], x["process"]): x for x in _ex9_rows}
+                        _n_ins = 0
+                        for i in range(0, len(_pv["new"]), 200):
+                            _n_ins += _db.insert("production_log",
+                                                 _pv["new"][i:i + 200])
+                        # 표준: 있으면 시트값 갱신(확정은 uph_std 유지),
+                        # 없으면 신규(AUTO, 출처 SHEET)
                         _ins9, _upd9 = [], 0
                         for k, v in _pv["stds"].items():
                             # PostgREST 일괄 insert 는 모든 행의 키가 같아야
@@ -22008,14 +22039,15 @@ elif page == "영업 보고":
         transaction_statements_html as _sr_stmt)
 
     def _sr_ships(cond):
-        _rows, _tr = fetch_all(                                                 # 후속 C
+        """→ (rows, truncated). 절단이면 호출자가 집계 미확인·재발행 비활성(BCD r2 M2)."""
+        return fetch_all(                                                       # 후속 C
             "shipments",
             "shipment_id,ship_no,ship_date,status,created_by,confirmed_at,"
             "rev_no,revised_at",
             cond, order="ship_date.asc,shipment_id.asc")
-        if _tr:
-            st.warning(f"출고 전표 {TRUNC_MSG} — 합계가 일부입니다. 기간을 좁히세요.")
-        return _rows
+
+    def _sr_unk(v, tr):
+        return "미확인" if tr else v
 
     def _sr_items(ships):
         """전표 라인 조회 + ship_no/ship_date(=date) 부착."""
@@ -22070,14 +22102,16 @@ elif page == "영업 보고":
         _d_pick = st.date_input("결산일", _sr_date.today(), key="sr_day")
         _d_iso = _d_pick.isoformat()
         try:
-            _d_ships = _sr_ships(
+            _d_ships, _d_tr = _sr_ships(
                 f"status=eq.CONFIRMED&ship_date=eq.{_fq(_d_iso)}")
             _d_drafts = fetch("shipments", "shipment_id,ship_no",
                               f"status=eq.DRAFT&ship_date=eq.{_fq(_d_iso)}",
                               limit=50)
         except Exception as e:
             st.error(f"조회 실패: {e}")
-            _d_ships, _d_drafts = [], []
+            _d_ships, _d_drafts, _d_tr = [], [], False
+        if _d_tr:
+            st.warning(f"출고 전표 {TRUNC_MSG} — 결산 합계는 미확인입니다.")
         if _d_drafts:
             st.warning(
                 "이 날짜의 작성중 전표 {}건({})은 집계에 포함되지 "
@@ -22092,11 +22126,11 @@ elif page == "영업 보고":
             _da = _d_agg["all"]
             st.markdown(
                 '<div class="kpi-row">'
-                + _sr_kpi("전표", f"{len(_d_ships)}건")
-                + _sr_kpi("거래처", f"{len(_d_agg['customers'])}곳")
-                + _sr_kpi("총 수량", _da["qty"])
-                + _sr_kpi("공급가액", _da["supply"], tone="good")
-                + _sr_kpi("합계 (VAT포함)", _da["total"], tone="good")
+                + _sr_kpi("전표", _sr_unk(f"{len(_d_ships)}건", _d_tr))
+                + _sr_kpi("거래처", _sr_unk(f"{len(_d_agg['customers'])}곳", _d_tr))
+                + _sr_kpi("총 수량", _sr_unk(_da["qty"], _d_tr))
+                + _sr_kpi("공급가액", _sr_unk(_da["supply"], _d_tr), tone="good")
+                + _sr_kpi("합계 (VAT포함)", _sr_unk(_da["total"], _d_tr), tone="good")
                 + "</div>", unsafe_allow_html=True)
             _sr_missing_note(_d_agg)
 
@@ -22167,18 +22201,17 @@ elif page == "영업 보고":
             _pc4.text_input("종료일", _p_to.isoformat(), disabled=True,
                             key=f"sr_to_ro_{_bm_pick}_{_rg_pick}")
         _pf_iso, _pt_iso = _p_from.isoformat(), _p_to.isoformat()
-        _m_ships, _m_drafts = [], []
+        _m_ships, _m_drafts, _m_tr = [], [], False
         if _p_from > _p_to:
             st.error("시작일이 종료일보다 늦습니다.")
         else:
             try:
-                _m_ships = [
-                    s for s in _sr_ships(
-                        "status=eq.CONFIRMED"
-                        f"&ship_date=gte.{_fq(_pf_iso)}"
-                        f"&ship_date=lte.{_fq(_pt_iso)}")
-                    if _pf_iso <= str(s.get("ship_date") or "")[:10]
-                    <= _pt_iso]
+                _m_all, _m_tr = _sr_ships(
+                    "status=eq.CONFIRMED"
+                    f"&ship_date=gte.{_fq(_pf_iso)}"
+                    f"&ship_date=lte.{_fq(_pt_iso)}")
+                _m_ships = [s for s in _m_all
+                            if _pf_iso <= str(s.get("ship_date") or "")[:10] <= _pt_iso]
                 _m_drafts = [
                     d for d in fetch(
                         "shipments", "shipment_id,ship_no,ship_date",
@@ -22189,9 +22222,8 @@ elif page == "영업 보고":
                     <= _pt_iso]
             except Exception as e:
                 st.error(f"조회 실패: {e}")
-            if len(_m_ships) >= 1000:
-                st.warning("확정 전표가 1,000건 상한에 걸렸습니다 — 기간을 "
-                           "나눠 조회하세요.")
+            if _m_tr:      # 예전 1,000건 상한 판정 → fetch_all 절단(BCD r2 M2)
+                st.warning(f"확정 전표 {TRUNC_MSG} — 합계는 미확인입니다. 기간을 나눠 조회하세요.")
         _m_rows_all = _sr_items(_m_ships) if _m_ships else []
         _cu_opts = sorted({x.get("customer") for x in _m_rows_all
                            if x.get("customer")})
@@ -22216,12 +22248,12 @@ elif page == "영업 보고":
             _ma = _m_agg["all"]
             st.markdown(
                 '<div class="kpi-row">'
-                + _sr_kpi("전표", f"{len(_m_agg['ship_nos'])}건")
-                + _sr_kpi("납품일수", f"{len(_m_agg['by_date'])}일")
-                + _sr_kpi("거래처", f"{len(_m_agg['customers'])}곳")
-                + _sr_kpi("총 수량", _ma["qty"])
-                + _sr_kpi("공급가액", _ma["supply"], tone="good")
-                + _sr_kpi("합계 (VAT포함)", _ma["total"], tone="good")
+                + _sr_kpi("전표", _sr_unk(f"{len(_m_agg['ship_nos'])}건", _m_tr))
+                + _sr_kpi("납품일수", _sr_unk(f"{len(_m_agg['by_date'])}일", _m_tr))
+                + _sr_kpi("거래처", _sr_unk(f"{len(_m_agg['customers'])}곳", _m_tr))
+                + _sr_kpi("총 수량", _sr_unk(_ma["qty"], _m_tr))
+                + _sr_kpi("공급가액", _sr_unk(_ma["supply"], _m_tr), tone="good")
+                + _sr_kpi("합계 (VAT포함)", _sr_unk(_ma["total"], _m_tr), tone="good")
                 + "</div>", unsafe_allow_html=True)
             _sr_missing_note(_m_agg)
 
@@ -22387,13 +22419,16 @@ elif page == "영업 보고":
             "시작일", _sr_date.today().replace(day=1), key="sr_re_from")
         _r_to = _rc2.date_input("종료일", _sr_date.today(), key="sr_re_to")
         try:
-            _r_ships = _sr_ships(
+            _r_ships, _r_tr = _sr_ships(
                 "status=eq.CONFIRMED"
                 f"&ship_date=gte.{_r_from.isoformat()}"
                 f"&ship_date=lte.{_r_to.isoformat()}")
         except Exception as e:
             st.error(f"조회 실패: {e}")
-            _r_ships = []
+            _r_ships, _r_tr = [], False
+        if _r_tr:
+            st.warning(f"출고 전표 {TRUNC_MSG} — 거래처 문서는 부분 자료로 만들지 않습니다(재발행 비활성). "
+                       "기간을 좁히세요.")
         if not _r_ships:
             st.info("기간 내 확정 전표가 없습니다.")
         else:
@@ -22474,14 +22509,14 @@ elif page == "영업 보고":
                 _sr_list(_sr_batch(_r_items, _r_pick), rev_label=_sr_rev_lbl),
                 file_name=f"출고리스트_{_r_pick['ship_no']}.html",
                 mime="text/html", key="sr_re_list",
-                use_container_width=True)
+                use_container_width=True, disabled=_r_tr)
             _rb2.download_button(
                 "거래명세서 재발행",
                 _sr_stmt(_sr_batch(_r_items, _r_pick),
                          _sr_vmap(_r_items), rev_label=_sr_rev_lbl),
                 file_name=f"거래명세서_{_r_pick['ship_no']}.html",
                 mime="text/html", key="sr_re_stmt", type="primary",
-                use_container_width=True)
+                use_container_width=True, disabled=_r_tr)
 
 elif page == "원가 확인":
     st.subheader("원가 확인")

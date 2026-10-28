@@ -66,10 +66,10 @@ def test_tuple_pk_from_list_is_hashable_and_explicit(raw):
 
 
 def test_registered_view_keys():
-    assert db.PK_OF["data_quality_v"] == ("code", "ref")
+    # BCD r2 H1: 구조적 유일 키만 — data_quality_v·product_lot_stock_v 는 없음(호출에서 dedupe=False)
+    assert "data_quality_v" not in db.PK_OF and "product_lot_stock_v" not in db.PK_OF
     assert db.PK_OF["material_stock_by_lot"] == ("lot_number", "material_id")
-    assert db.PK_OF["product_lot_stock_v"] == ("product_id", "lot_number")
-    assert db.PK_OF["product_material_price_status_v"] == ("product_id", "material_id")
+    assert db.PK_OF["product_material_price_status_v"] == "bom_id"
     for t, k in (("product_routing", "routing_id"), ("bom", "bom_id"), ("vendors", "vendor_id"),
                  ("product_op_std", "op_id"), ("production_log", "log_id"), ("wo_batches", "batch_id"),
                  ("product_stock_v", "product_id"), ("product_cost_full_v", "product_id")):

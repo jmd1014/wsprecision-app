@@ -24,7 +24,7 @@ def normalize_machine(name):
     if not name:
         return None
     # 'CNC13(다인로봇)' 처럼 괄호 설명이 붙은 표기는 괄호 앞만 (2026-09-07)
-    base = re.split(r"[(\[（]", str(name), 1)[0]
+    base = re.split(r"[(\[（]", str(name), maxsplit=1)[0]
     m = _MACHINE_RE.match(base)
     if not m:
         return str(name).strip().upper().replace(" ", "")

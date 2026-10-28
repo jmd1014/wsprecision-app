@@ -239,17 +239,19 @@ PK_OF = {
     "purchase_orders": "po_id", "products": "product_id", "materials": "material_id",
     # 뷰 — material_stock 은 materials 기준 GROUP BY material_id 라 유일(2026-10-28 SQL 확인 1,006/1,006)
     "material_stock": "material_id", "purchase_ledger": "ledger_id",
-    # 핫픽스 2 후속 C — 테이블은 실제 PK, 뷰는 2026-10-28 SQL 로 유일성 확인(행 수 = distinct 수)
+    # 핫픽스 2 후속 C — 테이블은 실제 PK. 뷰는 **구조적으로 유일한 키만**(GROUP BY 키·노출된 원본 PK) —
+    # 시점 SQL 의 행 수 = distinct 수는 근거가 못 된다(BCD r2 H1). 유일 키가 없는 뷰는 여기 넣지 말고
+    # 호출에서 pk=(정렬용 열…) + dedupe=False.
     "product_routing": "routing_id", "bom": "bom_id", "vendors": "vendor_id",
     "product_op_std": "op_id", "production_log": "log_id", "wo_batches": "batch_id",
     "product_op_machine": "pom_id", "production_schedule": "sched_id",
     "purchase_item_map": "map_id",
     "product_stock_v": "product_id", "product_cost_full_v": "product_id", "product_full": "product_id",
     # 복합키 뷰 — tuple(정렬도 이 순서로 보강, 중복 제거 키 = 값 tuple)
-    "data_quality_v": ("code", "ref"),
-    "material_stock_by_lot": ("lot_number", "material_id"),       # material_id NULL 18행(lot 유일)
-    "product_lot_stock_v": ("product_id", "lot_number"),
-    "product_material_price_status_v": ("product_id", "material_id"),
+    "material_stock_by_lot": ("lot_number", "material_id"),       # 뷰 = GROUP BY material_id, lot_number
+    "product_material_price_status_v": "bom_id",                  # 뷰 = bom 1행당 1행(bom_id 노출)
+    # data_quality_v(UNION ALL 진단, 원본 ID 없음)·product_lot_stock_v(wo_tracking 이 wo_number 당 여러 행
+    # 가능 — 유일 인덱스는 (wo_number, w_lot))는 구조적 유일 키가 없어 넣지 않는다 → 호출에서 dedupe=False
 }
 FETCH_ALL_PAGE = 1000          # PostgREST 요청당 최대 행(Supabase 기본 db-max-rows)
 
@@ -259,10 +261,11 @@ def _pk_cols(pk) -> tuple:
     return (pk,) if isinstance(pk, str) else tuple(pk)
 
 
-def _fetch_all_raw(table: str, sel: str, base: str, page: int, max_rows: int, pk):
+def _fetch_all_raw(table: str, sel: str, base: str, page: int, max_rows: int, pk, dedupe: bool = True):
     """페이지 반복 본체 — 페이지마다 cache=False(페이지별 캐시가 서로 다른 시점을 섞지 않게).
     반환 (rows, truncated). max_rows 에 딱 닿으면 1행 탐색으로 실제 남은 행이 있는지 본다.
-    복합키(tuple)면 키 값 tuple 로 중복 제거 — 값이 전부 None 이면 단일 열과 같이 제거하지 않는다."""
+    복합키(tuple)면 키 값 tuple 로 중복 제거 — 값이 전부 None 이면 단일 열과 같이 제거하지 않는다.
+    dedupe=False 면 키는 정렬 보강에만 쓰고 중복 제거는 하지 않는다(유일 키 없는 뷰)."""
     cols = _pk_cols(pk)
     rows, seen, off = [], set(), 0
     while True:
@@ -271,7 +274,7 @@ def _fetch_all_raw(table: str, sel: str, base: str, page: int, max_rows: int, pk
                    limit=n, cache=False)
         for r in pg:
             k = r.get(cols[0]) if len(cols) == 1 else tuple(r.get(c) for c in cols)
-            if k is not None and not (isinstance(k, tuple) and all(v is None for v in k)):
+            if dedupe and k is not None and not (isinstance(k, tuple) and all(v is None for v in k)):
                 if k in seen:
                     continue
                 seen.add(k)
@@ -291,20 +294,20 @@ FETCH_ALL_TTL_TX = CACHE_TTL_TX
 
 
 @st.cache_data(ttl=FETCH_ALL_TTL, show_spinner=False)
-def _fetch_all_cached(table: str, sel: str, base: str, page: int, max_rows: int, pk):
+def _fetch_all_cached(table: str, sel: str, base: str, page: int, max_rows: int, pk, dedupe: bool = True):
     """fetch_all 결과 전체를 한 단위로 캐시(핫픽스 2 r2 H1) — 페이지별 캐시는 쓰지 않는다. 마스터 표 5분."""
-    return _fetch_all_raw(table, sel, base, page, max_rows, pk)
+    return _fetch_all_raw(table, sel, base, page, max_rows, pk, dedupe)
 
 
 @st.cache_data(ttl=FETCH_ALL_TTL_TX, show_spinner=False)
-def _fetch_all_cached_tx(table: str, sel: str, base: str, page: int, max_rows: int, pk):
+def _fetch_all_cached_tx(table: str, sel: str, base: str, page: int, max_rows: int, pk, dedupe: bool = True):
     """그 외 표는 fetch 와 같은 60초(r3 — 회차 등 원장이 외부 변경 뒤 5분 늦게 보이지 않게)."""
-    return _fetch_all_raw(table, sel, base, page, max_rows, pk)
+    return _fetch_all_raw(table, sel, base, page, max_rows, pk, dedupe)
 
 
 def fetch_all(table: str, select: str = "*", filter_query: str = "", *,
               page: int = FETCH_ALL_PAGE, max_rows: int = 20000, order: str | None = None,
-              cache: bool | None = None, pk: str | tuple | None = None):
+              cache: bool | None = None, pk: str | tuple | None = None, dedupe: bool = True):
     """offset 페이지 반복으로 끝까지 읽는다 → (rows, truncated).
 
     PostgREST 는 요청당 최대 1,000행이라 `fetch(limit=2000)` 도 1,000 에서 잘리고 len < limit
@@ -322,6 +325,8 @@ def fetch_all(table: str, select: str = "*", filter_query: str = "", *,
       잘려 절단 감지 불가), max_rows 양수.
     - 복합키(후속 C): pk=("material_id", "lot_number") 처럼 tuple — 빠진 열을 select·정렬에 순서대로 붙이고
       키 값 tuple 로 중복 제거. 단일 열 pk 동작은 그대로.
+    - dedupe=False(BCD r2): 구조적 유일 키가 없는 뷰 — pk 열은 정렬 보강에만 쓰고 같은 키 행을 모두 남긴다
+      (페이지 사이 삽입·삭제 시 경계 중복 가능 — 1,000행 미만이면 한 페이지라 해당 없음).
     """
     if "order=" in (filter_query or ""):
         raise ValueError("fetch_all: 정렬은 order 인자로(filter_query 에 order= 금지)")
@@ -348,10 +353,10 @@ def fetch_all(table: str, select: str = "*", filter_query: str = "", *,
     except Exception:
         _prev = None
     if cache is False:
-        rows, truncated = _fetch_all_raw(table, sel, base, page, max_rows, pk)
+        rows, truncated = _fetch_all_raw(table, sel, base, page, max_rows, pk, dedupe)
     else:
         _cf = _fetch_all_cached if table in CACHED_TABLES else _fetch_all_cached_tx
-        rows, truncated = _cf(table, sel, base, page, max_rows, pk)
+        rows, truncated = _cf(table, sel, base, page, max_rows, pk, dedupe)
     if _prev is not None:
         try:
             _ft = st.session_state.setdefault("_fetch_truncated", {})
