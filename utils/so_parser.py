@@ -9,7 +9,7 @@ import re
 from datetime import date, datetime
 import openpyxl
 
-from utils.mijin_erp_parser import MJT_CUSTOMER, MJT_ONLY_PNS, strip_suffix
+from utils.mjt_rules import MJT_CUSTOMER, MJT_ONLY_PNS, strip_suffix   # pandas 없음(r2)
 
 # 미진 엑셀에 섞여 오는 엠제이티 품목의 수주 거래처 = MJT_CUSTOMER(vendors 정식명, 핫픽스 3)
 _MJT_ONLY_UPPER = {p.upper() for p in MJT_ONLY_PNS}

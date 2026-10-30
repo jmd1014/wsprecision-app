@@ -139,10 +139,24 @@ PRODUCTS = [
      "archive_reason": None},
 ]
 INSERTED, FETCHES = [], []
+MJT_LINES = [{"soi_id": 1, "line_no": 1, "customer_part_no": "4S4PDVN-03;OUP", "qty": 100, "unit_price": 1200},
+             {"soi_id": 2, "line_no": 2, "customer_part_no": "4S8PDVN-02;OUP", "qty": 20, "unit_price": 5000}]
+# ((주)엠제이티, PO-MJT) 수주가 이미 있다(라인 2개, 파일 MIXED 와 같은 수량·단가)
+EXIST_MJT = {"orders": {(MJT, f"{PO}-MJT"): 600}, "lines": {600: MJT_LINES}}
+NEW_IDS = {PO: 701, f"{PO}-MJT": 702, f"{PO}-MJT-R3": 703, f"{PO}-R2": 704}
 
 
-def _mk_fetch(existing_mjt):
-    """existing_mjt: ((주)엠제이티, PO-MJT) 수주가 이미 있다(라인 2개, 파일과 같은 수량·단가)."""
+def _in_list(fq, col):
+    k = f"{col}=in.("
+    return fq.split(k, 1)[1].split(")", 1)[0].split(",") if k in fq else []
+
+
+def _mk_fetch(scn):
+    """scn: orders {(거래처, 수주번호): so_id} · lines {so_id: [라인]} · rev {거래처: [기존 -R 번호]}
+    · cpm {거래처: [customer_part_mapping 행]}."""
+    def _cust_in(fq):
+        return next((c for c in (MJT, MIJIN) if c in fq), None)
+
     def _fetch(table, select="*", filter_query="", limit=1000, **kw):
         fq = unquote(filter_query or "")
         FETCHES.append((table, fq))
@@ -153,17 +167,17 @@ def _mk_fetch(existing_mjt):
                 return [{"vendor_id": 73, "name": MIJIN}]
             return []                                    # short_name 은 둘 다 NULL
         if table == "sales_orders":
-            if existing_mjt and f'customer=eq."{MJT}"' in fq and f"{PO}-MJT" in fq \
-                    and "so_number=in." in fq:
-                return [{"so_id": 600, "so_number": f"{PO}-MJT"}]
-            return []
+            cu = _cust_in(fq)
+            if "so_number.like." in fq:
+                return [{"so_number": n} for n in scn.get("rev", {}).get(cu, [])]
+            nums = _in_list(fq, "so_number")
+            return [{"so_id": sid, "so_number": n} for (c, n), sid in scn.get("orders", {}).items()
+                    if c == cu and n in nums]
         if table == "sales_order_items":
-            if existing_mjt and "so_id=in.(600)" in fq:
-                return [{"so_id": 600, "soi_id": 1, "line_no": 1, "customer_part_no": "4S4PDVN-03;OUP",
-                         "qty": 100, "unit_price": 1200},
-                        {"so_id": 600, "soi_id": 2, "line_no": 2, "customer_part_no": "4S8PDVN-02;OUP",
-                         "qty": 20, "unit_price": 5000}]
-            return []
+            return [dict(x, so_id=int(i)) for i in _in_list(fq, "so_id")
+                    for x in scn.get("lines", {}).get(int(i), [])]
+        if table == "customer_part_mapping":
+            return [dict(x) for x in scn.get("cpm", {}).get(_cust_in(fq), [])]
         if table == "products":
             return [] if "product_id=in." in fq else [dict(p) for p in PRODUCTS]
         return []
@@ -173,10 +187,9 @@ def _mk_fetch(existing_mjt):
 def _fetch_one(table, filter_query="", select="*"):
     fq = unquote(filter_query or "")
     if table == "sales_orders":
-        if f"{PO}-MJT" in fq:
-            return {"so_id": 702}
-        if PO in fq:
-            return {"so_id": 701}
+        for n in sorted(NEW_IDS, key=len, reverse=True):        # 긴 번호(-MJT-R3) 먼저
+            if n in fq:
+                return {"so_id": NEW_IDS[n]}
     return None
 
 
@@ -195,8 +208,8 @@ def up_db(monkeypatch):
     monkeypatch.setattr(db, "count_rows", lambda *a, **k: 0)
     monkeypatch.setattr(db, "rpc", lambda *a, **k: None)
 
-    def _use(existing_mjt):
-        monkeypatch.setattr(db, "fetch", _mk_fetch(existing_mjt))
+    def _use(scn=None):
+        monkeypatch.setattr(db, "fetch", _mk_fetch(scn or {}))
         return db
     return _use
 
@@ -229,7 +242,7 @@ def _save(at):
 
 @app_test
 def test_upload_new_mixed_file_saves_two_orders(up_db):
-    up_db(existing_mjt=False)
+    up_db()
     at = _upload(MIXED)
     from tests.conftest import msg_texts
     assert "엠제이티 분리 1건" in " ".join(msg_texts(at))
@@ -250,7 +263,7 @@ def test_reupload_finds_existing_mjt_order_by_customer_key(up_db, rows):
     """중복 검증이 ((주)엠제이티, X-MJT) 키로 기존 수주를 찾아 제외 — 개정 발주(단가·수량 다른 라인)로도
     잡지 않는다(거래처별 대조). 미진 쪽 새 수주 X 만 저장. mijin_first: 예전 개정 대조는 첫 줄 거래처
     (customer_name = items[0]) 하나로만 찾아, 미진 줄이 앞이면 엠제이티 라인을 '다른 라인'으로 잡았다."""
-    up_db(existing_mjt=True)
+    up_db(EXIST_MJT)
     at = _upload(rows)
     assert any(f'customer=eq."{MJT}"' in fq and f"so_number=in.({PO}-MJT)" in fq
                for t, fq in FETCHES if t == "sales_orders")
@@ -267,7 +280,7 @@ def test_reupload_finds_existing_mjt_order_by_customer_key(up_db, rows):
 @app_test
 def test_master_mismatch_warns_but_keeps_parsed_customer(up_db):
     """파일 품번이 엠제이티 목록에 없는데 매칭된 마스터 품번이 엠제이티 전용이면 경고만, 저장은 파싱 판정."""
-    up_db(existing_mjt=False)
+    up_db()
     at = _upload([("OLD-PDVN02;OUP", "PDVN 2", 5, 100)])
     assert any("거래처 판정이 마스터 품번과 다른 라인 1개" in str(w.value) and "4PDVN-02" in str(w.value)
                for w in at.warning), [w.value for w in at.warning]
@@ -279,8 +292,11 @@ def test_master_mismatch_warns_but_keeps_parsed_customer(up_db):
 
 def test_mjt_customer_constant_shared_by_parsers():
     import utils.mijin_erp_parser as erp
+    import utils.mjt_rules as rules
     import utils.so_parser as sp
-    assert erp.MJT_CUSTOMER == MJT == "(주)엠제이티" and sp.MJT_CUSTOMER is erp.MJT_CUSTOMER
+    assert rules.MJT_CUSTOMER == MJT == "(주)엠제이티"
+    assert sp.MJT_CUSTOMER is erp.MJT_CUSTOMER is rules.MJT_CUSTOMER
+    assert erp.MJT_ONLY_PNS is rules.MJT_ONLY_PNS and erp.customer_for is rules.customer_for
     assert erp.customer_for("4PDVN-03") == MJT and erp.customer_for(None, "4PDVN-02;OUP") == MJT
     assert erp.customer_for("4HDV-VM-04") == MIJIN
     rows = [{"so_number": "E1", "so_date": None, "due_date": None, "amount": 10,
@@ -289,5 +305,55 @@ def test_mjt_customer_constant_shared_by_parsers():
              "customer_hint": erp.customer_for("4HDV-VM-04")}]
     assert sorted((h["customer"], h["so_number"]) for h in erp.group_by_order(rows)) == [
         (MJT, "E1-MJT"), (MIJIN, "E1")]
-    src = open(os.path.join(ROOT, "utils", "mijin_erp_parser.py"), encoding="utf-8").read()
-    assert src.count("㈜") == 1 and 'return "㈜' not in src           # 옛 표기는 상수 주석 설명 1곳만
+    for f, n in (("mijin_erp_parser.py", 0), ("mjt_rules.py", 1)):     # 옛 표기는 상수 주석 설명 1곳만
+        src = open(os.path.join(ROOT, "utils", f), encoding="utf-8").read()
+        assert src.count("㈜") == n and 'return "㈜' not in src, f
+
+
+def test_so_parser_does_not_pull_pandas():
+    """r2(Codex REVIEW LIMITATIONS): so_parser 는 mjt_rules(표준 라이브러리)만 — pandas·ERP 파서를 끌어오지 않는다."""
+    import subprocess
+    code = ("import sys; sys.path.insert(0, %r); import utils.so_parser; "
+            "print('pandas' in sys.modules, 'utils.mijin_erp_parser' in sys.modules)" % ROOT)
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=120)
+    assert out.stdout.split() == ["False", "False"], out.stdout + out.stderr
+
+
+# ── r2: 거래처별 품번 매핑 키(Codex H1)·개정 발주 거래처별 저장(REQUIRED 2) ─────────────────
+
+@app_test
+def test_part_mapping_is_keyed_by_customer(up_db):
+    """두 거래처에 같은 품번 키가 다른 제품으로 매핑돼 있어도 각 라인은 자기 거래처 매핑을 쓴다.
+    예전(_cpm[품번])엔 거래처 정렬상 나중인 미진정밀 매핑이 엠제이티 라인을 덮었다."""
+    up_db({"cpm": {
+        MJT: [{"customer_part_no": "4S4PDVN-03;OUP", "product_id": "P403", "canonical_pn": "4PDVN-03"},
+              {"customer_part_no": "4HDV-VM-04;OUP", "product_id": "PX-MJT", "canonical_pn": "X-MJT"}],
+        MIJIN: [{"customer_part_no": "4S4PDVN-03;OUP", "product_id": "PX-MIJIN", "canonical_pn": "X-MIJIN"},
+                {"customer_part_no": "4HDV-VM-04;OUP", "product_id": "P404", "canonical_pn": "4HDV-VM-04"}]}})
+    at = _upload(MIXED[:2])
+    heads, lines = _save(at)
+    got = sorted((x["so_id"], x["customer_part_no"], x["product_id"]) for x in lines)
+    assert got == [(701, "4HDV-VM-04;OUP", "P404"), (702, "4S4PDVN-03;OUP", "P403")], got
+
+
+@app_test
+def test_revision_saves_per_customer_r_numbers(up_db):
+    """양쪽 거래처 기존 수주와 수량이 다른 재발주 → 개정 등록: 거래처별 다음 -R 번호(엠제이티는 -R2 가 이미
+    있어 -R3, 미진은 -R2), 거래처·번호별 묶음, line_no 는 원래 순번."""
+    up_db({"orders": {(MJT, f"{PO}-MJT"): 600, (MIJIN, PO): 601},
+           "lines": {600: MJT_LINES,
+                     601: [{"soi_id": 3, "line_no": 1, "customer_part_no": "4HDV-VM-04;OUP",
+                            "qty": 50, "unit_price": 3000}]},
+           "rev": {MJT: [f"{PO}-MJT-R2"]}})
+    rows = [(pn, nm, q + 5, p) for pn, nm, q, p in MIXED]          # 세 줄 모두 수량 +5
+    at = _upload(rows)
+    from tests.conftest import msg_texts
+    assert any("단가·수량이 다른 라인 3개" in t for t in msg_texts(at)), msg_texts(at)
+    next(c for c in at.checkbox if c.key == "so_rev_ok").check().run()
+    assert not at.exception, [str(e.value) for e in at.exception]
+    heads, lines = _save(at)
+    assert sorted((h["customer"], h["so_number"]) for h in heads) == [
+        (MJT, f"{PO}-MJT-R3"), (MIJIN, f"{PO}-R2")]
+    got = sorted((x["so_id"], x["line_no"], x["customer_part_no"], x["qty"]) for x in lines)
+    assert got == [(703, 1, "4S4PDVN-03;OUP", 105), (703, 2, "4S8PDVN-02;OUP", 25),
+                   (704, 1, "4HDV-VM-04;OUP", 55)], got

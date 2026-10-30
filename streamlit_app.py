@@ -7239,7 +7239,9 @@ elif page == "수주 관리":
                                         "customer_part_no,product_id,canonical_pn",
                                         f"customer=eq.{_fq(_cu0)}", limit=500):
                                     if _m.get("product_id"):
-                                        _cpm[_mk(_m["customer_part_no"])] = (
+                                        # 키 = (거래처, 품번) — 거래처별 매핑이라 같은 품번이 두 거래처에
+                                        # 다른 제품일 수 있다(미진 엑셀은 이제 늘 두 거래처, DIC 두 공장, 핫픽스 3 r2)
+                                        _cpm[(_cu0, _mk(_m["customer_part_no"]))] = (
                                             _m["canonical_pn"], _m["product_id"], False)
                         except Exception:
                             _cpm = {}
@@ -7257,7 +7259,8 @@ elif page == "수주 관리":
                                 _strip_prefix(pn_hint),
                                 _strip_prefix(base),
                             ]
-                            m = _cpm.get(_mk(pn_hint)) or _cpm.get(_mk(base))
+                            m = (_cpm.get((it["customer"], _mk(pn_hint)))
+                                 or _cpm.get((it["customer"], _mk(base))))
                             _merged_hit = None
                             for _ci, c in enumerate(candidates):
                                 if m: break
@@ -7290,7 +7293,7 @@ elif page == "수주 관리":
                         # 경고만 — 중복 검증이 이미 파싱 판정으로 끝났으니 바꾸지 않는다(핫픽스 3).
                         # 파일을 고쳐 다시 올린다
                         if any(it.get("_source") == "MIJIN_EXCEL" for it in items):
-                            from utils.mijin_erp_parser import customer_for as _mj_cust_for
+                            from utils.mjt_rules import customer_for as _mj_cust_for
                             _mj_odd = [it for it in items
                                        if it.get("_source") == "MIJIN_EXCEL" and it.get("matched_pn")
                                        and ((_mj_cust_for(it["matched_pn"]) != "미진정밀")
