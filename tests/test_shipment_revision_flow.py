@@ -428,6 +428,7 @@ def test_confirm_header_failure_is_surfaced_and_recoverable(rev_db, monkeypatch)
                  "txn_type": "ISSUE", "lot_number": None, "qty": -100,
                  "product_id": "P1"})
     ALLOCS.append({"alloc_id": 9, "si_id": 2, "sched_id": 2, "qty": 100})
+    db.clear_cache()   # 목 상태 직접 변경 = 쓰기 경로 밖 (운영은 db.insert 가 비움, fetch_all 결과 캐시)
     at.run()
     assert [b for b in at.button if b.key == "cf_fix_header"]
     assert at.button(key="cf_go").proto.disabled
