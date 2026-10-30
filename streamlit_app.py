@@ -22133,14 +22133,14 @@ elif page == "영업 보고":
         try:
             _d_ships, _d_tr = _sr_ships(
                 f"status=eq.CONFIRMED&ship_date=eq.{_fq(_d_iso)}")
+            if _d_tr:
+                st.warning(f"출고 전표 {TRUNC_MSG} — 결산 합계는 미확인입니다.")
             _d_drafts = fetch("shipments", "shipment_id,ship_no",
                               f"status=eq.DRAFT&ship_date=eq.{_fq(_d_iso)}",
                               limit=50)
         except Exception as e:
             st.error(f"조회 실패: {e}")
-            _d_ships, _d_drafts, _d_tr = [], [], False
-        if _d_tr:
-            st.warning(f"출고 전표 {TRUNC_MSG} — 결산 합계는 미확인입니다.")
+            _d_ships, _d_drafts, _d_tr = [], [], True     # 2차 묶음 E — 절단과 같은 '미확인'
         if _d_drafts:
             st.warning(
                 "이 날짜의 작성중 전표 {}건({})은 집계에 포함되지 "
@@ -22148,7 +22148,8 @@ elif page == "영업 보고":
                     len(_d_drafts),
                     ", ".join(d["ship_no"] for d in _d_drafts)))
         if not _d_ships:
-            st.info(f"{_d_iso} 확정 전표가 없습니다.")
+            if not _d_tr:          # 조회 실패를 '전표 없음'으로 안내하지 않는다
+                st.info(f"{_d_iso} 확정 전표가 없습니다.")
         else:
             _d_rows = _sr_items(_d_ships)
             _d_agg = _sr.aggregate(_d_rows)
@@ -22239,6 +22240,8 @@ elif page == "영업 보고":
                     "status=eq.CONFIRMED"
                     f"&ship_date=gte.{_fq(_pf_iso)}"
                     f"&ship_date=lte.{_fq(_pt_iso)}")
+                if _m_tr:      # 예전 1,000건 상한 판정 → fetch_all 절단(BCD r2 M2)
+                    st.warning(f"확정 전표 {TRUNC_MSG} — 합계는 미확인입니다. 기간을 나눠 조회하세요.")
                 _m_ships = [s for s in _m_all
                             if _pf_iso <= str(s.get("ship_date") or "")[:10] <= _pt_iso]
                 _m_drafts = [
@@ -22250,9 +22253,9 @@ elif page == "영업 보고":
                     if _pf_iso <= str(d.get("ship_date") or "")[:10]
                     <= _pt_iso]
             except Exception as e:
-                st.error(f"조회 실패: {e}")
-            if _m_tr:      # 예전 1,000건 상한 판정 → fetch_all 절단(BCD r2 M2)
-                st.warning(f"확정 전표 {TRUNC_MSG} — 합계는 미확인입니다. 기간을 나눠 조회하세요.")
+                # 절단이 아닌 예외도 절단과 같은 차단(2차 묶음 E) — 빈·부분 결과로 마감·출력하지 않는다
+                _m_tr = True
+                st.error(f"조회 실패: {e} — 합계는 미확인입니다.")
         _m_rows_all = _sr_items(_m_ships) if _m_ships else []
         _cu_opts = sorted({x.get("customer") for x in _m_rows_all
                            if x.get("customer")})
@@ -22270,7 +22273,7 @@ elif page == "영업 보고":
                     ", ".join(d["ship_no"] for d in _m_drafts[:8])
                     + (" 외" if len(_m_drafts) > 8 else "")))
         if not _m_rows:
-            if _p_from <= _p_to:
+            if _p_from <= _p_to and not _m_tr:       # 조회 실패를 '전표 없음'으로 안내하지 않는다
                 st.info(f"{_pf_iso} ~ {_pt_iso} 확정 전표가 없습니다.")
         else:
             _m_agg = _sr.aggregate(_m_rows)
@@ -22456,14 +22459,15 @@ elif page == "영업 보고":
                 "status=eq.CONFIRMED"
                 f"&ship_date=gte.{_r_from.isoformat()}"
                 f"&ship_date=lte.{_r_to.isoformat()}")
+            if _r_tr:
+                st.warning(f"출고 전표 {TRUNC_MSG} — 거래처 문서는 부분 자료로 만들지 않습니다(재발행 비활성). "
+                           "기간을 좁히세요.")
         except Exception as e:
             st.error(f"조회 실패: {e}")
-            _r_ships, _r_tr = [], False
-        if _r_tr:
-            st.warning(f"출고 전표 {TRUNC_MSG} — 거래처 문서는 부분 자료로 만들지 않습니다(재발행 비활성). "
-                       "기간을 좁히세요.")
+            _r_ships, _r_tr = [], True        # 2차 묶음 E — 절단과 같은 '미확인'
         if not _r_ships:
-            st.info("기간 내 확정 전표가 없습니다.")
+            if not _r_tr:          # 조회 실패를 '전표 없음'으로 안내하지 않는다
+                st.info("기간 내 확정 전표가 없습니다.")
         else:
             _r_rows = _sr_items(_r_ships)
             _r_bysh = {}
