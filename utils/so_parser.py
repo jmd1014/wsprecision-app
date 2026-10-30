@@ -9,6 +9,25 @@ import re
 from datetime import date, datetime
 import openpyxl
 
+from utils.mijin_erp_parser import MJT_CUSTOMER, MJT_ONLY_PNS, strip_suffix
+
+# 미진 엑셀에 섞여 오는 엠제이티 품목의 수주 거래처 = MJT_CUSTOMER(vendors 정식명, 핫픽스 3)
+_MJT_ONLY_UPPER = {p.upper() for p in MJT_ONLY_PNS}
+
+
+def strip_prefix(s):
+    """4S/S 재질 접두어 제거 (PMLib _getBasePn) — 수주 업로드 매칭과 미진 엑셀 거래처 판정이 같이 쓴다."""
+    if not s: return ""
+    p = str(s).upper().strip()
+    if p.startswith('4S') and len(p) > 2 and (p[2].isalnum()):
+        return p[2:]
+    if p.startswith('S') and len(p) > 1 and (p[1].isalnum()):
+        excluded = ('SP-','SDF','SUS','SODV','SFB','SCM','SKD','SKH',
+                    'S45','S20','S30','S304','S316','S630')
+        if not any(p.startswith(e) for e in excluded):
+            return p[1:]
+    return p
+
 
 def _to_num(v):
     if v is None or v == "": return None
@@ -101,13 +120,17 @@ def parse_mijin_excel(file_bytes: bytes, filename: str = "") -> list[dict]:
         po = ws.cell(r, col("외주발주번호")).value
         if not po or str(po).strip() in ("TOTAL", ""): continue
 
-        so_num = str(po)
+        # 엠제이티 전용 품번은 미진 ERP 로 와도 거래처가 엠제이티 — ERP 파서(group_by_order)처럼
+        # 같은 발주번호를 '-MJT' 수주로 분리한다. 중복 검증(거래처, 수주번호)보다 먼저 정해야 한다(핫픽스 3)
+        _pn0 = ws.cell(r, col("제품번호")).value if col("제품번호") else None
+        _mjt = strip_prefix(strip_suffix(_pn0)) in _MJT_ONLY_UPPER
+        so_num = f"{po}-MJT" if _mjt else str(po)
         line_seq[so_num] = line_seq.get(so_num, 0) + 1
 
         item = {
             "_source": "MIJIN_EXCEL",
             "_raw_filename": filename,
-            "customer": "미진정밀",
+            "customer": MJT_CUSTOMER if _mjt else "미진정밀",
             "so_number": so_num,
             "line_no": line_seq[so_num],
             "so_date": _to_date(ws.cell(r, col("외주발주일")).value) if col("외주발주일") else None,
@@ -339,7 +362,7 @@ def parse_mjt_pdf(file_bytes: bytes, filename: str = "") -> list[dict]:
             items.append({
                 "_source": "MJT_PDF",
                 "_raw_filename": filename,
-                "customer": "(주)엠제이티",
+                "customer": MJT_CUSTOMER,
                 "so_number": so_number,
                 "line_no": line_no,
                 "so_date": so_date,

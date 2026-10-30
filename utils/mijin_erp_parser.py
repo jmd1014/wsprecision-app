@@ -24,6 +24,10 @@ MJT_ONLY_PNS = {
     "12HFDVN-VM-03",
 }
 
+# 엠제이티 수주 거래처 표기 — vendors 22 정식명. 미진 ERP·엑셀 파서가 같이 쓴다(핫픽스 3: 예전 "㈜엠제이티"
+# (U+327E)는 정식명이 아니라 vendor 조회·중복 검증이 어긋난다. 운영 수주·전표는 전부 이 표기)
+MJT_CUSTOMER = "(주)엠제이티"
+
 _SUFFIX_RE = re.compile(r";\s*(PM|OUP|OP)\s*$", re.I)
 _SKIP_PNS = {"-3%(외주반품)", "차액분", "외주반품"}
 
@@ -45,7 +49,7 @@ def customer_for(canonical_pn, erp_pn=None):
     for pn in (canonical_pn, strip_suffix(erp_pn) if erp_pn else None):
         if pn and str(pn).strip().upper() in {
                 p.upper() for p in MJT_ONLY_PNS}:
-            return "㈜엠제이티"
+            return MJT_CUSTOMER
     return "미진정밀"
 
 

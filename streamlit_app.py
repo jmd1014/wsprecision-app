@@ -6264,7 +6264,7 @@ elif page == "수주 관리":
 
     from datetime import date as _date, timedelta as _td
     from utils.so_parser import (parse_hdx_excel, parse_mijin_excel, parse_mjt_pdf,
-                                 parse_dic_excel,
+                                 parse_dic_excel, strip_prefix as _so_strip_prefix,
                                   group_by_so_number, match_canonical_pn)
     import db as _db
     import pandas as pd
@@ -6331,18 +6331,7 @@ elif page == "수주 관리":
         s = _re.sub(r'[\s\-_·,\.]+', '', s)
         return s
 
-    def _so_strip_prefix(s):
-        """4S/S 접두어 제거 (PMLib _getBasePn)"""
-        if not s: return ""
-        p = str(s).upper().strip()
-        if p.startswith('4S') and len(p) > 2 and (p[2].isalnum()):
-            return p[2:]
-        if p.startswith('S') and len(p) > 1 and (p[1].isalnum()):
-            excluded = ('SP-','SDF','SUS','SODV','SFB','SCM','SKD','SKH',
-                        'S45','S20','S30','S304','S316','S630')
-            if not any(p.startswith(e) for e in excluded):
-                return p[1:]
-        return p
+    # _so_strip_prefix = utils.so_parser.strip_prefix (위 import — 핫픽스 3 에서 utils 로 이동)
 
     def _so_log(table, rid, field, old, new, reason):
         try:
@@ -7029,7 +7018,6 @@ elif page == "수주 관리":
 
                         # ── 중복 수주번호 검증 (DB 기존 데이터 vs 파싱 결과) ──
                         # 키 = (거래처, 수주번호)
-                        customer_name = items[0]["customer"]
                         existing_keys = set()
                         for _cu0 in _up_custs:
                             _nums0 = sorted({it["so_number"] for it in items
@@ -7112,10 +7100,17 @@ elif page == "수주 관리":
                             # 등록 → 단가 변동 감지 패널에서 대체/별건 처리 ──
                             _rev_diff = []
                             try:
-                                _ex_so = fetch("sales_orders", "so_id,so_number",
-                                               f"customer=eq.\"{customer_name}\"&so_number=in.("
-                                               + ",".join(dup_so_nums) + ")", limit=100)
-                                _ex_map = {s["so_number"]: s["so_id"] for s in _ex_so}
+                                # 거래처별로 찾는다 — 미진 엑셀은 엠제이티 품목을 '-MJT' (주)엠제이티 수주로
+                                # 나눠 한 파일에 거래처가 둘이다(핫픽스 3). 키 = (거래처, 수주번호)
+                                _ex_map = {}
+                                for _cu0 in _up_custs:
+                                    _n0 = sorted({it["so_number"] for it in dup_items
+                                                  if it["customer"] == _cu0})
+                                    if _n0:
+                                        for s in fetch("sales_orders", "so_id,so_number",
+                                                       f"customer=eq.\"{_cu0}\"&so_number=in.("
+                                                       + ",".join(_n0) + ")", limit=100):
+                                            _ex_map[(_cu0, s["so_number"])] = s["so_id"]
                                 _ex_lines = {}
                                 if _ex_map:
                                     for x in fetch("sales_order_items",
@@ -7125,7 +7120,8 @@ elif page == "수주 관리":
                                                    limit=500):
                                         _ex_lines.setdefault(x["so_id"], []).append(x)
                                 for it in dup_items:
-                                    _els = _ex_lines.get(_ex_map.get(it.get("so_number")), [])
+                                    _els = _ex_lines.get(_ex_map.get(
+                                        (it["customer"], it.get("so_number"))), [])
                                     _same = any(
                                         str(e.get("customer_part_no") or "").strip()
                                         == str(it.get("customer_part_no") or "").strip()
@@ -7137,11 +7133,16 @@ elif page == "수주 관리":
                                     if not _same:
                                         _rev_diff.append(it)
                                 _rev_nums = sorted({it["so_number"] for it in _rev_diff})
-                                _rev_existing = {s["so_number"] for s in fetch(
-                                    "sales_orders", "so_number",
-                                    f"customer=eq.\"{customer_name}\"&or=("
-                                    + ",".join(f"so_number.like.{n}-R*" for n in _rev_nums)
-                                    + ")", limit=200)} if _rev_nums else set()
+                                _rev_existing = set()
+                                for _cu0 in _up_custs:
+                                    _rn0 = sorted({it["so_number"] for it in _rev_diff
+                                                   if it["customer"] == _cu0})
+                                    if _rn0:
+                                        _rev_existing |= {(_cu0, s["so_number"]) for s in fetch(
+                                            "sales_orders", "so_number",
+                                            f"customer=eq.\"{_cu0}\"&or=("
+                                            + ",".join(f"so_number.like.{n}-R*" for n in _rn0)
+                                            + ")", limit=200)}
                             except Exception:
                                 _rev_diff, _rev_nums, _rev_existing = [], [], set()
                             if _rev_diff:
@@ -7156,7 +7157,7 @@ elif page == "수주 관리":
                                     for it in _rev_diff:
                                         _base = it["so_number"]
                                         _n = 2
-                                        while f"{_base}-R{_n}" in _rev_existing:
+                                        while (it["customer"], f"{_base}-R{_n}") in _rev_existing:
                                             _n += 1
                                         it["so_number"] = f"{_base}-R{_n}"
                                         it["remark"] = ((it.get("remark") or "")
@@ -7243,18 +7244,7 @@ elif page == "수주 관리":
                         except Exception:
                             _cpm = {}
 
-                        def _strip_prefix(s):
-                            """4S/S 접두어 제거 (PMLib _getBasePn)"""
-                            if not s: return ""
-                            p = str(s).upper().strip()
-                            if p.startswith('4S') and len(p) > 2 and (p[2].isalnum()):
-                                return p[2:]
-                            if p.startswith('S') and len(p) > 1 and (p[1].isalnum()):
-                                excluded = ('SP-','SDF','SUS','SODV','SFB','SCM','SKD','SKH',
-                                            'S45','S20','S30','S304','S316','S630')
-                                if not any(p.startswith(e) for e in excluded):
-                                    return p[1:]
-                            return p
+                        _strip_prefix = _so_strip_prefix     # utils.so_parser.strip_prefix(핫픽스 3)
 
                         matched_count = 0
                         for it in items:
@@ -7296,6 +7286,29 @@ elif page == "수주 관리":
                                 it["matched_pn"] = None
                                 it["matched_pid"] = None
 
+                        # 미진 엑셀: 파싱 때 품번으로 정한 거래처와 매칭된 마스터 품번 기준 판정이 다르면
+                        # 경고만 — 중복 검증이 이미 파싱 판정으로 끝났으니 바꾸지 않는다(핫픽스 3).
+                        # 파일을 고쳐 다시 올린다
+                        if any(it.get("_source") == "MIJIN_EXCEL" for it in items):
+                            from utils.mijin_erp_parser import customer_for as _mj_cust_for
+                            _mj_odd = [it for it in items
+                                       if it.get("_source") == "MIJIN_EXCEL" and it.get("matched_pn")
+                                       and ((_mj_cust_for(it["matched_pn"]) != "미진정밀")
+                                            != (it.get("customer") != "미진정밀"))]
+                            if _mj_odd:
+                                st.warning(
+                                    f"거래처 판정이 마스터 품번과 다른 라인 {len(_mj_odd)}개: "
+                                    + ", ".join(f"{it.get('so_number')} {it['matched_pn']}"
+                                                for it in _mj_odd[:5])
+                                    + (" …" if len(_mj_odd) > 5 else "")
+                                    + " — 파일 품번을 확인해 다시 올려 주세요.")
+                            _mj_split = len({it["so_number"] for it in items
+                                             if it.get("_source") == "MIJIN_EXCEL"
+                                             and it.get("customer") != "미진정밀"})
+                            if _mj_split:
+                                ws_note(f"엠제이티 분리 {_mj_split}건 — 엠제이티 전용 품번은 "
+                                        "'-MJT' (주)엠제이티 수주로 저장합니다.")
+
                         # (매칭 비율 안내 → 결과 카드 머리 배지 '품번 확인 n', U3)
 
                         # 단가가 없는 양식(DIC)은 제품 마스터 판매단가로 채운다
@@ -7334,7 +7347,8 @@ elif page == "수주 관리":
 
                         # 미리보기
                         df = pd.DataFrame([{
-                            **({"거래처": it.get("customer")} if _is_dic else {}),
+                            **({"거래처": it.get("customer")}
+                               if _is_dic or len(_up_custs) > 1 else {}),
                             "수주번호": it.get("so_number"),
                             "라인": it.get("line_no"),
                             "거래처 자재": it.get("customer_part_no"),
