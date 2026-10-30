@@ -17,6 +17,7 @@ try:
     # PostgREST 필터 값 인용 (2026-09-17): 최상위 값 _fq, or=()/in.() 안 _fqo/_fql
     # (이름은 페이지 지역 변수와 충돌하지 않는 것으로 — _qv 는 수량 변수로 이미 사용)
     from db import qv as _fq, qo as _fqo, qol as _fql
+    from utils.fetch_in import fetch_all_in as _fetch_all_in     # id 묶음(in) 끝까지 조회(2차 묶음 F)
     DB_AVAILABLE = True
 except Exception as e:
     DB_AVAILABLE = False
@@ -2249,6 +2250,7 @@ if page == "홈":
         _h_so = []
     # 수주별 대표 품번 + 분납 스케줄 납기 (미납 라인 기준)
     _h_pn, _h_sched, _h_lines = {}, {}, []
+    _h_li_tr = False      # 미납 라인 절단(2차 묶음 F)
     _h_sc_tr = False      # 회차가 안전 상한(2만 행)을 넘어 잘리면 '일부 미확인' 안내(핫픽스 2 r2 M2)
     _open_ids = [s["so_id"] for s in _h_so
                  if float(s.get("total_pending_qty") or 0) > 0]
@@ -2258,13 +2260,11 @@ if page == "홈":
         _id_chunks = [",".join(str(i) for i in _open_ids[_i0:_i0 + 100])
                       for _i0 in range(0, len(_open_ids), 100)]
         try:
-            _h_lines = []
-            for _ids in _id_chunks:
-                _h_lines += fetch("sales_order_items",
-                    "so_id,soi_id,product_id,canonical_pn,customer_part_no,"
-                    "qty,received_qty,pending_qty,due_date",
-                    f"so_id=in.({_ids})&pending_qty=gt.0"
-                    "&order=pending_qty.desc", limit=1000)
+            # 수주 50개 묶음마다 끝까지(2차 묶음 F) — 묶음 안 미납 큰 순(같은 수주는 한 묶음)
+            _h_lines, _h_li_tr = _fetch_all_in("sales_order_items",
+                "so_id,soi_id,product_id,canonical_pn,customer_part_no,"
+                "qty,received_qty,pending_qty,due_date",
+                "so_id", _open_ids, "pending_qty=gt.0", order="pending_qty.desc")
             for _l in _h_lines:      # pending desc → 첫 라인이 대표
                 _e = _h_pn.setdefault(_l["so_id"],
                                       {"top": None, "n": 0})
@@ -2321,10 +2321,9 @@ if page == "홈":
     except Exception:
         _h_ps = []
     try:
-        _h_mes = fetch("production_log", "total_qty",
-            f"log_date=eq.{_fq(_hd.today().isoformat())}&source=eq.MES_UPLOAD",
-            limit=2000)
-        _mes_today = sum(float(x.get("total_qty") or 0) for x in _h_mes)
+        _h_mes, _h_mes_tr = fetch_all("production_log", "total_qty",          # 끝까지(2차 묶음 F)
+            f"log_date=eq.{_fq(_hd.today().isoformat())}&source=eq.MES_UPLOAD")
+        _mes_today = None if _h_mes_tr else sum(float(x.get("total_qty") or 0) for x in _h_mes)
     except Exception:
         _mes_today = 0
 
@@ -2354,7 +2353,9 @@ if page == "홈":
                 + _kpi("외주중", _out_wip, tone="warn")
                 + _kpi("완성 재고", _fin_stock, tone="good")
                 + "</div>", unsafe_allow_html=True)
-    if _mes_today:
+    if _mes_today is None:
+        st.caption(f"오늘 MES 생산 실적: 미확인 — {TRUNC_MSG} (상세는 생산 보고)")
+    elif _mes_today:
         st.caption(f"오늘 MES 생산 실적: {_mes_today:,.0f} EA "
                    "(상세는 생산 보고)")
 
@@ -2368,6 +2369,8 @@ if page == "홈":
         st.markdown(f"##### 수주 진행 ({_h_view} · 미납 · 납기순)")
         if _h_sc_tr:
             ws_note("회차 일부 미확인 — 회차가 너무 많아 일부 납기는 수주 납기로 표시합니다", warn=True)
+        if _h_li_tr:
+            ws_note(f"미납 라인 {TRUNC_MSG} — 수주 진행 수량은 일부입니다(미확인)", warn=True)
         # 품번별 = 생산 일정 관리 단위 (같은 품번에 수주가 계속
         # 추가되므로 실무 기본값). 수주별은 문서 단위 확인용.
         _h_view = st.radio("수주 진행 보기", ["품번별", "수주별"],
@@ -2795,10 +2798,11 @@ elif page == "마스터 관리":
                     _pids = {b["product_id"] for b in _bl}
                     _pm = {}
                     if _pids:
-                        _pm = {p["product_id"]: p["pn"] for p in _db.fetch(
-                            "products", "product_id,pn",
-                            "product_id=in.({})".format(",".join(
-                                f'"{i}"' for i in _pids)), limit=2000)}
+                        _pm_rows, _pm_tr = _fetch_all_in(                # 끝까지(2차 묶음 F)
+                            "products", "product_id,pn", "product_id", sorted(_pids), quote=True)
+                        if _pm_tr:
+                            st.warning(f"제품 {TRUNC_MSG} — '사용 품번' 표기가 일부 빠질 수 있습니다.")
+                        _pm = {p["product_id"]: p["pn"] for p in _pm_rows}
                     for b in _bl:
                         _p = _pm.get(b["product_id"])
                         if _p:
@@ -4903,20 +4907,22 @@ elif page == "마스터 관리":
             else:
                 # 참조 건수 — 어느 쪽을 남길지 판단 근거
                 _ids = [m["material_id"] for v in _dups.values() for m in v]
-                _bcnt, _tcnt = {}, {}
-                try:
-                    for b in _db.fetch("bom", "material_id",
-                            "material_id=in.({})".format(",".join(_ids)),
-                            limit=2000):
+                _bcnt, _tcnt, _cnt_unk = {}, {}, False
+                try:                       # 끝까지 — 일부만이면 건수 미확인(빈칸)(2차 묶음 F)
+                    _b9, _b9_tr = _fetch_all_in("bom", "material_id", "material_id", _ids)
+                    for b in _b9:
                         _bcnt[b["material_id"]] = _bcnt.get(
                             b["material_id"], 0) + 1
-                    for t in _db.fetch("inventory_transactions", "material_id",
-                            "material_id=in.({})".format(",".join(_ids)),
-                            limit=2000):
+                    _t9, _t9_tr = _fetch_all_in("inventory_transactions", "material_id",
+                                                "material_id", _ids)
+                    for t in _t9:
                         _tcnt[t["material_id"]] = _tcnt.get(
                             t["material_id"], 0) + 1
+                    _cnt_unk = _b9_tr or _t9_tr
                 except Exception:
-                    pass
+                    _cnt_unk = True
+                if _cnt_unk:
+                    ws_note("참조 건수(BOM·원장)를 끝까지 읽지 못했습니다 — 건수는 미확인(빈칸)입니다.", warn=True)
                 st.caption(f"중복 후보 {len(_dups)}쌍"
                            + (" (일부 자재 미검사 — 병합은 전수 조회 뒤)" if _all_m_tr
                               else " — 한 쌍씩 확인하고 병합하세요."))
@@ -4930,8 +4936,8 @@ elif page == "마스터 관리":
                             "규격": m.get("spec") or "-",
                             "공급사": m.get("main_supplier") or "-",
                             "재고": float(m.get("stock_qty") or 0),
-                            "BOM": _bcnt.get(m["material_id"], 0),
-                            "원장": _tcnt.get(m["material_id"], 0),
+                            "BOM": None if _cnt_unk else _bcnt.get(m["material_id"], 0),
+                            "원장": None if _cnt_unk else _tcnt.get(m["material_id"], 0),
                         } for m in _v]), use_container_width=True,
                             hide_index=True)
                         _kk = "_".join(_k)
@@ -5142,11 +5148,12 @@ elif page == "마스터 관리":
             # 리스트 표시용 BOM·라우팅 요약
             _sum_mat, _sum_proc = {}, {}
             try:
-                _pl_ids = ",".join(f'"{p["product_id"]}"'
-                                   for p in pmatch)
-                for b in fetch("bom",
-                        "product_id,process_type,raw_material_name",
-                        f"product_id=in.({_pl_ids})", limit=2000):
+                _pl_bom, _pl_tr = _fetch_all_in(                     # 끝까지(2차 묶음 F)
+                    "bom", "product_id,process_type,raw_material_name",
+                    "product_id", [p["product_id"] for p in pmatch], quote=True)
+                if _pl_tr:
+                    st.warning(f"BOM {TRUNC_MSG} — 소재·공정 요약이 일부 빠질 수 있습니다.")
+                for b in _pl_bom:
                     if (b.get("process_type")
                             or "MATERIAL") == "MATERIAL":
                         _sum_mat.setdefault(
@@ -7062,15 +7069,13 @@ elif page == "수주 관리":
                                                 + ",".join(_n0) + ")", limit=200):
                                             _dx_so[(_cu0, e["so_number"])] = e["so_id"]
                                 _dx_lines = {}
-                                _ids0 = sorted(set(_dx_so.values()))
-                                for _i0 in range(0, len(_ids0), 80):
-                                    for x in fetch(
-                                            "sales_order_items",
-                                            "soi_id,so_id,line_no,customer_part_no",
-                                            "so_id=in.({})".format(",".join(
-                                                str(v) for v in _ids0[_i0:_i0 + 80])),
-                                            limit=2000):
-                                        _dx_lines.setdefault(x["so_id"], []).append(x)
+                                _dx_li, _dx_tr = _fetch_all_in(            # 끝까지(2차 묶음 F)
+                                    "sales_order_items", "soi_id,so_id,line_no,customer_part_no",
+                                    "so_id", sorted(set(_dx_so.values())))
+                                if _dx_tr:     # 기존 라인을 일부만 알면 있는 라인을 새 행번으로 또 넣는다
+                                    raise RuntimeError(f"기존 수주 라인 {TRUNC_MSG} — 추가하지 않았습니다")
+                                for x in _dx_li:
+                                    _dx_lines.setdefault(x["so_id"], []).append(x)
                                 for it in dup_items:
                                     _sid0 = _dx_so.get((it["customer"], it["so_number"]))
                                     _hit = next((
@@ -8282,21 +8287,25 @@ elif page == "수주 관리":
                    | {l["so_id"] for l in _open_li}) or {0}
         _soi_more = (({r["soi_id"] for r in _sch_base} | {r["soi_id"] for r in _all_sc})
                      - {l["soi_id"] for l in _open_li})
-        try:
-            _sc_som = {s["so_id"]: s for s in fetch("sales_orders",
-                "so_id,so_number,customer,status",
-                "so_id=in.({})".format(",".join(map(str, _so_ids))),
-                limit=1000)}
+        try:                       # 끝까지 — 일부면 종결·취소 수주를 못 거른다 → 합계 미확인(2차 묶음 F)
+            _sc_som_rows, _sc_som_tr = _fetch_all_in(
+                "sales_orders", "so_id,so_number,customer,status", "so_id", sorted(_so_ids))
+            _sc_som = {s["so_id"]: s for s in _sc_som_rows}
+            if _sc_som_tr:
+                _sch_unk = True
+                ws_note(f"수주 머리글 {TRUNC_MSG} — 계획률·미계획·상단 합계는 미확인입니다", warn=True)
         except Exception:
             _sc_som = {}
         _li_by_soi = {l["soi_id"]: l for l in _open_li}
         if _soi_more:  # 납품이 끝난 라인의 회차도 품번 표시가 필요
             try:
-                for l in fetch("sales_order_items",
-                        "soi_id,so_id,canonical_pn,customer_part_no,qty,"
-                        "received_qty,pending_qty,due_date",
-                        "soi_id=in.({})".format(
-                            ",".join(map(str, _soi_more))), limit=1000):
+                _li_more, _li_more_tr = _fetch_all_in(
+                    "sales_order_items",
+                    "soi_id,so_id,canonical_pn,customer_part_no,qty,"
+                    "received_qty,pending_qty,due_date", "soi_id", sorted(_soi_more))
+                if _li_more_tr:
+                    ws_note(f"납품 끝난 라인 {TRUNC_MSG} — 일부 회차의 품번 표시가 빠질 수 있습니다", warn=True)
+                for l in _li_more:
                     _li_by_soi.setdefault(l["soi_id"], l)
             except Exception:
                 pass
@@ -9433,12 +9442,10 @@ elif page == "출고 관리":
                                  "status=eq.DRAFT&order=ship_no.desc", limit=50)
             _n_drafts_all = len(_open_drafts)
             if _open_drafts:
-                _d_ids = ",".join(str(s["shipment_id"])
-                                  for s in _open_drafts)
                 _d_no = {s["shipment_id"]: s["ship_no"]
                          for s in _open_drafts}
-                _d_items = fetch("shipment_items", "si_id,soi_id,shipment_id",
-                                 f"shipment_id=in.({_d_ids})", limit=1000)
+                _d_items, _d_tr = _fetch_all_in(                  # 끝까지(2차 묶음 F)
+                    "shipment_items", "si_id,soi_id,shipment_id", "shipment_id", list(_d_no))
                 for x in _d_items:
                     if x.get("soi_id") is not None:
                         _draft_sois.setdefault(
@@ -9446,22 +9453,28 @@ elif page == "출고 관리":
                 # 확정 반영 흔적(재고 차감·회차 충당)이 있는 작성중 전표는
                 # 사실상 확정된 전표 — 라인을 더 붙이면 반영 없이 섞인다
                 # (2026-10-12 QA 리뷰 H2). 추가 대상에서 뺀다.
-                _d_si = ",".join(str(x["si_id"]) for x in _d_items
-                                 if x.get("si_id"))
+                _d_si = [x["si_id"] for x in _d_items if x.get("si_id")]
                 if _d_si:
                     _d_hit = set()
-                    for _a in fetch("shipment_allocations", "si_id",
-                                    f"si_id=in.({_d_si})", limit=1000):
+                    _d_al, _d_tr2 = _fetch_all_in("shipment_allocations", "si_id", "si_id", _d_si)
+                    for _a in _d_al:
                         _d_hit.add(_a["si_id"])
-                    for _t in fetch("inventory_transactions", "ref_id",
-                                    "ref_table=eq.shipment_items"
-                                    f"&txn_type=eq.ISSUE&ref_id=in.({_d_si})",
-                                    limit=1000):
+                    _d_tx, _d_tr3 = _fetch_all_in(
+                        "inventory_transactions", "ref_id", "ref_id", _d_si,
+                        "ref_table=eq.shipment_items&txn_type=eq.ISSUE")
+                    for _t in _d_tx:
                         _d_hit.add(_t["ref_id"])
+                    _d_tr = _d_tr or _d_tr2 or _d_tr3
                     _d_bad = {x["shipment_id"] for x in _d_items
                               if x.get("si_id") in _d_hit}
                     _open_drafts = [s for s in _open_drafts
                                     if s["shipment_id"] not in _d_bad]
+                if _d_tr:
+                    # 일부만 읽음 — 반영 흔적을 다 못 봤으니 '기존 작성중 전표에 추가'는 막고, 이미 담긴 라인은
+                    # 아는 만큼만 뺀다(등록 직전 재확인이 한 번 더 막는다)
+                    _open_drafts = []
+                    st.warning(f"작성중 전표 라인 {TRUNC_MSG} — 기존 작성중 전표에 추가는 잠시 막습니다. "
+                               "'출고 전표' 화면에서 작성중 전표를 정리하세요.")
         except Exception:
             _draft_sois = {}
             _open_drafts = []
@@ -9665,19 +9678,18 @@ elif page == "출고 관리":
                 _grp = _sh_pids[_i0:_i0 + 80]
                 _acc = {}
                 try:
-                    _off = 0
-                    while True:
-                        _pg = fetch("product_lot_stock_v", "product_id,remain_qty",
-                                    "remain_qty=gt.0&product_id=in.({})&order=product_id.asc,"
-                                    "lot_number.asc&offset={}".format(
-                                        ",".join(f'"{x}"' for x in _grp), _off),
-                                    limit=1000)
-                        for _l in _pg:
-                            _acc[_l["product_id"]] = (_acc.get(_l["product_id"], 0.0)
-                                                      + float(_l.get("remain_qty") or 0))
-                        if len(_pg) < 1000:
-                            break
-                        _off += 1000
+                    # 예전 offset 루프 → fetch_all(2차 묶음 F). 뷰에 구조적 유일 키가 없어(wo_tracking 조인)
+                    # (product_id, lot_number) 는 정렬에만 쓰고 중복 제거는 하지 않는다 — 예전 루프와 같은 합
+                    _pg, _pg_tr = _fetch_all_in(
+                        "product_lot_stock_v", "product_id,remain_qty", "product_id", _grp,
+                        "remain_qty=gt.0", quote=True, chunk=80,
+                        order="product_id.asc,lot_number.asc",
+                        pk=("product_id", "lot_number"), dedupe=False)
+                    if _pg_tr:
+                        raise RuntimeError("완성 LOT 조회 절단")      # 일부 합 = 미확인
+                    for _l in _pg:
+                        _acc[_l["product_id"]] = (_acc.get(_l["product_id"], 0.0)
+                                                  + float(_l.get("remain_qty") or 0))
                     for _p9 in _grp:
                         _sh_stock[_p9] = _acc.get(_p9, 0.0)
                 except Exception:
@@ -9875,15 +9887,18 @@ elif page == "출고 관리":
                     _g_drafts = fetch("shipments", "shipment_id,ship_no",
                                       "status=eq.DRAFT", limit=50)
                     if _g_drafts:
-                        _g_ids = ",".join(str(d["shipment_id"])
-                                          for d in _g_drafts)
-                        _g_sois = {x["soi_id"] for x in fetch(
-                            "shipment_items", "soi_id,shipment_id",
-                            f"shipment_id=in.({_g_ids})", limit=1000)}
+                        _g_li, _g_tr = _fetch_all_in(              # 끝까지(2차 묶음 F)
+                            "shipment_items", "soi_id,shipment_id", "shipment_id",
+                            [d["shipment_id"] for d in _g_drafts])
+                        _g_sois = {x["soi_id"] for x in _g_li}
                         _new_sois = {it["li"]["soi_id"]
                                      for it, _ in _sh_sel}
                         _hit_g = _new_sois & _g_sois
-                        if _hit_g:
+                        if _g_tr:          # 재확인이 일부만 — 이중 출고를 못 거르므로 등록하지 않는다
+                            _dup_guard = True
+                            st.warning(f"등록 중단 — 작성중 전표 라인 {TRUNC_MSG}. '출고 전표' 화면에서 "
+                                       "작성중 전표를 정리한 뒤 다시 등록하세요.")
+                        elif _hit_g:
                             _dup_guard = True
                             st.warning(
                                 "등록 중단 — 방금 만든 작성중 전표에 "
@@ -9988,12 +10003,14 @@ elif page == "출고 관리":
                         "cancelled_at,cancel_reason")
             _cf_sq = (_cf_search or "").strip().replace(",", " ")
             if _cf_sq:
-                _cf_hit_rows = fetch(
+                # 1,000행 상한은 그대로 두되 절단은 fetch_all 로 정확히 감지(2차 묶음 F — 예전 len>=1000 판정은
+                # 서버 상한과 같은 값이라 '딱 1,000행'과 '잘림'을 구분하지 못했다)
+                _cf_hit_rows, _cf_hit_tr = fetch_all(
                     "shipment_items", "shipment_id",
                     f"or=(pn.ilike.{_fql(_cf_sq)},customer.ilike.{_fql(_cf_sq)},"
-                    f"customer_pn.ilike.{_fql(_cf_sq)})", limit=1000)
+                    f"customer_pn.ilike.{_fql(_cf_sq)})", max_rows=1000)
                 _cf_hit = {x["shipment_id"] for x in _cf_hit_rows}
-                if len(_cf_hit_rows) >= 1000 or len(_cf_hit) > 300:
+                if _cf_hit_tr or len(_cf_hit) > 300:
                     # 검색 UI 는 300 전표 상한 그대로 — 넘치면 안내만(후속 C)
                     st.info("검색 결과가 너무 많아 일부만 표시합니다 — 검색어를 좁히세요.")
                 _cf_ships = fetch("shipments", _cf_cols,
@@ -10111,21 +10128,21 @@ elif page == "출고 관리":
                 _ids = [x.get("si_id") for x in (items or []) if x.get("si_id")]
                 if not _ids:
                     return {"txn": 0, "alloc": 0, "ok": True, "si": set()}
-                _s = ",".join(str(i) for i in _ids)
                 _ckw = {} if cache is None else {"cache": cache}   # 응답 불명 재조회는 cache=False (P3-0)
                 try:
                     # 라인별 ISSUE 순합 — 역분개로 0 이 된 라인은 흔적 아님
                     # (2026-10-12 리뷰: 건수 기준이면 순합 0 전표를 오판)
                     _net = {}
-                    for _t in fetch("inventory_transactions",
-                                    "txn_id,ref_id,qty",
-                                    "ref_table=eq.shipment_items"
-                                    f"&txn_type=eq.ISSUE&ref_id=in.({_s})",
-                                    limit=1000, **_ckw):
+                    _tx9, _tr9a = _fetch_all_in(                   # 끝까지(2차 묶음 F)
+                        "inventory_transactions", "txn_id,ref_id,qty", "ref_id", _ids,
+                        "ref_table=eq.shipment_items&txn_type=eq.ISSUE", **_ckw)
+                    for _t in _tx9:
                         _net[_t["ref_id"]] = (_net.get(_t["ref_id"], 0.0)
                                               + float(_t.get("qty") or 0))
-                    _al = fetch("shipment_allocations", "alloc_id,si_id",
-                                f"si_id=in.({_s})", limit=1000, **_ckw)
+                    _al, _tr9b = _fetch_all_in("shipment_allocations", "alloc_id,si_id",
+                                               "si_id", _ids, **_ckw)
+                    if _tr9a or _tr9b:
+                        raise RuntimeError("반영 흔적 조회 절단")    # 일부만 읽음 = 모름 → 아래와 같이 잠금
                 except Exception:
                     # 조회 실패 = 모름 → 호출부가 확정·취소·정정을 모두 잠근다
                     return {"txn": None, "alloc": None, "ok": False,
@@ -10369,21 +10386,21 @@ elif page == "출고 관리":
                 _user = current_user_name()
                 _rev = int(pick.get("rev_no") or 0) + 1
                 _si_ids = [x["si_id"] for x, _, _, _ in _deltas]
-                _si_str = ",".join(str(s) for s in _si_ids)
                 _soi_ids = sorted({x["soi_id"] for x, _, _, _ in _deltas
                                    if x.get("soi_id") is not None})
                 _txn_by, _alloc_by, _li_by = {}, {}, {}
                 try:
-                    for t in fetch("inventory_transactions",
-                                   "txn_id,ref_id,lot_number,qty",
-                                   "ref_table=eq.shipment_items"
-                                   "&txn_type=eq.ISSUE"
-                                   f"&ref_id=in.({_si_str})", limit=1000):
+                    _tx9, _tr9a = _fetch_all_in(                   # 끝까지(2차 묶음 F)
+                        "inventory_transactions", "txn_id,ref_id,lot_number,qty", "ref_id", _si_ids,
+                        "ref_table=eq.shipment_items&txn_type=eq.ISSUE", order="txn_id.asc")
+                    for t in _tx9:
                         _txn_by.setdefault(t["ref_id"], []).append(t)
-                    for a in fetch("shipment_allocations",
-                                   "alloc_id,si_id,sched_id,qty",
-                                   f"si_id=in.({_si_str})", limit=1000):
+                    _al9, _tr9b = _fetch_all_in("shipment_allocations", "alloc_id,si_id,sched_id,qty",
+                                                "si_id", _si_ids, order="alloc_id.asc")
+                    for a in _al9:
                         _alloc_by.setdefault(a["si_id"], []).append(a)
+                    if _tr9a or _tr9b:      # 일부만 읽고 역분개·회차 환원하면 어긋난다 → 정정 중단
+                        return 0, [f"정정 준비 조회 {TRUNC_MSG} — 정정을 중단했습니다."]
                     if _soi_ids:
                         _li_by = {l["soi_id"]: l for l in fetch(
                             "sales_order_items",
@@ -11724,26 +11741,26 @@ elif page == "출고 관리":
         else:
             _dv_smap = {s["shipment_id"]: s for s in _dv_ships}
             _dv_rows = []
-            _dv_ids = list(_dv_smap)
-            for _i0 in range(0, len(_dv_ids), 50):
-                _ck = ",".join(str(x) for x in _dv_ids[_i0:_i0 + 50])
-                try:
-                    for x in fetch(
-                            "shipment_items",
-                            "si_id,shipment_id,soi_id,product_id,pn,"
-                            "item_name,customer,so_number,qty",
-                            f"shipment_id=in.({_ck})&order=si_id.desc",
-                            limit=2000):
-                        if float(x.get("qty") or 0) <= 0:
-                            continue      # 정정으로 제외된 라인
-                        _s0 = _dv_smap.get(x["shipment_id"]) or {}
-                        x["ship_no"] = _s0.get("ship_no")
-                        x["ship_date"] = _s0.get("ship_date")
-                        x["reg"] = _s0.get("created_at")   # 등록일(참고)
-                        x["by"] = _s0.get("created_by")
-                        _dv_rows.append(x)
-                except Exception:
-                    pass
+            try:                     # 전표 50개 묶음마다 끝까지(2차 묶음 F)
+                _dv_its, _dv_tr = _fetch_all_in(
+                    "shipment_items",
+                    "si_id,shipment_id,soi_id,product_id,pn,"
+                    "item_name,customer,so_number,qty",
+                    "shipment_id", list(_dv_smap), order="si_id.desc")
+            except Exception as e:
+                st.error(f"출고 라인 조회 실패: {e}")
+                _dv_its, _dv_tr = [], True
+            if _dv_tr and _dv_its:
+                ws_note(f"출고 라인 {TRUNC_MSG} — 목록·합계가 일부입니다(합계 미확인).", warn=True)
+            for x in _dv_its:
+                if float(x.get("qty") or 0) <= 0:
+                    continue      # 정정으로 제외된 라인
+                _s0 = _dv_smap.get(x["shipment_id"]) or {}
+                x["ship_no"] = _s0.get("ship_no")
+                x["ship_date"] = _s0.get("ship_date")
+                x["reg"] = _s0.get("created_at")   # 등록일(참고)
+                x["by"] = _s0.get("created_by")
+                _dv_rows.append(x)
 
             # 품명 (사내 정본 우선) · LOT (원장 ISSUE 실적)
             _dv_pn_nm = {}
@@ -11767,15 +11784,11 @@ elif page == "출고 관리":
 
             _dv_lot_map = {}
             try:
-                _si_ids = [r["si_id"] for r in _dv_rows]
-                _tx0 = []
-                for _i0 in range(0, len(_si_ids), 80):
-                    _tx0 += fetch(
-                        "inventory_transactions", "ref_id,lot_number,qty",
-                        "ref_table=eq.shipment_items&txn_type=eq.ISSUE"
-                        "&ref_id=in.({})".format(",".join(
-                            str(x) for x in _si_ids[_i0:_i0 + 80])),
-                        limit=2000)
+                _tx0, _tx0_tr = _fetch_all_in(                       # 끝까지(2차 묶음 F)
+                    "inventory_transactions", "ref_id,lot_number,qty", "ref_id",
+                    [r["si_id"] for r in _dv_rows], "ref_table=eq.shipment_items&txn_type=eq.ISSUE")
+                if _tx0_tr:
+                    ws_note(f"출고 LOT {TRUNC_MSG} — LOT 열이 일부 비어 있을 수 있습니다.", warn=True)
                 _dv_lot_map = _dv_lots_fn(_tx0)
             except Exception:
                 pass
@@ -11808,10 +11821,10 @@ elif page == "출고 관리":
 
             st.markdown(
                 '<div class="kpi-row">'
-                + _dv_kpi("출고 수량", _dv_sum, _dv_preset, "good")
-                + _dv_kpi("전표", f"{_dv_nship}건")
-                + _dv_kpi("품목", f"{_dv_npn}종")
-                + _dv_kpi("거래처", f"{_dv_ncust}곳")
+                + _dv_kpi("출고 수량", "미확인" if _dv_tr else _dv_sum, _dv_preset, "good")
+                + _dv_kpi("전표", "미확인" if _dv_tr else f"{_dv_nship}건")
+                + _dv_kpi("품목", "미확인" if _dv_tr else f"{_dv_npn}종")
+                + _dv_kpi("거래처", "미확인" if _dv_tr else f"{_dv_ncust}곳")
                 + "</div>", unsafe_allow_html=True)
 
             _dv_view = st.radio(
@@ -11898,26 +11911,19 @@ elif page == "출고 관리":
                         except Exception:
                             pass
                         # 전표 출고 누적 (기간 무관 — 전체 확정 전표)
-                        _dv_ship_sum = {}
-                        try:
-                            _soi_str = ",".join(
-                                str(s["soi_id"]) for s in _dv_sois)
-                            _all_li = fetch(
-                                "shipment_items",
-                                "soi_id,shipment_id,qty",
-                                f"soi_id=in.({_soi_str})", limit=1000)
-                            _sh_st = {}
+                        _dv_ship_sum, _dv_ss_unk = {}, False
+                        try:                 # 끝까지 — 일부만이면 '전표 출고'·'전표 외' 미확인(2차 묶음 F)
+                            _all_li, _tr_a = _fetch_all_in(
+                                "shipment_items", "soi_id,shipment_id,qty", "soi_id",
+                                [s["soi_id"] for s in _dv_sois])
+                            _sh_st, _tr_b = {}, False
                             _sh_ids2 = {x["shipment_id"]
                                         for x in _all_li}
                             if _sh_ids2:
-                                _sh_st = {s["shipment_id"]: s["status"]
-                                          for s in fetch(
-                                        "shipments",
-                                        "shipment_id,status",
-                                        "shipment_id=in.({})".format(
-                                            ",".join(str(i) for i in
-                                                     _sh_ids2)),
-                                        limit=300)}
+                                _sh_rows2, _tr_b = _fetch_all_in(
+                                    "shipments", "shipment_id,status", "shipment_id", sorted(_sh_ids2))
+                                _sh_st = {s["shipment_id"]: s["status"] for s in _sh_rows2}
+                            _dv_ss_unk = _tr_a or _tr_b
                             for x in _all_li:
                                 if _sh_st.get(
                                         x["shipment_id"]) == "CONFIRMED":
@@ -11925,11 +11931,14 @@ elif page == "출고 관리":
                                         _dv_ship_sum.get(x["soi_id"], 0)
                                         + float(x.get("qty") or 0))
                         except Exception:
-                            pass
+                            _dv_ss_unk = True
+                        if _dv_ss_unk:
+                            ws_note("전표 출고 누적을 끝까지 읽지 못했습니다 — '전표 출고'·'전표 외 기납품'은 "
+                                    "미확인(빈칸)입니다.", warn=True)
                         _dv_rc = []
                         for s in _dv_sois:
                             _rcv = float(s.get("received_qty") or 0)
-                            _shp = _dv_ship_sum.get(s["soi_id"], 0.0)
+                            _shp = None if _dv_ss_unk else _dv_ship_sum.get(s["soi_id"], 0.0)
                             _no, _cu = _dv_so_nm.get(
                                 s["so_id"], ("-", "-"))
                             _dv_rc.append({
@@ -11937,7 +11946,7 @@ elif page == "출고 관리":
                                 "수주": float(s.get("qty") or 0),
                                 "기납품": _rcv,
                                 "전표 출고": _shp,
-                                "전표 외 기납품": max(_rcv - _shp, 0),
+                                "전표 외 기납품": None if _shp is None else max(_rcv - _shp, 0),
                                 "미납": float(
                                     s.get("pending_qty") or 0),
                             })
@@ -11948,7 +11957,7 @@ elif page == "출고 관리":
                                     format="localized", width="small")
                                 for c in ("수주", "기납품", "전표 출고",
                                           "전표 외 기납품", "미납")})
-                        if any(r["전표 외 기납품"] > 0 for r in _dv_rc):
+                        if any((r["전표 외 기납품"] or 0) > 0 for r in _dv_rc):
                             st.caption(
                                 "**전표 외 기납품** = 런칭 전 실적 "
                                 "(수주 업로드 스냅샷·기납품 소급) — "
@@ -12200,17 +12209,21 @@ elif page == "생산 계획":
                     "updated_at")
         if (st.session_state.get("wp_loaded") != (_wp_ws.isoformat(), _wp_nonce)
                 or "wp_rows" not in st.session_state):
-            try:
-                _db_rows = fetch("production_plan_items", _WP_COLS,
-                                 f"week_start=eq.{_wp_ws.isoformat()}"
-                                 "&order=seq,plan_item_id", limit=1000)
+            _wp_tr = False
+            try:                   # 끝까지(2차 묶음 F) — pk 는 테이블 PK(PK_OF 밖이라 명시)
+                _db_rows, _wp_tr = fetch_all("production_plan_items", _WP_COLS,
+                                             f"week_start=eq.{_wp_ws.isoformat()}",
+                                             order="seq.asc", pk="plan_item_id")
             except Exception as e:
                 st.error(f"주간 계획 조회 실패: {e}")
                 _db_rows = []
+            st.session_state["wp_trunc"] = _wp_tr
             st.session_state["wp_rows"] = [dict(r) for r in _db_rows]
             st.session_state["wp_fp"] = _wp.fingerprint(_db_rows)
             st.session_state["wp_loaded"] = (_wp_ws.isoformat(), _wp_nonce)
         _wp_rows = st.session_state["wp_rows"]
+        if st.session_state.get("wp_trunc"):     # 일부만 불러온 채 저장하면 빠진 행이 삭제로 읽힌다
+            st.warning(f"이 주 계획 {TRUNC_MSG} — 저장을 막았습니다.")
 
         def _wp_stds_for(pn, pid):
             """품번의 공정 표준(참고값)."""
@@ -12332,13 +12345,14 @@ elif page == "생산 계획":
                     })
                 wb1, wb2 = st.columns(2)
                 _wp_save = wb1.form_submit_button("저장", type="primary",
-                                                  use_container_width=True)
+                                                  use_container_width=True,
+                                                  disabled=bool(st.session_state.get("wp_trunc")))
                 _wp_cancel = wb2.form_submit_button("편집 취소", use_container_width=True)
             if _wp_cancel:
                 st.session_state.pop("wp_rows", None)
                 st.session_state["wp_nonce"] = _wp_nonce + 1
                 st.rerun()
-            if _wp_save and click_guard("wp_save"):
+            if _wp_save and not st.session_state.get("wp_trunc") and click_guard("wp_save"):
                 _edits = []
                 for _bi, _brow in _wp_ed.iterrows():
                     _edits.append({
@@ -13032,6 +13046,7 @@ elif page == "생산 계획":
                       "pending_qty": i.get("pending_qty")} for i in sois]
         _sb_rounds, _sb_stock, _sb_wip, _sb_stds, _sb_cap = [], {}, {}, [], {}
         _sb_rounds_tr = False   # 회차 절단 시 큐 머리 경고(핫픽스 2 r2 M2)
+        _sb_more_tr = False     # 재공·표준·장비 절단(2차 묶음 F)
         try:
             _soi2pid = {i["soi_id"]: i.get("product_id") for i in sois}
             _soi_ids = list(_soi2pid)
@@ -13052,27 +13067,25 @@ elif page == "생산 계획":
                                                  "product_id,current_stock",
                                                  f"product_id=in.({_pstr})",
                                                  limit=300)})
-                for b in fetch("wo_batches", "product_id,qty,step_code",
-                               f"product_id=in.({_pstr})&status=eq.OPEN",
-                               limit=1000):
-                    if b.get("step_code") != "DONE":
-                        _sb_wip[b["product_id"]] = (
-                            _sb_wip.get(b["product_id"], 0)
-                            + float(b.get("qty") or 0))
-                _sb_stds += fetch("product_op_std",
-                                  "product_id,pn,process,step,uph_std,"
-                                  "setup_min,group_code",
-                                  f"product_id=in.({_pstr})&active=eq.true"
-                                  "&order=pn,step", limit=1000)
+            # 재공·표준·가능 장비도 끝까지(2차 묶음 F) — 절단이면 큐 머리 경고
+            _sb_wb, _sb_tr2 = _fetch_all_in("wo_batches", "product_id,qty,step_code", "product_id",
+                                            _sb_pids, "status=eq.OPEN", quote=True)
+            for b in _sb_wb:
+                if b.get("step_code") != "DONE":
+                    _sb_wip[b["product_id"]] = (
+                        _sb_wip.get(b["product_id"], 0)
+                        + float(b.get("qty") or 0))
+            _sb_std_rows, _sb_tr3 = _fetch_all_in(
+                "product_op_std", "product_id,pn,process,step,uph_std,setup_min,group_code",
+                "product_id", _sb_pids, "active=eq.true", quote=True, order="pn.asc,step.asc")
+            _sb_stds += _sb_std_rows
             _sb_pns = sorted({s["pn"] for s in _sb_stds})
-            for _i0 in range(0, len(_sb_pns), 60):
-                for m in fetch("product_op_machine",
-                               "pn,process,machine_id,runs",
-                               "pn=in.({})&order=runs.desc".format(",".join(
-                                   f'"{p}"' for p in _sb_pns[_i0:_i0 + 60])),
-                               limit=1000):
-                    _sb_cap.setdefault((m["pn"], m["process"]),
-                                       []).append(m["machine_id"])
+            _sb_pom, _sb_tr4 = _fetch_all_in("product_op_machine", "pn,process,machine_id,runs", "pn",
+                                             _sb_pns, quote=True, order="runs.desc")
+            for m in _sb_pom:
+                _sb_cap.setdefault((m["pn"], m["process"]),
+                                   []).append(m["machine_id"])
+            _sb_more_tr = _sb_tr2 or _sb_tr3 or _sb_tr4
         except Exception as e:
             st.warning(f"작업 큐 일부 조회 실패: {e}")
         _sb_alloc = {}
@@ -13096,6 +13109,9 @@ elif page == "생산 계획":
                        "정상 반영됩니다.")
         if _sb_rounds_tr:
             st.warning("회차가 너무 많아 일부 회차를 읽지 못했습니다 — 생산 대기 큐의 납기·수량이 "
+                       "불완전할 수 있습니다.")
+        if _sb_more_tr:
+            st.warning(f"재공·공정 표준·가능 장비 {TRUNC_MSG} — 생산 대기 큐의 재공·소요 시간·장비가 "
                        "불완전할 수 있습니다.")
         _sb_gl = _sch.group_load(_sb_act, _sb_load)
         _sb_unassigned = [q for q in _sb_queue
@@ -14146,9 +14162,12 @@ elif page == "구매 관리":
             return {"msg": "매칭된 product_id가 없습니다. 수주 → 매칭 안된 품목에서 "
                            "매핑 필요."}
 
-        pids_str = ",".join(f'"{p}"' for p in pids)
-        bom_rows = fetch("bom", "product_id,material_id,raw_material_name,qty_per_pc,shared_factor",
-                         f"product_id=in.({pids_str})", limit=2000)
+        pids_str = ",".join(f'"{p}"' for p in pids)          # 4.5) 완성 재고 조회가 쓴다
+        bom_rows, _bom_tr = _fetch_all_in(                                     # 끝까지(2차 묶음 F)
+            "bom", "product_id,material_id,raw_material_name,qty_per_pc,shared_factor",
+            "product_id", pids, quote=True)
+        if _bom_tr:
+            return {"msg": f"BOM {TRUNC_MSG} — 소요량을 계산하지 않았습니다. 관리자에게 알려 주세요."}
         bom_by_pid = _dd(list)
         for b in bom_rows:
             bom_by_pid[b["product_id"]].append(b)
@@ -14175,23 +14194,25 @@ elif page == "구매 관리":
         # 수량은 발주 필요량에서 뺀다 (같은 자재를 두 번 제안하지 않도록).
         # 취소만 제외 — 발주서를 만든 것(DRAFT)도 발주다 (2026-09-16 사용자:
         # 발송 완료를 수동으로 거치지 않으므로 SENT 여부로 거르지 않는다).
-        on_order = {}
+        on_order, _oo_tr = {}, False
         if mids:
             try:
-                for _i0 in range(0, len(mids), 80):
-                    _ms = ",".join(f'"{m}"' for m in mids[_i0:_i0 + 80])
-                    for r in fetch("po_item_receipt_v",
-                                   "material_id,pending_qty,po_status",
-                                   f"material_id=in.({_ms})&pending_qty=gt.0",
-                                   limit=1000):
-                        if (r.get("po_status") or "") in ("CANCELLED",
-                                                           "CANCELED"):
-                            continue
-                        on_order[r["material_id"]] = (
-                            on_order.get(r["material_id"], 0.0)
-                            + float(r.get("pending_qty") or 0))
+                # 뷰 po_item_receipt_v = 발주 라인 1행당 1행(poi_id 노출 — 머리글·자재는 PK 조인, 입고 합은
+                # ref_id 로 GROUP BY) → poi_id 가 구조적 유일 키. PK_OF 밖이라 명시(2차 묶음 F)
+                _oo_rows, _oo_tr = _fetch_all_in(
+                    "po_item_receipt_v", "material_id,pending_qty,po_status", "material_id", mids,
+                    "pending_qty=gt.0", quote=True, pk="poi_id")
+                for r in _oo_rows:
+                    if (r.get("po_status") or "") in ("CANCELLED",
+                                                       "CANCELED"):
+                        continue
+                    on_order[r["material_id"]] = (
+                        on_order.get(r["material_id"], 0.0)
+                        + float(r.get("pending_qty") or 0))
             except Exception:
                 on_order = {}
+        if _oo_tr:         # 입고 대기를 덜 빼면 같은 자재를 또 제안한다
+            return {"msg": f"미입고 발주 잔량 {TRUNC_MSG} — 소요량을 계산하지 않았습니다. 관리자에게 알려 주세요."}
 
         # ── 4.5) 제품 완성 재고 조회 (product_stock_v — 원장 누적) ──
         # 완성 재고가 있으면 그만큼은 생산 없이 출고 가능 → 자재 필요량에서 제외
@@ -14207,19 +14228,20 @@ elif page == "구매 관리":
         # 소재를 투입하면 소재 재고에서 빠지는데 완성 전까지 어디에도 안 잡혀
         # 그 사이 발주 필요가 다시 커지던 빈틈). 열린 배치 중 완성 단계가
         # 아닌 것의 수량을 제품 단위로 센다 — 완성 재고처럼 미납에서 먼저 뺀다
-        prod_wip_left = {}
+        prod_wip_left, _wip_tr = {}, False
         try:
-            for _i0 in range(0, len(pids), 80):
-                for _b in fetch("wo_batches", "product_id,qty,step_code,status",
-                                "product_id=in.({})&status=eq.OPEN".format(
-                                    ",".join(f'"{x}"' for x in pids[_i0:_i0 + 80])),
-                                limit=2000):
-                    if (_b.get("step_code") or "") != "DONE":
-                        prod_wip_left[_b["product_id"]] = (
-                            prod_wip_left.get(_b["product_id"], 0.0)
-                            + float(_b.get("qty") or 0))
+            _wip_rows, _wip_tr = _fetch_all_in(                                # 끝까지(2차 묶음 F)
+                "wo_batches", "product_id,qty,step_code,status", "product_id", pids,
+                "status=eq.OPEN", quote=True)
+            for _b in _wip_rows:
+                if (_b.get("step_code") or "") != "DONE":
+                    prod_wip_left[_b["product_id"]] = (
+                        prod_wip_left.get(_b["product_id"], 0.0)
+                        + float(_b.get("qty") or 0))
         except Exception:
             prod_wip_left = {}
+        if _wip_tr:
+            return {"msg": f"재공(열린 배치) {TRUNC_MSG} — 소요량을 계산하지 않았습니다. 관리자에게 알려 주세요."}
         total_wip_used = 0.0
         prod_net = {}      # product_id → {pend, stock_used, wip_used, net}
 
@@ -15118,13 +15140,11 @@ elif page == "구매 관리":
             else:
                 _use_pn = {}
                 try:
-                    _mb_ids = [m["material_id"] for m in _hold]
-                    _bom0 = []
-                    for _i0 in range(0, len(_mb_ids), 50):
-                        _bom0 += fetch("bom", "material_id,product_id",
-                            "material_id=in.({})".format(
-                                ",".join(_mb_ids[_i0:_i0 + 50])),
-                            limit=2000)
+                    _bom0, _bom0_tr = _fetch_all_in(                       # 끝까지(2차 묶음 F)
+                        "bom", "material_id,product_id", "material_id",
+                        [m["material_id"] for m in _hold])
+                    if _bom0_tr:
+                        ws_note(f"BOM {TRUNC_MSG} — '사용 품번'이 일부 빠질 수 있습니다.", warn=True)
                     _bp_ids = sorted({b["product_id"] for b in _bom0
                                       if b.get("product_id")})
                     _bp_nm = {}
@@ -15453,14 +15473,12 @@ elif page == "구매 관리":
                     return {}
                 out = {}
                 try:
-                    _ln = []
-                    for _i0 in range(0, len(pids), 80):
-                        _ln += fetch("sales_order_items",
-                                     "product_id,so_id,pending_qty,due_date",
-                                     "product_id=in.({})&pending_qty=gt.0"
-                                     "&order=due_date.asc".format(",".join(
-                                         f'"{x}"' for x in pids[_i0:_i0 + 80])),
-                                     limit=1000)
+                    # 끝까지(2차 묶음 F) — 절단이면 out["_trunc"]=True(호출자가 경고, 제품 키와 겹치지 않음)
+                    _ln, _ln_tr = _fetch_all_in(
+                        "sales_order_items", "product_id,so_id,pending_qty,due_date", "product_id",
+                        pids, "pending_qty=gt.0", quote=True, order="due_date.asc")
+                    if _ln_tr:
+                        out["_trunc"] = True
                     _sids = sorted({l["so_id"] for l in _ln if l.get("so_id")})
                     _som = {}
                     for _i0 in range(0, len(_sids), 100):
@@ -15530,13 +15548,14 @@ elif page == "구매 관리":
                     if _vh_pos:
                         _vh_pmap = {p["po_id"]: p for p in _vh_pos}
                         _vh_rank = {p["po_id"]: i for i, p in enumerate(_vh_pos)}
-                        _vh_items = fetch("purchase_order_items",
-                                          "poi_id,po_id,item_name,material,spec,"
-                                          "qty,unit_price,material_id,unit,"
-                                          "product_id",
-                                          "po_id=in.(" + ",".join(
-                                              str(p["po_id"]) for p in _vh_pos)
-                                          + ")", limit=2000)
+                        _vh_items, _vh_items_tr = _fetch_all_in(            # 끝까지(2차 묶음 F)
+                            "purchase_order_items",
+                            "poi_id,po_id,item_name,material,spec,"
+                            "qty,unit_price,material_id,unit,product_id",
+                            "po_id", [p["po_id"] for p in _vh_pos])
+                        if _vh_items_tr:
+                            ws_note(f"발주 이력 라인 {TRUNC_MSG} — 최근 발주 품목이 일부 빠질 수 있습니다.",
+                                    warn=True)
                         _vh_items = [i for i in _vh_items if i.get("item_name")]
                         # 라인에 제품이 연결돼 있으면 그 제품이 기준 — 옛 양식 품명
                         # ('40BLD-APP (Ø140 * 16L)')은 이름으로 제품을 못 찾아 연결한
@@ -15803,6 +15822,9 @@ elif page == "구매 관리":
                     # 제품 행의 현재 수주 — 미납 합계·가장 이른 납기 (2026-09-22 사용자:
                     # 발주서 작성 때 수주 정보를 참고하고 싶다)
                     _so_pend = _po_pending_map([p["product_id"] for p in _res])
+                    if _so_pend.get("_trunc"):
+                        ws_note(f"미납 수주 라인 {TRUNC_MSG} — '미납 수주'·'발주 필요'는 일부입니다(미확인).",
+                                warn=True)
                     # 이력 행(제품으로 이어지지 않은 옛 발주 품목)도 미납을 보여 준다:
                     # 그 라인의 제품 + 그 자재(M###)를 BOM 으로 쓰는 제품의 미납 합계
                     # (DIC 'D917137/THRUST WASHER' 처럼 품명으로는 제품을 못 찾는 경우)
@@ -15813,18 +15835,18 @@ elif page == "구매 관리":
                     _h_fac = {}      # (자재, 제품) → 제품 1개당 소재 수량
                     if _h_mids:
                         try:
-                            for _i0 in range(0, len(_h_mids), 80):
-                                for _b in fetch(
-                                        "bom", "product_id,material_id,process_type,"
-                                               "qty_per_pc,shared_factor",
-                                        "material_id=in.({})".format(",".join(
-                                            f'"{x}"' for x in _h_mids[_i0:_i0 + 80])),
-                                        limit=2000):
-                                    if (_b.get("process_type") or "MATERIAL") == "MATERIAL":
-                                        _h_bom.setdefault(_b["material_id"], set()).add(
-                                            _b["product_id"])
-                                        _h_fac[(_b["material_id"], _b["product_id"])] = \
-                                            po_mat_factor(_b)
+                            _h_bom_rows, _h_bom_tr = _fetch_all_in(            # 끝까지(2차 묶음 F)
+                                "bom", "product_id,material_id,process_type,qty_per_pc,shared_factor",
+                                "material_id", _h_mids, quote=True)
+                            if _h_bom_tr:
+                                ws_note(f"BOM {TRUNC_MSG} — 이력 행의 '미납 수주'·'발주 필요'는 일부입니다(미확인).",
+                                        warn=True)
+                            for _b in _h_bom_rows:
+                                if (_b.get("process_type") or "MATERIAL") == "MATERIAL":
+                                    _h_bom.setdefault(_b["material_id"], set()).add(
+                                        _b["product_id"])
+                                    _h_fac[(_b["material_id"], _b["product_id"])] = \
+                                        po_mat_factor(_b)
                         except Exception:
                             _h_bom = {}
                     for _n, _h in _hist_rows:
@@ -15835,6 +15857,9 @@ elif page == "구매 관리":
                     _h_pend = (_po_pending_map(sorted({x for v in _h_pids.values()
                                                        for x in v}))
                                if any(_h_pids.values()) else {})
+                    if _h_pend.get("_trunc") and not _so_pend.get("_trunc"):
+                        ws_note(f"미납 수주 라인 {TRUNC_MSG} — 이력 행의 '미납 수주'는 일부입니다(미확인).",
+                                warn=True)
 
                     def _hist_pend(nm):
                         _q, _d = 0, None
@@ -15855,16 +15880,17 @@ elif page == "구매 관리":
                     _res_pids = [p["product_id"] for p in _res if _so_pend.get(p["product_id"])]
                     if _res_pids:
                         try:
-                            for _i0 in range(0, len(_res_pids), 80):
-                                for _b in fetch(
-                                        "bom", "product_id,process_type,qty_per_pc,"
-                                               "shared_factor",
-                                        "product_id=in.({})".format(",".join(
-                                            f'"{x}"' for x in _res_pids[_i0:_i0 + 80])),
-                                        limit=2000):
-                                    if (_b.get("process_type") or "MATERIAL") == "MATERIAL":
-                                        _p_fac.setdefault(_b["product_id"],
-                                                          po_mat_factor(_b))
+                            _p_bom, _p_bom_tr = _fetch_all_in(                 # 끝까지(2차 묶음 F)
+                                "bom", "product_id,process_type,qty_per_pc,shared_factor",
+                                "product_id", _res_pids, quote=True)
+                            if _p_bom_tr:
+                                # 계수를 못 읽은 제품은 1.0(제품 수량 그대로)로 계산되므로 알린다
+                                ws_note(f"BOM {TRUNC_MSG} — '발주 필요'의 소재 환산이 일부 빠질 수 있습니다.",
+                                        warn=True)
+                            for _b in _p_bom:
+                                if (_b.get("process_type") or "MATERIAL") == "MATERIAL":
+                                    _p_fac.setdefault(_b["product_id"],
+                                                      po_mat_factor(_b))
                         except Exception:
                             _p_fac = {}
 
@@ -17688,9 +17714,12 @@ elif page == "구매 관리":
                 return False, (f"금액을 계산할 수 없는 행 {len(bad)}건 — 단가나 공급가액을 입력하세요: "
                                + ", ".join(r["item"] for r in bad[:5]))
             try:   # 같은 날짜 전체를 정규화 키로 비교 — 시트 표기와 마스터명이 달라도 잡힘
-                ex = fetch("purchase_ledger", "trade_date,vendor,item,amount", f"trade_date=eq.{date_iso}", limit=2000)
+                ex, ex_tr = fetch_all("purchase_ledger", "trade_date,vendor,item,amount",
+                                      f"trade_date=eq.{date_iso}")                 # 끝까지(2차 묶음 F)
             except Exception:
-                ex = []
+                ex, ex_tr = [], False
+            if ex_tr:      # 일부만 비교하면 중복이 빠져 들어간다
+                return False, f"같은 날짜 장부 {TRUNC_MSG} — 중복 검사를 끝낼 수 없어 반영하지 않았습니다."
             exk = {_psync.dedup_key(x) for x in ex}
             dups = [r for r in rows if _psync.dedup_key(r) in exk]
             if dups and not dup_ok:
@@ -18925,12 +18954,13 @@ elif page == "공정 관리":
                 _wo_ids9 = [t1["wo_id"] for t1 in _pe_pool
                             if t1.get("wo_id")]
                 if _wo_ids9:
-                    for b in fetch("wo_batches",
-                            "wo_id,qty,step_code,step_name,"
-                            "step_status,location",
-                            "wo_id=in.({})&status=eq.OPEN".format(
-                                ",".join(str(i) for i in _wo_ids9)),
-                            limit=2000):
+                    _pos9, _pos9_tr = _fetch_all_in(                         # 끝까지(2차 묶음 F)
+                        "wo_batches", "wo_id,qty,step_code,step_name,step_status,location",
+                        "wo_id", _wo_ids9, "status=eq.OPEN")
+                    if _pos9_tr:
+                        ws_note(f"열린 배치 {TRUNC_MSG} — 일부 작업지시의 현재 위치가 빠질 수 있습니다.",
+                                warn=True)
+                    for b in _pos9:
                         _pos_map9.setdefault(
                             b["wo_id"], []).append(b)
             except Exception:
@@ -21681,12 +21711,13 @@ elif page == "생산 보고":
                 # ── 3) 기존 저장분과 행 단위 중복 감지 ──
                 # 같은 날짜의 MES 행과 (설비/공정/지시서/시간/수량) 동일하면 중복.
                 # 교대별 파일을 나눠 올려도, 하루 통합 파일을 다시 올려도 안전.
+                exist_tr = False
                 try:
-                    exist = fetch("production_log",
+                    exist, exist_tr = fetch_all("production_log",          # 끝까지(2차 묶음 F)
                         "log_id,shift,machine,process,work_order,"
                         "work_start,work_end,total_qty,defect_qty",
                         f"log_date=eq.{_fq(mes_date.isoformat())}"
-                        f"&source=eq.MES_UPLOAD", limit=2000)
+                        f"&source=eq.MES_UPLOAD")
                 except Exception:
                     exist = []
                 exist_keys = {
@@ -21798,17 +21829,19 @@ elif page == "생산 보고":
                 st.divider()
                 sv1, sv2 = st.columns([1, 3])
                 with sv1:
+                    if exist_tr:       # 기존 행을 일부만 읽음 → 중복 판정 불완전, 저장 막음(2차 묶음 F)
+                        st.caption(f"같은 날짜 기존 MES 행 {TRUNC_MSG} — 중복 판정이 불완전해 저장할 수 없습니다.")
                     do_mes_save = st.button(
                         f"MES 실적 저장 ({len(inc)}행)",
                         type="primary",
-                        disabled=len(inc) == 0 or bool(bad_pn),
+                        disabled=len(inc) == 0 or bool(bad_pn) or exist_tr,
                         key="mes_submit")
                 with sv2:
                     st.caption(
                         "production_log 에 source=MES_UPLOAD 로 저장 — "
                         "**재고 원장에는 반영되지 않습니다.**")
 
-                if do_mes_save and len(inc) > 0 and not bad_pn \
+                if do_mes_save and len(inc) > 0 and not bad_pn and not exist_tr \
                         and click_guard("mes_submit"):
                     try:
                         if exist and dup_mode.startswith("교체"):
@@ -22079,23 +22112,29 @@ elif page == "영업 보고":
         return "미확인" if tr else v
 
     def _sr_items(ships):
-        """전표 라인 조회 + ship_no/ship_date(=date) 부착."""
+        """전표 라인 조회 + ship_no/ship_date(=date) 부착 → (rows, truncated).
+        절단·예외는 호출자의 '미확인' 게이트(_d_tr·_m_tr·_r_tr)로(2차 묶음 F) — 예외면 ([], True)."""
         smap = {s["shipment_id"]: s for s in ships}
-        ids, out = list(smap), []
-        for _i in range(0, len(ids), 50):
-            _ck = ",".join(str(x) for x in ids[_i:_i + 50])
-            for x in fetch(
-                    "shipment_items",
-                    "si_id,shipment_id,soi_id,product_id,pn,customer_pn,"
-                    "item_name,customer,so_number,qty,unit,unit_price",
-                    f"shipment_id=in.({_ck})&order=si_id.asc", limit=2000):
-                if float(x.get("qty") or 0) <= 0:
-                    continue      # 정정으로 제외된 라인은 집계 제외
-                _s = smap.get(x["shipment_id"]) or {}
-                x["ship_no"] = _s.get("ship_no")
-                x["date"] = _s.get("ship_date")
-                out.append(x)
-        return out
+        out = []
+        try:
+            _its, _tr = _fetch_all_in(
+                "shipment_items",
+                "si_id,shipment_id,soi_id,product_id,pn,customer_pn,"
+                "item_name,customer,so_number,qty,unit,unit_price",
+                "shipment_id", list(smap), order="si_id.asc")
+        except Exception as e:
+            st.error(f"전표 라인 조회 실패: {e}")
+            return [], True
+        if _tr:
+            st.warning(f"전표 라인 {TRUNC_MSG} — 합계는 미확인입니다.")
+        for x in _its:            # 묶음(전표 50개) 순서 × 묶음 안 si_id 순 — 예전과 같은 순서
+            if float(x.get("qty") or 0) <= 0:
+                continue      # 정정으로 제외된 라인은 집계 제외
+            _s = smap.get(x["shipment_id"]) or {}
+            x["ship_no"] = _s.get("ship_no")
+            x["date"] = _s.get("ship_date")
+            out.append(x)
+        return out, _tr
 
     def _sr_kpi(label, value, sub="", tone="primary"):
         _v = value if isinstance(value, str) else f"{value:,.0f}"
@@ -22151,7 +22190,8 @@ elif page == "영업 보고":
             if not _d_tr:          # 조회 실패를 '전표 없음'으로 안내하지 않는다
                 st.info(f"{_d_iso} 확정 전표가 없습니다.")
         else:
-            _d_rows = _sr_items(_d_ships)
+            _d_rows, _d_itr = _sr_items(_d_ships)
+            _d_tr = _d_tr or _d_itr          # 라인 절단·실패도 '미확인'(2차 묶음 F)
             _d_agg = _sr.aggregate(_d_rows)
             _da = _d_agg["all"]
             st.markdown(
@@ -22256,7 +22296,8 @@ elif page == "영업 보고":
                 # 절단이 아닌 예외도 절단과 같은 차단(2차 묶음 E) — 빈·부분 결과로 마감·출력하지 않는다
                 _m_tr = True
                 st.error(f"조회 실패: {e} — 합계는 미확인입니다.")
-        _m_rows_all = _sr_items(_m_ships) if _m_ships else []
+        _m_rows_all, _m_itr = _sr_items(_m_ships) if _m_ships else ([], False)
+        _m_tr = _m_tr or _m_itr          # 라인 절단·실패도 마감·출력 차단(2차 묶음 F)
         _cu_opts = sorted({x.get("customer") for x in _m_rows_all
                            if x.get("customer")})
         _cu_pick = st.multiselect(
@@ -22469,7 +22510,8 @@ elif page == "영업 보고":
             if not _r_tr:          # 조회 실패를 '전표 없음'으로 안내하지 않는다
                 st.info("기간 내 확정 전표가 없습니다.")
         else:
-            _r_rows = _sr_items(_r_ships)
+            _r_rows, _r_itr = _sr_items(_r_ships)
+            _r_tr = _r_tr or _r_itr          # 라인 절단·실패면 재발행 비활성(2차 묶음 F)
             _r_bysh = {}
             for x in _r_rows:
                 _r_bysh.setdefault(x["shipment_id"], []).append(x)
