@@ -248,13 +248,28 @@ class DashMock:
         return True
 
     def install(self, monkeypatch, db):
+        # 쓰기 뒤 읽기 캐시 비우기도 진짜처럼(2차 묶음 G) — 실제 db 쓰기 함수는 끝에 clear_cache() 를 부른다.
+        # 목이 안 부르면 쓰기 뒤 fetch_all 재조회가 이전 결과를 읽어 화면 테스트가 거짓 통과할 수 있다.
+        # 시점은 db.py 와 같게: insert·delete 는 성공 뒤, update·update_count 는 값을 돌려주면(실패 False·-1
+        # 포함), rpc 는 성공·거부·전송 실패 뒤(RpcUnavailable 만 제외). 하위 클래스(SOMock) 재정의도 함께 감싼다.
+        def _then_clear(fn, on_error=False):
+            def _w(*a, **k):
+                try:
+                    out = fn(*a, **k)
+                except Exception as e:
+                    if on_error and not isinstance(e, db.RpcUnavailable):
+                        db.clear_cache()
+                    raise
+                db.clear_cache()
+                return out
+            return _w
         monkeypatch.setattr(db, "fetch", self.fetch)
         monkeypatch.setattr(db, "fetch_one", self.fetch_one)
-        monkeypatch.setattr(db, "insert", self.insert)
-        monkeypatch.setattr(db, "update", self.update)
-        monkeypatch.setattr(db, "update_count", self.update_count)
-        monkeypatch.setattr(db, "delete", self.delete)
-        monkeypatch.setattr(db, "rpc", self.rpc)
+        monkeypatch.setattr(db, "insert", _then_clear(self.insert))
+        monkeypatch.setattr(db, "update", _then_clear(self.update))
+        monkeypatch.setattr(db, "update_count", _then_clear(self.update_count))
+        monkeypatch.setattr(db, "delete", _then_clear(self.delete))
+        monkeypatch.setattr(db, "rpc", _then_clear(self.rpc, on_error=True))
         monkeypatch.setattr(db, "log_error", self.log_error)
         monkeypatch.setattr(db, "health_check", lambda: {"status": "OK", "counts": {}})
         monkeypatch.setattr(db, "debug_check", lambda: {"status": "mock"})
