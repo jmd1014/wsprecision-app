@@ -21,6 +21,8 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 import db  # noqa: E402
 from tests.test_shipment_revision_flow import rev_db  # noqa: E402,F401  (픽스처)
+from tests.test_weekly_plan_page import plan_db  # noqa: E402,F401  (픽스처)
+from tests.test_bulk_delivery import ship_db  # noqa: E402,F401  (픽스처)
 
 APP_FILE = os.path.join(ROOT, "streamlit_app.py")
 streamlit_available = importlib.util.find_spec("streamlit") is not None
@@ -334,3 +336,224 @@ def _dic_db(monkeypatch, td):
     monkeypatch.setattr(db, "debug_check", lambda: {"status": "mock"})
     monkeypatch.setattr(db, "count_rows", lambda *a, **k: 0)
     monkeypatch.setattr(db, "rpc", lambda *a, **k: None)
+
+
+# ══ r2 (Codex r1 M1 · REQUIRED TESTS 선별, 2026-10-30) ══════════════════════
+
+# ── r2-2 fetch_all_in ──
+
+def test_second_chunk_exception_propagates_without_partial_rows(som, monkeypatch):
+    from utils.fetch_in import fetch_all_in
+    som.tables["sales_order_items"] = [{"soi_id": i, "so_id": i} for i in range(1, 61)]
+    real = db.fetch_all
+
+    def _fa(t, select="*", filter_query="", **kw):
+        if "so_id=in.(51" in filter_query:
+            raise RuntimeError("두 번째 묶음 실패(시뮬레이션)")
+        return real(t, select, filter_query, **kw)
+    monkeypatch.setattr(db, "fetch_all", _fa)
+    got = None
+    with pytest.raises(RuntimeError, match="두 번째 묶음"):
+        got = fetch_all_in("sales_order_items", "soi_id", "so_id", list(range(1, 61)))
+    assert got is None                       # 부분 행을 돌려주지 않는다
+
+
+def test_cache_false_is_passed_to_fetch_all(som, monkeypatch):
+    from utils.fetch_in import fetch_all_in
+    som.tables["sales_order_items"] = [{"soi_id": 1, "so_id": 1}]
+    calls = _calls(monkeypatch)
+    fetch_all_in("sales_order_items", "soi_id", "so_id", [1], cache=False)
+    fetch_all_in("sales_order_items", "soi_id", "so_id", [1])
+    assert calls[0][2].get("cache") is False and "cache" not in calls[1][2]
+
+
+def test_duplicate_ids_across_boundary_two_calls_no_dup_rows(som, monkeypatch):
+    from utils.fetch_in import fetch_all_in
+    som.tables["sales_order_items"] = [{"soi_id": i, "so_id": i} for i in range(1, 61)]
+    calls = _calls(monkeypatch)
+    rows, tr = fetch_all_in("sales_order_items", "soi_id", "so_id", list(range(1, 51)) + [50, 51])
+    assert len(calls) == 2 and tr is False
+    assert sorted(r["soi_id"] for r in rows) == list(range(1, 52))
+
+
+def test_machine_capability_sets_same_as_old_60_chunks(som):
+    """설비 스케줄 가능 장비: 예전 60개 묶음 → 50개 묶음. pn 51개·runs 동률에서 (pn, process)→장비 집합 동일."""
+    from utils.fetch_in import fetch_all_in
+    pns = [f"PN{i:03d}" for i in range(51)]
+    rows, k = [], 0
+    for p in pns:
+        for mc, runs in (("CNC01", 5), ("CNC02", 5), ("MCT01", 3)):      # 동률 2건
+            k += 1
+            rows.append({"pom_id": k, "pn": p, "process": f"{p}#10", "machine_id": mc, "runs": runs})
+    som.tables["product_op_machine"] = rows
+
+    old = {}
+    for i0 in range(0, len(pns), 60):
+        for m in db.fetch("product_op_machine", "pn,process,machine_id,runs",
+                          "pn=in.({})&order=runs.desc".format(",".join(f'"{p}"' for p in pns[i0:i0 + 60])),
+                          limit=1000):
+            old.setdefault((m["pn"], m["process"]), set()).add(m["machine_id"])
+    new = {}
+    got, tr = fetch_all_in("product_op_machine", "pn,process,machine_id,runs", "pn", pns,
+                           quote=True, order="runs.desc")
+    for m in got:
+        new.setdefault((m["pn"], m["process"]), set()).add(m["machine_id"])
+    assert tr is False and new == old and len(new) == 51
+
+
+# ── r2-1 주간 계획: 기존 행 + 절단 → 저장 버튼 존재·비활성, 쓰기 0 ──
+
+def _wp_save_buttons(at):
+    return [b for b in at.button if b.label == "저장" and "wp_form" in str(getattr(b, "form_id", ""))]
+
+
+@app_only
+def test_weekly_plan_truncated_existing_rows_save_disabled_and_no_writes(plan_db, monkeypatch):
+    from tests import test_weekly_plan_page as wp
+    _trunc_when(monkeypatch, lambda t, s, f: t == "production_plan_items")
+    at = wp._open(plan_db)
+    assert any("이 주 계획 행이 너무 많아" in str(w.value) for w in at.warning), \
+        [str(w.value) for w in at.warning]
+    sv = _wp_save_buttons(at)
+    assert sv and all(b.disabled for b in sv), [(b.label, b.disabled) for b in sv]
+    try:                                        # 비활성 버튼 강제 클릭 시도(AppTest 가 거부하면 그대로)
+        sv[0].click().run()
+    except Exception:
+        pass
+    assert not at.exception, [str(e.value) for e in at.exception]
+    assert wp.CALLS["rpc"] == [] and wp.CALLS["insert"] == [] and wp.CALLS["update"] == [] \
+        and wp.CALLS["delete"] == [], wp.CALLS
+
+
+@app_only
+def test_weekly_plan_complete_contrast_save_enabled(plan_db):
+    from tests import test_weekly_plan_page as wp
+    at = wp._open(plan_db)
+    sv = _wp_save_buttons(at)
+    assert sv and not any(b.disabled for b in sv)
+    assert not any("이 주 계획 행이 너무 많아" in str(w.value) for w in at.warning)
+
+
+# ── r2-1 출고 등록: ① 작성중 전표 추가 선택지 미노출 ② 등록 직전 재확인 절단 → 등록 중단 ──
+
+def _bd_new_line():
+    from tests import test_bulk_delivery as bd
+    bd.SOS.append({"so_id": 102, "so_number": "SO-102", "customer": "미진정밀", "status": "CONFIRMED",
+                   "so_date": "2026-07-03", "due_date": None})
+    bd.LINES[13] = {"soi_id": 13, "so_id": 102, "canonical_pn": "4PDVN-03", "customer_part_no": None,
+                    "customer_item_name": None, "product_id": "P1", "qty": 100, "received_qty": 0,
+                    "pending_qty": 100, "unit": "EA", "unit_price": 1000, "due_date": None}
+    bd.ROUNDS.append({"sched_id": 4, "soi_id": 13, "so_id": 102, "seq": 1, "due_date": bd.TODAY,
+                      "qty": 100, "delivered_qty": 0})
+    db.clear_cache()
+
+
+def _bd_cleanup():
+    from tests import test_bulk_delivery as bd
+    bd.SOS[:] = [s for s in bd.SOS if s["so_id"] != 102]
+    bd.LINES.pop(13, None)
+    bd.ROUNDS[:] = [r for r in bd.ROUNDS if r["sched_id"] != 4]
+
+
+@app_only
+def test_ship_register_truncated_draft_lines_hide_add_to_draft(ship_db, monkeypatch):
+    """test_bulk_delivery.test_add_lines_to_open_draft 의 절단판 — 그 테스트가 대조군(버튼 있음)."""
+    from tests import test_bulk_delivery as bd
+    at = bd._open_shipping(ship_db)
+    bd._register(at)                                  # 전표 1(DRAFT)
+    assert len(bd.SHIPMENTS) == 1
+    _bd_new_line()
+    try:
+        _trunc_when(monkeypatch, lambda t, s, f: t == "shipment_items" and s == "si_id,soi_id,shipment_id")
+        at2 = bd._open_shipping(ship_db)
+        assert not at2.exception, [str(e.value) for e in at2.exception]
+        assert not [b for b in at2.button if b.key == "ship_add_draft"]
+        assert any("작성중 전표 라인" in str(w.value) and "추가는 잠시 막습니다" in str(w.value)
+                   for w in at2.warning), [str(w.value) for w in at2.warning]
+        opts = [o for sb in at2.selectbox for o in (sb.options or [])]
+        assert not any(bd.SHIPMENTS[0]["ship_no"] in str(o) for o in opts), opts
+    finally:
+        _bd_cleanup()
+
+
+@app_only
+def test_ship_register_recheck_truncated_stops_registration(ship_db, monkeypatch):
+    """등록 직전 재확인(작성중 전표 라인, select soi_id,shipment_id)이 잘리면 등록 중단 — 새 전표·라인 insert 0.
+    대조: 같은 흐름에서 절단을 끄면 전표 2 가 생긴다(마지막 단계)."""
+    from tests import test_bulk_delivery as bd
+    at = bd._open_shipping(ship_db)
+    bd._register(at)                                  # 전표 1(DRAFT) — 재확인 분기(_g_drafts) 진입 조건
+    _bd_new_line()
+    try:
+        bd.INSERTED.clear()
+        state = {"on": True}
+        _trunc_when(monkeypatch, lambda t, s, f: state["on"] and t == "shipment_items"
+                    and s == "soi_id,shipment_id")
+        at2 = bd._open_shipping(ship_db)
+        bd._register(at2)
+        assert any("등록 중단 — 작성중 전표 라인" in str(w.value) for w in at2.warning), \
+            [str(w.value) for w in at2.warning]
+        assert not [t for t, _ in bd.INSERTED if t in ("shipments", "shipment_items")], bd.INSERTED
+        assert len(bd.SHIPMENTS) == 1
+        state["on"] = False                           # 대조군 — 절단을 끄면 같은 등록이 전표 2
+        db.clear_cache()
+        at3 = bd._open_shipping(ship_db)
+        bd._register(at3)
+        assert len(bd.SHIPMENTS) == 2, [s["ship_no"] for s in bd.SHIPMENTS]
+    finally:
+        _bd_cleanup()
+
+
+# ── r2-2 출고 전표 _effects(cache=False) · 정정 준비 충당 절단 · 영업 보고 라인 예외 ──
+
+@app_only
+def test_slip_recheck_effects_use_cache_false(ship_db, monkeypatch):
+    """확정 응답 불명 → 재조회의 반영 흔적(_effects cache=False)이 fetch_all 에 cache=False 로 간다."""
+    from tests import test_shipment_confirm_unknown as cu
+    monkeypatch.setenv("WS_CF_RECHECK_SEC", "0")
+    w = cu.World(ship_db, monkeypatch)
+    calls = _calls(monkeypatch)
+    cu._confirm(ship_db, monkeypatch, w, w.rpc_seq(cu._transport, cu._ok_commit))
+    rec = [(t, kw.get("cache")) for t, _f, kw in calls if t in ("inventory_transactions", "shipment_allocations")]
+    assert ("inventory_transactions", False) in rec and ("shipment_allocations", False) in rec, rec
+
+
+@app_only
+def test_revision_prep_alloc_truncation_writes_nothing(rev_db, monkeypatch):
+    from tests import test_shipment_revision_flow as rf
+    _trunc_when(monkeypatch, lambda t, s, f: t == "shipment_allocations" and "sched_id" in s)
+    rf._seed()
+    at = rf._pick_confirmed(rf._open())
+    at.text_input(key="cf_cx_reason_1").set_value("거래처 착오")
+    at.run()
+    at.button(key="cf_cancel").click()
+    at.run()
+    at.button(key="cf_cancel_cfm_ok").click()
+    at.run()
+    assert not at.exception, [str(e.value) for e in at.exception]
+    assert any("정정 준비 조회" in str(e.value) for e in at.error), [str(e.value) for e in at.error]
+    assert not [t for t, _ in rf.INSERTED if t in ("inventory_transactions", "shipment_revisions")]
+    assert not [1 for t, _f, _v in rf.UPDATED if t in ("so_delivery_schedule", "sales_order_items")]
+    assert not [1 for t, _f in rf.DELETED if t == "shipment_allocations"]
+    assert rf.SHIPMENTS[0]["status"] == "CONFIRMED"
+
+
+@app_only
+def test_sales_report_line_exception_blocks_all_three_tabs(monkeypatch):
+    from tests.test_hotfix2_followup_a import _open
+    from tests.test_hotfix2_2nd_e_month_close import MONTH_OUTPUTS, _dl
+    from tests.test_hotfix2_followup_bcd_r3 import _force_fail, _sales_mock
+    m = _sales_mock()
+    _force_fail(monkeypatch, "shipment_items")
+    at = _open(monkeypatch, m, "sales")
+    assert sum("전표 라인 조회 실패" in str(e.value) for e in at.error) >= 3, [str(e.value) for e in at.error]
+    assert '<div class="v">미확인</div>' in _kpi_html(at, "총 수량")                 # 일일
+    btn = [b for b in at.button if b.key == "sr_mc_close"]
+    assert btn and btn[0].disabled                                                  # 마감
+    dl = _dl(at)
+    assert dl.get("일일 결산 리포트 인쇄") is True
+    assert not any(dl.get(k) is False for k in MONTH_OUTPUTS), dl
+    assert not any(dl.get(k) is False for k in ("출고 리스트 재발행", "거래명세서 재발행")), dl   # 재발행
+    at.session_state["cfm_sr_mc_close"] = True
+    at.run()
+    assert not [w for w in m.writes if w[1] == "sales_month_close"], m.writes

@@ -74,3 +74,25 @@ def test_mock_rpc_unavailable_does_not_clear_like_real(mdb):
     with pytest.raises(db.RpcUnavailable):
         db.rpc("dash_generate_cards", {"p_template_ids": [], "p_work_date": "2026-10-30", "p_shift": "day"})
     assert _parts(db)[1] == (2, "품질")                          # 캐시 그대로
+
+
+# ── r2-3 (Codex L1): db.py 와 다른 두 시점 맞춤 — 대조군 ─────────────────────
+
+def test_mock_empty_insert_does_not_clear_like_real(mdb):
+    """db.insert([]) 는 요청 없이 0 — 캐시를 비우지 않는다. 목도 같게."""
+    m, db = mdb
+    _parts(db)
+    m.tables["dash_parts"][1]["name"] = "밖에서 바뀜"
+    assert db.insert("dash_parts", []) == 0
+    assert _parts(db)[1] == (2, "품질")                          # 캐시 그대로
+
+
+def test_mock_rpc_pgrst203_rejection_does_not_clear_like_real(mdb):
+    """db.rpc 의 PGRST203(오버로드 모호) 거부는 함수가 실행되지 않아 캐시를 비우지 않는다 — 목도 같게."""
+    m, db = mdb
+    _parts(db)
+    m.tables["dash_parts"][1]["name"] = "밖에서 바뀜"
+    m.rpc_raise = db.RpcRejected("PGRST203", "ambiguous", 300)
+    with pytest.raises(db.RpcRejected):
+        db.rpc("dash_generate_cards", {"p_template_ids": [], "p_work_date": "2026-10-30", "p_shift": "day"})
+    assert _parts(db)[1] == (2, "품질")
