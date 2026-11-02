@@ -253,6 +253,35 @@ def test_manual_add_variant_lines_saved_with_customer_pn(monkeypatch):
         (BASE5, BASE5, "P0005", 100), (RE5, BASE5, "P0005", 30), (RV5, BASE5, "P0005", 20)]
 
 
+def test_manual_add_picker_resets_after_add(monkeypatch):
+    """T1(H3): -RE-P 30 추가 뒤 같은 제품 기본 100 추가 → 2번 줄은 기본 품번(앞 선택이 남지 않음)."""
+    m = _so_input_mock()
+    at = _manual_pick(monkeypatch, m, "H11SDF")
+    _add(at, 30, RE5)
+    assert at.selectbox(key="m_cpn_pick_P0005").value == BASE5
+    _add(at, 100)
+    assert [(i["line_no"], i["customer_part_no"], i["qty"]) for i in at.session_state["m_so_items"]] == [
+        (1, RE5, 30), (2, BASE5, 100)]
+
+
+def test_manual_add_delete_and_readd(monkeypatch):
+    """T2: 3줄(기본·RE·RV) 뒤 2번(RE) 삭제 → 번호 다시 매김, RE 재추가 → 3번, 합계 그대로."""
+    m = _so_input_mock()
+    at = _manual_pick(monkeypatch, m, "H11SDF")
+    _add(at, 100)
+    _add(at, 30, RE5)
+    _add(at, 20, RV5)
+    at.button(key="so_item_1_del").click()
+    at.run()
+    assert [(i["line_no"], i["customer_part_no"]) for i in at.session_state["m_so_items"]] == [
+        (1, BASE5), (2, RV5)]
+    _add(at, 30, RE5)
+    its = at.session_state["m_so_items"]
+    assert [(i["line_no"], i["customer_part_no"], i["qty"]) for i in its] == [
+        (1, BASE5, 100), (2, RV5, 20), (3, RE5, 30)]
+    assert sum(i["qty"] for i in its) == 150
+
+
 def test_manual_add_without_variant_has_no_picker(monkeypatch):
     """대조군: 별칭만 있는 제품(P0100) — 셀렉트박스 없음, customer_part_no = 제품 pn(묶음 전과 같음)."""
     m = _so_input_mock()

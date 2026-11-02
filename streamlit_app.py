@@ -7696,6 +7696,9 @@ elif page == "수주 관리":
                             "product_id": _m_prod["product_id"],
                             "canonical_pn": _m_prod["pn"],
                         })
+                        # 거래처 품번 선택은 줄마다 새로 — 남겨 두면 다음 [추가]가 앞 줄의 출하 품번으로
+                        # 저장된다(PN r2 H3: -RE-P 30 → 기본 100 이 -RE-P 로)
+                        st.session_state.pop(f"m_cpn_pick_{_m_prod['product_id']}", None)
                         st.rerun()
 
                 with st.expander("신규 품목 등록 (마스터 미등록 품번)"):
