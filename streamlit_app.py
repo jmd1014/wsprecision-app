@@ -6285,6 +6285,7 @@ elif page == "수주 관리":
     import db as _db
     import pandas as pd
     import re as _re
+    _pnv = _pn_variants()      # 출하 품번 병기(거래처 앞) — 수주 관리 전 화면 공통 (PN 묶음)
 
     # 상단 KPI — 페이지 골격 통일 (요약 → 처리 → 현황)
     try:
@@ -8282,7 +8283,7 @@ elif page == "수주 관리":
                 _sch_base = _sch_full
         try:  # 미납이 남은 전 라인 — 계획률·미계획 물량 산출 기준
             _open_li, _open_li_tr = fetch_all("sales_order_items",              # 후속 C
-                "soi_id,so_id,canonical_pn,customer_part_no,qty,"
+                "soi_id,so_id,canonical_pn,customer_part_no,product_id,qty,"
                 "received_qty,pending_qty,due_date",
                 "pending_qty=gt.0")
             if _open_li_tr:
@@ -8310,7 +8311,7 @@ elif page == "수주 관리":
             try:
                 _li_more, _li_more_tr = _fetch_all_in(
                     "sales_order_items",
-                    "soi_id,so_id,canonical_pn,customer_part_no,qty,"
+                    "soi_id,so_id,canonical_pn,customer_part_no,product_id,qty,"
                     "received_qty,pending_qty,due_date", "soi_id", sorted(_soi_more))
                 if _li_more_tr:
                     ws_note(f"납품 끝난 라인 {TRUNC_MSG} — 일부 회차의 품번 표시가 빠질 수 있습니다", warn=True)
@@ -8346,6 +8347,7 @@ elif page == "수주 관리":
                 _due = _date.fromisoformat(str(r["due_date"])[:10])
                 _out.append({
                     "품번": _pn_of(_l),
+                    "_lpn": line_pn(_l, _pnv, full=False),     # 툴팁·지연 상세 표시(출하 품번)
                     "거래처": _sc_som.get(r["so_id"], {}).get("customer", "-"),
                     "수주번호": _sc_som.get(r["so_id"], {}).get("so_number", "-"),
                     "구분": "분납", "회차": int(r.get("seq") or 0),
@@ -8367,6 +8369,7 @@ elif page == "수주 관리":
             _due = _date.fromisoformat(str(l["due_date"])[:10])
             _singles.append({
                 "품번": _pn_of(l),
+                "_lpn": line_pn(l, _pnv, full=False),
                 "거래처": _sc_som.get(l["so_id"], {}).get("customer", "-"),
                 "수주번호": _sc_som.get(l["so_id"], {}).get("so_number", "-"),
                 "구분": "단발", "회차": 1,
@@ -8444,7 +8447,7 @@ elif page == "수주 관리":
                         .format(len(_late_rows),
                                 sum(c["잔량"] for c in _late_rows))):
                     _ldf = pd.DataFrame([{
-                        "품번": c["품번"], "거래처": c["거래처"],
+                        "품번": c["_lpn"], "거래처": c["거래처"],
                         "수주번호": c["수주번호"],
                         "회차": "{} {}".format(c["구분"], c["회차"]),
                         "납기": c["납기"].isoformat(),
@@ -8596,7 +8599,7 @@ elif page == "수주 관리":
                                     "납기 {due:%Y-%m-%d} ({dd})<br>"
                                     "회차 {q:,.0f} · 납품 {dv:,.0f} · "
                                     "잔량 <b>{rem:,.0f}</b>{w}").format(
-                                    pn=c["품번"], cu=c["거래처"],
+                                    pn=c["_lpn"], cu=c["거래처"],
                                     so=c["수주번호"], kind=c["구분"],
                                     seq=c["회차"], due=c["납기"],
                                     dd=("D+{}".format(_ld) if _ld > 0
@@ -8789,8 +8792,7 @@ elif page == "수주 관리":
                     _st_rows = [{
                         "수주번호": _so_lbl.get(i["so_id"], {}).get(
                             "so_number", "-"),
-                        "품번": (i.get("canonical_pn")
-                                or i.get("customer_part_no") or "-"),
+                        "품번": line_pn(i, _pnv),
                         "미납": float(i.get("pending_qty") or 0),
                         "회차": _sc_cnt.get(i["soi_id"], {}).get("n", 0),
                         "납기 입력됨": float(i.get("pending_qty") or 0)
@@ -8821,8 +8823,7 @@ elif page == "수주 관리":
                     _li_rows = [{
                         "수주번호": _so_lbl.get(i["so_id"], {}
                                                 ).get("so_number", "-"),
-                        "품번": (i.get("canonical_pn")
-                                 or i.get("customer_part_no") or "-"),
+                        "품번": line_pn(i, _pnv),
                         "미납": float(i.get("pending_qty") or 0),
                         "회차": (_sc_cnt.get(i["soi_id"], {}).get("n")
                                  or 0),
@@ -8846,6 +8847,9 @@ elif page == "수주 관리":
                         _sc_cnt.get(_li["soi_id"], {}).get("q", 0))
                         - float(_sc_cnt.get(_li["soi_id"], {}).get("d", 0)))
                     _li_unplan = max(0.0, _li_pend - _li_planned)
+                    _li_lbl = line_pn(_li, _pnv)               # 편집 대상 라인 (출하 품번 구분)
+                    st.caption("{} · {} · 미납 {:,.0f}".format(
+                        _s_so.get("so_number", "-"), _li_lbl, _li_pend))
                     lm1, lm2, lm3, lm4 = st.columns(4)
                     lm1.metric("미납 (계획 대상)", f"{_li_pend:,.0f}",
                                help=f"수주 {_li_qty:,.0f} − 기납품 "
@@ -9106,7 +9110,7 @@ elif page == "수주 관리":
                                                     f"sched_id=eq.{_fq(_r['sched_id'])}",
                                                     {"qty": float(_q)})
                                             nav_flash(
-                                                f"총량 {_new_tot:,.0f} 로 "
+                                                f"{_li_lbl} · 총량 {_new_tot:,.0f} 로 "
                                                 "재배분 완료")
                                             st.rerun()
                                     except Exception as e:
@@ -9148,7 +9152,7 @@ elif page == "수주 관리":
                                                 {"due_date":
                                                  _nd.isoformat()})
                                             _n += 1
-                                        nav_flash(f"{_n}개 회차 "
+                                        nav_flash(f"{_li_lbl} · {_n}개 회차 "
                                                    f"{_shift:+d}일 이동")
                                         st.rerun()
                                     except Exception as e:
@@ -9279,7 +9283,7 @@ elif page == "수주 관리":
                                                f"soi_id=eq.{_fq(_li['soi_id'])}")
                                     st.session_state[_rk] = False
                                     st.session_state[_pend_key] = []
-                                    nav_flash("전체 삭제 완료")
+                                    nav_flash(f"{_li_lbl} · 전체 삭제 완료")
                                     st.rerun()
                                 except Exception as e:
                                     st.error(f"삭제 실패: {e}")
@@ -9388,7 +9392,7 @@ elif page == "수주 관리":
                                 except Exception:
                                     pass
                             st.session_state[_pend_key] = []
-                            nav_flash(f"저장 완료 — {len(_keep)}개 회차")
+                            nav_flash(f"{_li_lbl} · 저장 완료 — {len(_keep)}개 회차")
                             st.rerun()
                         except Exception as e:
                             st.error(f"저장 실패: {e}")

@@ -111,3 +111,65 @@ def test_ship_register_payload_keeps_internal_pn(ship_db, monkeypatch):
     items = [r for t, recs in bd.INSERTED if t == "shipment_items" for r in recs]
     assert items and {(r["pn"], r["customer_pn"]) for r in items} == {
         ("4PDVN-03", "4S4PDVN-03"), ("MRG6-07", "MRG6-07")}
+
+
+# ── ① 납품 스케줄: 납기 입력 표·편집 캡션(거래처 앞), 간트 툴팁(full=False) — 행 묶음은 제품 단위 그대로 ──
+from tests import test_delivery_schedule_gantt as sg  # noqa: E402
+from tests.test_delivery_schedule_gantt import sched_db  # noqa: E402,F401  (fixture)
+
+
+def _sched_variant_fetch(monkeypatch, variant=True):
+    """soi 1 = 출하 품번 4PDVN-02-RE(P0002), 나머지는 내부 품번과 같은 거래처 품번."""
+    import db
+
+    def _f(table, select="*", filter_query="", limit=1000, **kw):
+        if table == "customer_part_mapping":
+            return ([{"product_id": "P0002", "customer_part_no": "4PDVN-02-RE",
+                      "kind": "variant"}] if variant else [])
+        rows = sg._fetch(table, select, filter_query, limit, **kw)
+        if table == "sales_order_items":
+            for r in rows:
+                r["product_id"] = f"P{r['soi_id']:04d}"
+                if r["soi_id"] == 1:
+                    r["product_id"], r["customer_part_no"] = "P0002", "4PDVN-02-RE"
+        return rows
+    monkeypatch.setattr(db, "fetch", _f)
+
+
+def _texts(at):
+    out = [m.value for m in at.markdown] + [c.value for c in at.caption]
+    out += [d.value.to_string() for d in at.dataframe]
+    return "\n".join(str(x) for x in out)
+
+
+def test_schedule_input_shows_variant_and_edit_caption(sched_db, monkeypatch):
+    _sched_variant_fetch(monkeypatch)
+    at = sg._open_schedule_tab(sched_db)
+    at.session_state["sch_view"] = "납기 입력"
+    at.run()
+    assert not at.exception, [str(e.value) for e in at.exception]
+    t = _texts(at)
+    assert "4PDVN-02-RE (4PDVN-02)" in t, t[:2000]
+    assert any(c.value == "202604080013-MJT · 4PDVN-02-RE (4PDVN-02) · 미납 91,648"
+               for c in at.caption), [c.value for c in at.caption]
+    assert "4PDVN-03 (" not in t                                  # 같은 품번 라인은 한 번만
+
+
+def test_schedule_gantt_tooltip_variant_rows_unchanged(sched_db, monkeypatch):
+    _sched_variant_fetch(monkeypatch)
+    at = sg._open_schedule_tab(sched_db)
+    html = sg._gantt_html(at)
+    assert html and "<b>4PDVN-02-RE</b>" in html                  # 툴팁 = 출하 품번(좁은 칸)
+    assert ">4PDVN-02<" in html or "4PDVN-02</" in html           # 행 라벨 = 내부 품번(제품 단위 묶음)
+
+
+def test_schedule_without_variants_is_unchanged(sched_db, monkeypatch):
+    """대조군: variant 0건 — 캡션·표·간트가 내부 품번 하나(묶음 전 문자열)."""
+    _sched_variant_fetch(monkeypatch, variant=False)
+    at = sg._open_schedule_tab(sched_db)
+    html = sg._gantt_html(at)
+    assert "<b>4PDVN-02</b>" in html and "4PDVN-02-RE" not in html
+    at.session_state["sch_view"] = "납기 입력"
+    at.run()
+    assert any(c.value == "202604080013-MJT · 4PDVN-02 · 미납 91,648" for c in at.caption)
+    assert "4PDVN-02-RE (4PDVN-02)" not in _texts(at)     # 원문 거래처 품번은 기존 '제품 확인' 카드에만
