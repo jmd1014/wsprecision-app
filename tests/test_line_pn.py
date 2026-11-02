@@ -63,3 +63,36 @@ def test_load_variants_filters_kind():
     assert calls == [("customer_part_mapping", "product_id,customer_part_no,kind",
                       "kind=eq.variant")]
     assert load_variants(lambda *a: None) == set()
+
+
+# ── 출력물(PN 묶음 13·29): 출하 품번만 품번 칸 병기(내부 앞), variant 0건이면 바이트 동일 ──
+def _rows():
+    return [
+        {"pn": BASE, "customer_pn": RE, "product_id": "P0005", "item_name": None,
+         "disp_name": "SEAT", "lots": "W1", "customer": "(주)엠제이티", "so_number": "SO-1",
+         "qty": 30, "unit": "EA", "unit_price": 1000, "ship_no": "SH-1"},
+        {"pn": "8HFDV-VM-05", "customer_pn": "4S8HFDV-VM-05;PM", "product_id": "P0100",
+         "item_name": None, "disp_name": "VALVE", "lots": "W2", "customer": "미진정밀",
+         "so_number": "SO-2", "qty": 10, "unit": "EA", "unit_price": 500, "ship_no": "SH-1"},
+    ]
+
+
+def test_delivery_list_variant_internal_first_and_control_bytes():
+    from utils.statement_generator import delivery_list_html
+    b = {"date": "2026-11-02", "rows": _rows()}
+    base = delivery_list_html(b, draft=True)
+    assert base == delivery_list_html(b, draft=True, variants=frozenset())
+    assert base == delivery_list_html(b, draft=True, variants={("P0100", "OTHER")})   # 대조군
+    out = delivery_list_html(b, draft=True, variants=VS)
+    assert f"<td class='pn'>{BASE} ({RE})</td>" in out
+    assert "<td class='pn'>8HFDV-VM-05</td>" in out                 # 별칭 = 내부 품번만
+    assert out.replace(f"{BASE} ({RE})", BASE) == base               # 바뀐 건 품번 문자열뿐
+
+
+def test_daily_report_pn_column_only_and_control_bytes():
+    from utils.sales_report import daily_report_html
+    base = daily_report_html("2026-11-02", _rows(), "테스트")
+    assert base == daily_report_html("2026-11-02", _rows(), "테스트", variants=frozenset())
+    out = daily_report_html("2026-11-02", _rows(), "테스트", variants=VS)
+    assert f"<td>{BASE} ({RE})</td><td>{RE}</td>" in out           # 품번 열 병기, 품명 열(거래처 품번) 그대로
+    assert out.replace(f"<td>{BASE} ({RE})</td>", f"<td>{BASE}</td>") == base

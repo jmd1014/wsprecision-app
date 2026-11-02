@@ -8,6 +8,7 @@
 품명은 거래처 ERP 표기(customer_part_no)를 우선 사용 — 거래처가
 자기 전산과 대조하기 쉽게.
 """
+from utils.line_pn import line_pn
 
 SUPPLIER = {
     "biz_no": "606-02-14529",
@@ -279,12 +280,13 @@ def transaction_statements_html(batch, vendors_map=None, rev_label=None):
               "()=>window.print(),300)</script></body></html>")
 
 
-def delivery_list_html(batch, draft=False, rev_label=None):
+def delivery_list_html(batch, draft=False, rev_label=None, variants=frozenset()):
     """내부 출고 리스트 — 상차·검수 확인용 (A4, 확인란 포함).
 
     사내 품번 기준으로 준비하므로 거래처 표기·수주번호는 싣지 않고
     품번 옆에 품명(유사 품번 착오 방지)과 LOT(W번호)를 보여준다.
-    행 키: pn, disp_name(또는 item_name), lots, customer, qty, unit.
+    행 키: pn, disp_name(또는 item_name), lots, customer, qty, unit
+    (+ customer_pn·product_id — 출하 품번(variants)이면 `pn (customer_pn)` 병기, PN 묶음).
 
     draft=True: 출고 처리 전 '현장 확인용' — 수량 정정 기입란을 두어
     현장에서 고친 수량을 앱에 반영한 뒤 확정 처리하도록 한다.
@@ -302,7 +304,8 @@ def delivery_list_html(batch, draft=False, rev_label=None):
             "<td class='nm'>{nm}</td>"
             "<td>{lot}</td><td>{cu}</td><td class='r'>{q} {u}</td>"
             "{ex}<td class='c chk'></td></tr>".format(
-                i=i, pn=r.get("pn") or "-",
+                i=i, pn=(line_pn(r, variants, internal_first=True)
+                         if r.get("pn") else "-"),
                 nm=str(r.get("disp_name") or r.get("item_name")
                        or "-")[:24],
                 lot=r.get("lots") or "-",

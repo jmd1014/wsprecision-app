@@ -9,6 +9,7 @@
 """
 
 from utils.statement_generator import SUPPLIER
+from utils.line_pn import line_pn
 
 
 def _f(v):
@@ -176,7 +177,7 @@ def _by_customer_table(agg):
         "".join(rows), tot)
 
 
-def daily_report_html(day, rows, issued_by=""):
+def daily_report_html(day, rows, issued_by="", variants=frozenset()):
     """일일 출고 결산 — 거래처별 합계 + 품목 상세 (전표번호 포함).
 
     rows: 그날 확정 전표들의 shipment_items (ship_no 포함).
@@ -194,7 +195,8 @@ def daily_report_html(day, rows, issued_by=""):
             "<td>{nm}</td><td class='r'>{q}</td><td class='r'>{up}</td>"
             "<td class='r'>{su}</td><td class='r'>{vt}</td></tr>".format(
                 sn=r.get("ship_no") or "-", cu=r.get("customer") or "-",
-                pn=r.get("pn") or "-", nm=name,
+                pn=(line_pn(r, variants, internal_first=True)       # 출하 품번만 병기(PN 묶음 29)
+                    if r.get("pn") else "-"), nm=name,
                 q=_num(r.get("qty")),
                 up=_num(r.get("unit_price")) if amt else "",
                 su=_num(amt[0]) if amt else "",

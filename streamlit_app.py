@@ -2274,12 +2274,12 @@ if page == "홈":
                 "so_id,soi_id,product_id,canonical_pn,customer_part_no,"
                 "qty,received_qty,pending_qty,due_date",
                 "so_id", _open_ids, "pending_qty=gt.0", order="pending_qty.desc")
+            _pnv = _pn_variants()     # 출하 품번 병기(거래처 앞, PN 묶음)
             for _l in _h_lines:      # pending desc → 첫 라인이 대표
                 _e = _h_pn.setdefault(_l["so_id"],
                                       {"top": None, "n": 0})
                 if _e["top"] is None:
-                    _e["top"] = (_l.get("canonical_pn")
-                                 or _l.get("customer_part_no") or "-")
+                    _e["top"] = line_pn(_l, _pnv)
                 _e["n"] += 1
         except Exception:
             _h_lines = []
@@ -6841,13 +6841,18 @@ elif page == "수주 관리":
                     st.markdown(
                         "**{}** · {} — 새 수주 **{}** ({}) · 수량 {:,.0f} · 단가 "
                         "{:,.0f}원 ({:+.1f}%) · 마스터 판매 단가 {}".format(
-                            _n.get("pn") or "-", _n.get("customer"),
+                            line_pn({"customer_part_no": _n.get("customer_part_no"),
+                                     "pn": _n.get("pn"), "product_id": _n.get("product_id")},
+                                    _pnv, internal_first=True), _n.get("customer"),
                             _n["so_number"], _n.get("so_date") or "-",
                             float(_n.get("qty") or 0), _np,
                             _g["diff_pct"] if _g["diff_pct"] is not None else 0,
                             f"{_msp:,.0f}원" if _msp else "미설정"))
+                    # 출하 품번이 섞인 묶음만 '품번' 열(같은 제품·다른 출하 품번 라인 구분, PN 묶음)
+                    _o_pnc = any(line_pn(o, _pnv) != line_pn(o, ()) for o in _g["olds"])
                     _odf = pd.DataFrame([{
                         "포함": True, "옛 수주": o["so_number"],
+                        **({"품번": line_pn(o, _pnv)} if _o_pnc else {}),
                         "수주일": str(o.get("so_date") or "-")[:10],
                         "수량": float(o.get("qty") or 0),
                         "미납": float(o.get("pending_qty") or 0),
@@ -6861,7 +6866,7 @@ elif page == "수주 관리":
                             "포함": st.column_config.CheckboxColumn(
                                 help="대체 처리에 포함할 옛 라인"),
                             **{c: st.column_config.Column(disabled=True)
-                               for c in ("옛 수주", "수주일", "수량", "미납",
+                               for c in ("옛 수주", "품번", "수주일", "수량", "미납",
                                          "단가", "납기")}})
                     _sel_olds = [_g["olds"][int(i)] for i, r in _oed.iterrows()
                                  if bool(r.get("포함"))]
@@ -7414,8 +7419,9 @@ elif page == "수주 관리":
                                 toss_table([{
                                     "#": _i + 1,
                                     **({"수주번호": it.get("so_number")} if len(_so_nos) > 1 else {}),
-                                    "우성 품번": (it.get("matched_pn")
-                                                or it.get("customer_part_no") or "-"),
+                                    "우성 품번": line_pn({"customer_part_no": it.get("customer_part_no"),
+                                                         "canonical_pn": it.get("matched_pn"),
+                                                         "product_id": it.get("matched_pid")}, _pnv),
                                     "품명": (it.get("customer_item_name") or "")[:30],
                                     "수량": int(it.get("qty") or 0),
                                     "납기": str(it.get("due_date") or "")[:10] or None,
@@ -7855,7 +7861,7 @@ elif page == "수주 관리":
                                   | {r["new_soi_id"] for r in _rp_hist})
                     for _i0 in range(0, len(_ids), 80):
                         for x in fetch("sales_order_items",
-                                       "soi_id,so_id,canonical_pn",
+                                       "soi_id,so_id,canonical_pn,customer_part_no,product_id",
                                        "soi_id=in.({})".format(",".join(
                                            str(i) for i in _ids[_i0:_i0 + 80])),
                                        limit=200):
@@ -7876,7 +7882,7 @@ elif page == "수주 관리":
                         "{} · **{}** · {} {} → {} · 단가 {:,.0f} → {:,.0f}{}{} · {} {}"
                         .format(
                             "대체" if r["action"] == "REPLACE" else "별건 유지",
-                            _ns.get("canonical_pn") or _os.get("canonical_pn") or "-",
+                            line_pn(_ns if _ns.get("canonical_pn") else _os, _pnv),
                             _rp_son.get(_os.get("so_id"), "-"),
                             f"(미납 {float(r.get('closed_pending_qty') or 0):,.0f} 종료)"
                             if r["action"] == "REPLACE" else "",
@@ -9989,7 +9995,7 @@ elif page == "출고 관리":
         from utils.shipment_adjust import split_round_alloc as _cf_split
         import utils.statement_generator as _cf_sg
         import inspect as _cf_insp
-        if "rev_label" not in _cf_insp.signature(
+        if "variants" not in _cf_insp.signature(
                 _cf_sg.delivery_list_html).parameters:
             # Cloud 재배포 시 sys.modules 에 옛 모듈이 남아 새 인자를
             # 못 받던 TypeError (2026-09-04) — 영업 보고와 같은 가드
@@ -10131,6 +10137,7 @@ elif page == "출고 관리":
                         "rows": [{
                             "pn": x.get("pn"),
                             "customer_pn": x.get("customer_pn"),
+                            "product_id": x.get("product_id"),
                             "item_name": x.get("item_name"),
                             "disp_name": _cf_names.get(x.get("si_id")),
                             "lots": _cf_lotmap.get(x.get("si_id")),
@@ -10848,19 +10855,21 @@ elif page == "출고 관리":
             def _cf_rev_history(pick):
                 try:
                     _rvs = fetch("shipment_revisions",
-                        "rev_no,action,pn,qty_before,qty_after,reason,"
+                        "rev_no,action,si_id,pn,qty_before,qty_after,reason,"
                         "created_by,created_at",
                         f"shipment_id=eq.{_fq(pick['shipment_id'])}"
                         "&order=rev_id.desc", limit=200)
                 except Exception:
                     _rvs = []
                 if _rvs:
+                    _rv_si = {x.get("si_id"): x for x in _cf_items}      # 이력엔 거래처 품번·제품이 없음
                     with st.expander("정정 이력 {}건".format(len(_rvs))):
                         toss_table([{
                             "회차": f"v{int(r.get('rev_no') or 0) + 1}",
                             "구분": ("취소" if r.get("action") == "CANCEL"
                                    else "정정"),
-                            "품번": r.get("pn") or "-",
+                            "품번": line_pn(dict(_rv_si.get(r.get("si_id")) or {}, pn=r.get("pn")),
+                                          _pnv, internal_first=True),
                             "이전": float(r.get("qty_before") or 0),
                             "이후": float(r.get("qty_after") or 0),
                             "사유": r.get("reason") or "-",
@@ -10943,7 +10952,7 @@ elif page == "출고 관리":
                 pr1, pr2 = st.columns(2)
                 pr1.download_button(
                     "출고 리스트 재발행",
-                    _cf_list(_cf_batch(_cf_items), rev_label=_cf_rev_lbl),
+                    _cf_list(_cf_batch(_cf_items), rev_label=_cf_rev_lbl, variants=_pnv),
                     file_name=f"출고리스트_{_cf_pick['ship_no']}.html",
                     mime="text/html", key="cf_dl_list",
                     use_container_width=True)
@@ -11217,7 +11226,7 @@ elif page == "출고 관리":
                 ac1, ac2, ac3 = st.columns([1, 1, 1])
                 ac1.download_button(
                     "확인용 리스트 인쇄",
-                    _cf_list(_cf_batch(_cf_items), draft=True),
+                    _cf_list(_cf_batch(_cf_items), draft=True, variants=_pnv),
                     file_name="출고리스트_확인용_{}.html".format(
                         _cf_pick["ship_no"]),
                     mime="text/html", key="cf_dl_draft",
@@ -11790,7 +11799,7 @@ elif page == "출고 관리":
             try:                     # 전표 50개 묶음마다 끝까지(2차 묶음 F)
                 _dv_its, _dv_tr = _fetch_all_in(
                     "shipment_items",
-                    "si_id,shipment_id,soi_id,product_id,pn,"
+                    "si_id,shipment_id,soi_id,product_id,pn,customer_pn,"
                     "item_name,customer,so_number,qty",
                     "shipment_id", list(_dv_smap), order="si_id.desc")
             except Exception as e:
@@ -11846,7 +11855,7 @@ elif page == "출고 관리":
                 _q0 = _dv_q.strip().lower()
                 _dv_rows = [r for r in _dv_rows if any(
                     _q0 in str(v).lower() for v in (
-                        r.get("pn"), _dv_name(r), r.get("customer"),
+                        r.get("pn"), r.get("customer_pn"), _dv_name(r), r.get("customer"),
                         r.get("so_number"), r.get("ship_no")))]
 
             _dv_sum = sum(float(r.get("qty") or 0) for r in _dv_rows)
@@ -11912,11 +11921,14 @@ elif page == "출고 관리":
                 if _dv_pick:
                     _dv_det = [r for r in _dv_rows
                                if r.get("pn") == _dv_pick]
+                    # 출하 품번이 섞였을 때만 '품번' 열(같은 제품 행 묶음 안 라인 구분, PN 묶음)
+                    _dv_pnc = any(line_pn(r, _pnv) != line_pn(r, ()) for r in _dv_det)
                     st.markdown("**출고 라인 (기간 내)**")
                     toss_df(pd.DataFrame([{
                         "납품일": r.get("ship_date"),
                         "등록일": kst_date(r.get("reg")),
                         "전표": r.get("ship_no"),
+                        **({"품번": line_pn(r, _pnv, internal_first=True)} if _dv_pnc else {}),
                         "수주번호": r.get("so_number") or "-",
                         "수량": float(r.get("qty") or 0),
                         "LOT": _dv_lot_map.get(r["si_id"]) or "-",
@@ -11933,7 +11945,8 @@ elif page == "출고 관리":
                     try:
                         _dv_sois = fetch(
                             "sales_order_items",
-                            "soi_id,so_id,qty,received_qty,pending_qty",
+                            "soi_id,so_id,qty,received_qty,pending_qty,"
+                            "canonical_pn,customer_part_no,product_id",
                             f"canonical_pn=eq.{_fq(_dv_pick)}"
                             "&order=soi_id.asc", limit=100)
                     except Exception:
@@ -11982,6 +11995,7 @@ elif page == "출고 관리":
                             ws_note("전표 출고 누적을 끝까지 읽지 못했습니다 — '전표 출고'·'전표 외 기납품'은 "
                                     "미확인(빈칸)입니다.", warn=True)
                         _dv_rc = []
+                        _dv_rpc = any(line_pn(s, _pnv) != line_pn(s, ()) for s in _dv_sois)
                         for s in _dv_sois:
                             _rcv = float(s.get("received_qty") or 0)
                             _shp = None if _dv_ss_unk else _dv_ship_sum.get(s["soi_id"], 0.0)
@@ -11989,6 +12003,7 @@ elif page == "출고 관리":
                                 s["so_id"], ("-", "-"))
                             _dv_rc.append({
                                 "수주번호": _no, "거래처": _cu,
+                                **({"품번": line_pn(s, _pnv, internal_first=True)} if _dv_rpc else {}),
                                 "수주": float(s.get("qty") or 0),
                                 "기납품": _rcv,
                                 "전표 출고": _shp,
@@ -12016,7 +12031,8 @@ elif page == "출고 관리":
                     "납품일": r.get("ship_date"),
                     "등록일": kst_date(r.get("reg")),
                     "전표": r.get("ship_no"),
-                    "품번": r.get("pn"),
+                    "품번": (line_pn(r, _pnv, internal_first=True)
+                           if r.get("pn") else r.get("pn")),
                     "품명": _dv_name(r),
                     "거래처": r.get("customer") or "-",
                     "수주번호": r.get("so_number") or "-",
@@ -14090,6 +14106,7 @@ elif page == "구매 관리":
     from utils.po_generator import generate_po_number, fill_po_template
     import db as _db
     import pandas as pd
+    _pnv = _pn_variants()      # 출하 품번 병기(거래처 앞) — 발주 소요량 미납 라인 (PN 묶음)
 
     PURCHASE_GROUPS = {
         "MAT_STS": "소재 STS (명진/유성)",
@@ -14626,9 +14643,12 @@ elif page == "구매 관리":
                                            "편집에서 등록하세요.")
                         with pc2:
                             st.markdown("**미납 수주 라인**")
+                            _pe_pnc = any(line_pn(l, _pnv) != line_pn(l, ())
+                                          for l in _pe["lines"])   # 출하 품번 섞일 때만 품번 열
                             toss_table([{
                                 "수주": so_map.get(l["so_id"], {}).get("so_number")
                                 or "-",
+                                **({"품번": line_pn(l, _pnv)} if _pe_pnc else {}),
                                 "납기": str(l.get("due_date") or "-")[:10],
                                 "미납": float(l.get("pending_qty") or 0),
                                 "순생산": float(l.get("net_pending")
@@ -22139,12 +22159,18 @@ elif page == "영업 보고":
     import pandas as _sr_pd
     from datetime import date as _sr_date
     import utils.sales_report as _sr
-    if not hasattr(_sr, "period_report_html"):
+    import inspect as _sr_insp
+    if (not hasattr(_sr, "period_report_html")
+            or "variants" not in _sr_insp.signature(_sr.daily_report_html).parameters):
         import importlib as _sr_il
         _sr = _sr_il.reload(_sr)  # Cloud 재배포 시 sys.modules 캐시 가드
-    from utils.statement_generator import (
-        delivery_list_html as _sr_list,
-        transaction_statements_html as _sr_stmt)
+    import utils.statement_generator as _sr_sg
+    if "variants" not in _sr_insp.signature(_sr_sg.delivery_list_html).parameters:
+        import importlib as _sr_il2
+        _sr_sg = _sr_il2.reload(_sr_sg)   # 같은 가드(PN 묶음 variants 인자)
+    _sr_list = _sr_sg.delivery_list_html
+    _sr_stmt = _sr_sg.transaction_statements_html
+    _pnv = _pn_variants()      # 출하 품번 병기(내부 앞) — 일일 결산 출력물·출고 리스트 (PN 묶음)
 
     def _sr_ships(cond):
         """→ (rows, truncated). 절단이면 호출자가 집계 미확인·재발행 비활성(BCD r2 M2)."""
@@ -22270,7 +22296,7 @@ elif page == "영업 보고":
                          column_config=_NUMCOL)
             st.download_button(
                 "일일 결산 리포트 인쇄", _sr.daily_report_html(
-                    _d_iso, _d_rows, current_user_name()),
+                    _d_iso, _d_rows, current_user_name(), variants=_pnv),
                 file_name=f"일일결산_{_d_iso}.html", mime="text/html",
                 key="sr_dl_day", type="primary", disabled=_d_tr)
 
@@ -22597,6 +22623,7 @@ elif page == "영업 보고":
                         "rows": [{
                             "pn": x.get("pn"),
                             "customer_pn": x.get("customer_pn"),
+                            "product_id": x.get("product_id"),
                             "item_name": x.get("item_name"),
                             "disp_name": _r_names.get(x.get("si_id")),
                             "lots": _r_lots.get(x.get("si_id")),
@@ -22631,7 +22658,7 @@ elif page == "영업 보고":
             _rb1, _rb2 = st.columns(2)
             _rb1.download_button(
                 "출고 리스트 재발행",
-                _sr_list(_sr_batch(_r_items, _r_pick), rev_label=_sr_rev_lbl),
+                _sr_list(_sr_batch(_r_items, _r_pick), rev_label=_sr_rev_lbl, variants=_pnv),
                 file_name=f"출고리스트_{_r_pick['ship_no']}.html",
                 mime="text/html", key="sr_re_list",
                 use_container_width=True, disabled=_r_tr)
