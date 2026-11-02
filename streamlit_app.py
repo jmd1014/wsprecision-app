@@ -6442,21 +6442,29 @@ elif page == "수주 관리":
                 _mode9 = "휴면 해제(활성화)" if _p else "신규 등록"
                 _soi9 = ",".join(str(l["soi_id"]) for l in _g["lines"])
 
-                def _link_lines(_pid9, _pn9, _g=_g, _soi9=_soi9):
+                def _link_lines(_pid9, _pn9, _g=_g, _soi9=_soi9, _kid9=_kid):
                     _ok9 = _db.update("sales_order_items",
                                       f"soi_id=in.({_soi9})",
                                       {"product_id": _pid9,
                                        "canonical_pn": _pn9})
+                    _map9 = {
+                        "customer": _g["customer"],
+                        "customer_part_no": _g["cpn"],
+                        "product_id": _pid9, "canonical_pn": _pn9,
+                        "customer_item_name": _g["iname"] or None,
+                        "verified": True}
+                    if st.session_state.get(f"{_kid9}_variant"):
+                        _map9["kind"] = "variant"      # 미체크 = 열 생략(기본 alias, 묶음 전 payload)
                     try:
-                        _db.insert("customer_part_mapping", [{
-                            "customer": _g["customer"],
-                            "customer_part_no": _g["cpn"],
-                            "product_id": _pid9, "canonical_pn": _pn9,
-                            "customer_item_name": _g["iname"] or None,
-                            "verified": True}])
+                        _db.insert("customer_part_mapping", [_map9])
                     except Exception:
                         pass   # 매핑 사전은 보조 — 실패해도 라인 연결 유지
                     return _ok9
+
+                st.checkbox("출하 품번으로 구분", key=f"{_kid}_variant",
+                            help="같은 제품을 거래처가 다른 품번으로 따로 주문·납품할 때만 "
+                                 "체크 — 수주·출고 라인에 이 거래처 품번을 함께 표시합니다 "
+                                 "(PN 묶음, 기본 해제)")
 
                 if _p and _mode9 == "휴면 해제(활성화)":
                     # ── 휴면 제품: 변동 확인 후 활성화 ──
@@ -7628,6 +7636,29 @@ elif page == "수주 관리":
                                    "품목만 입력할 수 있습니다. 아래 '신규 "
                                    "품목 등록'으로 마스터에 추가 후 "
                                    "선택하세요.")
+                    # 출하 품번(variant) — 같은 제품을 거래처가 다른 품번으로 따로 주문·납품(PN 묶음 31).
+                    # 별칭(alias)은 고르는 대상이 아니다. variant 가 없는 제품은 셀렉트박스 없이 제품 pn.
+                    _m_cpn = _m_prod["pn"] if _m_prod else None
+                    if _m_prod:
+                        try:
+                            _m_vrows = fetch("customer_part_mapping", "customer_part_no,kind",
+                                             f"product_id=eq.{_fq(_m_prod['product_id'])}"
+                                             "&kind=eq.variant", limit=50)
+                        except Exception:
+                            _m_vrows = []
+                        _m_vopts = []
+                        for _mv in _m_vrows or []:
+                            _mc = str(_mv.get("customer_part_no") or "").strip()
+                            if (_mv.get("kind") == "variant" and _mc
+                                    and _mc.upper() != str(_m_prod["pn"]).upper()
+                                    and _mc.upper() not in {x.upper() for x in _m_vopts}):
+                                _m_vopts.append(_mc)
+                        if _m_vopts:
+                            _m_cpn = st.selectbox(
+                                "거래처 품번", [_m_prod["pn"]] + sorted(_m_vopts),
+                                key=f"m_cpn_pick_{_m_prod['product_id']}",
+                                help="같은 제품을 거래처가 다른 품번(출하 품번)으로 따로 "
+                                     "주문·납품할 때 고릅니다")
                     ic2, ic3, ic4 = st.columns(3)
                     m_qty = ic2.number_input("수량", 0, step=10, key="m_qty")
                     m_up = ic3.number_input("단가", 0, step=100, key="m_up")
@@ -7636,7 +7667,7 @@ elif page == "수주 관리":
                                  disabled=not (_m_prod and m_qty)):
                         st.session_state.m_so_items.append({
                             "line_no": len(st.session_state.m_so_items) + 1,
-                            "customer_part_no": _m_prod["pn"], "qty": m_qty,
+                            "customer_part_no": _m_cpn, "qty": m_qty,
                             "unit_price": m_up, "amount": m_qty * m_up,
                             "due_date": m_due_item,
                             "product_id": _m_prod["product_id"],
@@ -7739,7 +7770,7 @@ elif page == "수주 관리":
                                 [5, 1], vertical_alignment="center")
                             _dc1.markdown(
                                 f'<div class="so-item-row"><b>{_soi_it["line_no"]}. '
-                                f'{_html_soi.escape(str(_soi_it.get("customer_part_no") or ""))}</b>'
+                                f'{_html_soi.escape(line_pn(_soi_it, _pnv))}</b>'
                                 f'<span>{float(_soi_it.get("qty") or 0):,.0f} EA'
                                 + (f' · 납기 {str(_soi_it.get("due_date"))[:10]}'
                                    if _soi_it.get("due_date") else "")
