@@ -270,32 +270,99 @@ def test_manual_add_p0005_without_variant_kind_has_no_picker(monkeypatch):
     assert not [s for s in at.selectbox if str(s.key or "").startswith("m_cpn_pick")]
 
 
-# ── 매핑 등록(제품 확인 카드): "출하 품번으로 구분" 체크박스 → kind ──
-def _register_card(monkeypatch, check):
-    from tests.test_hotfix2_followup_a import _mock, _open, _seed_so_cards
+# ── 매핑 등록(제품 확인 카드 신규 등록 폼): "출하 품번으로 구분" → kind (PN r2 H1·H2) ──
+def _card_mock(two=False):
+    from tests.test_hotfix2_followup_a import _mock, _seed_so_cards
     from tests.test_hotfix2_followup_b import _allow_product_writes
     m = _mock()
     _seed_so_cards(m)                                   # 913 = 미등록 라인(거래처 품번 CP-913)
+    if two:                                             # 두 번째 미등록 그룹(CP-914, 납기 뒤)
+        m.seed(so_id=404, so_status="CONFIRMED", lines=[(914, 5, 0, 5, "PENDING")],
+               pn="NEW-PN2", product_id="PNEW2")
+        for it in m.tables["sales_order_items"]:
+            if it["soi_id"] == 914:
+                it["product_id"], it["due_date"] = None, "2026-10-25"
     _allow_product_writes(m)
-    at = _open(monkeypatch, m, "so", "input")
-    cb = next(c for c in at.checkbox if str(c.key or "").endswith("_variant"))
-    assert cb.value is False                            # 기본 해제
+    return m
+
+
+def _var_boxes(at):
+    return [c for c in at.checkbox if str(c.key or "").startswith("sochk_var_")]
+
+
+def _register(at, pn, check):
     if check:
-        cb.check()
-        at.run()
-    next(t for t in at.text_input if t.label == "품번 *").set_value("NEW-913")
+        _var_boxes(at)[0].check()
+    next(t for t in at.text_input if t.label == "품번 *").set_value(pn)
     next(b for b in at.button if "등록하고 진행" in str(b.label)).click()
     at.run()
     assert not at.exception, [str(e.value) for e in at.exception]
+
+
+def _maps(m):
     return [w[2] for w in m.writes if w[0] == "insert" and w[1] == "customer_part_mapping"]
 
 
 def test_mapping_register_default_payload_unchanged(monkeypatch):
-    maps = _register_card(monkeypatch, check=False)
-    assert len(maps) == 1 and "kind" not in maps[0], maps            # 묶음 전 payload(열 생략 = 기본 alias)
+    from tests.test_hotfix2_followup_a import _open
+    m = _card_mock()
+    at = _open(monkeypatch, m, "so", "input")
+    assert [c.value for c in _var_boxes(at)] == [False]          # 기본 해제, 신규 등록 폼 안
+    _register(at, "NEW-913", check=False)
+    maps = _maps(m)
+    assert len(maps) == 1 and "kind" not in maps[0], maps        # 묶음 전 payload(열 생략 = 기본 alias)
     assert maps[0]["customer_part_no"] == "CP-913"
 
 
 def test_mapping_register_checked_is_variant(monkeypatch):
-    maps = _register_card(monkeypatch, check=True)
+    from tests.test_hotfix2_followup_a import _open
+    m = _card_mock()
+    at = _open(monkeypatch, m, "so", "input")
+    _register(at, "NEW-913", check=True)
+    maps = _maps(m)
     assert len(maps) == 1 and maps[0]["kind"] == "variant", maps
+
+
+def test_mapping_checkbox_not_inherited_by_next_group(monkeypatch):
+    """T7(H1): 1번 그룹 체크 후 등록 → rerun 뒤 남은 그룹 체크박스는 False, 그 등록은 alias."""
+    from tests.test_hotfix2_followup_a import _open
+    m = _card_mock(two=True)
+    at = _open(monkeypatch, m, "so", "input")
+    assert len(_var_boxes(at)) == 2
+    _register(at, "NEW-913", check=True)
+    left = _var_boxes(at)
+    assert len(left) == 1 and left[0].value is False, [(c.key, c.value) for c in left]
+    _register(at, "NEW-914", check=False)
+    kinds = [(mp["customer_part_no"], mp.get("kind")) for mp in _maps(m)]
+    assert kinds == [("CP-913", "variant"), ("CP-914", None)], kinds
+
+
+def test_mapping_variant_insert_failure_warns(monkeypatch):
+    """T8(H2): 체크된 매핑 insert 실패 → 라인 연결은 완료, 다음 화면에 경고 1건 + log_error."""
+    import db
+    from tests.test_hotfix2_followup_a import _open
+    m = _card_mock()
+    at = _open(monkeypatch, m, "so", "input")
+    m.insert_raise_for = "customer_part_mapping"
+    logged = []
+    monkeypatch.setattr(db, "log_error", lambda *a, **k: logged.append((a, k)))
+    _register(at, "NEW-913", check=True)
+    ups = [w for w in m.writes if w[0] == "update" and w[1] == "sales_order_items"]
+    assert ups and ups[0][2]["canonical_pn"] == "NEW-913"          # 라인 연결 완료
+    warns = [str(w.value) for w in at.warning] + [str(x.value) for x in at.markdown]
+    assert sum("출하 품번 매핑은 저장되지 않았습니다" in w for w in warns) == 1, warns
+    assert any("출하 품번 매핑 저장 실패" in str(a[0][1]) for a in logged), logged
+
+
+def test_mapping_checkbox_hidden_for_dormant_activation(monkeypatch):
+    """H2: 휴면 해제 분기(매핑 저장 없음)에는 체크박스가 없다."""
+    from tests.test_hotfix2_followup_a import _mock, _open
+    from tests.test_hotfix2_followup_b import _allow_product_writes
+    m = _mock()
+    m.seed(so_id=501, so_status="CONFIRMED", lines=[(921, 10, 0, 10, "PENDING")], pn="DORM-PN",
+           product_id="PDORM")
+    next(p for p in m.tables["products"] if p["product_id"] == "PDORM")["archived_at"] = "2026-09-01"
+    _allow_product_writes(m)
+    at = _open(monkeypatch, m, "so", "input")
+    assert any(str(b.key or "").endswith("_act") for b in at.button)
+    assert not _var_boxes(at)

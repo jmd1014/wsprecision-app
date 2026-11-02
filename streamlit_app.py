@@ -6411,6 +6411,9 @@ elif page == "수주 관리":
     if _ck_tr:
         ws_note("제품 확인 필요 — 수주·제품 조회가 너무 많아 일부 미확인입니다. "
                 "관리자에게 알려 주세요.", warn=True)
+    _ck_mw = st.session_state.pop("sochk_map_warn", None)     # 출하 품번 매핑 저장 실패(PN r2 H2)
+    if _ck_mw:
+        ws_note(_ck_mw, warn=True)
     if _ck_groups:
         with st.expander(
                 ("제품 확인 필요(일부 미확인)" if _ck_tr else
@@ -6442,7 +6445,7 @@ elif page == "수주 관리":
                 _mode9 = "휴면 해제(활성화)" if _p else "신규 등록"
                 _soi9 = ",".join(str(l["soi_id"]) for l in _g["lines"])
 
-                def _link_lines(_pid9, _pn9, _g=_g, _soi9=_soi9, _kid9=_kid):
+                def _link_lines(_pid9, _pn9, _g=_g, _soi9=_soi9, variant=False):
                     _ok9 = _db.update("sales_order_items",
                                       f"soi_id=in.({_soi9})",
                                       {"product_id": _pid9,
@@ -6453,18 +6456,27 @@ elif page == "수주 관리":
                         "product_id": _pid9, "canonical_pn": _pn9,
                         "customer_item_name": _g["iname"] or None,
                         "verified": True}
-                    if st.session_state.get(f"{_kid9}_variant"):
+                    if variant:
                         _map9["kind"] = "variant"      # 미체크 = 열 생략(기본 alias, 묶음 전 payload)
                     try:
                         _db.insert("customer_part_mapping", [_map9])
-                    except Exception:
-                        pass   # 매핑 사전은 보조 — 실패해도 라인 연결 유지
+                    except Exception as _me9:
+                        # 매핑 사전은 보조 — 실패해도 라인 연결 유지. 단 '출하 품번 구분' 결정은
+                        # 조용히 사라지면 안 된다(PN r2 H2: UNIQUE 충돌·열 없음)
+                        if variant:
+                            _db.log_error("db_write", f"출하 품번 매핑 저장 실패 "
+                                          f"({_g['customer']} {_g['cpn']}): {_me9}",
+                                          table_name="customer_part_mapping")
+                            st.session_state["sochk_map_warn"] = (
+                                f"{_g['cpn']}: 출하 품번 매핑은 저장되지 않았습니다 — 라인 연결은 "
+                                "완료. 관리자에게 알려 주세요.")
                     return _ok9
 
-                st.checkbox("출하 품번으로 구분", key=f"{_kid}_variant",
-                            help="같은 제품을 거래처가 다른 품번으로 따로 주문·납품할 때만 "
-                                 "체크 — 수주·출고 라인에 이 거래처 품번을 함께 표시합니다 "
-                                 "(PN 묶음, 기본 해제)")
+                # 체크박스 key = 그룹 정체성(거래처·거래처 품번·제품) — 순번 key 는 앞 그룹 처리 뒤
+                # 다음 그룹이 체크 상태를 물려받는다(PN r2 H1, po_vh_only 사고 유형)
+                import hashlib as _ck_hl
+                _vkey9 = "sochk_var_" + _ck_hl.md5(
+                    "|".join(map(str, _gk)).encode("utf-8")).hexdigest()[:12]
 
                 if _p and _mode9 == "휴면 해제(활성화)":
                     # ── 휴면 제품: 변동 확인 후 활성화 ──
@@ -6552,6 +6564,10 @@ elif page == "수주 관리":
                                 value=float(_g["price"] or 0))
                             _npr9 = _n5.selectbox("조달", ["도급", "사급"])
                             _nmt9 = _n6.text_input("재질 (선택)")
+                            _nvar9 = st.checkbox(
+                                "출하 품번으로 구분", key=_vkey9,
+                                help="같은 제품을 거래처가 다른 품번으로 따로 주문·납품할 때만 "
+                                     "체크 — 수주·출고 라인에 이 거래처 품번을 함께 표시합니다")
                             _ngo9 = st.form_submit_button("등록하고 진행",
                                                           type="primary")
                         if _ngo9:
@@ -6595,7 +6611,8 @@ elif page == "수주 관리":
                                                 None, float(_nsp9),
                                                 f"수주 {', '.join(sorted(_g['sos']))}"
                                                 " 등록 시 단가")
-                                    _link_lines(_npid9, _npn9)
+                                    _link_lines(_npid9, _npn9, variant=bool(_nvar9))
+                                    st.session_state.pop(_vkey9, None)
                                     nav_flash(f"{_npn9} 등록({_npid9}) + "
                                                f"{len(_g['lines'])}라인 연결")
                                     st.rerun()
