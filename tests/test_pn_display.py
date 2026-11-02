@@ -395,3 +395,177 @@ def test_mapping_checkbox_hidden_for_dormant_activation(monkeypatch):
     at = _open(monkeypatch, m, "so", "input")
     assert any(str(b.key or "").endswith("_act") for b in at.button)
     assert not _var_boxes(at)
+
+
+# ── T3 정정 이력(14): 이력엔 거래처 품번이 없어 같은 전표 라인(si_id)으로 — si_id·pn 없는 행 포함 ──
+def _rev_rows():
+    base = {"action": "EDIT", "qty_before": 500, "qty_after": 400, "reason": "r",
+            "created_by": "t", "created_at": "2026-09-01T10:00:00"}
+    return [dict(base, rev_no=0, si_id=1, pn="4PDVN-03"),
+            dict(base, rev_no=0, si_id=None, pn=None),
+            dict(base, rev_no=0, si_id=1, pn=None)]
+
+
+def _rev_table(at):
+    return next(m.value for m in at.markdown
+                if '<table class="tt"' in m.value and "v1" in m.value)
+
+
+def test_revision_history_variant_labels(rev_db, monkeypatch):
+    rf._seed()
+    rf.REVS[:] = _rev_rows()
+    _with_variants(monkeypatch, [{"product_id": "P1", "customer_part_no": "4S4PDVN-03",
+                                  "kind": "variant"}])
+    at = rf._pick_confirmed(rf._open())
+    t = _rev_table(at)
+    assert t.count("4PDVN-03 (4S4PDVN-03)") == 2, t                # si_id 있음(pn 없음 = 라인 pn 폴백)
+    assert ">-<" in t                                               # si_id·pn 둘 다 없음 = 묶음 전처럼 "-"
+
+
+def test_revision_history_without_variants_unchanged(rev_db):
+    rf._seed()
+    rf.REVS[:] = _rev_rows()
+    at = rf._pick_confirmed(rf._open())
+    t = _rev_table(at)
+    assert "(4S4PDVN-03)" not in t and t.count(">4PDVN-03<") == 2, t
+
+
+# ── T4 출고 현황(25·26·27): 출하 품번 있을 때만 '품번' 열, 이력 품번 내부 앞 ──
+def _dstat(monkeypatch, variant):
+    from tests.test_hotfix2_followup_a import _open
+    from tests.test_hotfix2_followup_bcd_r3 import _sales_mock
+    m = _sales_mock()                                   # PSR · si 9101 customer_pn CP-981 · soi 981 CP-981
+    m.tables["customer_part_mapping"] = [{"mapping_id": 1, "customer": "(주)디아이씨두서공장",
+                                          "customer_part_no": "CP-981", "product_id": "PSR",
+                                          "canonical_pn": "SR-PN",
+                                          "kind": "variant" if variant else "alias"}]
+    return _open(monkeypatch, m, "ship", "dstat")
+
+
+def _tt(at, col):
+    """toss_table(HTML) 중 헤더에 col 이 있는 표들."""
+    return [m.value for m in at.markdown
+            if '<table class="tt"' in m.value and f">{col}<" in m.value]
+
+
+def test_dstat_detail_columns_only_with_variant(monkeypatch):
+    at = _dstat(monkeypatch, True)
+    lines, recon = _tt(at, "LOT"), _tt(at, "전표 외 기납품")
+    assert lines and ">품번<" in lines[0] and "SR-PN (CP-981)" in lines[0], lines
+    assert recon and ">품번<" in recon[0] and "SR-PN (CP-981)" in recon[0], recon
+    at.radio(key="dstat_view").set_value("출고 이력")
+    at.run()
+    hist = _tt(at, "품명")
+    assert hist and "SR-PN (CP-981)" in hist[0], hist
+
+
+def test_dstat_without_variant_has_no_new_columns(monkeypatch):
+    at = _dstat(monkeypatch, False)
+    lines, recon = _tt(at, "LOT"), _tt(at, "전표 외 기납품")
+    assert lines and recon
+    assert ">품번<" not in lines[0] and ">품번<" not in recon[0]       # 묶음 전 표(열 없음)
+    at.radio(key="dstat_view").set_value("출고 이력")
+    at.run()
+    hist = _tt(at, "품명")
+    assert hist and "SR-PN" in hist[0] and "(CP-981)" not in hist[0]
+
+
+# ── T5 확정 계획 오류(22)·정정 경고(24): 문구 품번 ──
+def _plan_err_texts(at):
+    at.button(key="cf_go").click().run()
+    assert not at.exception, [str(e.value) for e in at.exception]
+    return [str(e.value) for e in at.error]
+
+
+def test_confirm_plan_error_label(rev_db, monkeypatch):
+    rf._seed()
+    rf.SHIP_ITEMS[1]["soi_id"] = 99                     # 작성중 라인의 수주 라인이 없음
+    _with_variants(monkeypatch, [{"product_id": "P1", "customer_part_no": "4S4PDVN-03",
+                                  "kind": "variant"}])
+    errs = _plan_err_texts(rf._open())
+    assert any("4PDVN-03 (4S4PDVN-03): 수주 라인 없음" in e for e in errs), errs
+
+
+def test_confirm_plan_error_label_without_variants(rev_db):
+    rf._seed()
+    rf.SHIP_ITEMS[1]["soi_id"] = 99
+    errs = _plan_err_texts(rf._open())
+    assert any("4PDVN-03: 수주 라인 없음" in e for e in errs), errs
+
+
+def _cancel_without_ledger(at, monkeypatch):
+    """취소 성공 경로는 경고를 그린 직후 st.rerun 이라 최종 화면엔 남지 않는다(기존 동작) → 호출을 기록."""
+    import streamlit as _st
+    seen, orig = [], _st.warning
+
+    def _rec(body, *a, **k):
+        seen.append(str(body))
+        return orig(body, *a, **k)
+    monkeypatch.setattr(_st, "warning", _rec)
+    rf.TXNS[:] = []                                     # 차감 기록 없음 → "원장에 차감 기록이 없는" 경고
+    at.text_input(key="cf_cx_reason_1").set_value("확인")
+    at.run()
+    at.button(key="cf_cancel").click()
+    at.run()
+    at.button(key="cf_cancel_cfm_ok").click()
+    at.run()
+    assert not at.exception, [str(e.value) for e in at.exception]
+    return seen + [str(e.value) for e in at.error]
+
+
+def test_cancel_warning_label(rev_db, monkeypatch):
+    rf._seed()
+    _with_variants(monkeypatch, [{"product_id": "P1", "customer_part_no": "4S4PDVN-03",
+                                  "kind": "variant"}])
+    ws = _cancel_without_ledger(rf._pick_confirmed(rf._open()), monkeypatch)
+    assert any(w.startswith("4PDVN-03 (4S4PDVN-03) — 원장에 차감 기록이 없는") for w in ws), ws
+
+
+def test_cancel_warning_label_without_variants(rev_db, monkeypatch):
+    rf._seed()
+    ws = _cancel_without_ledger(rf._pick_confirmed(rf._open()), monkeypatch)
+    assert any(w.startswith("4PDVN-03 — 원장에 차감 기록이 없는") for w in ws), ws
+
+
+# ── T6 variant 조회 실패(열 없음 모사) → 묶음 전 표시, 예외 없음 ──
+def test_variant_fetch_failure_falls_back(ship_db, monkeypatch):
+    import db
+    base = db.fetch
+
+    def _f(table, select="*", filter_query="", limit=1000, **kw):
+        if table == "customer_part_mapping":
+            raise RuntimeError("400 column customer_part_mapping.kind does not exist")
+        return base(table, select, filter_query, limit, **kw)
+    monkeypatch.setattr(db, "fetch", _f)
+    at = bd._open_shipping(ship_db)
+    sel = _search(at, "4PDVN")
+    assert any(l.startswith("4PDVN-03 | SO-100 | 미납 2,000") for l in sel.options), list(sel.options)
+    ed = next(d.value for d in at.dataframe
+              if "잔량" in d.value.columns and "출고" in d.value.columns)
+    assert set(ed["품번"]) == {"4PDVN-03", "MRG6-07"}
+
+
+# ── T4(28) 발주 소요량 › 미납 수주 라인: 출하 품번 있을 때만 '품번' 열(거래처 앞) ──
+def _po_req(monkeypatch, kind):
+    from tests.test_hotfix2_followup_a import _mock, _open
+    m = _mock()
+    m.seed(so_id=901, so_status="CONFIRMED", lines=[(991, 10, 0, 10, "PENDING")], pn="MR-PN",
+           product_id="PMR")                                     # customer_part_no CP-991
+    m.tables["bom"] = [{"bom_id": 1, "product_id": "PMR", "material_id": "M1",
+                        "raw_material_name": "SUS", "qty_per_pc": 1, "shared_factor": 1,
+                        "process_type": "MATERIAL"}]
+    m.tables["customer_part_mapping"] = [{"mapping_id": 1, "customer": "x", "customer_part_no": "CP-991",
+                                          "product_id": "PMR", "canonical_pn": "MR-PN", "kind": kind}]
+    at = _open(monkeypatch, m, "po", "new")
+    return next(v for v in (x.value for x in at.markdown)
+                if '<table class="tt"' in v and ">순생산<" in v)
+
+
+def test_po_requirement_pending_lines_variant_column(monkeypatch):
+    t = _po_req(monkeypatch, "variant")
+    assert ">품번<" in t and "<td>CP-991 (MR-PN)</td>" in t, t
+
+
+def test_po_requirement_pending_lines_without_variant_unchanged(monkeypatch):
+    t = _po_req(monkeypatch, "alias")
+    assert ">품번<" not in t and "CP-991" not in t, t                # 묶음 전 표(열 없음)

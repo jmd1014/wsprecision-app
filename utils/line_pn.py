@@ -20,7 +20,7 @@ def load_variants(fetch):
     """
     rows = fetch("customer_part_mapping", "product_id,customer_part_no,kind",
                  "kind=eq.variant") or []
-    return {(r["product_id"], str(r.get("customer_part_no") or "").strip().upper())
+    return {(r.get("product_id"), str(r.get("customer_part_no") or "").strip().upper())
             for r in rows
             if r.get("kind") == "variant" and r.get("product_id")
             and str(r.get("customer_part_no") or "").strip()}
@@ -29,16 +29,19 @@ def load_variants(fetch):
 def line_pn(row, variants, *, internal_first=False, full=True) -> str:
     """라인의 표시 품번. 거래처 품번이 그 제품의 출하 품번(variant)이고 내부 품번과 다를 때만 병기.
 
-    그 외(별칭·빈값·같음·product_id 없음)는 `pn or cpn or "-"` — 묶음 전 표시와 같은 문자열.
+    그 외(별칭·빈값·같음·product_id 없음)는 `pn or cpn or "-"` **원문** — 묶음 전 표시와 같은 문자열
+    (비교만 strip·upper, PN r2 M1).
     row: soi(customer_part_no, canonical_pn, product_id) 또는 si(customer_pn, pn, product_id) dict.
     full=False: 좁은 칸 — 병기 대상이면 앞쪽 품번만.
     """
     row = row or {}
-    cpn = str(row.get("customer_part_no") or row.get("customer_pn") or "").strip()
-    pn = str(row.get("canonical_pn") or row.get("pn") or "").strip()
+    raw_cpn = row.get("customer_part_no") or row.get("customer_pn")
+    raw_pn = row.get("canonical_pn") or row.get("pn")
+    cpn = str(raw_cpn or "").strip()
+    pn = str(raw_pn or "").strip()
     pid = row.get("product_id") or ""
     if (cpn and pn and cpn.upper() != pn.upper()
             and (pid, cpn.upper()) in (variants or ())):
         a, b = (pn, cpn) if internal_first else (cpn, pn)
         return f"{a} ({b})" if full else a
-    return pn or cpn or "-"
+    return raw_pn or raw_cpn or "-"

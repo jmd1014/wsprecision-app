@@ -96,3 +96,13 @@ def test_daily_report_pn_column_only_and_control_bytes():
     out = daily_report_html("2026-11-02", _rows(), "테스트", variants=VS)
     assert f"<td>{BASE} ({RE})</td><td>{RE}</td>" in out           # 품번 열 병기, 품명 열(거래처 품번) 그대로
     assert out.replace(f"<td>{BASE} ({RE})</td>", f"<td>{BASE}</td>") == base
+
+
+def test_non_variant_returns_original_text():
+    """M1: 비variant 는 원문 그대로(공백·비문자 포함) — 비교만 strip·upper."""
+    assert line_pn({"customer_pn": f"{RE} ", "pn": f" {BASE}", "product_id": "P0005"},
+                   frozenset()) == f" {BASE}"
+    assert line_pn({"pn": None, "customer_pn": 12345}, VS) == 12345           # 묶음 전 `pn or cpn` 과 같은 값
+    # variant 판정은 공백·대소문자 무시
+    assert line_pn({"customer_pn": f" {RE.lower()} ", "pn": BASE, "product_id": "P0005"},
+                   VS) == f"{RE.lower()} ({BASE})"

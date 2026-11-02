@@ -20,7 +20,8 @@ ALTER TABLE public.customer_part_mapping
 DO $$
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_constraint
-                   WHERE conname = 'customer_part_mapping_kind_check') THEN
+                   WHERE conname = 'customer_part_mapping_kind_check'
+                     AND conrelid = 'public.customer_part_mapping'::regclass) THEN
         ALTER TABLE public.customer_part_mapping
             ADD CONSTRAINT customer_part_mapping_kind_check
             CHECK (kind IN ('alias', 'variant'));

@@ -6867,6 +6867,8 @@ elif page == "수주 관리":
                             f"{_msp:,.0f}원" if _msp else "미설정"))
                     # 출하 품번이 섞인 묶음만 '품번' 열(같은 제품·다른 출하 품번 라인 구분, PN 묶음)
                     _o_pnc = any(line_pn(o, _pnv) != line_pn(o, ()) for o in _g["olds"])
+                    if _o_pnc:     # 묶음 키가 (거래처, 제품)이라 다른 출하 품번 라인이 섞일 수 있다(후보 12, PN r2 M5)
+                        ws_note("출하 품번이 섞여 있습니다 — 대체 전 품번 열을 확인하세요.", warn=True)
                     _odf = pd.DataFrame([{
                         "포함": True, "옛 수주": o["so_number"],
                         **({"품번": line_pn(o, _pnv)} if _o_pnc else {}),
@@ -10888,7 +10890,9 @@ elif page == "출고 관리":
                             "회차": f"v{int(r.get('rev_no') or 0) + 1}",
                             "구분": ("취소" if r.get("action") == "CANCEL"
                                    else "정정"),
-                            "품번": line_pn(dict(_rv_si.get(r.get("si_id")) or {}, pn=r.get("pn")),
+                            "품번": line_pn(dict(_rv_si.get(r.get("si_id")) or {},
+                                               pn=r.get("pn")
+                                               or (_rv_si.get(r.get("si_id")) or {}).get("pn")),
                                           _pnv, internal_first=True),
                             "이전": float(r.get("qty_before") or 0),
                             "이후": float(r.get("qty_after") or 0),
