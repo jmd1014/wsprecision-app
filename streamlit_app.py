@@ -17462,6 +17462,7 @@ elif page == "구매 관리":
                                 for _pg in _socr.parse_document(_f.getvalue(), _f.name, _sc_biz, _sc_known,
                                                                 vendors=_sc_v):     # 추록 1 O11 상호 폴백
                                     _pg["file"] = _f.name
+                                    _pg["_sid"] = len(_sc_pages)        # 장 고유 번호 — 위젯 key·저장 요청(r1-3)
                                     _pg["unit_mode"] = (_sc_umode.get(_socr.vendor_key((_pg.get("vendor") or {}).get("name")))
                                                         if _pg.get("vendor") else None)
                                     _sc_pages.append(_pg)
@@ -17477,6 +17478,8 @@ elif page == "구매 관리":
                     except Exception:
                         _sc_vn = []
                     for _pi, _pg in enumerate(_sc_pages):
+                        # 위젯 key 는 장 고유 번호로 — 앞 장을 저장해 빼도 뒤 장의 편집 상태가 앞으로 밀리지 않게(r1-3)
+                        _pi = _pg.get("_sid", _pi)
                         _vname = (_pg.get("vendor") or {}).get("name")
                         _hdr = f"{_pg.get('file')} · {_pg['page']}쪽 — {_vname or '거래처 미식별'} · {_pg.get('date') or '날짜 미식별'} · 라인 {len(_pg['items'])} · "
                         # P2-2(2026-11-03): ○/× 옆에 숫자 — × 면 인쇄 합계(합계 줄 숫자 중 최댓값)와 라인 합
@@ -17547,6 +17550,10 @@ elif page == "구매 관리":
                                                 warn=True)
                             except Exception:
                                 pass
+                            _sc_err = st.session_state.get("sc_save_err")
+                            if _sc_err and _sc_err[0] == _pi:          # r1-3: 직전 저장 요청의 실패 사유 1회
+                                st.session_state.pop("sc_save_err", None)
+                                ws_note(_sc_err[1], warn=True)
                             _sc_dupok = st.checkbox("같은 행이 이미 있어도 추가(의도한 중복)", key=f"sc_dup_{_sc_nonce}_{_pi}")
                             if st.button("이 장을 장부에 추가", key=f"sc_save_{_sc_nonce}_{_pi}", type="primary") and click_guard(f"sc_save_{_pi}"):
                                 _rows = []
@@ -17571,14 +17578,11 @@ elif page == "구매 관리":
                                 if not _rows:
                                     st.warning("저장할 행이 없습니다.")
                                 else:
-                                    _ok1, _msg1 = _mi_save_rows(_rows, _sc_date.isoformat(), _sc_no, _sc_dupok, "SCAN")
-                                    if _ok1:
-                                        _left = [p for i, p in enumerate(_sc_pages) if i != _pi]
-                                        st.session_state["sc_pages"] = _left
-                                        nav_flash(_msg1)
-                                        st.rerun()
-                                    else:
-                                        st.error(_msg1)
+                                    # r1-3(2026-11-03): 저장 함수 _mi_save_rows 는 이 카드보다 아래(수기 입력 앞)에서 정의된다 —
+                                    # 여기서 부르면 NameError(7ab6e2e 10/16 이후 스캔 저장 불가). 요청만 남기고 정의 뒤에서 처리.
+                                    st.session_state["sc_save_req"] = {
+                                        "nonce": _sc_nonce, "pi": _pi, "rows": _rows, "date_iso": _sc_date.isoformat(),
+                                        "stmt_no": _sc_no, "dup_ok": _sc_dupok}
                     if st.button("판독 결과 비우기", key="sc_clear"):
                         st.session_state.pop("sc_pages", None)
                         st.rerun()
@@ -17891,6 +17895,24 @@ elif page == "구매 관리":
                 return True, f"장부 추가 {n}행 — 합산 {n_cut}·KG→개당 {n_pp}·매핑표 {n_map}·치수 매칭 {n_dims}."
             except Exception as _e:
                 return False, f"저장 실패: {_e}"
+
+        # r1-3: 스캔 판독 "이 장을 장부에 추가" 요청 처리(카드가 위에 있어 _mi_save_rows 정의 뒤인 여기서). 요청은 먼저
+        # 꺼낸다 — 예외가 나도 다음 실행에서 다시 저장되지 않게. 새로 판독했으면(nonce 다름) 옛 요청은 버린다.
+        _sc_req = st.session_state.pop("sc_save_req", None)
+        if _sc_req and _sc_req.get("nonce") == st.session_state.get("sc_nonce", 0):
+            _ok1, _msg1 = _mi_save_rows(_sc_req["rows"], _sc_req["date_iso"], _sc_req["stmt_no"],
+                                        _sc_req["dup_ok"], "SCAN")
+            if _ok1:
+                _left = [p for i, p in enumerate(st.session_state.get("sc_pages") or [])
+                         if p.get("_sid", i) != _sc_req["pi"]]
+                if _left:
+                    st.session_state["sc_pages"] = _left
+                else:
+                    st.session_state.pop("sc_pages", None)
+                nav_flash(_msg1)
+            else:
+                st.session_state["sc_save_err"] = (_sc_req["pi"], _msg1)
+            st.rerun()
 
         with st.expander("매입 수기 입력 (거래명세서 기준)", expanded=False):
             from datetime import date as _mi_d0

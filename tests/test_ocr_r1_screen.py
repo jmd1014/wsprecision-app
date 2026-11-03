@@ -140,3 +140,83 @@ def test_r1b_screen_name_fallback_note_and_correction_remarks(monkeypatch):
     df = _editor(at)
     assert list(df["비고"]) == ["", "OCR 보정: 7,870→7,370", "", "", "", "OCR 보정: 수량 1(판독 안 됨)"]
     assert list(df["단가"])[1] == 7370 and list(df["수량"])[5] == 1
+
+
+# ─────────────── r1-3(2026-11-03) — 스캔 저장 요청을 _mi_save_rows 정의 뒤에서 처리(기존 NameError) ───────────────
+def _ledger_inserts(m):
+    out = []
+    for w in m.writes:
+        if w[0] == "insert" and w[1] == "purchase_ledger":
+            out += w[2] if isinstance(w[2], list) else [w[2]]
+    return out
+
+
+def _click_save(at):
+    next(b for b in at.button if b.key == "sc_save_1_0").click()
+    at.run()
+    assert not at.exception, [str(e.value) for e in at.exception]
+
+
+@app_only
+def test_r1_3_scan_save_success_inserts_once_and_removes_card(monkeypatch):
+    import db
+    m, at = _open_pur(monkeypatch, [])
+    calls, real = [], db.insert
+
+    def _count(table, records, *a, **kw):
+        calls.append(table)
+        return real(table, records, *a, **kw)
+    monkeypatch.setattr(db, "insert", _count)
+    _click_save(at)
+    rows = _ledger_inserts(m)
+    assert calls.count("purchase_ledger") == 1, "insert 호출 1회(4행)"
+    assert len(rows) == 4 and {r["source"] for r in rows} == {"SCAN"} and rows[0]["trade_date"] == "2026-10-23"
+    assert [round(r["amount"]) for r in rows] == [1315700, 191100, 112100, 1885000]
+    assert "sc_pages" not in at.session_state and "sc_save_req" not in at.session_state, "남은 장 0 → 판독 결과 비움"
+    assert not any(b.key == "sc_save_1_0" for b in at.button)
+    at.run()
+    assert len(_ledger_inserts(m)) == 4, "다시 실행해도 재저장 없음"
+
+
+@app_only
+def test_r1_3_scan_save_duplicate_fails_with_note_once(monkeypatch):
+    led = [{"ledger_id": 1, "trade_date": "2026-10-23", "vendor": VENDOR, "item": "STS304환봉 110￠*24ℓ",
+            "amount": 1315700}]
+    m, at = _open_pur(monkeypatch, led)
+    _click_save(at)
+    assert _ledger_inserts(m) == [], "중복이면 저장 안 함(_mi_save_rows dedup 그대로)"
+    md = _md(at)
+    assert "이미 장부에 같은 행이 있습니다" in md and "sc_pages" in at.session_state, "실패 사유는 카드에 경고로"
+    at.run()
+    assert "이미 장부에 같은 행이 있습니다" not in _md(at), "한 번만"
+
+
+@app_only
+def test_r1_3_scan_save_missing_amount_fails(monkeypatch):
+    pages = _pages()
+    pages[0]["items"] = pages[0]["items"][:1]
+    m, at = _open_pur(monkeypatch, [], pages=pages)
+    at.session_state["sc_ed_1_0"] = {"edited_rows": {"0": {"공급가액": None, "단가": None}},
+                                      "added_rows": [], "deleted_rows": []}
+    at.run()
+    _click_save(at)
+    assert _ledger_inserts(m) == []
+    assert "금액을 계산할 수 없는 행 1건" in _md(at)
+
+
+@app_only
+def test_r1_3_stale_request_from_previous_read_is_ignored(monkeypatch):
+    m, at = _open_pur(monkeypatch, [])
+    at.session_state["sc_save_req"] = {"nonce": 0, "pi": 0, "rows": [{"item": "X", "amount": 1}],
+                                       "date_iso": "2026-10-23", "stmt_no": "", "dup_ok": False}
+    at.run()
+    assert _ledger_inserts(m) == [] and "sc_save_req" not in at.session_state
+
+
+def test_r1_3_scan_card_does_not_call_save_helper_directly():
+    """정적 검사: 스캔 카드(판독 결과 표 ~ '판독 결과 비우기') 안에서 _mi_save_rows( 를 직접 부르지 않는다."""
+    src = open(os.path.join(ROOT, "streamlit_app.py"), encoding="utf-8").read()
+    a = src.index('_sc_pages = st.session_state.get("sc_pages") or []')
+    b = src.index('st.button("판독 결과 비우기"')
+    assert "_mi_save_rows(" not in src[a:b]
+    assert src.index("def _mi_save_rows(") < src.index('st.session_state.pop("sc_save_req"'), "처리부는 정의 뒤"
