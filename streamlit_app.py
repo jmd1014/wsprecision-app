@@ -17459,7 +17459,8 @@ elif page == "구매 관리":
                             _sc_umode = _socr.vendor_unit_mode(_sc_led)     # O4: 단위 못 읽은 줄의 기본값
                             _sc_pages = []
                             for _f in _sc_files:
-                                for _pg in _socr.parse_document(_f.getvalue(), _f.name, _sc_biz, _sc_known):
+                                for _pg in _socr.parse_document(_f.getvalue(), _f.name, _sc_biz, _sc_known,
+                                                                vendors=_sc_v):     # 추록 1 O11 상호 폴백
                                     _pg["file"] = _f.name
                                     _pg["unit_mode"] = (_sc_umode.get(_socr.vendor_key((_pg.get("vendor") or {}).get("name")))
                                                         if _pg.get("vendor") else None)
@@ -17488,6 +17489,8 @@ elif page == "구매 관리":
                                      + f" · 라인 합 {_sc_sum:,.0f}")
                         with st.container(border=True):
                             st.markdown(f"**{_hdr}**")
+                            if _pg.get("vendor_how") == "name":
+                                ws_note("사업자번호 미판독 — 상호로 추정", warn=True)
                             sc1, sc2, sc3 = st.columns([2.5, 1.2, 1.5])
                             _vopts = _sc_vn if _sc_vn else ([_vname] if _vname else [])
                             _vidx = _vopts.index(_vname) if _vname in _vopts else 0

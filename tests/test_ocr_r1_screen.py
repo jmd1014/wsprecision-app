@@ -39,7 +39,7 @@ def _pages(total_ok=True):
              "unit_mode": "KG"}]
 
 
-def _open_pur(monkeypatch, ledger, total_ok=True):
+def _open_pur(monkeypatch, ledger, total_ok=True, pages=None):
     import streamlit
     from utils import stmt_ocr as S
     from tests.test_hotfix2_followup_a import _mock, _open
@@ -58,7 +58,7 @@ def _open_pur(monkeypatch, ledger, total_ok=True):
     m.tables.setdefault("vendors", []).append({"vendor_id": 9001, "name": VENDOR, "business_no": "606-81-89947",
                                                "in_use": True, "archived_at": None})
     at = _open(monkeypatch, m, "po", "pur")
-    at.session_state["sc_pages"] = _pages(total_ok)
+    at.session_state["sc_pages"] = pages if pages is not None else _pages(total_ok)
     at.session_state["sc_nonce"] = 1
     at.run()
     assert not at.exception, [str(e.value) for e in at.exception]
@@ -121,3 +121,22 @@ def test_r1_screen_ledger_lookup_failures_are_silent(monkeypatch):
     md = _md(at)
     assert "장부 최근 동기화" not in md and "이 장부에 이미 있습니다" not in md
     assert any(b.key == "sc_save_1_0" for b in at.button)
+
+
+@app_only
+def test_r1b_screen_name_fallback_note_and_correction_remarks(monkeypatch):
+    """추록 1: 상호로 찾은 거래처 안내 + fix1·qty1 행 비고에 보정 내역."""
+    from tests.test_stmt_ocr import _line
+    from utils import stmt_ocr as S
+    fx = json.load(open(os.path.join(ROOT, "tests", "fixtures", "stmt_ocr_20261103.json"), encoding="utf-8"))
+    lines = [_line(t) for t in next(p for p in fx if p["page"] == 1)["lines"]]
+    items = S.parse_line_items(lines)
+    s, cands, ok, vat = S.find_totals(lines, items)
+    pg = {"page": 1, "rot": 0, "psm": 6, "vendor": {"name": VENDOR}, "vendor_how": "name", "date": "2026-10-28",
+          "items": items, "sum": s, "printed_totals": cands, "total_ok": ok, "vat_seen": vat, "lines": [],
+          "file": "scan.pdf", "unit_mode": "EA"}
+    m, at = _open_pur(monkeypatch, [], pages=[pg])
+    assert "사업자번호 미판독 — 상호로 추정" in _md(at)
+    df = _editor(at)
+    assert list(df["비고"]) == ["", "OCR 보정: 7,870→7,370", "", "", "", "OCR 보정: 수량 1(판독 안 됨)"]
+    assert list(df["단가"])[1] == 7370 and list(df["수량"])[5] == 1

@@ -46,8 +46,10 @@ def test_find_vendor_by_business_number_and_date():
     words = [{"t": t} for t in "606—-37—-55556 «Sm 2026 년 09 월 30 일 60602-14529".split()]
     biz = {"6063755556": {"name": "두리T.M.S"}, "6060214529": {"name": "우성정밀"}}
     assert find_vendor(words, biz)["name"] == "두리T.M.S", "대시 오독·우성 번호 무시"
-    assert find_date(words) == "2026-09-30"
-    assert find_date([{"t": "2006"}, {"t": "9"}, {"t": "월"}, {"t": "16"}, {"t": "일"}]).endswith("-09-16"), "연도 오독은 올해로"
+    # r1-2(2026-11-03): today 고정 — O3 의 오늘−400 창 때문에 2027-11 이후 거짓 실패하지 않게(동작 무변화)
+    _t = __import__("datetime").date(2026, 11, 3)
+    assert find_date(words, today=_t) == "2026-09-30"
+    assert find_date([{"t": "2006"}, {"t": "9"}, {"t": "월"}, {"t": "16"}, {"t": "일"}], today=_t).endswith("-09-16"),         "연도 오독은 올해로"
 
 
 def test_ocr_dims_and_match_item_relations():
@@ -217,6 +219,18 @@ def test_r1_t8_kg_qty_weight_unit_and_notes():
     assert d["qty"] == 1.016 and d["note"] == "수량 1.016 은 1,016 오독일 수 있습니다(소수점)", "자동 치환 없이 안내"
     assert ocr_row_defaults(_it(unit="EA", qty=1.016, qty_fix=1016))["note"] is None, "EA 행은 수량 = a"
     assert ocr_row_defaults(_it(remark=None))["remark"] == ""
+    assert ocr_row_defaults(_it(qty=1.016, qty_fix=1016, a=325.0, remark="8PSF-C-03"))["remark"] ==         "8PSF-C-03 · OCR 확인: 수량 1.016→1,016?"
+
+
+def test_r1b_t8_correction_remarks():
+    d = ocr_row_defaults(_it(unit="EA", a=30.0, price=7370.0, amount=221100.0, how="fix1",
+                             fixed_from={"price": 7870.0}, remark=None))
+    assert d["remark"] == "OCR 보정: 7,870→7,370" and d["price"] == 7370
+    d = ocr_row_defaults(_it(unit=None, a=299.0, price=300.0, amount=89700.0, how="fix1", fixed_from={"a": 209.0},
+                             remark=None), "EA")
+    assert d["remark"] == "OCR 보정: 209→299" and d["qty"] == 299
+    d = ocr_row_defaults(_it(unit="EA", a=1.0, price=7000.0, amount=7000.0, how="qty1", remark=None))
+    assert d["remark"] == "OCR 보정: 수량 1(판독 안 됨)" and d["qty"] == 1
 
 
 # ─────────────── 추록 1(2026-11-03) — 샘플 6장(두리·에스피열처리·중앙연마), 정답은 검토 세션이 원본 대조 ───────────────

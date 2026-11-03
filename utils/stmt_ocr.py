@@ -472,7 +472,8 @@ MATCH_AUTO_MIN = 80     # O7: 제안 점수가 이 값 이상일 때만 저장 �
 def ocr_row_defaults(it, unit_mode=None):
     """O7·O4·O5(2026-11-03) 검토 표 한 줄의 기본값 — 순수 함수.
     저장 품명: 제안 점수 ≥ 80 이면 제안, 아니면 OCR 품명(정리본). 단위: 판독 단위 → 거래처 최빈 단위 → EA.
-    KG 행: 수량 = qty(없으면 None = 빈칸), 중량 = a. 그 외: 수량 = a. note: 수량 `1.016` 꼴이면 1,016 오독 안내 한 줄."""
+    KG 행: 수량 = qty(없으면 None = 빈칸), 중량 = a. 그 외: 수량 = a. note: 수량 `1.016` 꼴이면 1,016 오독 안내 한 줄.
+    비고: remark(O8) + 숫자 보정 내역(fix1 `OCR 보정: 7,870→7,370`·qty1·qty_fix 확인)."""
     unit = (it.get("unit") or unit_mode or "EA").upper()
     kg = unit == "KG"
     sc = it.get("match_score") or 0
@@ -480,11 +481,21 @@ def ocr_row_defaults(it, unit_mode=None):
     note = None
     if kg and it.get("qty_fix") and q is not None:
         note = f"수량 {q:g} 은 {it['qty_fix']:,} 오독일 수 있습니다(소수점)"
+    # 추록 1: 해석이 숫자를 고친 행은 비고에 남겨 저장 전에 사람이 보게(fix1·qty1), qty_fix 는 확인 요청만
+    fixes = []
+    for k, v in (it.get("fixed_from") or {}).items():
+        new = it["a"] if k == "a" else it["price"]
+        fixes.append(f"OCR 보정: {v:,.10g}→{new:,.10g}")
+    if it.get("how") == "qty1":
+        fixes.append("OCR 보정: 수량 1(판독 안 됨)")
+    if note:
+        fixes.append(f"OCR 확인: 수량 {q:g}→{it['qty_fix']:,}?")
+    remark = " · ".join([x for x in [it.get("remark") or ""] + fixes if x])
     return {"save_item": it["match"] if (it.get("match") and sc >= MATCH_AUTO_MIN) else it["item"],
             "ocr_item": it["item"], "score": sc, "unit": unit,
             "qty": (float(q) if q is not None else None), "weight": (float(it["a"]) if kg else None),
             "price": float(it["price"]), "amount": float(it["amount"]), "vat": float(round(it["amount"] * 0.1)),
-            "remark": it.get("remark") or "", "note": note}
+            "remark": remark, "note": note}
 
 
 def vendor_unit_mode(ledger_rows):
