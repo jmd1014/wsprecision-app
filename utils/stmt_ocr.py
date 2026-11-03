@@ -130,12 +130,15 @@ def to_num(t):
 
 
 _NUM_UNIT_RE = re.compile(r"^(\d[\d,.]*)/(KG|EA|M|SET|본)$", re.I)
-_NUM_TAIL_RE = re.compile(r"[°'\"·,@]+$")
+_NUM_TAIL_RE = re.compile(r"[°'\"·,@:]+$")
+_DOTS_MULTI_RE = re.compile(r"^\d{1,3}(?:\.\d{3}){2,}$")      # 1.214.400 — 소수일 수 없는 꼴
+_DOTS_ONE_RE = re.compile(r"^\d{1,3}\.\d{3}$")                 # 155.100 — 소수(1.016)와 겹쳐 금액·단가 자리만 2차 해석
 
 
 def normalize_tokens(toks):
-    """O1(2026-11-03): 단가 칸 `1,390/KG`·`105/EA` → 숫자 + 단위 두 단어, 숫자 끝의 `°'"·,@` 떼기(`150°`).
-    같은 입력을 두 번 넣어도 결과가 같다(line_nums 가 안에서 다시 불러도 번호가 어긋나지 않게)."""
+    """O1(2026-11-03): 단가 칸 `1,390/KG`·`105/EA` → 숫자 + 단위 두 단어, 숫자 끝의 `°'"·,@:` 떼기(`150°`·`300,000:`),
+    점 여러 개 천단위 `1.214.400` → `1,214,400`. 같은 입력을 두 번 넣어도 결과가 같다(line_nums 가 안에서 다시 불러도
+    번호가 어긋나지 않게)."""
     out = []
     for w in toks:
         t = str(w["t"])
@@ -144,6 +147,8 @@ def normalize_tokens(toks):
             out += [{**w, "t": m.group(1)}, {**w, "t": m.group(2).upper()}]
             continue
         s = _NUM_TAIL_RE.sub("", t)
+        if _DOTS_MULTI_RE.match(s):
+            s = s.replace(".", ",")
         out.append({**w, "t": s} if (s != t and s and NUM_RE.match(s.replace("O", "0"))) else w)
     return out
 
@@ -178,6 +183,67 @@ def _unit_of(t, fuzzy=False):
     return None
 
 
+_TOTAL_KW = ("합계", "공급가액", "공급가", "명세합계", "총액", "소계", "부가세", "잔액", "미수")
+
+
+def _is_total_line(text):
+    t = str(text or "").replace(" ", "")
+    return any(k in t for k in _TOTAL_KW)
+
+
+def _solve(nums):
+    """① a×b=c ② c+세액 쌍 → ((qi,q),(pi,p),(ci,c)), how — 못 찾으면 (None, None)."""
+    # O2(2026-11-03): 금액 후보 c 의 바로 왼쪽 숫자가 ≈10×c 면 c 는 세액 → 후보에서 뺀다(명진 `112,100 11,210` 에서
+    # 19×590(5,900 오독)=11,210 이 우연히 맞아 세액을 금액으로 잡던 것). 오른쪽 이웃이 ≈0.1×c(세액)인 후보를 먼저 본다.
+    for ci in _amount_cands(nums):
+        c = nums[ci][1]
+        # 맞는 쌍(왼쪽=수량·중량, 오른쪽=단가) 중 금액에 가장 가까운 것 — 혜성 `289 KG 289 1,390` 은 뒤의 289(중량)
+        pairs = [(ai, bi) for ai in range(ci) for bi in range(ai + 1, ci)
+                 if nums[ai][1] > 0 and nums[bi][1] > 0 and abs(nums[ai][1] * nums[bi][1] - c) <= max(1.0, c * 0.001)]
+        if pairs:
+            ai, bi = max(pairs)
+            return (nums[ai], nums[bi], nums[ci]), "mul"
+    for ci in range(len(nums) - 1):
+        c, v = nums[ci][1], nums[ci + 1][1]
+        if c >= 100 and abs(c * 0.1 - v) <= max(1.0, c * 0.001):
+            before = [n for n in nums[:ci] if n[1] > 0]
+            if len(before) >= 2:
+                a_i, p_i = before[-2], before[-1]
+                price = c / a_i[1]
+                if abs(price - p_i[1]) / max(price, 1) <= 0.15 or abs(price - round(price)) < 0.01:
+                    return (a_i, (p_i[0], round(price)), nums[ci]), "vat"
+            break
+    return None, None
+
+
+def _amount_cands(nums):
+    cis = [ci for ci in range(len(nums) - 1, -1, -1)
+           if nums[ci][1] >= 100 and not (ci > 0 and _near(nums[ci - 1][1], nums[ci][1] * 10))]
+    cis.sort(key=lambda ci: not (ci + 1 < len(nums) and _near(nums[ci + 1][1], nums[ci][1] * 0.1)))
+    return cis
+
+
+def _one_digit_off(x, y):
+    sx, sy = str(int(x)), str(int(y))
+    return len(sx) == len(sy) and sum(a != b for a, b in zip(sx, sy)) == 1
+
+
+def _fix_one_digit(nums):
+    """O9(2026-11-03): 금액 c 왼쪽 두 숫자 a·b 중 하나가 한 자리 오독 — c/b 가 정수이고 a 와 한 자리만 다르면 a := c/b,
+    대칭으로 b := c/a. 두리 `30 7,870 221,100` → 7,370 · 중앙연마 `209 300 89,700` → 299. 원래 값은 fixed_from."""
+    for ci in _amount_cands(nums):
+        if ci < 2:
+            continue
+        (ia, a), (ib, b), c = nums[ci - 2], nums[ci - 1], nums[ci][1]
+        if min(a, b) <= 0 or any(v != int(v) for v in (a, b, c)):
+            continue
+        if c % b == 0 and _one_digit_off(c // b, a):
+            return ((ia, float(c // b)), (ib, b), nums[ci]), "fix1", {"a": a}
+        if c % a == 0 and _one_digit_off(c // a, b):
+            return ((ia, a), (ib, float(c // a)), nums[ci]), "fix1", {"price": b}
+    return None, None, None
+
+
 def parse_line_items(lines):
     """줄 목록 → 라인 항목. ① a×b=c(±0.1%, c 는 오른쪽·≥100) ② c 와 세액(c×0.1) 쌍 → 앞의 두 숫자로 수량·단가.
     항목: item(정리본)·item_raw·unit(None 이면 화면이 거래처 최빈 단위)·a·price·amount·other_nums·how·line
@@ -185,35 +251,26 @@ def parse_line_items(lines):
     items = []
     for ln in lines:
         toks = normalize_tokens(ln["words"])
-        nums = line_nums(toks)
+        # O6 보강: 첫 단어가 1~2자리 숫자이고 다음 단어가 숫자·단위가 아니면 줄번호 — 계산·품명에서 뺀다
+        row_no = (len(toks) >= 3 and re.fullmatch(r"\d{1,2}", toks[0]["t"]) is not None
+                  and not NUM_RE.match(toks[1]["t"]) and not _unit_of(toks[1]["t"], fuzzy=True))
+        nums = [n for n in line_nums(toks) if not (row_no and n[0] == 0)]
         if len(nums) < 2:
             continue
-        found, how = None, None
-        # O2(2026-11-03): 금액 후보 c 의 바로 왼쪽 숫자가 ≈10×c 면 c 는 세액 → 후보에서 뺀다(명진 `112,100 11,210` 에서
-        # 19×590(5,900 오독)=11,210 이 우연히 맞아 세액을 금액으로 잡던 것). 오른쪽 이웃이 ≈0.1×c(세액)인 후보를 먼저 본다.
-        cis = [ci for ci in range(len(nums) - 1, -1, -1)
-               if nums[ci][1] >= 100 and not (ci > 0 and _near(nums[ci - 1][1], nums[ci][1] * 10))]
-        cis.sort(key=lambda ci: not (ci + 1 < len(nums) and _near(nums[ci + 1][1], nums[ci][1] * 0.1)))
-        for ci in cis:
-            c = nums[ci][1]
-            # 맞는 쌍(왼쪽=수량·중량, 오른쪽=단가) 중 금액에 가장 가까운 것 — 혜성 `289 KG 289 1,390` 은 뒤의 289(중량)
-            pairs = [(ai, bi) for ai in range(ci) for bi in range(ai + 1, ci)
-                     if nums[ai][1] > 0 and nums[bi][1] > 0 and abs(nums[ai][1] * nums[bi][1] - c) <= max(1.0, c * 0.001)]
-            if pairs:
-                ai, bi = max(pairs)
-                found, how = (nums[ai], nums[bi], nums[ci]), "mul"
-                break
+        fixed_from = None
+        found, how = _solve(nums)
         if not found:
-            for ci in range(len(nums) - 1):
-                c, v = nums[ci][1], nums[ci + 1][1]
-                if c >= 100 and abs(c * 0.1 - v) <= max(1.0, c * 0.001):
-                    before = [n for n in nums[:ci] if n[1] > 0]
-                    if len(before) >= 2:
-                        a_i, p_i = before[-2], before[-1]
-                        price = c / a_i[1]
-                        if abs(price - p_i[1]) / max(price, 1) <= 0.15 or abs(price - round(price)) < 0.01:
-                            found, how = (a_i, (p_i[0], round(price)), nums[ci]), "vat"
-                    break
+            # O1 보강: 금액·단가 자리(오른쪽 두 숫자)의 `155.100` 은 천단위 점으로 다시 읽어 본다(중량 1.016 은 그대로)
+            alt = [(i, float(toks[i]["t"].replace(".", "")) if (k >= len(nums) - 2 and _DOTS_ONE_RE.match(toks[i]["t"])) else v)
+                   for k, (i, v) in enumerate(nums)]
+            if alt != nums:
+                found, how = _solve(alt)
+                nums = alt if found else nums
+        if not found and not _is_total_line(ln["text"]):
+            found, how, fixed_from = _fix_one_digit(nums)
+        if not found and not _is_total_line(ln["text"]) and len(nums) == 2                 and nums[0][1] >= 100 and _near(nums[0][1], nums[1][1], 0):
+            # O10: 숫자가 단가·금액 둘뿐이고 같으면 수량 1 (수량 칸 `1` 을 `아`·`ｌ` 로 읽음)
+            found, how = ((nums[0][0], 1.0), nums[0], nums[1]), "qty1"
         if not found:
             continue
         (qi, q), (pi, p), (ci, c) = found
@@ -236,14 +293,16 @@ def parse_line_items(lines):
                 continue
             break
         cut = min(first, qty_i) if (unit == "KG" and qty_i is not None) else first
-        text_words = [w["t"] for w in toks[:cut] if w["t"] not in UNITS and not re.match(r"^\d{2}/\d{2}$", w["t"])]
+        text_words = [w["t"] for w in toks[(1 if row_no else 0):cut]
+                      if w["t"] not in UNITS and not re.match(r"^\d{2}/\d{2}$", w["t"])]
         other = [v for i, v in nums if i not in (qi, pi, ci) and i < ci]
         raw = " ".join(text_words).strip()
         # O8: 줄 끝 `/4S25ABV-FL-01-X156`(소재가 쓰일 제품 품번) → 비고 제안
         rm = _REMARK_RE.match(toks[-1]["t"]) if toks else None
         items.append({"item": clean_item(raw), "item_raw": raw, "unit": unit, "a": q,
                       "price": float(p), "amount": c, "other_nums": other, "how": how, "line": ln["text"],
-                      "qty": qty, "qty_fix": qty_fix, "remark": rm.group(1) if rm else None})
+                      "qty": qty, "qty_fix": qty_fix, "remark": rm.group(1) if rm else None,
+                      "fixed_from": fixed_from})
     return items
 
 
@@ -252,39 +311,60 @@ def find_totals(lines, items):
     cands, all_nums = [], set()
     for ln in lines:
         txt = ln["text"].replace(" ", "")
-        nums = [round(v) for _, v in line_nums(ln["words"]) if v >= 1000]
+        toks = normalize_tokens(ln["words"])
+        nums = [round(v) for _, v in line_nums(toks) if v >= 1000]
+        # 천단위 점 한 개(`117.600`)도 합계 대조용으로는 함께 본다(O1 보강)
+        nums += [int(w["t"].replace(".", "")) for w in toks if _DOTS_ONE_RE.match(w["t"])]
         all_nums.update(nums)
-        if any(k in txt for k in ("합계", "공급가액", "공급가", "명세합계", "총액", "소계")):
+        if any(k in txt for k in ("합계", "공급가액", "공급가", "명세합계", "총액", "소계", "부가세")):
             cands += nums
     vat_seen = round(s * 0.1) in all_nums
     return s, sorted(set(cands)), (s in cands) or (s in all_nums and vat_seen), vat_seen
 
 
-def find_vendor(words, biz_map, our_biz="6060214529"):
-    """본문 숫자열에 등록 사업자번호(10자리)가 들어 있으면 그 거래처."""
+def _name_key(name):
+    return re.sub(r"[()\[\]]", "", vendor_key(name))
+
+
+def find_vendor(words, biz_map, our_biz="6060214529", names=None):
+    """본문 숫자열에 등록 사업자번호(10자리)가 들어 있으면 그 거래처.
+    O11(2026-11-03): 번호로 못 찾고 names(거래처 dict 목록)를 주면, 본문을 공백 없이 이어 붙인 글자에 상호 키(법인 표기·
+    공백·괄호 제거, 3자 이상)가 **하나만** 들어 있을 때 그 거래처(둘 이상이면 None). 우성정밀(우리) 번호의 거래처는 제외."""
     digits = re.sub(r"\D", "", "".join(w["t"] for w in words))
     for b, v in biz_map.items():
         if b != our_biz and len(b) == 10 and b in digits:
             return v
-    return None
+    if not names:
+        return None
+    text = _name_key("".join(w["t"] for w in words))
+    hits, seen = [], set()
+    for v in names:
+        k = _name_key(v.get("name"))
+        if len(k) >= 3 and k in text and k != "우성정밀" and re.sub(r"\D", "", str(v.get("business_no") or "")) != our_biz                 and k not in seen:
+            seen.add(k)
+            hits.append(v)
+    return hits[0] if len(hits) == 1 else None
 
 
 _DATE_NEN_RE = re.compile(r"(?<!\d)(20\d\d)\d{1,2}\s+(\d{1,2})\D{0,3}?\s*(\d{1,2})(?!\d)")
+_DATE_MD_RE = re.compile(r"(?<!\d)(\d{1,2})\s*[월%]\s*(\d{1,2})(?!\d)")    # O3b: `10월 28일`·`10% 28 일`
 _DATE_KW = ("거래일", "일자", "Date", "DATE", "년")
 
 
 def find_date(words, today=None):
     """거래일. O3(2026-11-03): 후보를 전부 모아 오늘+7 초과·오늘−400 미만을 빼고, '일자·Date·년·거래일' 글자에
     가장 가까운 후보(없으면 첫 후보). 남는 후보가 없으면 None(화면은 오늘 기본 + '날짜 미식별').
-    후보: ① 숫자열 이어 붙인 본문의 20xx 년·월·일 ② '2026년' 의 년을 숫자로 읽은 꼴(`202611 10g 19` → 10-19).
+    후보: ① 숫자열 이어 붙인 본문의 20xx 년·월·일 ② '2026년' 의 년을 숫자로 읽은 꼴(`202611 10g 19` → 10-19)
+    ③ O3b 월·일(`10% 28 일`, '월' 을 %로 읽음) + 가장 가까운 20xx 연도(`20269` 는 2026, 없으면 올해).
+    연·월·일 사이에 구분 글자가 있는 후보(`2026/10/23`·③)가 숫자가 붙은 후보(`2026910` → 9-10)보다 먼저.
     연도 오독(2020 이전)은 올해로 — 단 '월' 이 함께 있는 꼴만(`2006 9 월 16 일`, 금액 속 2000 은 제외), 미래가 되면 작년."""
     today = today or dt.date.today()
     lo, hi = today - dt.timedelta(days=400), today + dt.timedelta(days=7)
     text = "".join(w["t"] for w in words)
     spaced = " ".join(w["t"] for w in words)
-    cands = []                                   # (본문 위치, 날짜)
+    cands = []                                   # (본문 위치, 날짜, 구분 글자 있음)
 
-    def _add(pos, y, mo, d, misread_ok):
+    def _add(pos, y, mo, d, misread_ok, strong=True):
         if not (1 <= mo <= 12 and 1 <= d <= 31):
             return
         if y < 2020:
@@ -292,23 +372,30 @@ def find_date(words, today=None):
                 return
             y = today.year if dt.date(today.year, mo, min(d, 28)) <= hi else today.year - 1
         try:
-            cands.append((pos, dt.date(y, mo, d)))
+            cands.append((pos, dt.date(y, mo, d), strong))
         except ValueError:
             pass
 
     for s in re.finditer(r"(?=20\d\d)", text):
         m = DATE_RE.match(text, s.start())
         if m:
-            _add(m.start(), int(m.group(1)), int(m.group(2)), int(m.group(3)), "월" in m.group(0))
+            _add(m.start(), int(m.group(1)), int(m.group(2)), int(m.group(3)), "월" in m.group(0),
+                 m.start(2) > m.end(1) and m.start(3) > m.end(2))
     for m in _DATE_NEN_RE.finditer(spaced):
         _add(len(spaced[:m.start()].replace(" ", "")), int(m.group(1)), int(m.group(2)), int(m.group(3)), False)
-    cands = [(p, d) for p, d in cands if lo <= d <= hi]
+    years = [(m.start(), int(m.group(1))) for m in re.finditer(r"(?<!\d)(20\d\d)", spaced)]
+    for m in _DATE_MD_RE.finditer(spaced):
+        y = min(years, key=lambda t: abs(t[0] - m.start()))[1] if years else 0    # 0 → 올해(미래면 작년)
+        _add(len(spaced[:m.start()].replace(" ", "")), y, int(m.group(1)), int(m.group(2)), True)
+    cands = [c for c in cands if lo <= c[1] <= hi]
+    if any(c[2] for c in cands):
+        cands = [c for c in cands if c[2]]
     if not cands:
         return None
     kws = [i for k in _DATE_KW for i in [m.start() for m in re.finditer(re.escape(k), text)]]
     if kws:
         return min(cands, key=lambda c: (min(abs(c[0] - k) for k in kws), c[0]))[1].isoformat()
-    return min(cands)[1].isoformat()
+    return min(cands, key=lambda c: c[0])[1].isoformat()
 
 
 _LEAD_DATE_RE = re.compile(r"^(?:\d{4}-\d{1,2}-\d{1,2}|\d{1,2}/\d{1,2})\s+")
@@ -412,9 +499,10 @@ def vendor_unit_mode(ledger_rows):
 
 
 # ─────────────────────────── 문서 한 건 ───────────────────────────
-def parse_document(file_bytes, name, biz_map, known_by_vendor, psms=(6, 11, 4)):
-    """→ [{page, vendor(dict|None), date, items[{item, unit, a, price, amount, how, match}], sum, printed_totals,
-           total_ok, vat_seen, rot, psm}]. OCR 엔진이 없으면 RuntimeError."""
+def parse_document(file_bytes, name, biz_map, known_by_vendor, psms=(6, 11, 4), vendors=None):
+    """→ [{page, vendor(dict|None), vendor_how('biz'|'name'|None), date, items[{item, unit, a, price, amount, how, match}],
+           sum, printed_totals, total_ok, vat_seen, rot, psm}]. OCR 엔진이 없으면 RuntimeError.
+    vendors: 상호 폴백(O11)용 거래처 목록 — 없으면 biz_map 의 거래처들."""
     if not ocr_available():
         raise RuntimeError("OCR 엔진(Tesseract)이 없습니다")
     pages = []
@@ -433,13 +521,18 @@ def parse_document(file_bytes, name, biz_map, known_by_vendor, psms=(6, 11, 4)):
                 best = (score, psm, words, lines, items, s, cands, ok, vat_seen)
         _, psm, words, lines, items, s, cands, ok, vat_seen = best
         vend = find_vendor(words, biz_map)
+        vhow = "biz" if vend else None
+        if not vend:
+            vend = find_vendor(words, {}, names=vendors if vendors is not None else list(biz_map.values()))
+            vhow = "name" if vend else None
         known = known_by_vendor.get(vendor_key(vend["name"]), {}) if vend else {}
         for it in items:
             raw, sc, how = match_item(it["item"], known, it["price"])
             it["match"] = raw
             it["match_score"] = sc
             it["match_how"] = how
-        pages.append({"page": pno, "rot": rot, "psm": psm, "vendor": vend, "date": find_date(words), "items": items,
+        pages.append({"page": pno, "rot": rot, "psm": psm, "vendor": vend, "vendor_how": vhow,
+                      "date": find_date(words), "items": items,
                       "sum": s, "printed_totals": cands, "total_ok": ok, "vat_seen": vat_seen,
                       "lines": [l["text"] for l in lines]})
     return pages

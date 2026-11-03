@@ -217,3 +217,105 @@ def test_r1_t8_kg_qty_weight_unit_and_notes():
     assert d["qty"] == 1.016 and d["note"] == "수량 1.016 은 1,016 오독일 수 있습니다(소수점)", "자동 치환 없이 안내"
     assert ocr_row_defaults(_it(unit="EA", qty=1.016, qty_fix=1016))["note"] is None, "EA 행은 수량 = a"
     assert ocr_row_defaults(_it(remark=None))["remark"] == ""
+
+
+# ─────────────── 추록 1(2026-11-03) — 샘플 6장(두리·에스피열처리·중앙연마), 정답은 검토 세션이 원본 대조 ───────────────
+from utils.stmt_ocr import find_vendor as _find_vendor
+
+_FIX2 = os.path.join(os.path.dirname(__file__), "fixtures", "stmt_ocr_20261103.json")
+_TODAY2 = dt.date(2026, 11, 3)
+_TRUTH2 = {   # 쪽: [(품명, 단가)] — 장부(시트) 표기, 제안 대조용
+    "두리T.M.S": [("INSERT TIP VBMT 160404-PS AH8015", 7370), ("INSERT TIP VBMT 160402-PS AH8015", 7370),
+                 ("INSERT TIP GVR 185A PR930", 22750), ("INSERT TIP CCMT 09T308-C25 PC9030", 5170),
+                 ("INSERT TIP CCMT 09T302-HMP PC9030", 5170), ("플러그 4P 20A 25V", 7000),
+                 ("초경드릴(팡팡드릴) 8.5D*50*84*SH9 (DPPA01085)", 37650), ("코발트 드릴(나찌) 1.5D*20*65 HSS-CO", 1950)],
+    "에스피열처리": [("진공(에이징처리) [SUS630]", 200000)],
+    "중앙연마": [("PISTON/Φ45", 300), ("유성축/25.42*95", 350)],
+}
+_KB2 = build_known([{"vendor": v, "item": i, "unit_price": p} for v, xs in _TRUTH2.items() for i, p in xs])
+
+
+def _page2(no, key="lines"):
+    pg = next(p for p in json.load(open(_FIX2, encoding="utf-8")) if p["page"] == no)
+    lines = [_line(t) for t in pg[key]]
+    words = [w for l in [_line(t) for t in pg["lines"]] for w in l["words"]]
+    items = parse_line_items(lines)
+    return pg, words, items, find_totals(lines, items)
+
+
+def _sug(vendor, it):
+    return match_item(it["item"], _KB2[vendor], it["price"])
+
+
+def test_r1b_t9_duri_fix1_dots_qty1_and_month_day_date():
+    pg, words, items, (s, cands, ok, _) = _page2(1)
+    assert [(i["a"], i["price"], round(i["amount"]), i["how"]) for i in items] == [
+        (30, 7370, 221100, "mul"), (30, 7370, 221100, "fix1"), (20, 22750, 455000, "mul"),
+        (30, 5170, 155100, "mul"), (30, 5170, 155100, "mul"), (1, 7000, 7000, "qty1")]
+    assert items[1]["fixed_from"] == {"price": 7870}, "단가 7,870 → 7,370 한 자리 복원(O9), 원래 값 보존"
+    assert items[4]["amount"] == 155100, "`155.100` 천단위 점 — 금액 자리 2차 해석(O1 보강)"
+    assert s == 1214400 and ok, "인쇄 합계 `1.214.400`(점 여러 개) — 부가세 줄"
+    assert find_date(words, today=_TODAY2) == "2026-10-28", "`20269 10% 28 일` 월·일 패턴(O3b)"
+    sugs = [_sug("두리T.M.S", i) for i in items]
+    assert [x[1] >= 80 for x in sugs] == [True] * 6
+    assert sugs[1][0] == "INSERT TIP VBMT 160402-PS AH8015" and sugs[4][0] == "INSERT TIP CCMT 09T302-HMP PC9030"
+    assert not items[1]["item"].startswith("2 "), "줄번호 2 는 품명에서 뗌(O6 보강)"
+
+
+def test_r1b_t10_duri_two_lines_no_date():
+    pg, words, items, (s, cands, ok, _) = _page2(2)
+    assert [round(i["amount"]) for i in items] == [112950, 19500] and s == 132450 and ok
+    assert find_date(words, today=_TODAY2) is None, "날짜 줄 자체가 판독 안 됨 → None(화면은 오늘 기본)"
+
+
+def test_r1b_t11_sp_heat_colon_amount():
+    pg, words, items, (s, cands, ok, _) = _page2(3)
+    assert [(i["a"], i["price"], round(i["amount"]), i["unit"]) for i in items] == [(1.5, 200000, 300000, "CH")], \
+        "`300,000:` 끝 콜론(O1 보강)"
+    assert find_date(words, today=_TODAY2) == "2026-10-22"
+    assert _sug("에스피열처리", items[0])[1] >= 80
+
+
+def test_r1b_t12_vendor_name_fallback():
+    pg, words, items, _ = _page2(4)
+    biz = {"5981900019": {"name": "에스피열처리", "business_no": "598-19-00019"}}
+    assert _find_vendor(words, biz) is None, "사업자번호 줄 오독"
+    names = [{"name": "에스피열처리"}, {"name": "(주)명진메탈"}, {"name": "나우"}, {"name": "우성정밀"}]
+    assert _find_vendor(words, biz, names=names)["name"] == "에스피열처리", "상호 폴백(O11)"
+    assert _find_vendor(words, biz, names=names + [{"name": "주식회사 에스피열처리"}])["name"] == "에스피열처리", \
+        "같은 상호 키는 하나로"
+    assert _find_vendor(words, biz, names=names + [{"name": "BNK부산은행"}]) is None, "둘 이상 들어 있으면 None"
+    assert len(items) == 1 and items[0]["amount"] == 300000
+
+
+def test_r1b_t13_jungang_psm11_line_fix1():
+    _, _, items6, (s6, _, ok6, _) = _page2(5)
+    assert items6 == [] and not ok6, "psm 6 줄에는 품목 줄이 없음 — 거짓 라인 0"
+    pg, words, items, (s, cands, ok, _) = _page2(5, "lines_psm11")
+    assert [(i["a"], i["price"], round(i["amount"]), i["how"]) for i in items] == [(299, 300, 89700, "fix1")]
+    assert items[0]["fixed_from"] == {"a": 209}
+    assert ok and (ok, len(items)) > (ok6, len(items6)), "psm 점수(합계 검증, 라인 수) 로 psm 11 이 채택될 조건"
+    assert _sug("중앙연마", items[0])[:2] == ("PISTON/Φ45", 100)
+
+
+def test_r1b_t14_jungang_plain_line():
+    pg, words, items, (s, cands, ok, _) = _page2(6)
+    assert [(i["a"], i["price"], round(i["amount"])) for i in items] == [(336, 350, 117600)] and ok
+    assert _sug("중앙연마", items[0])[:2] == ("유성축/25.42*95", 100)
+    assert find_date(words, today=_TODAY2) == "2026-10-16"
+
+
+def test_r1b_fallback_guards():
+    one = lambda t: parse_line_items([_line(t)])
+    assert one("합 계 7,000 7,000") == [] and one("공급가액 30 7,870 221,100") == [], "합계 줄에는 O9·O10 안 씀"
+    assert one("BOLT 30 7,870 230,000") == [], "c/a·c/b 가 한 자리 차이가 아니면 복원 안 함"
+    assert one("BOLT 30 7,870 221,100")[0]["how"] == "fix1"
+    it = one("6 플러그 EA 7,000 7,000")[0]
+    assert (it["a"], it["how"], it["item"]) == (1, "qty1", "플러그"), "줄번호 6 은 숫자 후보에서도 뺌"
+    it = one("10 EA 500 5,000")
+    assert it and it[0]["a"] == 10, "첫 숫자 다음이 단위면 줄번호가 아니라 수량"
+    assert normalize_tokens([{"t": "300,000:"}, {"t": "1.214.400"}, {"t": "155.100"}, {"t": "1.016"}]) == [
+        {"t": "300,000"}, {"t": "1,214,400"}, {"t": "155.100"}, {"t": "1.016"}], "점 하나는 1차에서 그대로"
+    w = lambda s: [{"t": t} for t in s.split()]
+    assert find_date(w("거래일 20269 10% 28 일"), today=_TODAY2) == "2026-10-28"
+    assert find_date(w("12 월 28 일"), today=dt.date(2027, 1, 3)) == "2026-12-28", "연도 없는 월일 — 미래면 작년"
