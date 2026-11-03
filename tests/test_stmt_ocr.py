@@ -322,8 +322,13 @@ def test_r1b_t14_jungang_plain_line():
 def test_r1b_fallback_guards():
     one = lambda t: parse_line_items([_line(t)])
     assert one("합 계 7,000 7,000") == [] and one("공급가액 30 7,870 221,100") == [], "합계 줄에는 O9·O10 안 씀"
-    assert one("BOLT 30 7,870 230,000") == [], "c/a·c/b 가 한 자리 차이가 아니면 복원 안 함"
-    assert one("BOLT 30 7,870 221,100")[0]["how"] == "fix1"
+    assert one("BOLT EA 30 7,870 230,000") == [], "c/a·c/b 가 한 자리 차이가 아니면 복원 안 함"
+    assert one("BOLT EA 30 7,870 221,100")[0]["how"] == "fix1"
+    # Codex r1 HIGH: 이월·잔액·품목 표시 없는 줄은 O9·O10 으로 품목이 되지 않는다
+    for t in ("이월금 100,000 100,000", "전기이월 100,000 100,000", "당월계 7,000 7,000", "누계 30 7,870 221,100",
+              "BOLT 30 7,870 221,100", "메모 7,000 7,000", "입금 300,000 300,000"):
+        assert one(t) == [], t
+    assert one("10/22 PISTON/045 209 300 89,700 8,970")[0]["how"] == "fix1", "앞 날짜 `10/22` 는 품목 줄 표시"
     it = one("6 플러그 EA 7,000 7,000")[0]
     assert (it["a"], it["how"], it["item"]) == (1, "qty1", "플러그"), "줄번호 6 은 숫자 후보에서도 뺌"
     it = one("10 EA 500 5,000")

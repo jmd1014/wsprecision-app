@@ -183,7 +183,8 @@ def _unit_of(t, fuzzy=False):
     return None
 
 
-_TOTAL_KW = ("합계", "공급가액", "공급가", "명세합계", "총액", "소계", "부가세", "잔액", "미수")
+_TOTAL_KW = ("합계", "공급가액", "공급가", "명세합계", "총액", "소계", "부가세", "잔액", "미수", "이월", "전월", "당월",
+             "누계", "입금", "결제")
 
 
 def _is_total_line(text):
@@ -266,9 +267,15 @@ def parse_line_items(lines):
             if alt != nums:
                 found, how = _solve(alt)
                 nums = alt if found else nums
-        if not found and not _is_total_line(ln["text"]):
+        # O9·O10 은 산술이 안 맞는 줄을 고쳐 품목으로 올리는 규칙 — 합계·이월 줄이 아니고 품목 줄 표시(줄번호·단위·
+        # 앞의 `10/22` 날짜)가 있을 때만(Codex r1 HIGH: `이월금 100,000 100,000` 이 수량 1 품목이 되던 것)
+        repairable = not _is_total_line(ln["text"]) and (
+            row_no or re.fullmatch(r"\d{1,2}/\d{1,2}", toks[0]["t"]) is not None
+            or any(_unit_of(w["t"], fuzzy=True) for w in toks))
+        if not found and repairable:
             found, how, fixed_from = _fix_one_digit(nums)
-        if not found and not _is_total_line(ln["text"]) and len(nums) == 2                 and nums[0][1] >= 100 and _near(nums[0][1], nums[1][1], 0):
+        if not found and repairable and len(nums) == 2 and nums[0][1] >= 100 \
+                and _near(nums[0][1], nums[1][1], 0):
             # O10: 숫자가 단가·금액 둘뿐이고 같으면 수량 1 (수량 칸 `1` 을 `아`·`ｌ` 로 읽음)
             found, how = ((nums[0][0], 1.0), nums[0], nums[1]), "qty1"
         if not found:
@@ -340,7 +347,8 @@ def find_vendor(words, biz_map, our_biz="6060214529", names=None):
     hits, seen = [], set()
     for v in names:
         k = _name_key(v.get("name"))
-        if len(k) >= 3 and k in text and k != "우성정밀" and re.sub(r"\D", "", str(v.get("business_no") or "")) != our_biz                 and k not in seen:
+        if len(k) >= 3 and k in text and k != "우성정밀" and k not in seen \
+                and re.sub(r"\D", "", str(v.get("business_no") or "")) != our_biz:
             seen.add(k)
             hits.append(v)
     return hits[0] if len(hits) == 1 else None
