@@ -17423,6 +17423,10 @@ elif page == "구매 관리":
             from collections import defaultdict
             # ── 거래명세서 스캔 판독 (2026-10-16, 내부 OCR) — 판독 결과는 검토 표에서 고친 뒤 저장 ──
             import utils.stmt_ocr as _socr
+            if not hasattr(_socr, "ocr_row_defaults"):
+                # 배포 직후 Cloud 에 구버전 모듈이 남은 경우(매입 OCR 보완 r1) — 디스크에서 다시 읽는다
+                import importlib as _il
+                _socr = _il.reload(_socr)
             import re as _re_sc
             from datetime import date as _sc_d0, timedelta
             if not _socr.ocr_available():
@@ -17431,6 +17435,16 @@ elif page == "구매 관리":
                 _sc_files = st.file_uploader("거래명세서 스캔 (PDF·JPG·PNG, 여러 장 가능)", type=["pdf", "png", "jpg", "jpeg"],
                                              accept_multiple_files=True, key="sc_files",
                                              help="다른 화면에 다녀오면 파일을 다시 올려야 합니다")
+                if _sc_files:
+                    # P2-1(2026-11-03): 품명 제안은 앱 장부를 본다 — 장부가 시트보다 오래됐으면 먼저 동기화 안내
+                    try:
+                        _sc_last = (fetch("purchase_ledger", "trade_date", "trade_date=not.is.null&order=trade_date.desc", limit=1)
+                                    or [{}])[0].get("trade_date")
+                        if _sc_last and _sc_d0.fromisoformat(str(_sc_last)[:10]) < _sc_d0.today() - timedelta(days=7):
+                            ws_note(f"장부 최근 동기화 {str(_sc_last)[:10]} — 먼저 시트 동기화를 실행하면 품명 제안이 정확해집니다",
+                                    warn=True)
+                    except Exception:
+                        pass
                 if _sc_files and st.button("판독", key="sc_go", type="primary") and click_guard("sc_go"):
                     try:
                         with st.spinner("판독 중… (장당 10~20초)"):
@@ -17438,13 +17452,17 @@ elif page == "구매 관리":
                             if _sc_v_tr:
                                 st.warning(f"거래처 {TRUNC_MSG} — 사업자번호 대조가 일부 빠질 수 있습니다.")
                             _sc_biz = {_re_sc.sub(r"\D", "", v["business_no"]): v for v in _sc_v if v.get("business_no")}
-                            _sc_known = _socr.build_known(_pl_fetch_pages(
-                                "purchase_ledger", "vendor,item,unit_price",
-                                f"trade_date=gte.{(_sc_d0.today() - timedelta(days=540)).isoformat()}"))
+                            _sc_led = _pl_fetch_pages(
+                                "purchase_ledger", "vendor,item,unit_price,unit",
+                                f"trade_date=gte.{(_sc_d0.today() - timedelta(days=540)).isoformat()}")
+                            _sc_known = _socr.build_known(_sc_led)
+                            _sc_umode = _socr.vendor_unit_mode(_sc_led)     # O4: 단위 못 읽은 줄의 기본값
                             _sc_pages = []
                             for _f in _sc_files:
                                 for _pg in _socr.parse_document(_f.getvalue(), _f.name, _sc_biz, _sc_known):
                                     _pg["file"] = _f.name
+                                    _pg["unit_mode"] = (_sc_umode.get(_socr.vendor_key((_pg.get("vendor") or {}).get("name")))
+                                                        if _pg.get("vendor") else None)
                                     _sc_pages.append(_pg)
                         st.session_state["sc_pages"] = _sc_pages
                         st.session_state["sc_nonce"] = st.session_state.get("sc_nonce", 0) + 1
@@ -17460,7 +17478,14 @@ elif page == "구매 관리":
                     for _pi, _pg in enumerate(_sc_pages):
                         _vname = (_pg.get("vendor") or {}).get("name")
                         _hdr = f"{_pg.get('file')} · {_pg['page']}쪽 — {_vname or '거래처 미식별'} · {_pg.get('date') or '날짜 미식별'} · 라인 {len(_pg['items'])} · "
-                        _hdr += "합계 검증 ○" if _pg.get("total_ok") else "합계 검증 × (검토 필요)"
+                        # P2-2(2026-11-03): ○/× 옆에 숫자 — × 면 인쇄 합계(합계 줄 숫자 중 최댓값)와 라인 합
+                        _sc_sum = _pg.get("sum") or 0
+                        if _pg.get("total_ok"):
+                            _hdr += f"합계 검증 ○ · 라인 합 {_sc_sum:,.0f}"
+                        else:
+                            _sc_pt = _pg.get("printed_totals") or []
+                            _hdr += ("합계 검증 × (검토 필요)" + (f" · 인쇄 합계 {max(_sc_pt):,.0f}" if _sc_pt else "")
+                                     + f" · 라인 합 {_sc_sum:,.0f}")
                         with st.container(border=True):
                             st.markdown(f"**{_hdr}**")
                             sc1, sc2, sc3 = st.columns([2.5, 1.2, 1.5])
@@ -17473,22 +17498,30 @@ elif page == "구매 관리":
                                 _dflt = _sc_d0.today()
                             _sc_date = sc2.date_input("거래일", value=_dflt, key=f"sc_d_{_sc_nonce}_{_pi}")
                             _sc_no = sc3.text_input("명세서 번호(선택)", key=f"sc_no_{_sc_nonce}_{_pi}")
-                            _sc_rows = []
-                            for it in _pg["items"]:
-                                _kg = (it.get("unit") or "").upper() == "KG"
-                                _qty = (it["other_nums"][0] if (_kg and it.get("other_nums")) else it["a"])
-                                _sc_rows.append({"저장 품명": it.get("match") or it["item"], "OCR 품명": it["item"],
-                                                 "제안 점수": it.get("match_score") or 0, "단위": it.get("unit") or "EA",
-                                                 "수량": float(_qty), "중량(kg)": (float(it["a"]) if _kg else float("nan")),
-                                                 "단가": float(it["price"]), "공급가액": float(it["amount"]),
-                                                 "세액": float(round(it["amount"] * 0.1)), "비고": ""})
+                            _sc_rows, _sc_notes = [], []
+                            for _ri, it in enumerate(_pg["items"], 1):
+                                # O7·O4·O5(2026-11-03): 제안 점수 80 미만은 OCR 품명, 단위 못 읽으면 거래처 최빈 단위,
+                                # KG 행 수량 = 중량 왼쪽 숫자(없으면 빈칸) — 규칙은 stmt_ocr.ocr_row_defaults(테스트 T8)
+                                _d = _socr.ocr_row_defaults(it, _pg.get("unit_mode"))
+                                if _d["note"]:
+                                    _sc_notes.append(f"{_ri}행 {_d['note']}")
+                                _sc_rows.append({"저장 품명": _d["save_item"], "OCR 품명": _d["ocr_item"],
+                                                 "제안 점수": _d["score"], "단위": _d["unit"],
+                                                 "수량": (_d["qty"] if _d["qty"] is not None else float("nan")),
+                                                 "중량(kg)": (_d["weight"] if _d["weight"] is not None else float("nan")),
+                                                 "단가": _d["price"], "공급가액": _d["amount"],
+                                                 "세액": _d["vat"], "비고": _d["remark"]})
+                            for _n in _sc_notes:
+                                ws_note(_n, warn=True)
                             _sc_ed = st.data_editor(
                                 pd.DataFrame(_sc_rows), hide_index=True, use_container_width=True, num_rows="dynamic",
                                 key=f"sc_ed_{_sc_nonce}_{_pi}",
                                 column_config={
                                     "저장 품명": st.column_config.TextColumn("저장 품명", help="장부에 들어갈 품명 — 제안(기존 품명)이 틀리면 고치세요"),
                                     "OCR 품명": st.column_config.TextColumn("OCR 품명", disabled=True),
-                                    "제안 점수": st.column_config.NumberColumn("제안", disabled=True, width="small"),
+                                    "제안 점수": st.column_config.NumberColumn(
+                                        "제안", disabled=True, width="small",
+                                        help=f"{_socr.MATCH_AUTO_MIN} 미만은 저장 품명에 자동으로 넣지 않습니다"),
                                     "단위": st.column_config.SelectboxColumn("단위", options=["EA", "KG", "SET", "CH", "식"], width="small"),
                                     "수량": st.column_config.NumberColumn("수량", min_value=0),
                                     "중량(kg)": st.column_config.NumberColumn("중량(kg)", min_value=0),
@@ -17496,6 +17529,21 @@ elif page == "구매 관리":
                                     "공급가액": st.column_config.NumberColumn("공급가액", min_value=0),
                                     "세액": st.column_config.NumberColumn("세액", min_value=0),
                                 })
+                            # P2-3(2026-11-03): 같은 거래처·거래일·공급가액 합이 장부에 이미 있으면 경고(저장은 막지 않음 —
+                            # 줄 단위 중복 검사는 _mi_save_rows 가 따로). 조회 실패·절단이면 조용히 건너뜀
+                            try:
+                                _sc_amt = float(pd.to_numeric(_sc_ed.get("공급가액"), errors="coerce").fillna(0).sum())
+                                if _sc_amt > 0 and str(_sc_vendor or "").strip():
+                                    _sc_ex, _sc_ex_tr = fetch_all("purchase_ledger", "vendor,amount",
+                                                                  f"trade_date=eq.{_fq(_sc_date.isoformat())}")
+                                    _sc_vk = _socr.vendor_key(_sc_vendor)
+                                    _sc_ex_sum = sum(float(x.get("amount") or 0) for x in _sc_ex
+                                                     if _socr.vendor_key(x.get("vendor")) == _sc_vk)
+                                    if not _sc_ex_tr and abs(_sc_ex_sum - _sc_amt) < 1:
+                                        ws_note(f"같은 거래처·날짜·합계 {_sc_amt:,.0f} 이 장부에 이미 있습니다 — 중복이면 추가하지 마세요",
+                                                warn=True)
+                            except Exception:
+                                pass
                             _sc_dupok = st.checkbox("같은 행이 이미 있어도 추가(의도한 중복)", key=f"sc_dup_{_sc_nonce}_{_pi}")
                             if st.button("이 장을 장부에 추가", key=f"sc_save_{_sc_nonce}_{_pi}", type="primary") and click_guard(f"sc_save_{_pi}"):
                                 _rows = []

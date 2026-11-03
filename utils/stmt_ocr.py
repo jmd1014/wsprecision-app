@@ -379,6 +379,27 @@ def build_known(ledger_rows):
     return out
 
 
+MATCH_AUTO_MIN = 80     # O7: 제안 점수가 이 값 이상일 때만 저장 품명 기본값으로
+
+
+def ocr_row_defaults(it, unit_mode=None):
+    """O7·O4·O5(2026-11-03) 검토 표 한 줄의 기본값 — 순수 함수.
+    저장 품명: 제안 점수 ≥ 80 이면 제안, 아니면 OCR 품명(정리본). 단위: 판독 단위 → 거래처 최빈 단위 → EA.
+    KG 행: 수량 = qty(없으면 None = 빈칸), 중량 = a. 그 외: 수량 = a. note: 수량 `1.016` 꼴이면 1,016 오독 안내 한 줄."""
+    unit = (it.get("unit") or unit_mode or "EA").upper()
+    kg = unit == "KG"
+    sc = it.get("match_score") or 0
+    q = it.get("qty") if kg else it["a"]
+    note = None
+    if kg and it.get("qty_fix") and q is not None:
+        note = f"수량 {q:g} 은 {it['qty_fix']:,} 오독일 수 있습니다(소수점)"
+    return {"save_item": it["match"] if (it.get("match") and sc >= MATCH_AUTO_MIN) else it["item"],
+            "ocr_item": it["item"], "score": sc, "unit": unit,
+            "qty": (float(q) if q is not None else None), "weight": (float(it["a"]) if kg else None),
+            "price": float(it["price"]), "amount": float(it["amount"]), "vat": float(round(it["amount"] * 0.1)),
+            "remark": it.get("remark") or "", "note": note}
+
+
 def vendor_unit_mode(ledger_rows):
     """O4(2026-11-03): 장부 행(vendor, unit) → {vendor_key: 가장 많이 쓴 단위}. 판독 줄에 단위가 안 읽히면
     검토 표 단위 기본값으로 쓴다(명진=KG, 성보=EA). 같은 횟수면 먼저 나온 단위."""

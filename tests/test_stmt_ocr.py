@@ -182,3 +182,38 @@ def test_r1_helpers_normalize_clean_and_date_window():
 def test_r1_vat_not_taken_as_amount_regression():
     it = parse_line_items([_line("515304 환 봉 125? 4 9 19.00 590 Ko 112,100 11,210 /4S25L0F-W")])
     assert len(it) == 1 and round(it[0]["amount"]) == 112100 and it[0]["price"] == 5900
+
+
+# ─────────────── r1-2 화면 기본값(T8) — 순수 함수 ocr_row_defaults ───────────────
+from utils.stmt_ocr import MATCH_AUTO_MIN, ocr_row_defaults
+
+
+def _it(**kw):
+    base = {"item": "STS304 환봉 110? +24", "unit": "KG", "a": 223.0, "price": 5900.0, "amount": 1315700.0,
+            "qty": 100.0, "qty_fix": None, "remark": "4S25ABV-FL-01-X156", "match": "STS304환봉 110￠*24ℓ",
+            "match_score": 100}
+    base.update(kw)
+    return base
+
+
+def test_r1_t8_save_item_threshold_79_80():
+    assert MATCH_AUTO_MIN == 80
+    assert ocr_row_defaults(_it(match_score=80))["save_item"] == "STS304환봉 110￠*24ℓ", "80 이상은 제안"
+    d = ocr_row_defaults(_it(match="8PDVN-02 (BONNET)", match_score=79, item="BONNET"))
+    assert d["save_item"] == "BONNET" and d["ocr_item"] == "BONNET" and d["score"] == 79, "80 미만은 OCR 품명(O7)"
+    assert ocr_row_defaults(_it(match=None, match_score=0))["save_item"] == "STS304 환봉 110? +24"
+
+
+def test_r1_t8_kg_qty_weight_unit_and_notes():
+    d = ocr_row_defaults(_it())
+    assert (d["unit"], d["qty"], d["weight"], d["vat"], d["remark"]) == ("KG", 100.0, 223.0, 131570.0, "4S25ABV-FL-01-X156")
+    d = ocr_row_defaults(_it(qty=None))
+    assert d["qty"] is None and d["weight"] == 223.0, "KG 행 수량 못 찾으면 빈칸(other_nums[0] 폐기)"
+    d = ocr_row_defaults(_it(unit=None), "KG")
+    assert d["unit"] == "KG" and d["qty"] == 100.0, "단위 못 읽으면 거래처 최빈 단위(O4)"
+    d = ocr_row_defaults(_it(unit=None, qty=64.0, a=5400.0, price=800.0, amount=4320000.0), None)
+    assert (d["unit"], d["qty"], d["weight"]) == ("EA", 5400.0, None), "단위·최빈 단위 다 없으면 EA, 수량 = a"
+    d = ocr_row_defaults(_it(qty=1.016, qty_fix=1016, a=325.0))
+    assert d["qty"] == 1.016 and d["note"] == "수량 1.016 은 1,016 오독일 수 있습니다(소수점)", "자동 치환 없이 안내"
+    assert ocr_row_defaults(_it(unit="EA", qty=1.016, qty_fix=1016))["note"] is None, "EA 행은 수량 = a"
+    assert ocr_row_defaults(_it(remark=None))["remark"] == ""
