@@ -73,3 +73,112 @@ def test_ocr_dims_and_match_item_relations():
     raw, sc, how = match_item("센 타 드릴 1.5*%5.0*60 도 DV301015", kb["두리T.M.S"], 4470)
     assert raw == "센타드릴 1.5*5.0*60도 DV301015" and sc >= 90
     assert match_item("아무거나", {}, None) == (None, 0, None)
+
+
+# ─────────────── 매입 OCR 보완 r1 (2026-11-03) — 샘플 5장 픽스처(줄 텍스트만, 정답은 구글시트 매입내역) ───────────────
+import datetime as dt
+import json
+
+from utils.stmt_ocr import clean_item, normalize_tokens, vendor_unit_mode
+
+_FIX = os.path.join(os.path.dirname(__file__), "fixtures", "stmt_ocr_20261102.json")
+_TODAY = dt.date(2026, 11, 2)
+
+
+def _page(no):
+    """픽스처 한 장 → (줄 목록, 단어 목록, 라인 항목, 합계 검증)"""
+    pg = next(p for p in json.load(open(_FIX, encoding="utf-8")) if p["page"] == no)
+    lines = [_line(t) for t in pg["lines"]]
+    words = [w for l in lines for w in l["words"]]
+    items = parse_line_items(lines)
+    return lines, words, items, find_totals(lines, items)
+
+
+def _amts(items):
+    return [round(i["amount"]) for i in items]
+
+
+def test_r1_page1_sungbo_item_names_cleaned():
+    lines, words, items, (s, cands, ok, _) = _page(1)
+    assert [i["item"] for i in items] == ["BONNET", "8PDVN-02 (BONNET)"], "앞 날짜·끝 잡음 숫자 64 제거(O6)"
+    assert items[0]["item_raw"] == "2026-10-28 BONNET 64", "원문은 item_raw 에 보존"
+    assert s == 6120000 and ok
+    assert find_date(words, today=_TODAY) == "2026-10-28"
+
+
+def test_r1_page2_hyesung_unit_price_tokens_and_date():
+    lines, words, items, (s, cands, ok, _) = _page(2)
+    assert [(i["a"], i["price"], round(i["amount"])) for i in items] == [
+        (289, 1390, 401710), (500, 105, 52500), (394, 1780, 701320), (810, 28, 22680)], "`1,390/KG` 꼴 단가(O1)"
+    assert [i["unit"] for i in items] == ["KG", "EA", "KG", "EA"]
+    assert items[0]["qty"] == 289, "혜성 `289 KG 289` — 뒤의 289 가 중량, 앞이 수량(O5)"
+    assert items[2]["qty"] is None, "중량 왼쪽이 치수 단어(28X97)면 수량 비움"
+    assert s == 1178210 and ok
+    assert find_date(words, today=_TODAY) == "2026-10-19", "`202611 10g 19`(년→11 오독) — 11-10 은 미래라 제외(O3)"
+
+
+def test_r1_page3_myungjin_vat_qty_unit_remark_and_dims_match():
+    lines, words, items, (s, cands, ok, _) = _page(3)
+    assert _amts(items) == [1315700, 191100, 112100, 1885000]
+    assert (items[2]["a"], items[2]["price"], round(items[2]["amount"]), items[2]["how"]) == (19, 5900, 112100, "vat"), \
+        "590(5,900 오독)×19 = 11,210(세액)을 금액으로 잡지 않고 세액 쌍으로 단가 복원(O2)"
+    assert s == 3503900 and ok
+    assert [i["unit"] for i in items] == ["KG"] * 4, "`Ko` 퍼지(O4)"
+    assert [i["qty"] for i in items] == [100, 10, 9, 1.016] and items[3]["qty_fix"] == 1016, \
+        "수량 = 중량 바로 왼쪽(O5), 1.016 은 1,016 제안값"
+    assert items[0]["remark"].startswith("4S25ABV-FL-01-X1") and "4S25ABV" not in items[0]["item"], "비고 제안(O8)"
+    assert items[0]["item"] == "STS304 환봉 110? +24", "515304→STS304, 끝 숫자(2) 제거(O6)"
+    kb = build_known([
+        {"vendor": "(주)명진메탈", "item": "STS304환봉 110￠*24ℓ", "unit_price": 5900},
+        {"vendor": "(주)명진메탈", "item": "STS304환봉 125￠*16ℓ", "unit_price": 5900},
+        {"vendor": "(주)명진메탈", "item": "STS316L환봉 125￠*16ℓ", "unit_price": 9100},
+    ])["명진메탈"]
+    assert match_item(items[0]["item"], kb, items[0]["price"])[:2] == ("STS304환봉 110￠*24ℓ", 100), \
+        "`110? +24` 치수 구분자(O6) → 재질+치수 일치"
+    assert find_date(words, today=_TODAY) == "2026-10-23"
+
+
+def test_r1_page4_myungjin_units_by_vendor_mode_and_amounts():
+    lines, words, items, (s, cands, ok, _) = _page(4)
+    assert _amts(items) == [276000, 1237600, 746200, 9972800, 206500, 170800]
+    mode = vendor_unit_mode([{"vendor": "(주)명진메탈", "unit": "KG"}, {"vendor": "(주)명진메탈", "unit": "kg"},
+                             {"vendor": "(주)명진메탈", "unit": "EA"}, {"vendor": "성보정밀", "unit": "EA"}])
+    assert mode == {"명진메탈": "KG", "성보정밀": "EA"}
+    assert [i["unit"] or mode["명진메탈"] for i in items] == ["KG"] * 6, "단위 글자 없는 줄은 거래처 최빈 단위"
+    assert [i["qty"] for i in items] == [10, 65, 40, 250, 17, 10]
+    assert ok and find_date(words, today=_TODAY) == "2026-10-16"
+
+
+def test_r1_page5_with_no_false_lines_and_no_future_date():
+    lines, words, items, (s, cands, ok, _) = _page(5)
+    truth = [125000, 267450, 112000]
+    assert _amts(items) == [267450, 112000], "`150°` 도 기호(O1) — `0 so`(500) 줄은 못 읽음"
+    assert all(a in truth for a in _amts(items)), "거짓 라인 0"
+    assert ok is False, "3라인 중 2라인 — 합계 검증은 × 로 남아 검토를 부른다"
+    assert items[0]["item"] == "HA50-80210 [KG]" and items[0]["unit"] is None, "품명 속 [KG] 는 단위로 보지 않음"
+    assert find_date(words, today=_TODAY) != "2026-11-20", "금액 112000 속 2000 + 11,20 → 미래 날짜 아님"
+
+
+def test_r1_helpers_normalize_clean_and_date_window():
+    toks = normalize_tokens([{"t": "1,390/KG"}, {"t": "150°"}, {"t": "267450,"}, {"t": "700@×16"}, {"t": "Ko"}])
+    assert [t["t"] for t in toks] == ["1,390", "KG", "150", "267450", "700@×16", "Ko"]
+    assert normalize_tokens(toks) == toks, "두 번 적용해도 같음"
+    assert clean_item("2026-10-28 BONNET 64") == "BONNET"
+    assert clean_item("10/14 HA50-80210 [KG]") == "HA50-80210 [KG]"
+    assert clean_item("6515304 환 봉 125 ?* 167 17") == "STS304 환봉 125 ?* 167"
+    assert clean_item("STS3048HE 140¢ +184") == "STS304HE 140¢ +184"
+    assert clean_item("515316 ㄴ 환 봉 140? ＊ 19 /") == "STS316 ㄴ 환봉 140? ＊ 19", "구분자 뒤 숫자는 치수라 남김"
+    assert clean_item("64") == "64", "숫자뿐이면 그대로"
+    assert (110.0, 24.0) in ocr_dims("STS304 환봉 110? +24") and (156.0, 23.0) in ocr_dims("156 ¢ #23")
+    w = lambda s: [{"t": t} for t in s.split()]
+    assert find_date(w("일자 2026-11-20"), today=_TODAY) is None, "오늘+7 초과 제외"
+    assert find_date(w("일자 2026-11-09"), today=_TODAY) == "2026-11-09", "오늘+7 까지는 허용"
+    assert find_date(w("2025-09-27 일자 2026-10-01"), today=_TODAY) == "2026-10-01"
+    assert find_date(w("발행 2025-09-27"), today=_TODAY) is None, "오늘−400 미만 제외"
+    assert find_date(w("2026-10-01 거래일 2026-10-20"), today=_TODAY) == "2026-10-20", "키워드에 가까운 후보"
+    assert find_date(w("2006 12 월 28 일"), today=dt.date(2027, 1, 3)) == "2026-12-28", "연도 오독이 미래면 작년"
+
+
+def test_r1_vat_not_taken_as_amount_regression():
+    it = parse_line_items([_line("515304 환 봉 125? 4 9 19.00 590 Ko 112,100 11,210 /4S25L0F-W")])
+    assert len(it) == 1 and round(it[0]["amount"]) == 112100 and it[0]["price"] == 5900
