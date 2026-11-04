@@ -9708,31 +9708,51 @@ elif page == "수주 관리":
                                                   f"{float(g.get('delivered_qty') or 0):,.0f}개"
                                                   for g in _gone_dl9)))
                                 _ok9 = False
+                            # r2 ②: 단계마다 예외도 잡아 같은 중단 메시지로(통신 예외는 반영 여부 불확실 안내)
+                            _UNSURE9 = " — 통신 오류라 이 요청의 실제 반영 여부가 불확실합니다(새로고침해 확인)"
                             if _ok9 and _plan9["delete"]:
-                                _n9 = _db.delete("so_delivery_schedule",
-                                                 "sched_id=in.(" + ",".join(
-                                                     str(x) for x in _plan9["delete"]) + ")")
-                                if _n9 != len(_plan9["delete"]):
-                                    _stop9(f"회차 삭제 {len(_plan9['delete'])}건 중 {_n9}건만 지워짐")
+                                try:
+                                    _n9 = _db.delete("so_delivery_schedule",
+                                                     "sched_id=in.(" + ",".join(
+                                                         str(x) for x in _plan9["delete"]) + ")")
+                                except Exception as _e9:
+                                    _stop9(f"회차 삭제 실패({_e9}){_UNSURE9}")
                                     _ok9 = False
                                 else:
-                                    _done9.append(f"삭제 {_n9}건")
+                                    if _n9:
+                                        _done9.append(f"삭제 {_n9}건")
+                                    if _n9 != len(_plan9["delete"]):
+                                        # r2 ①: 실제 삭제 건수를 먼저 기록 — 다른 사용자가 먼저 지웠을 수 있다
+                                        _stop9(f"회차 삭제 {len(_plan9['delete'])}건 중 {_n9}건 반영"
+                                               "(다른 사용자가 먼저 지웠을 수 있음)")
+                                        _ok9 = False
                             if _ok9:
+                                _n_p1 = 0
                                 for _k9, (_sid9, _tmp9) in enumerate(_plan9["phase1"], 1):
-                                    if not _db.update("so_delivery_schedule", f"sched_id=eq.{_fq(_sid9)}",
-                                                      {"seq": _tmp9}):
-                                        if _k9 > 1:
-                                            _done9.append(f"임시 번호 {_k9 - 1}건")
-                                        _stop9(f"1단계(임시 번호) {_k9}번째 회차 저장 실패")
+                                    try:
+                                        _r9 = _db.update("so_delivery_schedule", f"sched_id=eq.{_fq(_sid9)}",
+                                                         {"seq": _tmp9})
+                                        _x9 = ""
+                                    except Exception as _e9:
+                                        _r9, _x9 = False, f"({_e9}){_UNSURE9}"
+                                    if not _r9:
+                                        if _n_p1:
+                                            _done9.append(f"임시 번호 {_n_p1}건")
+                                        _stop9(f"1단계(임시 번호) {_k9}번째 회차 저장 실패{_x9}")
                                         _ok9 = False
                                         break
-                                else:
-                                    if _plan9["phase1"]:
-                                        _done9.append(f"임시 번호 {len(_plan9['phase1'])}건")
+                                    _n_p1 += 1
+                                if _ok9 and _n_p1:
+                                    _done9.append(f"임시 번호 {_n_p1}건")
                             if _ok9:
                                 for _k9, (_sid9, _f9) in enumerate(_plan9["phase2"], 1):
-                                    if not _db.update("so_delivery_schedule", f"sched_id=eq.{_fq(_sid9)}", _f9):
-                                        _stop9(f"2단계(번호·수량) {_k9}번째 회차 저장 실패")
+                                    try:
+                                        _r9 = _db.update("so_delivery_schedule", f"sched_id=eq.{_fq(_sid9)}", _f9)
+                                        _x9 = ""
+                                    except Exception as _e9:
+                                        _r9, _x9 = False, f"({_e9}){_UNSURE9}"
+                                    if not _r9:
+                                        _stop9(f"2단계(번호·수량) {_k9}번째 회차 저장 실패{_x9}")
                                         _ok9 = False
                                         break
                                     _done9.append(f"회차 {_f9['seq']} 저장")
@@ -9741,7 +9761,8 @@ elif page == "수주 관리":
                                     _db.insert("so_delivery_schedule", _plan9["insert"])
                                     _done9.append(f"새 회차 {len(_plan9['insert'])}건")
                                 except Exception as _e9:
-                                    _stop9(f"새 회차 추가 실패({_e9})")
+                                    _stop9(f"새 회차 {len(_plan9['insert'])}건 추가 실패({_e9}) — 응답 오류면 "
+                                           "추가되지 않았고, 통신 오류면 반영 여부가 불확실합니다(새로고침해 확인)")
                                     _ok9 = False
                             _due_note9 = ""
                             if _ok9 and _keep:
@@ -9759,8 +9780,8 @@ elif page == "수주 관리":
                                 st.session_state[_pend_key] = []
                                 nav_flash(f"{_li_lbl} · 저장 완료 — {len(_keep)}개 회차" + _due_note9)
                                 st.rerun()
-                        except Exception as e:
-                            st.error(f"저장 실패: {e}")
+                        except Exception as e:      # 최후 보루 — 단계별 쓰기 실패는 위 _stop9 가 알린다
+                            st.error(f"저장 실패(예상 밖 오류 — 새로고침해 회차를 확인하세요): {e}")
 
 
 elif page == "출고 관리":

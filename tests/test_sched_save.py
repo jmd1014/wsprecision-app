@@ -25,7 +25,10 @@ def _sched_mock(rounds):
 
     class _M(SOMock):
         false_after = None          # n 번째 schedule update 부터 False(부분 실패 흉내)
+        raise_after = None          # n 번째 schedule update 부터 예외(통신 오류 흉내)
         n_sched_update = 0
+        delete_mode = None          # "short"(1건 덜 지움 — 다른 사용자가 먼저 지움) · "raise"
+        insert_raise = False
 
         def _dup(self, soi, seq, sid):
             return any(int(r["soi_id"]) == int(soi) and int(r["seq"]) == int(seq) and r["sched_id"] != sid
@@ -34,6 +37,9 @@ def _sched_mock(rounds):
         def update(self, table, filter_query, fields):
             if table == "so_delivery_schedule":
                 self.n_sched_update += 1
+                if self.raise_after is not None and self.n_sched_update >= self.raise_after:
+                    self.writes.append(("update_raise", table, {"filter": filter_query, **fields}))
+                    raise RuntimeError("ConnectionError: 시뮬레이션")
                 if self.false_after is not None and self.n_sched_update >= self.false_after:
                     self.writes.append(("update_false", table, {"filter": filter_query, **fields}))
                     return False
@@ -46,6 +52,9 @@ def _sched_mock(rounds):
 
         def insert(self, table, records):
             if table == "so_delivery_schedule":
+                if self.insert_raise:
+                    self.writes.append(("insert_raise", table, {}))
+                    raise RuntimeError("so_delivery_schedule insert 500: 시뮬레이션")
                 for r in records:
                     if self._dup(r["soi_id"], r["seq"], None):
                         raise RuntimeError("so_delivery_schedule insert 409: duplicate key (soi_id, seq)")
@@ -63,7 +72,12 @@ def _sched_mock(rounds):
 
         def delete(self, table, filter_query):
             self._assert_dash("delete", table)
+            if self.delete_mode == "raise":
+                self.writes.append(("delete_raise", table, {"filter": filter_query}))
+                raise RuntimeError("ReadTimeout: 시뮬레이션")
             rows = self._rows(table, filter_query)
+            if self.delete_mode == "short":
+                rows = rows[1:]
             ids = {id(r) for r in rows}
             self.tables[table] = [r for r in self.tables[table] if id(r) not in ids]
             self.writes.append(("delete", table, {"filter": filter_query, "n": len(rows)}))
@@ -271,3 +285,108 @@ def test_a_codex1_resave_after_interrupted_phase2(monkeypatch):
     _save(at, m)
     assert not [w for w in m.writes if w[0] in ("update_409", "update_false")], m.writes
     assert [(x[1], x[2]) for x in _sched(m)] == [("2026-11-10", 1), ("2026-11-20", 2)]
+
+
+
+# ── r2(검토 세션 2026-11-05) ③ — 단계별 실패·예외, 날짜순≠번호순, 중복 날짜 + 납품, D 무변화 ──
+def _sched_writes(m):
+    return [w for w in m.writes if w[1] == "so_delivery_schedule"]
+
+
+def _three():
+    return _sched_mock([(1, "2026-11-10", 1, 100, 0), (2, "2026-11-20", 2, 100, 0), (3, "2026-11-30", 3, 100, 0)])
+
+
+def test_r2_phase2_false_stops_with_applied_list(monkeypatch):
+    m = _three()
+    at = _open(monkeypatch, m)
+    m.false_after = 2            # 임시 번호(1건) 뒤 2단계 첫 update 가 False
+    _save(at, m, deleted_rows=[1])
+    e = " ".join(_errors(at))
+    assert "2단계(번호·수량) 1번째 회차 저장 실패" in e and "이미 반영: 삭제 1건 · 임시 번호 1건" in e, e
+    assert not any("저장 완료" in f for f in _flash(at))
+    assert [w[0] for w in _sched_writes(m)][-1] == "update_false", "실패 뒤 쓰기 없음"
+
+
+def test_r2_phase1_exception_reports_uncertain(monkeypatch):
+    m = _three()
+    at = _open(monkeypatch, m)
+    m.raise_after = 1
+    _save(at, m, deleted_rows=[1])
+    e = " ".join(_errors(at))
+    assert "1단계(임시 번호) 1번째 회차 저장 실패" in e and "반영 여부가 불확실" in e and "이미 반영: 삭제 1건" in e, e
+    assert [w[0] for w in _sched_writes(m)][-1] == "update_raise"
+
+
+def test_r2_insert_exception_stops_without_flash(monkeypatch):
+    m = _sched_mock([(1, "2026-11-10", 1, 100, 0)])
+    at = _open(monkeypatch, m)
+    m.insert_raise = True
+    _save(at, m, added_rows=[{"납기": "2026-11-20", "수량": 50}])
+    e = " ".join(_errors(at))
+    assert "새 회차 1건 추가 실패" in e and "이미 반영: 회차 1 저장" in e, e
+    assert not any("저장 완료" in f for f in _flash(at))
+
+
+@pytest.mark.parametrize("mode", ["short", "raise"])
+def test_r2_delete_partial_or_exception_stops_before_updates(monkeypatch, mode):
+    m = _three()
+    at = _open(monkeypatch, m)
+    m.delete_mode = mode
+    _save(at, m, deleted_rows=[1])
+    e = " ".join(_errors(at))
+    if mode == "short":
+        assert "회차 삭제 1건 중 0건 반영(다른 사용자가 먼저 지웠을 수 있음)" in e and "아무것도 바뀌지 않았습니다" in e, e
+    else:
+        assert "회차 삭제 실패" in e and "반영 여부가 불확실" in e, e
+    assert not [w for w in _sched_writes(m) if w[0].startswith("update") or w[0].startswith("insert")], \
+        "삭제 실패 뒤 update·insert 0"
+    assert not any("저장 완료" in f for f in _flash(at))
+
+
+def test_r2_date_order_differs_from_seq_order(monkeypatch):
+    m = _sched_mock([(1, "2026-11-10", 2, 100, 0), (2, "2026-11-20", 1, 100, 0)])
+    at = _open(monkeypatch, m)
+    _save(at, m)
+    assert not [w for w in m.writes if w[0] in ("update_409", "update_false")]
+    assert [(x[0], x[1], x[2]) for x in _sched(m)] == [(1, "2026-11-10", 1), (2, "2026-11-20", 2)]
+
+
+def test_r2_duplicate_date_keeps_delivered_round(monkeypatch):
+    """예전 중복 저장(같은 날짜 2행) — 납품된 행(seq 2)을 유지하고 미납품 행을 지운다(B 에 걸리지 않음)."""
+    m = _sched_mock([(1, "2026-11-10", 1, 50, 0), (2, "2026-11-10", 2, 50, 50), (3, "2026-11-20", 3, 100, 0)])
+    at = _open(monkeypatch, m)
+    _save(at, m)
+    assert not _errors(at), _errors(at)
+    s = _sched(m)
+    assert [(x[0], x[1], x[2], x[3], x[4]) for x in s] == [(2, "2026-11-10", 1, 100.0, 50.0),
+                                                           (3, "2026-11-20", 2, 100.0, 0.0)]
+
+
+def test_r2_duplicate_date_both_delivered_blocked(monkeypatch):
+    m = _sched_mock([(1, "2026-11-10", 1, 50, 30), (2, "2026-11-10", 2, 50, 20)])
+    at = _open(monkeypatch, m)
+    _save(at, m)
+    assert any("납품된 회차(2026-11-10 기납품 20개)는 삭제할 수 없습니다" in e for e in _errors(at)), _errors(at)
+    assert not _sched_writes(m), "쓰기 전 차단"
+
+
+def test_r2_d_no_ship_no_html_identical_to_previous_version():
+    """D: ship_no 가 없으면 이전 버전(5410711)과 같은 HTML. 옛 커밋이 없는 얕은 클론(CI)에서는 건너뜀."""
+    import subprocess
+    import types
+    root = os.path.dirname(os.path.dirname(__file__))
+    try:
+        src = subprocess.run(["git", "show", "5410711:utils/statement_generator.py"], cwd=root,
+                             capture_output=True, check=True).stdout.decode("utf-8")
+    except Exception:
+        pytest.skip("옛 커밋 없음(얕은 클론)")
+    old = types.ModuleType("old_statement_generator")
+    old.__file__ = os.path.join(root, "utils", "statement_generator.py")   # 로고 경로 등
+    exec(compile(src, "old_statement_generator", "exec"), old.__dict__)
+    from utils import statement_generator as new
+    from tests.test_statement_generator import BATCH, VMAP
+    assert new.transaction_statements_html(BATCH, VMAP) == old.transaction_statements_html(BATCH, VMAP)
+    assert new.transaction_statements_html(BATCH, VMAP, rev_label="정정본 v2") == \
+        old.transaction_statements_html(BATCH, VMAP, rev_label="정정본 v2")
+    assert new.delivery_list_html(BATCH, draft=True) == old.delivery_list_html(BATCH, draft=True)

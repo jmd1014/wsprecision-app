@@ -32,7 +32,10 @@ def plan_sched_writes(old_rows, keep, tmp_base=TMP_BASE):
     seqs = [int(o.get("seq") or 0) for o in old_rows] + [int(r["seq"]) for r in keep]
     tmp_next = max([tmp_base] + [x + 1 for x in seqs])
     by_date = {}
-    for o in sorted(old_rows, key=lambda r: (int(r.get("seq") or 0), r.get("sched_id") or 0)):
+    # 같은 날짜 옛 회차가 여럿이면(예전 중복 저장) 납품된 회차를 먼저 유지 — 확정 전표 연결·납품 사실을 지키고,
+    # 사라지는 쪽이 미납품 회차가 되게(납품 회차 삭제 차단 B 에 걸리지 않게)
+    for o in sorted(old_rows, key=lambda r: (-(float(r.get("delivered_qty") or 0) > 0),
+                                             int(r.get("seq") or 0), r.get("sched_id") or 0)):
         by_date.setdefault(_d(o.get("due_date")), []).append(o)
     phase1, phase2, insert, kept = [], [], [], set()
     for r in keep:
