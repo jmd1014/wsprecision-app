@@ -79,7 +79,7 @@ def test_r1_screen_defaults_and_notes(monkeypatch):
     assert "4행 수량 1.016 은 1,016 오독일 수 있습니다(소수점)" in md, "O5 qty_fix 안내"
     assert "이 장부에 이미 있습니다" not in md, "같은 날짜 장부 없음 → P2-3 경고 없음"
     df = _editor(at)
-    assert list(df["저장 품명"]) == ["STS304환봉 110￠*24ℓ", "STS316[ 환봉 125? +16", "STS304환봉 125￠*16ℓ",
+    assert list(df["저장 품명"]) == ["STS304환봉 110￠*24ℓ", "STS316L 환봉 125? +16", "STS304환봉 125￠*16ℓ",  # r3 O12 316L
                                     "STS304환봉 40￠*27ℓ"], "점수 79 는 OCR 품명(O7)"
     assert list(df["단위"]) == ["KG"] * 4
     assert list(df["수량"]) == [100, 10, 9, 1.016], "KG 행 수량 = 중량 왼쪽 숫자(O5) — 예전 other_nums[0](515304) 아님"

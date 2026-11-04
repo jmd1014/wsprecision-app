@@ -13,6 +13,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
 from tests.test_ocr_r1_screen import VENDOR, _click_save, _ledger_inserts, _open_pur, app_only  # noqa: E402
+from utils import stmt_ocr as S  # noqa: E402
 
 
 def _open(monkeypatch, ledger=(), pages=None):
@@ -60,7 +61,7 @@ def test_t_l1_save_writes_one_log_row_after_ledger(monkeypatch):
         (VENDOR, VENDOR, "2026-10-23", "2026-10-23")
     assert (lg["n_rows_ocr"], lg["n_rows_saved"], lg["n_cells_changed"], lg["n_rows_added"],
             lg["n_rows_removed"], lg["n_head_changed"]) == (4, 4, 0, 0, 0, 0)
-    assert lg["rules_version"] == "r2" and lg["file_name"] == "scan.pdf" and (lg["page"], lg["psm"]) == (3, 6)
+    assert lg["rules_version"] == S.OCR_RULES_VERSION and lg["file_name"] == "scan.pdf" and (lg["page"], lg["psm"]) == (3, 6)
     assert [r["idx"] for r in lg["items_saved"]] == [0, 1, 2, 3] and [r["idx"] for r in lg["items_ocr"]] == [0, 1, 2, 3]
     assert lg["items_ocr"][1]["score"] == 79 and "how" in lg["items_ocr"][0], "기본값 + 제안 점수·how"
     assert round(lg["saved_sum"]) == 3503900 and lg["total_ok"] is True

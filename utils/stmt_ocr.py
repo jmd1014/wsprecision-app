@@ -32,7 +32,8 @@ NUM_RE = re.compile(r"^[\d,]+(?:\.\d+)?\.?$")
 UNITS = {"EA", "KG", "Kg", "kg", "SET", "CH", "식", "M", "본"}
 DATE_RE = re.compile(r"(20\d\d)\D{0,6}(\d{1,2})\D{0,6}(\d{1,2})")
 # 치수 구분자: `*`·`x`·`×` + OCR 오독 `＊#¢@?`(Φ·ℓ 자리), `110? +24` 처럼 구분자 뒤 `+` 도 (O6, 2026-11-03)
-DIMS_RE = re.compile(r"(\d+(?:\.\d+)?)[^\d*xX×＊#¢@?]{0,3}(?:[*xX×＊#¢@?]\s*)+\+?\s*(\d+(?:\.\d+)?)")
+# O13(OCR r3): `＊` 를 `«` 로 읽은 꼴(`25 ¢ «407`·`140 ¢ «18`) — 구분자 자리와 둘째 숫자 앞(`+` 자리) 모두
+DIMS_RE = re.compile(r"(\d+(?:\.\d+)?)[^\d*xX×＊#¢@?«]{0,3}(?:[*xX×＊#¢@?«]\s*)+[+«]?\s*(\d+(?:\.\d+)?)")
 _TESS_WIN = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 
 
@@ -408,15 +409,25 @@ def find_date(words, today=None):
 
 
 _LEAD_DATE_RE = re.compile(r"^(?:\d{4}-\d{1,2}-\d{1,2}|\d{1,2}/\d{1,2})\s+")
-_STS_OCR_RE = re.compile(r"^[56]?[5S][1Il\[][5S](?=3\d\d|4\d\d|630)")   # 515304·6515304·5[5316 → STS304·STS316
+# 515304·6515304·5[5316 → STS304·STS316. O12(OCR r3): 818316(·815304·|5[5304(첫 글자 `|` 는 체크표시)·
+# 515904(3→9, 치환 뒤 STS9xx → STS3xx)
+_STS_OCR_RE = re.compile(r"^[|/\[]?[56]?[5S8s][1Il\[|][5S8s](?=[349]\d\d|630)")
+# O12: 직원 체크표시(✓)가 품명 앞에 남긴 잡토큰 단어 `Vv`·`/|`·`-|`·`"` (1~3자, 이 글자들만)
+_LEAD_MARK_RE = re.compile(r"^[Vv|/\-\"\[]{1,3}\s+(?=\S)")
+# O12: 등급 뒤 `L` 오독 `STS316[`·`STS316(`·`STS316&`·`STS316 ㄴ` → STS316L (L 변형은 316 만)
+_STS316L_RE = re.compile(r"^STS316(?:[\[(&]|\s?ㄴ)")
 _REMARK_RE = re.compile(r"^/([A-Z0-9-]{4,})$")
 
 
 def clean_item(text):
     """O6(2026-11-03) 품명 정리 — 앞의 날짜(`2026-10-28`·`10/14`), 끝의 외톨이 숫자(1~3자리)·기호 단어 떼기,
-    재질 오독 `515304`→`STS304`·`STS3048`→`STS304`, `환 봉`·`육 각` 붙이기. 결과가 비면 원문."""
+    재질 오독 `515304`→`STS304`·`STS3048`→`STS304`, `환 봉`·`육 각` 붙이기. 결과가 비면 원문.
+    O12(OCR r3): 날짜 뒤 체크표시 잡토큰 단어(`Vv`·`/|`) 떼기 → 재질 오독(`8`·`9`·`|` 변형) → 316 의 L 오독."""
     s = _LEAD_DATE_RE.sub("", str(text or "").strip())
+    s = _LEAD_MARK_RE.sub("", s)
     s = _STS_OCR_RE.sub("STS", s)
+    s = re.sub(r"^STS9(?=\d\d)", "STS3", s)
+    s = _STS316L_RE.sub("STS316L", s)
     s = re.sub(r"STS3048(?!\d)", "STS304", s)
     s = s.replace("환 봉", "환봉").replace("육 각", "육각")
     toks = s.split()
@@ -428,12 +439,19 @@ def clean_item(text):
 
 
 def ocr_dims(text):
+    """판독 품명의 (지름, 길이) 후보 — 사전(known)에 있는 쪽만 match_item 이 채택한다.
+    지름 d≥100·끝 0 이면 d/10(Φ 를 0 으로 읽음). O13(OCR r3): 길이가 정수 3자리 이상이고 끝자리 2·4 면 L//10
+    (ℓ 을 2·4 로 읽음: `+152`→15, `+184`→18)."""
     out = []
     for m in DIMS_RE.finditer(text):
         d, L = float(m.group(1)), float(m.group(2))
-        out.append((d, L))
-        if d >= 100 and d % 10 == 0:
-            out.append((d / 10, L))
+        Ls = [L]
+        if L >= 100 and L == int(L) and int(L) % 10 in (2, 4):
+            Ls.append(float(int(L) // 10))
+        for LL in Ls:
+            out.append((d, LL))
+            if d >= 100 and d % 10 == 0:
+                out.append((d / 10, LL))
     return out
 
 
@@ -477,7 +495,7 @@ def build_known(ledger_rows):
 
 MATCH_AUTO_MIN = 80     # O7: 제안 점수가 이 값 이상일 때만 저장 품명 기본값으로
 # 해석 규칙 판 — 정정 기록(purchase_scan_log.rules_version, OCR r2)에 남는다. 규칙을 추록할 때마다 올린다
-OCR_RULES_VERSION = "r2"
+OCR_RULES_VERSION = "r3"
 
 
 def ocr_row_defaults(it, unit_mode=None):

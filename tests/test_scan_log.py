@@ -92,7 +92,7 @@ def test_log_row_counts_head_and_version():
     sv = [_saved(ocr[0]), _saved(ocr[1], item="STS304환봉 40￠*28ℓ")]
     row = L.scan_log_row(_page(), {"vendor": "명진메탈", "date": "2026-10-23", "statement_no": " 23-01 "},
                          ocr, sv, "홍길동", "scan.pdf")
-    assert row["rules_version"] == S.OCR_RULES_VERSION == "r2"
+    assert row["rules_version"] == S.OCR_RULES_VERSION   # 판 리터럴은 test_stmt_ocr_r3
     assert row["n_head_changed"] == 0, "법인 표기 '(주)' 차이는 정정 아님"
     assert (row["n_rows_ocr"], row["n_rows_saved"], row["n_cells_changed"]) == (2, 2, 1)
     assert row["statement_no"] == "23-01" and row["created_by"] == "홍길동" and row["file_name"] == "scan.pdf"
@@ -146,6 +146,6 @@ def test_pure_boundaries():
     assert L.scan_diff(ocr, [])["removed"] == [0] and L.scan_diff([], [_saved(ocr[0])])["added"] == [0]
     row = L.scan_log_row(None, None, [], [], None, None)
     assert row["n_head_changed"] == 0 and row["total_ok"] is False and row["printed_total"] is None
-    assert row["saved_sum"] == 0 and row["lines"] == [] and row["rules_version"] == "r2"
+    assert row["saved_sum"] == 0 and row["lines"] == [] and row["rules_version"] == S.OCR_RULES_VERSION
     row = L.scan_log_row(_page(printed_totals=[None, "1,000", float("nan")]), HEAD, ocr, [_saved(ocr[0])], "u", "f")
     assert row["printed_total"] == 1000.0, "합계 후보의 None·NaN·문자열"

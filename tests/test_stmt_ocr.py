@@ -169,7 +169,7 @@ def test_r1_helpers_normalize_clean_and_date_window():
     assert clean_item("10/14 HA50-80210 [KG]") == "HA50-80210 [KG]"
     assert clean_item("6515304 환 봉 125 ?* 167 17") == "STS304 환봉 125 ?* 167"
     assert clean_item("STS3048HE 140¢ +184") == "STS304HE 140¢ +184"
-    assert clean_item("515316 ㄴ 환 봉 140? ＊ 19 /") == "STS316 ㄴ 환봉 140? ＊ 19", "구분자 뒤 숫자는 치수라 남김"
+    assert clean_item("515316 ㄴ 환 봉 140? ＊ 19 /") == "STS316L 환봉 140? ＊ 19", "구분자 뒤 숫자는 치수라 남김"  # r3 O12 316L
     assert clean_item("64") == "64", "숫자뿐이면 그대로"
     assert (110.0, 24.0) in ocr_dims("STS304 환봉 110? +24") and (156.0, 23.0) in ocr_dims("156 ¢ #23")
     w = lambda s: [{"t": t} for t in s.split()]
