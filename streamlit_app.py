@@ -6977,19 +6977,39 @@ elif page == "수주 관리":
         except Exception as e:
             st.error(f"처리 실패: {e}")
 
-    def _rp_master_revert(r, why):
-        """결정 이력 r 이 마스터 판매 단가를 바꿨으면 옛 값으로(대체·단가 조정 공통)."""
+    def _rp_master_revert(r, why, guard=False):
+        """결정 이력 r 이 마스터 판매 단가를 바꿨으면 옛 값으로(대체·단가 조정 공통). → 안내 문구(없으면 None).
+        guard(단가 조정, Codex 34 HIGH): ① 같은 새 라인의 다른 활성 단가 조정 이력이 남아 있으면 마스터는 그대로
+        (마지막 건을 되돌릴 때 복원) ② 지금 마스터 단가가 이력의 새 단가와 다르면(이후 다른 변경) 자동 복원하지 않음.
+        대체(REPLACE)의 무조건 복원은 기존 성질 그대로."""
         if not r.get("master_updated"):
-            return
+            return None
         _n = _db.fetch_one("sales_order_items",
                            f"soi_id=eq.{_fq(r['new_soi_id'])}",
                            "product_id")
-        if _n and _n.get("product_id"):
-            _db.update("products",
-                       f"product_id=eq.{_fq(_n['product_id'])}",
-                       {"sale_price": r.get("master_old_price")})
-            _so_log("products", _n["product_id"], "sale_price",
-                    r.get("new_price"), r.get("master_old_price"), why)
+        if not (_n and _n.get("product_id")):
+            return None
+        if guard:
+            _others = [h for h in fetch("so_line_replacements",
+                                        "repl_id,new_soi_id,master_updated,reverted_at",
+                                        f"new_soi_id=eq.{_fq(r['new_soi_id'])}", limit=100)
+                       if h.get("repl_id") != r.get("repl_id") and h.get("master_updated")
+                       and not h.get("reverted_at")]
+            if _others:
+                return (f"마스터 판매 단가는 그대로 — 같은 새 수주의 단가 조정 {len(_others)}건이 남아 있습니다"
+                        "(마지막 건을 되돌릴 때 복원)")
+            _cur = (_db.fetch_one("products", f"product_id=eq.{_fq(_n['product_id'])}",
+                                  "sale_price") or {}).get("sale_price")
+            if _cur is None or r.get("new_price") is None \
+                    or abs(float(_cur) - float(r["new_price"])) >= 0.5:
+                return (f"마스터 판매 단가는 복원하지 않았습니다 — 지금 {float(_cur or 0):,.0f}원으로 이후 "
+                        "바뀌었습니다. 필요하면 제품 편집에서 직접 고치세요")
+        _db.update("products",
+                   f"product_id=eq.{_fq(_n['product_id'])}",
+                   {"sale_price": r.get("master_old_price")})
+        _so_log("products", _n["product_id"], "sale_price",
+                r.get("new_price"), r.get("master_old_price"), why)
+        return None
 
     def _rp_revert(r):
         _who = current_user_name()
@@ -7029,16 +7049,17 @@ elif page == "수주 관리":
                 _rp_master_revert(r, "수주 대체 되돌리기")
                 _db.update("sales_order_items", f"soi_id=eq.{_fq(r['new_soi_id'])}",
                            {"price_kind": None})
-            else:
-                # KEEP — 단가 조정(PRICE_ADJ)은 마스터도 옛 값으로(후보 34). 프로젝트·사급은 master_updated False
-                _rp_master_revert(r, "단가 조정 되돌리기")
+            _rv_note = None
+            if r["action"] != "REPLACE":
+                # KEEP — 단가 조정(PRICE_ADJ)은 마스터도 옛 값으로(후보 34, 그룹·이후 변경 보호). 프로젝트·사급은 master_updated False
+                _rv_note = _rp_master_revert(r, "단가 조정 되돌리기", guard=True)
                 _db.update("sales_order_items",
                            f"soi_id=eq.{_fq(r.get('tagged_soi_id') or r['new_soi_id'])}",
                            {"price_kind": None})
             _db.update("so_line_replacements", f"repl_id=eq.{_fq(r['repl_id'])}",
                        {"reverted_at": _rp_date.today().isoformat(),
                         "reverted_by": _who})
-            st.session_state["rp_flash"] = "결정을 되돌렸습니다."
+            st.session_state["rp_flash"] = "결정을 되돌렸습니다." + (f" {_rv_note}" if _rv_note else "")
             st.rerun()
         except Exception as e:
             st.error(f"되돌리기 실패: {e}")

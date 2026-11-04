@@ -421,6 +421,32 @@ def test_34_price_adj_keeps_old_and_updates_master_then_revert(monkeypatch):
     assert len(m.tables["master_change_log"]) == 2 and "되돌리기" in m.tables["master_change_log"][1]["reason"]
 
 
+def test_34_revert_group_and_later_master_change_guard(monkeypatch):
+    """Codex 34 HIGH: 옛 라인 2건 단가 조정 → 한 건만 되돌리면 마스터 그대로, 마지막 건에서 복원.
+    마스터가 이후 바뀌었으면 자동 복원하지 않음."""
+    m = _price_mock()
+    m.tables["sales_order_items"].append(dict(m.line(1), soi_id=2, line_no=2))
+    at = _open_so_list(monkeypatch, m)
+    _keep(at, "단가 조정")
+    rp = m.tables["so_line_replacements"]
+    assert len(rp) == 2 and all(r["master_updated"] and r["master_old_price"] == 3285 for r in rp)
+    assert m.tables["products"][0]["sale_price"] == 3282
+    at.button(key=f"rp_rv_{rp[0]['repl_id']}").click()
+    at.run()
+    assert not at.exception, [str(e.value) for e in at.exception]
+    assert m.line(1)["price_kind"] is None and m.line(2)["price_kind"] == "PRICE_ADJ"
+    assert m.tables["products"][0]["sale_price"] == 3282, "다른 단가 조정 이력이 남아 있으면 마스터 그대로"
+    assert any("1건이 남아 있습니다" in str(s.value) for s in at.success)
+    m.tables["products"][0]["sale_price"] = 3300           # 이후 다른 변경
+    at.run()
+    at.button(key=f"rp_rv_{rp[1]['repl_id']}").click()
+    at.run()
+    assert not at.exception, [str(e.value) for e in at.exception]
+    assert m.line(2)["price_kind"] is None and m.tables["products"][0]["sale_price"] == 3300, "덮어쓰지 않음"
+    assert any("복원하지 않았습니다" in str(s.value) for s in at.success)
+    assert all(r["reverted_at"] for r in m.tables["so_line_replacements"])
+
+
 def test_34_project_keep_unchanged_no_master_update(monkeypatch):
     m = _price_mock()
     at = _open_so_list(monkeypatch, m)
