@@ -451,15 +451,15 @@ def clean_item(text):
     return " ".join(toks) or str(text or "").strip()
 
 
-def ocr_dims(text):
+def ocr_dims(text, l_variants=True):
     """판독 품명의 (지름, 길이) 후보 — 사전(known)에 있는 쪽만 match_item 이 채택한다.
     지름 d≥100·끝 0 이면 d/10(Φ 를 0 으로 읽음). O13(OCR r3): 길이가 정수 3자리 이상이고 끝자리 2·4 면 L//10
-    (ℓ 을 2·4 로 읽음: `+152`→15, `+184`→18)."""
+    (ℓ 을 2·4 로 읽음: `+152`→15, `+184`→18) — l_variants=False 면 이 후보를 뺀다(match_item 1단계)."""
     out = []
     for m in DIMS_RE.finditer(text):
         d, L = float(m.group(1)), float(m.group(2))
         Ls = [L]
-        if L >= 100 and L == int(L) and int(L) % 10 in (2, 4):
+        if l_variants and L >= 100 and L == int(L) and int(L) % 10 in (2, 4):
             Ls.append(float(int(L) // 10))
         for LL in Ls:
             out.append((d, LL))
@@ -474,10 +474,16 @@ def match_item(ocr_text, known, price=None):
         return None, 0, None
     from rapidfuzz import fuzz, process
     g = norm_grade(ocr_text)
-    dims = ocr_dims(ocr_text)
-    if g and dims:
-        same = [k for k, (raw, _) in known.items()
-                if norm_grade(raw) == g and norm_dims(raw) and any(norm_dims(raw)[1:] == d for d in dims)]
+    # O13 길이 변형 후보(L//10)는 읽은 그대로의 치수(r2 규칙)로 사전에 없을 때만 — 사전에 95×152·95×15 가 함께
+    # 있으면 152 는 152 로(Codex r3 3차 HIGH). 점수식은 그대로
+    same = []
+    for dims in (ocr_dims(ocr_text, l_variants=False), ocr_dims(ocr_text)):
+        if g and dims:
+            same = [k for k, (raw, _) in known.items()
+                    if norm_grade(raw) == g and norm_dims(raw) and any(norm_dims(raw)[1:] == d for d in dims)]
+        if same:
+            break
+    if same:
         if len(same) == 1:
             return known[same[0]][0], 100, "dims"
         if len(same) > 1:

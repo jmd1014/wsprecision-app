@@ -176,3 +176,13 @@ def test_r3_o14_other_psm_plain_numbers_do_not_make_total_ok(monkeypatch):
     b = ["품목C 10 10,000 100,000", "합계 100,000"]
     pg = _run(monkeypatch, {6: a, 11: b}, {})
     assert pg["psm"] == 11 and pg["sum"] == 100000 and pg["total_ok"] is True, "합계가 맞는 B 채택(r2 와 같음)"
+
+
+def test_r3_o13_exact_length_wins_over_l_variant():
+    """Codex r3 3차 HIGH: 읽은 그대로의 치수가 사전에 있으면 길이 변형(L//10) 후보는 보지 않는다."""
+    both = build_known([{"vendor": "V", "item": "STS304환봉 95￠*152ℓ", "unit_price": 100},
+                        {"vendor": "V", "item": "STS304환봉 95￠*15ℓ", "unit_price": 200}])["V"]
+    assert match_item("STS304 환봉 95¢ +152", both, 200) == ("STS304환봉 95￠*152ℓ", 100, "dims"), "단가가 축약 쪽과 같아도"
+    short = build_known([{"vendor": "V", "item": "STS304환봉 95￠*15ℓ", "unit_price": 200}])["V"]
+    assert match_item("STS304 환봉 95¢ +152", short, None) == ("STS304환봉 95￠*15ℓ", 100, "dims"), "축약만 있으면 변형 후보로(O13)"
+    assert ocr_dims("95¢ +152", l_variants=False) == [(95, 152)]
