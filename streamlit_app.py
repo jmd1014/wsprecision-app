@@ -17477,9 +17477,12 @@ elif page == "구매 관리":
                         _sc_vn = [v["name"] for v in fetch("vendors", "vendor_id,name", "in_use=eq.true&archived_at=is.null&order=name", limit=500)]
                     except Exception:
                         _sc_vn = []
-                    for _pi, _pg in enumerate(_sc_pages):
-                        # 위젯 key 는 장 고유 번호로 — 앞 장을 저장해 빼도 뒤 장의 편집 상태가 앞으로 밀리지 않게(r1-3)
-                        _pi = _pg.get("_sid", _pi)
+                    # 위젯 key 는 장 고유 번호로 — 앞 장을 저장해 빼도 뒤 장의 편집 상태가 앞으로 밀리지 않게(r1-3).
+                    # _sid 없는 옛 판독 결과는 지금 위치로 한 번 고정(OCR r2 후보 21 a) — 이후 _pg["_sid"] 만 쓴다
+                    for _i0, _p0 in enumerate(_sc_pages):
+                        _p0.setdefault("_sid", _i0)
+                    for _pg in _sc_pages:
+                        _pi = _pg["_sid"]
                         _vname = (_pg.get("vendor") or {}).get("name")
                         _hdr = f"{_pg.get('file')} · {_pg['page']}쪽 — {_vname or '거래처 미식별'} · {_pg.get('date') or '날짜 미식별'} · 라인 {len(_pg['items'])} · "
                         # P2-2(2026-11-03): ○/× 옆에 숫자 — × 면 인쇄 합계(합계 줄 숫자 중 최댓값)와 라인 합

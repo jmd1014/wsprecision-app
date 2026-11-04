@@ -338,3 +338,16 @@ def test_r1b_fallback_guards():
     w = lambda s: [{"t": t} for t in s.split()]
     assert find_date(w("거래일 20269 10% 28 일"), today=_TODAY2) == "2026-10-28"
     assert find_date(w("12 월 28 일"), today=dt.date(2027, 1, 3)) == "2026-12-28", "연도 없는 월일 — 미래면 작년"
+
+
+# ─────────────── OCR r2(2026-11-04) 후보 21 b·c·d ───────────────
+def test_r2_c21_total_keywords_and_exact_qty1():
+    one = lambda t: parse_line_items([_line(t)])
+    # (c)(d) 품목 줄 표시(앞 날짜·줄번호)가 있어도 합계·청구·이월·입금 줄은 품목이 되지 않는다(키워드 독립 보호)
+    for t in ("10/22 청구금액 100,000 100,000", "10/22 합계금액 100,000 100,000", "10/22 이월금 100,000 100,000",
+              "1 입금 300,000 300,000"):
+        assert one(t) == [], t
+    # (b) O10 은 두 숫자가 정확히 같을 때만 — 1 차이는 같은 값이 아님
+    it = one("6 플러그 EA 100 100")
+    assert it and (it[0]["a"], it[0]["how"]) == (1, "qty1")
+    assert one("6 플러그 EA 100 101") == [] and one("6 플러그 EA 7,000 7,001") == []

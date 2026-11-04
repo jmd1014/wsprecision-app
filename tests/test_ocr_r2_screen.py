@@ -139,3 +139,60 @@ def test_t_l5_vendor_and_date_corrected(monkeypatch):
     assert (lg["n_head_changed"], lg["n_cells_changed"]) == (2, 0)
     assert (lg["vendor_saved"], lg["date_saved"]) == ("성보정밀", "2026-10-24")
     assert {r["vendor"] for r in _ledger_inserts(m)} == {"성보정밀"}
+
+
+# ─────────────── r2-3(후보 21 a·d) ───────────────
+@app_only
+def test_c21_retry_after_failure_saves_once_with_dup_ok(monkeypatch):
+    """저장 실패(중복) 뒤 그대로 재클릭 → 또 실패, 의도한 중복 체크 뒤 재클릭 → 1회만 저장·기록 1행."""
+    led = [{"ledger_id": 1, "trade_date": "2026-10-23", "vendor": VENDOR, "item": "STS304환봉 110￠*24ℓ",
+            "amount": 1315700}]
+    m, at = _open(monkeypatch, led)
+    _click_save(at)
+    _click_save(at)
+    assert _ledger_inserts(m) == [] and _logs(m) == []
+    at.checkbox(key="sc_dup_1_0").check()
+    at.run()
+    _click_save(at)
+    assert len(_ledger_inserts(m)) == 4 and len(_logs(m)) == 1
+    at.run()
+    assert len(_ledger_inserts(m)) == 4 and len(_logs(m)) == 1, "rerun 뒤 재저장 없음"
+
+
+@app_only
+def test_c21_old_pages_without_sid_get_stable_keys(monkeypatch):
+    """_sid 없는 옛 판독 결과(r1-3 이전 세션) → 지금 위치로 한 번 고정, 앞 장을 저장해 빼도 뒤 장 key 유지."""
+    from tests.test_ocr_r1_screen import _pages
+    p0, p1 = _pages()[0], _pages()[0]
+    p1["page"] = 4
+    m, at = _open(monkeypatch, pages=[p0, p1])
+    assert [p["_sid"] for p in at.session_state["sc_pages"]] == [0, 1]
+    assert {b.key for b in at.button} >= {"sc_save_1_0", "sc_save_1_1"}
+    _click_save(at)
+    assert [p["_sid"] for p in at.session_state["sc_pages"]] == [1], "남은 장은 번호 1 그대로"
+    assert any(b.key == "sc_save_1_1" for b in at.button) and not any(b.key == "sc_save_1_0" for b in at.button)
+    assert _logs(m)[0]["page"] == 3
+
+
+@app_only
+def test_c21_p21_lookup_failure_and_p23_truncation_are_silent(monkeypatch):
+    """P2-1(장부 최근 거래일) 조회 실패, P2-3(같은 날짜 장부) 절단 → 안내·경고 없이 통과(저장 버튼 그대로)."""
+    import db
+    from tests.test_ocr_r1_screen import _md
+    real_f, real_fa = db.fetch, db.fetch_all
+
+    def _f(t, select="*", filter_query="", *a, **kw):
+        if t == "purchase_ledger" and "trade_date=not.is.null" in (filter_query or ""):
+            raise RuntimeError("조회 실패 (시뮬레이션)")
+        return real_f(t, select, filter_query, *a, **kw)
+
+    def _fa(t, select="*", filter_query="", *a, **kw):
+        if t == "purchase_ledger" and "trade_date=eq." in (filter_query or ""):
+            return [{"vendor": VENDOR, "amount": 3503900}], True         # 합계는 같지만 절단
+        return real_fa(t, select, filter_query, *a, **kw)
+    monkeypatch.setattr(db, "fetch", _f)
+    monkeypatch.setattr(db, "fetch_all", _fa)
+    m, at = _open(monkeypatch)
+    md = _md(at)
+    assert "장부 최근 동기화" not in md and "이 장부에 이미 있습니다" not in md
+    assert any(b.key == "sc_save_1_0" for b in at.button)

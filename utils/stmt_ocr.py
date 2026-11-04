@@ -184,7 +184,7 @@ def _unit_of(t, fuzzy=False):
 
 
 _TOTAL_KW = ("합계", "공급가액", "공급가", "명세합계", "총액", "소계", "부가세", "잔액", "미수", "이월", "전월", "당월",
-             "누계", "입금", "결제")
+             "누계", "입금", "결제", "청구", "청구금액", "합계금액")      # 청구·합계금액: OCR r2(후보 21 c)
 
 
 def _is_total_line(text):
@@ -275,8 +275,9 @@ def parse_line_items(lines):
         if not found and repairable:
             found, how, fixed_from = _fix_one_digit(nums)
         if not found and repairable and len(nums) == 2 and nums[0][1] >= 100 \
-                and _near(nums[0][1], nums[1][1], 0):
-            # O10: 숫자가 단가·금액 둘뿐이고 같으면 수량 1 (수량 칸 `1` 을 `아`·`ｌ` 로 읽음)
+                and float(nums[0][1]) == float(nums[1][1]):
+            # O10: 숫자가 단가·금액 둘뿐이고 정확히 같으면 수량 1 (수량 칸 `1` 을 `아`·`ｌ` 로 읽음).
+            # OCR r2(후보 21 b): 예전 _near(…, 0) 은 1 차이(100·101)도 같다고 봤다
             found, how = ((nums[0][0], 1.0), nums[0], nums[1]), "qty1"
         if not found:
             continue
