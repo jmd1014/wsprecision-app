@@ -35,6 +35,7 @@ def _sched_mock(rounds):
                        for r in self.tables["so_delivery_schedule"])
 
         race = None                 # 첫 schedule 쓰기 직전에 이 sched_id 의 납품완료를 +1(동시 출고 확정 흉내)
+        apply_then_raise_at = None  # n 번째 schedule update 는 반영한 뒤 예외(응답 유실 흉내)
 
         def _sched_write(self, filter_query, fields):
             """화면은 update_count 를 쓴다(r2 ⑦) — 0 이상 행 수, 실패 -1. 옛 db.update 경로도 여기로."""
@@ -60,6 +61,11 @@ def _sched_mock(rounds):
 
         def update_count(self, table, filter_query, fields, select="*"):
             if table == "so_delivery_schedule":
+                if self.apply_then_raise_at is not None and self.n_sched_update + 1 == self.apply_then_raise_at:
+                    self.n_sched_update += 1
+                    super().update_count(table, filter_query, fields, select)
+                    self.writes.append(("update_applied_raise", table, {"filter": filter_query, **fields}))
+                    raise RuntimeError("ReadTimeout: 응답 유실 시뮬레이션")
                 r = self._sched_write(filter_query, fields)
                 if r is not None:
                     return r
@@ -94,6 +100,15 @@ def _sched_mock(rounds):
             if self.delete_mode == "raise":
                 self.writes.append(("delete_raise", table, {"filter": filter_query}))
                 raise RuntimeError("ReadTimeout: 시뮬레이션")
+            if self.delete_mode == "apply_raise":           # 지운 뒤 응답 유실
+                rows = self._rows(table, filter_query)
+                ids = {id(r) for r in rows}
+                self.tables[table] = [r for r in self.tables[table] if id(r) not in ids]
+                self.writes.append(("delete_applied_raise", table, {"filter": filter_query}))
+                raise RuntimeError("ReadTimeout: 응답 유실 시뮬레이션")
+            if self.delete_mode == "http":
+                self.writes.append(("delete_http", table, {"filter": filter_query}))
+                raise RuntimeError("so_delivery_schedule delete 409: conflict")
             rows = self._rows(table, filter_query)
             if self.delete_mode == "short":
                 rows = rows[1:]
@@ -105,7 +120,7 @@ def _sched_mock(rounds):
     m = _M()
     m.tables.setdefault("shipment_allocations", [])
     total = sum(q for _, _, _, q, _ in rounds)
-    done = sum(d for *_, d in rounds)
+    done = sum(d or 0 for *_, d in rounds)
     m.seed(so_id=101, so_number="PO-SCH", lines=[(SOI, total, done, total - done, "PARTIAL" if done else "PENDING")],
            rounds=[])
     m.tables["so_delivery_schedule"] = [
@@ -535,3 +550,94 @@ def test_r2_d_multi_page_each_header_has_ship_no():
     rows = [{"customer": "갑", "pn": f"P-{i}", "qty": 1, "unit_price": 100, "date": "2026-11-04"} for i in range(30)]
     html = transaction_statements_html({"date": "2026-11-04", "rows": rows}, {}, ship_no="SH-20261104-09")
     assert html.count("전표 SH-20261104-09<br>") == html.count("PAGE ") == 2 * 3, "3쪽 × 공급자·공급받는자"
+
+
+
+# ── r2c — 반영 여부 불명(응답 유실)은 무변경 단정 금지, _guarded9 경계, 전체 삭제 가드 ──
+def test_r2c_delete_applied_then_lost_response_not_called_unchanged(monkeypatch):
+    m = _three()
+    at = _open(monkeypatch, m)
+    m.delete_mode = "apply_raise"
+    _save(at, m, deleted_rows=[1])
+    e = " ".join(_errors(at))
+    assert "확인된 반영 내역 없음" in e and "아무것도 바뀌지 않았습니다" not in e, e
+    assert not any("저장 완료" in f for f in _flash(at))
+    assert [w[0] for w in _sched_writes(m)] == ["delete_applied_raise"], "후속 쓰기 0"
+
+
+def test_r2c_delete_http_error_is_certain_unchanged(monkeypatch):
+    m = _three()
+    at = _open(monkeypatch, m)
+    m.delete_mode = "http"
+    _save(at, m, deleted_rows=[1])
+    e = " ".join(_errors(at))
+    assert "아무것도 바뀌지 않았습니다" in e and "불확실" not in e, e
+
+
+def test_r2c_update_applied_then_lost_response(monkeypatch):
+    m = _three()
+    at = _open(monkeypatch, m)
+    m.apply_then_raise_at = 1                       # 1단계 첫 update 가 반영된 뒤 예외
+    _save(at, m, deleted_rows=[1])
+    e = " ".join(_errors(at))
+    assert "이미 반영: 삭제 1건" in e and "마지막 요청의 반영 여부는 새로고침 뒤 확인" in e, e
+    assert not any("저장 완료" in f for f in _flash(at))
+    assert [w[0] for w in _sched_writes(m)][-1] == "update_applied_raise", "후속 쓰기 0"
+
+
+def test_r2c_guard_filter_strings_for_delivered_values(monkeypatch):
+    """_guarded9 경계: 납품완료 0·0.0·소수·NULL 이 PostgREST 필터 문자열로(eq.0 / eq.0.0 / eq.12.5 / is.null)."""
+    m = _sched_mock([(1, "2026-11-10", 1, 100, 0), (2, "2026-11-20", 2, 100, 0.0), (3, "2026-11-25", 3, 100, 12.5),
+                     (4, "2026-11-30", 4, 100, None)])
+    at = _open(monkeypatch, m)
+    _save(at, m, added_rows=[{"납기": "2026-11-05", "수량": 10}])
+    flt = [w[2]["filter"] for w in _sched_writes(m) if w[0] == "update"]
+    assert any(f.startswith("sched_id=eq.1&delivered_qty=eq.0") and not f.startswith(
+        "sched_id=eq.1&delivered_qty=eq.0.") for f in flt), flt
+    assert any(f.startswith("sched_id=eq.2&delivered_qty=eq.0.0") for f in flt), flt
+    assert any(f.startswith("sched_id=eq.3&delivered_qty=eq.12.5") for f in flt), flt
+    assert any(f.startswith("sched_id=eq.4&delivered_qty=is.null") for f in flt), flt
+    assert [(x[1], x[2]) for x in _sched(m)][0] == ("2026-11-05", 1) and len(_sched(m)) == 5
+
+
+def _open_keep_patch(monkeypatch, m):
+    """_open 과 같지만 이미 설치한 db 목·패치를 다시 덮지 않는다."""
+    from streamlit.testing.v1 import AppTest
+    at = AppTest.from_file(APP_FILE, default_timeout=90)
+    at.secrets["supabase"] = {"url": "https://mock.local", "anon_key": "a", "service_role_key": "s"}
+    at.secrets["auth"] = {"disabled": True}
+    at.run()
+    goto(at, "so", "sched")
+    at.session_state["sch_view_next"] = "납기 입력"
+    at.run()
+    assert not at.exception, [str(e.value) for e in at.exception]
+    return at
+
+
+@pytest.mark.parametrize("kind", ["alloc", "lookup_fail"])
+def test_r2c_bulk_delete_guard_alloc_and_lookup_fail(monkeypatch, kind):
+    m = _sched_mock([(1, "2026-11-10", 1, 100, 0)])
+    if kind == "alloc":
+        m.tables["shipment_allocations"].append({"alloc_id": 2, "shipment_id": 73, "sched_id": 1, "soi_id": SOI,
+                                                 "qty": 0})
+        m.tables["shipments"].append({"shipment_id": 73, "ship_no": "SH-20261102-03", "ship_date": "2026-11-02",
+                                      "status": "CONFIRMED"})
+        at = _open(monkeypatch, m)
+    else:
+        import db as _dbmod
+        m.install(monkeypatch, _dbmod)
+        _orig = _dbmod.fetch
+
+        def _f(table, *a, **k):
+            if table == "shipment_items":
+                raise RuntimeError("timeout 시뮬레이션")
+            return _orig(table, *a, **k)
+        monkeypatch.setattr(_dbmod, "fetch", _f)
+        at = _open_keep_patch(monkeypatch, m)
+    b = at.button(key=f"sch_reset_{SOI}_ask")
+    want = "SH-20261102-03" if kind == "alloc" else "확인하지 못했습니다"
+    assert b.disabled and want in (b.proto.help or ""), b.proto.help
+    at.session_state[f"sch_reset_{SOI}"] = True       # 확인 단계가 열린 상태로 와도
+    at.run()
+    assert f"sch_reset_{SOI}_ok" not in {x.key for x in at.button}, "삭제 확정 버튼 없음"
+    assert not [w for w in m.writes if w[0].startswith("delete")], "DELETE 0"

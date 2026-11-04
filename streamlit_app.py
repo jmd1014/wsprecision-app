@@ -9738,10 +9738,17 @@ elif page == "수주 관리":
                             _plan9 = plan_sched_writes(_rows, _keep)
                             _done9 = []
 
-                            def _stop9(msg, round_chk=False):
-                                st.error(f"저장 중단 — {msg}. "
-                                         + ("이미 반영: " + " · ".join(_done9) + ". " if _done9 else
-                                            "아무것도 바뀌지 않았습니다. ")
+                            def _stop9(msg, round_chk=False, uncertain=False):
+                                # r2c: 통신 예외(반영 여부 불명)면 "아무것도 바뀌지 않았습니다" 라고 단정하지 않는다 —
+                                # 무변경 단정은 쓰기 전 차단·확실한 미반영(HTTP 오류 응답)에만
+                                if _done9:
+                                    _st9 = ("이미 반영: " + " · ".join(_done9) + ". "
+                                            + ("마지막 요청의 반영 여부는 새로고침 뒤 확인하세요. " if uncertain else ""))
+                                elif uncertain:
+                                    _st9 = "확인된 반영 내역 없음 — 이 요청의 반영 여부는 새로고침 뒤 확인하세요. "
+                                else:
+                                    _st9 = "아무것도 바뀌지 않았습니다. "
+                                st.error(f"저장 중단 — {msg}. " + _st9
                                          + "화면을 새로고침해 회차를 확인한 뒤 다시 저장하세요."
                                          + (" 마스터 관리 › 정합 점검의 ROUND_MISMATCH 도 확인하세요."
                                             if round_chk else "")
@@ -9817,7 +9824,11 @@ elif page == "수주 관리":
                                                      "sched_id=in.(" + ",".join(
                                                          str(x) for x in _plan9["delete"]) + ")")
                                 except Exception as _e9:
-                                    _stop9(f"회차 삭제 실패({_e9}){_UNSURE9}")
+                                    # db.delete 는 HTTP 오류면 "so_delivery_schedule delete NNN" 예외(확실한 미반영),
+                                    # 그 밖(타임아웃·연결 끊김)은 반영 여부 불명
+                                    _http9 = str(_e9).startswith("so_delivery_schedule delete ")
+                                    _stop9(f"회차 삭제 실패({_e9})" + ("" if _http9 else _UNSURE9),
+                                           uncertain=not _http9)
                                     _ok9 = False
                                 else:
                                     if _n9:
@@ -9834,7 +9845,8 @@ elif page == "수주 관리":
                                     if _c9 != 1:
                                         if _n_p1:
                                             _done9.append(f"임시 번호 {_n_p1}건")
-                                        _stop9(f"1단계(임시 번호) {_k9}번째 회차 — {_why9(_c9, _x9)}")
+                                        _stop9(f"1단계(임시 번호) {_k9}번째 회차 — {_why9(_c9, _x9)}",
+                                               uncertain=_c9 == -2)
                                         _ok9 = False
                                         break
                                     _n_p1 += 1
@@ -9845,7 +9857,7 @@ elif page == "수주 관리":
                                     _c9, _x9 = _guarded9(_sid9, _f9)
                                     if _c9 != 1:
                                         _stop9(f"2단계(번호·수량) {_k9}번째 회차 — {_why9(_c9, _x9)}",
-                                               round_chk=True)
+                                               round_chk=True, uncertain=_c9 == -2)
                                         _ok9 = False
                                         break
                                     _done9.append(f"회차 {_f9['seq']} 저장")
@@ -9854,8 +9866,10 @@ elif page == "수주 관리":
                                     _db.insert("so_delivery_schedule", _plan9["insert"])
                                     _done9.append(f"새 회차 {len(_plan9['insert'])}건")
                                 except Exception as _e9:
-                                    _stop9(f"새 회차 {len(_plan9['insert'])}건 추가 실패({_e9}) — 응답 오류면 "
-                                           "추가되지 않았고, 통신 오류면 반영 여부가 불확실합니다(새로고침해 확인)")
+                                    # db.insert 는 HTTP 오류면 "so_delivery_schedule insert NNN" 예외(확실한 미반영)
+                                    _http9 = str(_e9).startswith("so_delivery_schedule insert ")
+                                    _stop9(f"새 회차 {len(_plan9['insert'])}건 추가 실패({_e9})"
+                                           + ("" if _http9 else _UNSURE9), uncertain=not _http9)
                                     _ok9 = False
                             _due_note9 = ""
                             if _ok9 and _keep:
