@@ -69,3 +69,13 @@ def test_plan_round_move():
         [("2026-09-09", 300), ("2026-09-16", 500)]
     close2, create2 = plan_round_move(rounds, new_line_has_rounds=True)
     assert len(close2) == 2 and create2 == []
+
+
+def test_price_adj_old_line_excluded_and_new_line_is_next_base():
+    """후보 34(080): 단가 조정은 옛 라인에 PRICE_ADJ — 옛 라인은 다시 묻지 않고, 표시 없는 새 라인은
+    다음 수주와의 비교 기준(옛 후보)이 된다."""
+    lines = [_l(1, 10, "2026-10-01", 3285, 400, 391, kind="PRICE_ADJ"),
+             _l(9, 20, "2026-10-29", 3282, 100, 100)]
+    assert detect_groups(lines) == [], "PRICE_ADJ 옛 라인은 후보 아님"
+    g = detect_groups(lines + [_l(12, 30, "2026-11-20", 3300, 100, 100)])
+    assert len(g) == 1 and g[0]["new"]["soi_id"] == 12 and [o["soi_id"] for o in g[0]["olds"]] == [9]

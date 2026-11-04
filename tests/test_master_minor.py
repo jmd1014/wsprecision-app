@@ -343,3 +343,90 @@ def test_32_empty_target_copies_material_rows(mem_db):
     upd = [w for w in m.writes if w[0] == "update" and w[1] == "products"]
     assert upd and upd[0][3] == {"raw_material_name": "SCM420 Ø28*97", "bom_material_name": "SCM420 Ø28*97"}
     assert "소재행 1" in _ins(m, "master_change_log")[0]["reason"]
+
+
+# ─────────────── 후보 34 — 단가 변동 감지 '단가 조정'(PRICE_ADJ) ───────────────
+def _price_mock():
+    from tests.so_mock import SOMock
+
+    class _M(SOMock):
+        def _assert_dash(self, op, table):     # 단가 조정은 마스터 판매 단가·변경 이력까지 쓴다
+            if table not in ("products", "master_change_log"):
+                super()._assert_dash(op, table)
+
+        def insert(self, table, records):      # DashMock 은 id 를 붙인다 — 결정 이력은 repl_id 로 읽는다
+            n = super().insert(table, records)
+            if table == "so_line_replacements":
+                for r in self.tables[table]:
+                    r.setdefault("repl_id", r.get("id"))
+                    r.setdefault("reverted_at", None)
+            return n
+    m = _M()
+    m.tables.setdefault("master_change_log", [])
+    m.seed(so_id=101, so_number="PO-OLD", lines=[(1, 400, 9, 391, "PARTIAL")], rounds=[])
+    m.seed(so_id=102, so_number="PO-NEW", lines=[(9, 100, 0, 100, "PENDING")], rounds=[])
+    m.line(1)["unit_price"] = 3285
+    m.line(9)["unit_price"] = 3282
+    m.tables["products"][0]["sale_price"] = 3285
+    return m
+
+
+def _open_so_list(monkeypatch, m):
+    import db as _dbmod
+    from streamlit.testing.v1 import AppTest
+    m.install(monkeypatch, _dbmod)
+    at = AppTest.from_file(APP_FILE, default_timeout=90)
+    at.secrets["supabase"] = {"url": "https://mock.local", "anon_key": "a", "service_role_key": "s"}
+    at.secrets["auth"] = {"disabled": True}
+    at.run()
+    goto(at, "so", "list")
+    assert not at.exception, [str(e.value) for e in at.exception]
+    return at
+
+
+def _keep(at, kind):
+    [s for s in at.selectbox if s.key == "rp_9_t"][0].set_value(kind)
+    at.run()
+    btn = at.button(key="rp_9_keep")
+    btn.click()
+    at.run()
+    assert not at.exception, [str(e.value) for e in at.exception]
+    return btn
+
+
+def test_34_price_adj_keeps_old_and_updates_master_then_revert(monkeypatch):
+    m = _price_mock()
+    at = _open_so_list(monkeypatch, m)
+    assert "단가 조정" in [s for s in at.selectbox if s.key == "rp_9_t"][0].options
+    [s for s in at.selectbox if s.key == "rp_9_t"][0].set_value("단가 조정")
+    at.run()
+    assert at.button(key="rp_9_keep").label == "별건 (옛 수주 = 옛 단가)"
+    _keep(at, "단가 조정")
+    assert m.line(1)["price_kind"] == "PRICE_ADJ" and m.line(9)["price_kind"] is None, "옛 라인에 표시, 새 라인은 기준"
+    assert m.tables["products"][0]["sale_price"] == 3282, "새 수주 단가 → 마스터"
+    assert m.line(1)["pending_qty"] == 391 and m.line(1)["status"] == "PARTIAL", "옛 수주는 그대로 진행"
+    rp = m.tables["so_line_replacements"]
+    assert len(rp) == 1 and (rp[0]["action"], rp[0]["tagged_kind"], rp[0]["tagged_soi_id"],
+                             rp[0]["master_updated"], rp[0]["master_old_price"]) == ("KEEP", "PRICE_ADJ", 1, True, 3285)
+    lg = m.tables["master_change_log"]
+    assert len(lg) == 1 and lg[0]["field_name"] == "sale_price" and "단가 조정" in lg[0]["reason"]
+    assert any("단가 조정: 옛 수주 1건은 옛 단가 유지, 마스터 판매 단가 3,285 → 3,282" in str(s.value)
+               for s in at.success)
+    rid = rp[0].get("repl_id")
+    at.button(key=f"rp_rv_{rid}").click()
+    at.run()
+    assert not at.exception, [str(e.value) for e in at.exception]
+    assert m.line(1)["price_kind"] is None and m.tables["products"][0]["sale_price"] == 3285, "되돌리기 → 마스터 복원"
+    assert m.tables["so_line_replacements"][0]["reverted_at"]
+    assert len(m.tables["master_change_log"]) == 2 and "되돌리기" in m.tables["master_change_log"][1]["reason"]
+
+
+def test_34_project_keep_unchanged_no_master_update(monkeypatch):
+    m = _price_mock()
+    at = _open_so_list(monkeypatch, m)
+    assert at.button(key="rp_9_keep").label == "별건 (새 수주 = 프로젝트)"
+    _keep(at, "프로젝트")
+    assert m.line(9)["price_kind"] == "PROJECT" and m.line(1)["price_kind"] is None
+    assert m.tables["products"][0]["sale_price"] == 3285 and m.tables["master_change_log"] == []
+    rp = m.tables["so_line_replacements"][0]
+    assert (rp["master_updated"], rp["master_old_price"], rp["tagged_kind"]) == (False, None, "PROJECT")
