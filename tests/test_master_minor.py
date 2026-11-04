@@ -126,7 +126,7 @@ class _MemDB:
     def __init__(self, tables):
         self.t = {k: [dict(r) for r in v] for k, v in tables.items()}
         self.seq = {"bom": 9000, "product_routing": 500, "master_change_log": 1}
-        self.writes, self.fail = [], set()
+        self.writes, self.fail, self.rpc_calls = [], set(), []
 
     @staticmethod
     def _match(row, fq):
@@ -187,6 +187,17 @@ class _MemDB:
         self.writes.append(("update", table, fq, dict(fields)))
         return True
 
+    def rpc(self, name, params=None, timeout=None):
+        """copy_product_routing 목 — 실제 SQL 은 test_copy_routing_rpc_local 이 로컬 복원 DB 에서 실행한다.
+        rpc_exc 가 있으면 던지고(after 가 있으면 먼저 실행 — 응답 유실 흉내), 아니면 rpc_result."""
+        self.rpc_calls.append((name, dict(params or {})))
+        if getattr(self, "rpc_after", None):
+            self.rpc_after(self)
+        if getattr(self, "rpc_exc", None):
+            raise self.rpc_exc
+        return getattr(self, "rpc_result", {"proc": 2, "mat": 0, "routing": 6, "src_pn": "MM-SRC-1",
+                                            "tgt_pn": "MM-TGT-1"})
+
 
 def _prod(pid, pn, archived=None):
     return {"product_id": pid, "pn": pn, "item_name": f"품 {pn}", "customer": "시험고객",
@@ -236,8 +247,7 @@ def mem_db(monkeypatch):
         monkeypatch.setattr(db, "debug_check", lambda: {"status": "mock"})
         if hasattr(db, "count_rows"):
             monkeypatch.setattr(db, "count_rows", lambda *a, **k: 0)
-        if hasattr(db, "rpc"):
-            monkeypatch.setattr(db, "rpc", lambda *a, **k: None)
+        monkeypatch.setattr(db, "rpc", m.rpc)
         return m
     return make
 
@@ -270,7 +280,7 @@ def test_32_source_options_exclude_self_and_archived(mem_db):
     assert not any("MM-TGT-1" in o for o in opts), "자기 자신 제외"
 
 
-def test_32_copy_maps_bom_ids_and_logs(mem_db):
+def test_32_copy_calls_rpc_once_and_flashes(mem_db):
     m = mem_db(target_bom=[_bomrow(850, "PT", "MATERIAL", "SCM420 Ø30*99", mid="M192")])
     at = _open_copy(m)
     assert not [c for c in at.checkbox if c.key == "rc_mat_PT"], "(f) 소재행 있는 대상 → 체크박스 없음"
@@ -278,22 +288,10 @@ def test_32_copy_maps_bom_ids_and_logs(mem_db):
     _copy_btn(at).click()
     at.run()
     assert not at.exception, [str(e.value) for e in at.exception]
-    bom = _ins(m, "bom")
-    assert [(b["process_type"], b["raw_material_name"]) for b in bom] == [("HEAT", "침탄 열처리"), ("SURFACE", "도금")]
-    assert all(b["process_vendor_id"] is None and b["unit_price"] is None and b["material_id"] is None
-               and b["source"] == "MANUAL" and b["product_id"] == "PT" for b in bom), "업체·단가 복사 안 함"
-    assert bom[0]["lot_label"] == "KG" and bom[0]["verification_status"] == "확인완료"
-    new_ids = {r["raw_material_name"]: r["bom_id"] for r in m.t["bom"] if r["product_id"] == "PT"
-               and r["process_type"] != "MATERIAL"}
-    rt = _ins(m, "product_routing")
-    assert len(rt) == 6 and all(r["product_id"] == "PT" and r["confirmed"] is True and r["default_vendor"] is None
-                                for r in rt)
-    assert [r["bom_id"] for r in rt] == [None, None, new_ids["침탄 열처리"], new_ids["도금"], None, None], \
-        "원본 bom_id → 새 id, 외주 아닌 단계는 NULL"
-    lg = _ins(m, "master_change_log")
-    assert len(lg) == 1 and lg[0]["table_name"] == "product_routing" and lg[0]["record_id"] == "PT" \
-        and lg[0]["new_value"] == "6단계 복사 from MM-SRC-1"
-    assert not [w for w in m.writes if w[0] == "update"], "소재행 복사 안 했으면 products 소재 표기 그대로"
+    assert m.rpc_calls == [("copy_product_routing",
+                            {"p_src": "PS", "p_tgt": "PT", "p_with_mat": False, "p_who": m.rpc_calls[0][1]["p_who"]})]
+    assert m.writes == [], "쓰기는 전부 RPC 안(화면 직접 insert·delete 없음)"
+    assert any("라우팅 복사: MM-TGT-1 ← MM-SRC-1 — 공정행 2·순서 6단계" in str(s.value) for s in at.success)
 
 
 @pytest.mark.parametrize("case", ["target_routing", "target_proc", "src_unconfirmed"])
@@ -311,38 +309,52 @@ def test_32_blocked_cases_write_nothing(mem_db, case):
         assert not any("MM-TGT-1" in o for o in opts)
 
 
-def test_32_routing_failure_rolls_back_bom(mem_db):
+def test_32_rpc_rejected_and_unavailable_messages(mem_db):
+    import db
     m = mem_db()
-    m.fail.add("product_routing")
+    m.rpc_exc = db.RpcRejected("P0001", "target_has_routing", 400)
     at = _open_copy(m)
-    [c for c in at.checkbox if c.key == "rc_mat_PT"][0].uncheck()
-    at.run()
     _copy_btn(at).click()
     at.run()
     assert not at.exception, [str(e.value) for e in at.exception]
-    assert len(_ins(m, "bom")) == 2
-    assert [r for r in m.t["bom"] if r["product_id"] == "PT"] == [], "만든 BOM 행 삭제"
-    assert any(w[0] == "delete" and w[1] == "bom" for w in m.writes)
-    assert any("복사 실패" in str(e.value) for e in at.error)
-    assert _ins(m, "master_change_log") == []
+    assert any("대상에 이미 라우팅이 있습니다" in str(e.value) for e in at.error)
+    m.rpc_exc = db.RpcUnavailable("copy_product_routing: PGRST202")
+    at.session_state["_guard_rout_copy"] = 0
+    _copy_btn(at).click()
+    at.run()
+    assert any("081 미적용" in str(e.value) for e in at.error)
+    assert m.writes == [] and len(m.rpc_calls) == 2
 
 
-def test_32_empty_target_copies_material_rows(mem_db):
+@pytest.mark.parametrize("applied", [True, False])
+def test_32_transport_error_decided_by_target_routing(mem_db, applied):
+    import db
     m = mem_db()
+    m.rpc_exc = db.RpcTransportError("copy_product_routing: timeout")
+    if applied:       # 서버는 반영했고 응답만 잃음
+        m.rpc_after = lambda mm: mm.t["product_routing"].append(_rt("PT", 10, "PROD", "생산"))
+    at = _open_copy(m)
+    _copy_btn(at).click()
+    at.run()
+    assert not at.exception, [str(e.value) for e in at.exception]
+    if applied:
+        assert any("응답은 없었지만 복사된 것을 확인" in str(s.value) for s in at.success)
+    else:
+        assert any("반영되지 않았습니다" in str(e.value) for e in at.error)
+    assert len(m.rpc_calls) == 1, "자동 재시도 없음"
+
+
+def test_32_empty_target_offers_material_copy(mem_db):
+    m = mem_db()
+    m.rpc_result = {"proc": 2, "mat": 1, "routing": 6, "src_pn": "MM-SRC-1", "tgt_pn": "MM-TGT-1"}
     at = _open_copy(m)
     cb = [c for c in at.checkbox if c.key == "rc_mat_PT"]
     assert cb and cb[0].value is True, "(e) 빈 대상 → 소재행도 복사 체크박스(기본 켬)"
     _copy_btn(at).click()
     at.run()
     assert not at.exception, [str(e.value) for e in at.exception]
-    bom = _ins(m, "bom")
-    assert [b["process_type"] for b in bom] == ["MATERIAL", "HEAT", "SURFACE"]
-    assert bom[0]["material_id"] == "M191" and bom[0]["verification_status"] == "AUTO-추정"
-    new_proc = {r["bom_id"] for r in m.t["bom"] if r["product_id"] == "PT" and r["process_type"] != "MATERIAL"}
-    assert {r["bom_id"] for r in _ins(m, "product_routing") if r["bom_id"]} == new_proc, "매핑은 공정행만"
-    upd = [w for w in m.writes if w[0] == "update" and w[1] == "products"]
-    assert upd and upd[0][3] == {"raw_material_name": "SCM420 Ø28*97", "bom_material_name": "SCM420 Ø28*97"}
-    assert "소재행 1" in _ins(m, "master_change_log")[0]["reason"]
+    assert m.rpc_calls[0][1]["p_with_mat"] is True
+    assert any("소재행 1" in str(s.value) for s in at.success)
 
 
 # ─────────────── 후보 34 — 단가 변동 감지 '단가 조정'(PRICE_ADJ) ───────────────

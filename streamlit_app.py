@@ -5965,8 +5965,8 @@ elif page == "마스터 관리":
                     st.error(f"삭제 실패: {e}")
 
             # ── 후보 32(2026-11-04): 다른 제품의 공정·라우팅 복사 — 비어 있는 대상에만(덮어쓰기 없음).
-            # 업체·단가는 복사하지 않는다(BOM 상세에서 매칭). db.insert 는 새 id 를 돌려주지 않아(db.py 무변경)
-            # 넣은 뒤 대상 BOM 을 다시 읽어 넣기 전 id 를 뺀 새 행을 순서대로 짝짓는다.
+            # 업체·단가는 복사하지 않는다(BOM 상세에서 매칭). 쓰기는 전부 RPC 081 copy_product_routing 한 트랜잭션
+            # (화면의 차단은 안내용, 서버가 잠근 뒤 다시 검사한다).
             with st.expander("다른 제품의 공정·라우팅 복사"):
                 _rc_tgt = _bp["product_id"]
                 _rc_opts = {}
@@ -6046,78 +6046,46 @@ elif page == "마스터 관리":
                                + (" 설계변경이면 복사 뒤 소재 치수를 확인하세요." if _rc_with_mat else ""))
                     if st.button("복사", type="primary", disabled=bool(_rc_block),
                                  key=f"rc_go_{_rc_tgt}") and click_guard("rout_copy"):
-                        _rc_pre = {b["bom_id"] for b in brows}
-                        _rc_ins = ([{
-                            "product_id": _rc_tgt, "material_id": b.get("material_id"),
-                            "raw_material_name": b.get("raw_material_name"),
-                            "qty_per_pc": b.get("qty_per_pc"), "shared_factor": b.get("shared_factor"),
-                            "source": "MANUAL", "verification_status": "AUTO-추정",
-                            "process_type": "MATERIAL", "unit_price": None,
-                            "lot_label": b.get("lot_label"), "process_vendor_id": None,
-                        } for b in _rc_mats] if _rc_with_mat else []) + [{
-                            "product_id": _rc_tgt, "material_id": None,
-                            "raw_material_name": b.get("raw_material_name"),
-                            "qty_per_pc": b.get("qty_per_pc"), "shared_factor": b.get("shared_factor"),
-                            "source": "MANUAL", "verification_status": b.get("verification_status"),
-                            "process_type": b.get("process_type"), "unit_price": None,
-                            "lot_label": b.get("lot_label"), "process_vendor_id": None,
-                        } for b in _rc_proc]
-                        _rc_new = []
+                        # Codex 1차 H1·H2(결정 A): 한 트랜잭션 RPC 081 — 대상 잠금·차단 재검사·RETURNING 매핑·
+                        # 소재 표기 동기화·변경 이력까지 서버에서. 화면은 호출 1회(db.py 무변경)
+                        _RC_WHY = {
+                            "target_has_routing": "대상에 이미 라우팅이 있습니다(다른 화면에서 방금 저장됐을 수 있음)",
+                            "target_has_process": "대상에 공정행이 있습니다 — 공정행 삭제 뒤 복사하세요",
+                            "target_not_empty": "대상 BOM 이 비어 있지 않아 소재행은 복사할 수 없습니다",
+                            "source_no_routing": "원본 라우팅이 비어 있습니다",
+                            "source_unconfirmed": "원본 라우팅에 미확정 단계가 있습니다 — 원본 순서를 먼저 확정하세요",
+                            "archived": "보관(휴면) 제품입니다",
+                            "not_found": "제품을 찾을 수 없습니다",
+                        }
+                        _rc_out = None
                         try:
-                            _rc_map = {}
-                            if _rc_ins:
-                                _db.insert("bom", _rc_ins)
-                                _rc_after = fetch("bom", "bom_id,process_type,raw_material_name",
-                                                  f"product_id=eq.{_fq(_rc_tgt)}&order=bom_id.asc",
-                                                  limit=500)
-                                _rc_newrows = [b for b in _rc_after if b["bom_id"] not in _rc_pre]
-                                _rc_new = [b["bom_id"] for b in _rc_newrows]
-                                _rc_newproc = [b for b in _rc_newrows
-                                               if (b.get("process_type") or "MATERIAL") != "MATERIAL"]
-                                if (len(_rc_newrows) != len(_rc_ins) or len(_rc_newproc) != len(_rc_proc)
-                                        or any((a.get("process_type"), a.get("raw_material_name"))
-                                               != (n.get("process_type"), n.get("raw_material_name"))
-                                               for a, n in zip(_rc_proc, _rc_newproc))):
-                                    raise RuntimeError(
-                                        f"새 BOM 행 확인 불일치(넣은 {len(_rc_ins)}·읽은 {len(_rc_newrows)})")
-                                _rc_map = {a["bom_id"]: n["bom_id"] for a, n in zip(_rc_proc, _rc_newproc)}
-                            _db.insert("product_routing", [{
-                                "product_id": _rc_tgt, "seq": r.get("seq"),
-                                "step_code": r.get("step_code"), "step_name": r.get("step_name"),
-                                "step_kind": r.get("step_kind"), "stage": r.get("stage"),
-                                "bom_id": _rc_map.get(r.get("bom_id")), "default_vendor": None,
-                                "confirmed": True,
-                            } for r in _rc_rt])
-                        except Exception as e:
-                            if _rc_new:      # best effort — 만든 BOM 행만(넣기 전 id 제외)
-                                try:
-                                    _db.delete("bom", "bom_id=in.({})".format(
-                                        ",".join(str(i) for i in _rc_new)))
-                                except Exception:
-                                    pass
-                            st.error(f"복사 실패 — 만든 BOM 행 {len(_rc_new)}개는 지웠습니다: {e}")
-                        else:
-                            _rc_nm = len(_rc_mats) if _rc_with_mat else 0
-                            if _rc_nm:
-                                try:   # 제품 소재 표기 동기화(진실=BOM, 2026-10-22 교훈)
-                                    _db.update("products", f"product_id=eq.{_fq(_rc_tgt)}",
-                                               {"raw_material_name": _rc_mats[0].get("raw_material_name"),
-                                                "bom_material_name": _rc_mats[0].get("raw_material_name")})
-                                except Exception:
-                                    pass
+                            _rc_out = _db.rpc("copy_product_routing", {
+                                "p_src": _rc_src, "p_tgt": _rc_tgt, "p_with_mat": bool(_rc_with_mat),
+                                "p_who": current_user_name()})
+                        except getattr(_db, "RpcRejected", ()) as e:
+                            st.error("복사하지 않았습니다 — "
+                                     + _RC_WHY.get(getattr(e, "message", ""), str(e)))
+                        except getattr(_db, "RpcUnavailable", ()):
+                            st.error("복사 기능을 아직 쓸 수 없습니다(서버 함수 081 미적용) — 관리자에게 알려 주세요.")
+                        except Exception as e:      # RpcTransportError 등 — 반영 여부 불명 → 대상 라우팅으로 판정
                             try:
-                                _db.insert("master_change_log", [{
-                                    "table_name": "product_routing", "record_id": _rc_tgt,
-                                    "field_name": "routing", "old_value": None,
-                                    "new_value": f"{len(_rc_rt)}단계 복사 from {_rc_sp['pn']}",
-                                    "changed_by": current_user_name(),
-                                    "reason": f"라우팅 복사 — 공정행 {len(_rc_proc)}"
-                                              + (f"·소재행 {_rc_nm}" if _rc_nm else ""),
-                                }])
+                                _rc_done = bool(fetch("product_routing", "routing_id",
+                                                      f"product_id=eq.{_fq(_rc_tgt)}", limit=1))
                             except Exception:
-                                st.warning("변경 이력 기록 실패 — 복사는 저장되었습니다.")
+                                _rc_done = None
+                            if _rc_done:
+                                nav_flash(f"라우팅 복사: {_bp['pn']} ← {_rc_sp['pn']} — 응답은 없었지만 "
+                                          "복사된 것을 확인했습니다. 공정행·순서를 확인하세요.")
+                                st.rerun()
+                            elif _rc_done is False:
+                                st.error(f"복사가 반영되지 않았습니다 — 다시 시도하세요. ({e})")
+                            else:
+                                st.error(f"응답이 없고 확인 조회도 실패했습니다 — 화면을 새로 고쳐 대상 라우팅을 "
+                                         f"확인한 뒤 다시 시도하세요. ({e})")
+                        if isinstance(_rc_out, dict):
+                            _rc_nm = int(_rc_out.get("mat") or 0)
                             nav_flash(f"라우팅 복사: {_bp['pn']} ← {_rc_sp['pn']} — 공정행 "
-                                      f"{len(_rc_proc)}·순서 {len(_rc_rt)}단계"
+                                      f"{int(_rc_out.get('proc') or 0)}·순서 {int(_rc_out.get('routing') or 0)}단계"
                                       + (f"·소재행 {_rc_nm}" if _rc_nm else ""))
                             st.rerun()
 
