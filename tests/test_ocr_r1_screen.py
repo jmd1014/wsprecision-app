@@ -53,7 +53,7 @@ def _open_pur(monkeypatch, ledger, total_ok=True, pages=None):
         return _real_up(label, *a, **kw)
     monkeypatch.setattr(streamlit, "file_uploader", _up)
     m = _mock()
-    _allow(m, "purchase_ledger", "purchase_item_map", "materials")
+    _allow(m, "purchase_ledger", "purchase_item_map", "materials", "purchase_scan_log")   # 기록 표(OCR r2)
     m.tables["purchase_ledger"] = list(ledger)
     m.tables.setdefault("vendors", []).append({"vendor_id": 9001, "name": VENDOR, "business_no": "606-81-89947",
                                                "in_use": True, "archived_at": None})
@@ -170,6 +170,7 @@ def test_r1_3_scan_save_success_inserts_once_and_removes_card(monkeypatch):
     _click_save(at)
     rows = _ledger_inserts(m)
     assert calls.count("purchase_ledger") == 1, "insert 호출 1회(4행)"
+    assert calls.count("purchase_scan_log") == 1, "정정 기록 1회(OCR r2) — 쓰기 가드가 막아 삼켜지지 않음"
     assert len(rows) == 4 and {r["source"] for r in rows} == {"SCAN"} and rows[0]["trade_date"] == "2026-10-23"
     assert [round(r["amount"]) for r in rows] == [1315700, 191100, 112100, 1885000]
     assert "sc_pages" not in at.session_state and "sc_save_req" not in at.session_state, "남은 장 0 → 판독 결과 비움"

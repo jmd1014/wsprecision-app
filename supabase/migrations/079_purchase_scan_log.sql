@@ -9,6 +9,7 @@
 -- 성격:
 --   기록 전용. 업무 데이터 아님 — 장부(purchase_ledger)와 연결 키 없음, 손실 허용.
 --   앱은 이 표 insert 실패를 삼킨다(장부 저장은 그대로) → 표가 없어도 매입 등록은 동작.
+--   보존: 자동 purge 없음 — 연 1회 또는 rules_version 2판 지난 행 수동 정리. 야간 백업에 자동 포함.
 -- 변경: 새 표 1개·인덱스 2개. 기존 표·RPC·정책 무변경. 멱등(IF NOT EXISTS).
 -- 보안:
 --   RLS ENABLE, 정책 없음 → service_role 만 읽고 쓴다 (anon/authenticated 차단, 067 app_errors 와 같은 방식).

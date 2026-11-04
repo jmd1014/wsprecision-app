@@ -351,3 +351,4 @@ def test_r2_c21_total_keywords_and_exact_qty1():
     it = one("6 플러그 EA 100 100")
     assert it and (it[0]["a"], it[0]["how"]) == (1, "qty1")
     assert one("6 플러그 EA 100 101") == [] and one("6 플러그 EA 7,000 7,001") == []
+    assert one("6 플러그 EA 7,000.5 7,000") == [], "소수점 차이도 같은 값 아님(⑤-8)"

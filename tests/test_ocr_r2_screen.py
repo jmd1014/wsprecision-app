@@ -16,10 +16,16 @@ from tests.test_ocr_r1_screen import VENDOR, _click_save, _ledger_inserts, _open
 
 
 def _open(monkeypatch, ledger=(), pages=None):
-    from tests.test_hotfix2_followup_bcd_r2 import _allow
+    """log_error 호출은 m.log_errors 에 모은다 — 화면이 삼킨 기록 실패가 있으면 단언으로 잡는다(r2-4)."""
+    import db
     m, at = _open_pur(monkeypatch, list(ledger), pages=pages)
-    _allow(m, "purchase_ledger", "purchase_item_map", "materials", "purchase_scan_log")
+    m.log_errors = []
+    monkeypatch.setattr(db, "log_error", lambda kind, detail, **kw: m.log_errors.append((kind, detail, kw)) or True)
     return m, at
+
+
+def _swallowed(m):
+    return [e for e in m.log_errors if "스캔 정정 기록 실패" in str(e[1])]
 
 
 def _logs(m):
@@ -61,6 +67,7 @@ def test_t_l1_save_writes_one_log_row_after_ledger(monkeypatch):
     assert any("정정 기록(셀 0·행 +0/−0)" in f for f in _flash(at)), _flash(at)
     at.run()
     assert len(_logs(m)) == 1 and len(_ledger_inserts(m)) == 4, "rerun 뒤 재저장·재기록 없음"
+    assert _swallowed(m) == []
 
 
 @app_only
@@ -75,6 +82,7 @@ def test_t_l2_two_cells_changed_one_row_removed(monkeypatch):
     assert {(c["idx"], c["field"]) for c in lg["diff"]["changed"]} == {(0, "unit_price"), (2, "item")}
     assert len(_ledger_inserts(m)) == 3
     assert any("정정 기록(셀 2·행 +0/−1)" in f for f in _flash(at)), _flash(at)
+    assert _swallowed(m) == []
 
 
 @app_only
@@ -139,6 +147,67 @@ def test_t_l5_vendor_and_date_corrected(monkeypatch):
     assert (lg["n_head_changed"], lg["n_cells_changed"]) == (2, 0)
     assert (lg["vendor_saved"], lg["date_saved"]) == ("성보정밀", "2026-10-24")
     assert {r["vendor"] for r in _ledger_inserts(m)} == {"성보정밀"}
+    assert _swallowed(m) == []
+
+
+# ─────────────── r2-4(data·qa 리뷰) ───────────────
+@app_only
+def test_r24_missing_page_skips_log_with_one_error(monkeypatch):
+    """③ 저장 요청의 장을 못 찾으면(판독 결과가 바뀜) 장부는 저장하되 기록은 건너뛰고 log_error 1회."""
+    m, at = _open(monkeypatch)
+    at.session_state["sc_save_req"] = {
+        "nonce": 1, "pi": 99, "date_iso": "2026-10-23", "stmt_no": "", "dup_ok": False, "vendor": VENDOR,
+        "ocr_rows": [], "rows": [{"trade_date": "2026-10-23", "vendor": VENDOR, "item": "X 볼트", "unit": "EA",
+                                  "qty": 1.0, "weight": None, "unit_price": 1000.0, "amount": 1000.0, "vat": 100.0,
+                                  "total": 1100.0, "remark": None, "idx": 0}]}
+    at.run()
+    assert not at.exception, [str(e.value) for e in at.exception]
+    assert len(_ledger_inserts(m)) == 1 and _logs(m) == []
+    sw = _swallowed(m)
+    assert len(sw) == 1 and "판독 장 99 없음" in sw[0][1]
+
+
+@app_only
+def test_r24_log_function_exception_is_swallowed(monkeypatch):
+    """⑤-1 기록 함수 자체 예외 → 장부 저장·플래시 그대로, log_error 1회."""
+    from utils import scan_log as L
+
+    def _boom(*a, **kw):
+        raise ValueError("scan_log_row 실패 (시뮬레이션)")
+    monkeypatch.setattr(L, "scan_log_row", _boom)
+    m, at = _open(monkeypatch)
+    _click_save(at)
+    assert len(_ledger_inserts(m)) == 4 and _logs(m) == [] and len(_swallowed(m)) == 1
+    assert any("장부 추가 4행" in f for f in _flash(at))
+
+
+@app_only
+def test_r24_blank_item_is_removed_and_auto_vat_is_not_a_correction(monkeypatch):
+    """⑤-2 품명을 비운 행 = 저장 안 됨 = removed, ⑤-3 세액을 비워 자동 계산(공급가액×0.1)된 값은 정정 아님."""
+    m, at = _open(monkeypatch)
+    _edit(at, edited_rows={"1": {"저장 품명": ""}, "0": {"세액": None}})
+    _click_save(at)
+    lg = _logs(m)[0]
+    assert lg["diff"]["removed"] == [1] and lg["n_rows_saved"] == 3
+    assert lg["n_cells_changed"] == 0, lg["diff"]["changed"]
+    assert lg["items_saved"][0]["vat"] == 131570 and len(_ledger_inserts(m)) == 3
+    assert _swallowed(m) == []
+
+
+@app_only
+def test_r24_second_page_save_logs_that_page(monkeypatch):
+    """⑤-5 두 장 중 둘째 장 저장 → 기록은 둘째 장 머리, 첫 장 카드는 그대로."""
+    from tests.test_ocr_r1_screen import _pages
+    p0, p1 = _pages()[0], _pages()[0]
+    p1.update(page=4, psm=11, rot=90)
+    m, at = _open(monkeypatch, pages=[p0, p1])
+    next(b for b in at.button if b.key == "sc_save_1_1").click()
+    at.run()
+    assert not at.exception, [str(e.value) for e in at.exception]
+    lg = _logs(m)[0]
+    assert (lg["page"], lg["psm"], lg["rot"]) == (4, 11, 90) and len(_ledger_inserts(m)) == 4
+    assert [p["_sid"] for p in at.session_state["sc_pages"]] == [0]
+    assert any(b.key == "sc_save_1_0" for b in at.button) and _swallowed(m) == []
 
 
 # ─────────────── r2-3(후보 21 a·d) ───────────────
@@ -147,11 +216,22 @@ def test_c21_retry_after_failure_saves_once_with_dup_ok(monkeypatch):
     """저장 실패(중복) 뒤 그대로 재클릭 → 또 실패, 의도한 중복 체크 뒤 재클릭 → 1회만 저장·기록 1행."""
     led = [{"ledger_id": 1, "trade_date": "2026-10-23", "vendor": VENDOR, "item": "STS304환봉 110￠*24ℓ",
             "amount": 1315700}]
+    import time
+    from tests.test_ocr_r1_screen import _md
+    texts = lambda: _md(at) + "\n" + "\n".join(str(w.value) for w in at.warning)
     m, at = _open(monkeypatch, led)
     _click_save(at)
+    assert "이미 장부에 같은 행이 있습니다" in texts()
+    # r2-4(qa M1): 시간에 기대지 않게 가드를 직접 — 방금 누른 상태면 막히고(장부 불변), 풀면 다시 저장 시도
+    at.session_state["_guard_sc_save_0"] = time.time()
     _click_save(at)
+    assert "방금 같은 처리가 실행됐습니다" in texts() and _ledger_inserts(m) == []
+    at.session_state["_guard_sc_save_0"] = 0
+    _click_save(at)
+    assert "이미 장부에 같은 행이 있습니다" in texts(), "가드를 풀면 다시 저장 시도 → 중복으로 또 실패"
     assert _ledger_inserts(m) == [] and _logs(m) == []
     at.checkbox(key="sc_dup_1_0").check()
+    at.session_state["_guard_sc_save_0"] = 0
     at.run()
     _click_save(at)
     assert len(_ledger_inserts(m)) == 4 and len(_logs(m)) == 1

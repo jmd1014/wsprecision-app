@@ -125,3 +125,27 @@ def test_log_row_is_json_safe():
     assert back["items_saved"][0]["qty"] is None and back["items_ocr"][0]["qty"] is None
     assert back["items_saved"][0]["amount"] == 191100 and isinstance(back["ocr_sum"], float)
     assert not any(isinstance(v, float) and math.isnan(v) for v in back.values())
+
+
+# ─────────────── r2-4(qa REQUIRED TESTS 4·7) ───────────────
+def test_amount_and_vat_cleared_are_two_corrections():
+    """⑤-4 공급가액·세액을 둘 다 비우면 정정 2건(화면은 금액 없는 행을 저장하지 않지만 diff 규칙은 셀 단위)."""
+    ocr = [_ocr(0)]
+    d = L.scan_diff(ocr, [_saved(ocr[0], amount=None, vat=None)])
+    assert d["n_cells_changed"] == 2 and {c["field"] for c in d["changed"]} == {"amount", "vat"}
+
+
+def test_pure_boundaries():
+    """⑤-7 금액 차이 1원은 정정·1원 미만은 같음, 빈 입력, 장 정보 없음, 숫자 문자열."""
+    ocr = [_ocr(0)]
+    assert L.scan_diff(ocr, [_saved(ocr[0], amount=191101.0)])["n_cells_changed"] == 1
+    assert L.scan_diff(ocr, [_saved(ocr[0], amount=191100.999)])["n_cells_changed"] == 0
+    assert L.scan_diff(ocr, [_saved(ocr[0], unit_price="9,100")])["n_cells_changed"] == 0
+    assert L.scan_diff(None, None) == {"changed": [], "added": [], "removed": [], "n_cells_changed": 0,
+                                       "n_rows_added": 0, "n_rows_removed": 0}
+    assert L.scan_diff(ocr, [])["removed"] == [0] and L.scan_diff([], [_saved(ocr[0])])["added"] == [0]
+    row = L.scan_log_row(None, None, [], [], None, None)
+    assert row["n_head_changed"] == 0 and row["total_ok"] is False and row["printed_total"] is None
+    assert row["saved_sum"] == 0 and row["lines"] == [] and row["rules_version"] == "r2"
+    row = L.scan_log_row(_page(printed_totals=[None, "1,000", float("nan")]), HEAD, ocr, [_saved(ocr[0])], "u", "f")
+    assert row["printed_total"] == 1000.0, "합계 후보의 None·NaN·문자열"

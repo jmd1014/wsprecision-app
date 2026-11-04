@@ -17923,6 +17923,8 @@ elif page == "구매 관리":
                     st.session_state.pop("sc_pages", None)
                 # OCR r2: 저장 성공 뒤에만 장 1행 정정 기록(079). 실패해도 장부 저장·플래시는 그대로
                 try:
+                    if _pg1 is None:        # 판독 장을 못 찾으면 빈 머리 행이 집계를 흐리므로 기록하지 않는다
+                        raise LookupError(f"판독 장 {_sc_req['pi']} 없음 — 기록 생략")
                     from utils import scan_log as _slog
                     _lr = _slog.scan_log_row(
                         _pg1, {"vendor": _sc_req.get("vendor"), "date": _sc_req["date_iso"],
