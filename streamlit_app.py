@@ -1562,6 +1562,44 @@ def toss_grid(rows, *, key, badge_cols=(), num_cols=(), strong_cols=(),
         return min(_r[0], len(rows) - 1)
 
 
+def _sched_refs_block(sched_ids):
+    """납품 회차 id 들을 전표가 가리키면 사유 문구(없으면 None) — 납기 입력 안정화 r2 ④·⑧·⑭(2026-11-05).
+    shipment_allocations(확정 전표 충당, FK ON DELETE CASCADE)·shipment_items(작성중 포함, FK 없음).
+    조회 실패면 차단 문구(fail-closed)."""
+    ids = [str(i) for i in sched_ids if i is not None]
+    if not ids:
+        return None
+    import db as _dbr
+    try:
+        _al = _dbr.fetch("shipment_allocations", "sched_id,shipment_id",
+                         "sched_id=in.(" + ",".join(ids) + ")", limit=200, cache=False)
+        _si = _dbr.fetch("shipment_items", "sched_id,shipment_id",
+                         "sched_id=in.(" + ",".join(ids) + ")", limit=200, cache=False)
+        _sh_ids = sorted({r.get("shipment_id") for r in list(_al) + list(_si) if r.get("shipment_id") is not None})
+        _sh = ({r["shipment_id"]: r for r in _dbr.fetch(
+            "shipments", "shipment_id,ship_no,status",
+            "shipment_id=in.(" + ",".join(str(x) for x in _sh_ids) + ")", limit=200, cache=False)}
+            if _sh_ids else {})
+    except Exception as e:
+        return f"연결된 전표를 확인하지 못했습니다({e}) — 새로고침 뒤 다시 시도하세요."
+    if not _al and not _si:
+        return None
+    _conf = sorted({(_sh.get(r.get("shipment_id")) or {}).get("ship_no") or str(r.get("shipment_id"))
+                    for r in _al})
+    _draft = sorted({(_sh.get(r.get("shipment_id")) or {}).get("ship_no") or str(r.get("shipment_id"))
+                     for r in _si if (_sh.get(r.get("shipment_id")) or {}).get("status") == "DRAFT"})
+    _other = sorted({(_sh.get(r.get("shipment_id")) or {}).get("ship_no") or str(r.get("shipment_id"))
+                     for r in _si} - set(_draft) - set(_conf))
+    parts = []
+    if _conf:
+        parts.append(f"확정 전표 {', '.join(_conf)} 에 연결된 회차라 삭제할 수 없습니다")
+    if _draft:
+        parts.append(f"작성중 전표 {', '.join(_draft)} 가 이 회차를 가리킵니다 — 전표를 먼저 정리하세요")
+    if _other:
+        parts.append(f"전표 {', '.join(_other)} 가 이 회차를 가리킵니다")
+    return " · ".join(parts) + "."
+
+
 def _mem_index(rows, id_key, mem_key):
     """후보 31: session_state[mem_key] 에 기억한 id 의 rows 안 위치(없으면 None) — toss_grid(selected=) 용."""
     v = st.session_state.get(mem_key)
@@ -8777,7 +8815,7 @@ elif page == "수주 관리":
                     _ldf = pd.DataFrame([{
                         "품번": c["_lpn"], "거래처": c["거래처"],
                         "수주번호": c["수주번호"],
-                        "회차": "{} {}".format(c["구분"], c["회차"]),
+                        "회차": "{} {}".format(c["구분"], c["회차"] if c["회차"] < 1000 else "저장 중단"),
                         "납기": c["납기"].isoformat(),
                         "경과": "D+{}".format(
                             (_today_s - c["납기"]).days),
@@ -8929,7 +8967,7 @@ elif page == "수주 관리":
                                     "잔량 <b>{rem:,.0f}</b>{w}").format(
                                     pn=c["_lpn"], cu=c["거래처"],
                                     so=c["수주번호"], kind=c["구분"],
-                                    seq=c["회차"], due=c["납기"],
+                                    seq=(c["회차"] if c["회차"] < 1000 else "(저장 중단)"), due=c["납기"],
                                     dd=("D+{}".format(_ld) if _ld > 0
                                         else "오늘" if _ld == 0
                                         else "D-{}".format(-_ld)),
@@ -9598,8 +9636,19 @@ elif page == "수주 관리":
                                           key=f"sch_save_{_li['soi_id']}")
                     # 전체 삭제 — 2단계 확인 (오조작 방지)
                     _rk = f"sch_reset_{_li['soi_id']}"
+                    # r2 ⑭: 납품된 회차·전표가 가리키는 회차가 있으면 전체 삭제 불가(저장 경로의 차단과 같은 규칙 —
+                    # 회차 삭제는 확정 전표 충당 기록을 CASCADE 로 지우고, 작성중 전표 라인을 허공에 둔다)
+                    _rs_block = None
                     if _rows:
-                        if st.session_state.get(_rk):
+                        _rs_dl = [r for r in _rows if float(r.get("delivered_qty") or 0) > 0]
+                        _rs_block = ("납품된 회차가 있어 전체 삭제할 수 없습니다" if _rs_dl
+                                     else _sched_refs_block([r.get("sched_id") for r in _rows]))
+                    if _rows:
+                        if _rs_block:
+                            sv2.button(f"전체 삭제 ({len(_rows)}회차)", use_container_width=True,
+                                       key=f"{_rk}_ask", disabled=True, help=_rs_block)
+                            st.session_state[_rk] = False
+                        elif st.session_state.get(_rk):
                             sv2.warning("이 라인의 회차를 전부 지웁니다.")
                             rc1, rc2 = sv2.columns(2)
                             # 파괴 버튼 = 위험색(r2 R5) — primary(파랑) 제거, CSS 가 key 로 빨간 글자
@@ -9689,27 +9738,79 @@ elif page == "수주 관리":
                             _plan9 = plan_sched_writes(_rows, _keep)
                             _done9 = []
 
-                            def _stop9(msg):
+                            def _stop9(msg, round_chk=False):
                                 st.error(f"저장 중단 — {msg}. "
                                          + ("이미 반영: " + " · ".join(_done9) + ". " if _done9 else
                                             "아무것도 바뀌지 않았습니다. ")
-                                         + "화면을 새로고침해 회차를 확인한 뒤 다시 저장하세요.")
+                                         + "화면을 새로고침해 회차를 확인한 뒤 다시 저장하세요."
+                                         + (" 마스터 관리 › 정합 점검의 ROUND_MISMATCH 도 확인하세요."
+                                            if round_chk else "")
+                                         + " 원인은 관리자 › 오류 기록(app_errors)에 남습니다.")
                             _ok9 = True
-                            # 후보 26: 납품된 회차는 삭제하지 않는다(쓰기 전 차단). 날짜 변경도 옛 날짜 회차의
-                            # 삭제 + 새 날짜 삽입이라 같이 막힌다 — 안내대로 새 날짜 행을 추가하고 옛 행 수량을
-                            # 기납품 이상으로 남긴다
-                            _gone_dl9 = [g for g in _plan9["gone"] if float(g.get("delivered_qty") or 0) > 0]
-                            if _gone_dl9:
-                                st.error(
-                                    "납품된 회차({})는 삭제할 수 없습니다 — 수량을 기납품 이상으로 줄이세요. "
-                                    "날짜를 바꾸려면 옛 행을 지우지 말고 새 날짜 행을 추가한 뒤 옛 행 수량을 "
-                                    "기납품 수량으로 줄이세요. 아무것도 저장하지 않았습니다.".format(
-                                        ", ".join(f"{str(g.get('due_date'))[:10]} 기납품 "
-                                                  f"{float(g.get('delivered_qty') or 0):,.0f}개"
-                                                  for g in _gone_dl9)))
+                            # ── 쓰기 전 차단(아무것도 쓰지 않는다) ──
+                            if not _keep:
+                                # r2 ⑪: 저장 버튼으로 회차를 전부 지우지 않는다 — 전체 삭제 버튼(확인 단계)을 쓴다
+                                if _rows:
+                                    st.error("표가 비어 있습니다 — 회차를 전부 지우려면 '전체 삭제' 버튼을 쓰세요. "
+                                             "아무것도 저장하지 않았습니다.")
+                                else:
+                                    st.info("저장할 회차가 없습니다.")
                                 _ok9 = False
+                            # r2 ⑫: 납품된 회차의 수량을 기납품 아래로 줄이지 않는다(납품완료가 다른 회차로 옮겨 가
+                            # 충당 기록과 어긋나는 것을 막는다)
+                            _under9 = [(o, r) for o, r in _plan9["pairs"]
+                                       if float(r.get("qty") or 0) + 1e-9 < float(o.get("delivered_qty") or 0)]
+                            if _ok9 and _under9:
+                                st.error("납품된 회차 수량은 기납품 아래로 줄일 수 없습니다 — {}. 아무것도 저장하지 "
+                                         "않았습니다.".format(", ".join(
+                                             f"{str(o.get('due_date'))[:10]} 기납품 "
+                                             f"{float(o.get('delivered_qty') or 0):,.0f}개"
+                                             for o, _ in _under9)))
+                                _ok9 = False
+                            # 후보 26 + r2 ⑬: 납품된 회차는 삭제하지 않는다. 날짜 변경도 옛 날짜 회차의 삭제 +
+                            # 새 날짜 삽입이라 같이 막힌다 — 안내대로 새 날짜 행을 추가하고 옛 행 수량을 기납품으로
+                            _gone_dl9 = [g for g in _plan9["gone"] if float(g.get("delivered_qty") or 0) > 0]
+                            _kept_d9 = {str(r.get("due_date"))[:10] for _, r in _plan9["pairs"]}
+                            if _ok9 and _gone_dl9:
+                                if any(str(g.get("due_date"))[:10] in _kept_d9 for g in _gone_dl9):
+                                    st.error("같은 날짜에 납품된 회차가 2개 있습니다({}) — 하나로 합칠 수 없어 "
+                                             "저장하지 않았습니다. 마스터 관리 › 정합 점검이 필요합니다.".format(
+                                                 ", ".join(str(g.get("due_date"))[:10] for g in _gone_dl9)))
+                                else:
+                                    st.error(
+                                        "납품된 회차({})는 삭제할 수 없습니다 — 수량을 기납품 이상으로 줄이세요. "
+                                        "날짜를 바꾸려면 옛 행을 지우지 말고 새 날짜 행을 추가한 뒤 옛 행 수량을 "
+                                        "기납품 수량으로 줄이세요. 아무것도 저장하지 않았습니다.".format(
+                                            ", ".join(f"{str(g.get('due_date'))[:10]} 기납품 "
+                                                      f"{float(g.get('delivered_qty') or 0):,.0f}개"
+                                                      for g in _gone_dl9)))
+                                _ok9 = False
+                            # r2 ④·⑧: 지울 회차를 전표가 가리키면 차단 — shipment_allocations 는 ON DELETE CASCADE
+                            # (확정 전표 충당 기록이 사라짐), shipment_items.sched_id 는 FK 없음(작성중 전표가 허공을 가리킴)
+                            if _ok9 and _plan9["delete"]:
+                                _ref_msg9 = _sched_refs_block(_plan9["delete"])
+                                if _ref_msg9:
+                                    st.error(_ref_msg9 + " 아무것도 저장하지 않았습니다.")
+                                    _ok9 = False
+                            # ── 쓰기(계획 순서, 쓰기마다 결과 확인) ──
                             # r2 ②: 단계마다 예외도 잡아 같은 중단 메시지로(통신 예외는 반영 여부 불확실 안내)
                             _UNSURE9 = " — 통신 오류라 이 요청의 실제 반영 여부가 불확실합니다(새로고침해 확인)"
+
+                            def _guarded9(sid, fields):
+                                """r2 ⑦: 읽은 뒤 납품완료가 바뀌었으면(동시 출고 확정) 0행 → 중단. → (행 수, 예외 문구)"""
+                                _gd = _plan9["guard"].get(sid)
+                                _cond = ("delivered_qty=is.null" if _gd is None
+                                         else f"delivered_qty=eq.{_fq(_gd)}")
+                                try:
+                                    return _db.update_count("so_delivery_schedule",
+                                                            f"sched_id=eq.{_fq(sid)}&{_cond}", fields,
+                                                            select="sched_id"), ""
+                                except Exception as _e9:
+                                    return -2, f"({_e9}){_UNSURE9}"
+
+                            def _why9(n, x):
+                                return ("회차가 바뀌었거나 사라졌습니다(다른 화면의 출고 확정 등)" if n == 0
+                                        else "저장 실패" + x)
                             if _ok9 and _plan9["delete"]:
                                 try:
                                     _n9 = _db.delete("so_delivery_schedule",
@@ -9729,16 +9830,11 @@ elif page == "수주 관리":
                             if _ok9:
                                 _n_p1 = 0
                                 for _k9, (_sid9, _tmp9) in enumerate(_plan9["phase1"], 1):
-                                    try:
-                                        _r9 = _db.update("so_delivery_schedule", f"sched_id=eq.{_fq(_sid9)}",
-                                                         {"seq": _tmp9})
-                                        _x9 = ""
-                                    except Exception as _e9:
-                                        _r9, _x9 = False, f"({_e9}){_UNSURE9}"
-                                    if not _r9:
+                                    _c9, _x9 = _guarded9(_sid9, {"seq": _tmp9})
+                                    if _c9 != 1:
                                         if _n_p1:
                                             _done9.append(f"임시 번호 {_n_p1}건")
-                                        _stop9(f"1단계(임시 번호) {_k9}번째 회차 저장 실패{_x9}")
+                                        _stop9(f"1단계(임시 번호) {_k9}번째 회차 — {_why9(_c9, _x9)}")
                                         _ok9 = False
                                         break
                                     _n_p1 += 1
@@ -9746,13 +9842,10 @@ elif page == "수주 관리":
                                     _done9.append(f"임시 번호 {_n_p1}건")
                             if _ok9:
                                 for _k9, (_sid9, _f9) in enumerate(_plan9["phase2"], 1):
-                                    try:
-                                        _r9 = _db.update("so_delivery_schedule", f"sched_id=eq.{_fq(_sid9)}", _f9)
-                                        _x9 = ""
-                                    except Exception as _e9:
-                                        _r9, _x9 = False, f"({_e9}){_UNSURE9}"
-                                    if not _r9:
-                                        _stop9(f"2단계(번호·수량) {_k9}번째 회차 저장 실패{_x9}")
+                                    _c9, _x9 = _guarded9(_sid9, _f9)
+                                    if _c9 != 1:
+                                        _stop9(f"2단계(번호·수량) {_k9}번째 회차 — {_why9(_c9, _x9)}",
+                                               round_chk=True)
                                         _ok9 = False
                                         break
                                     _done9.append(f"회차 {_f9['seq']} 저장")

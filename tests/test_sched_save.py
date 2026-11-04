@@ -34,21 +34,40 @@ def _sched_mock(rounds):
             return any(int(r["soi_id"]) == int(soi) and int(r["seq"]) == int(seq) and r["sched_id"] != sid
                        for r in self.tables["so_delivery_schedule"])
 
-        def update(self, table, filter_query, fields):
+        race = None                 # 첫 schedule 쓰기 직전에 이 sched_id 의 납품완료를 +1(동시 출고 확정 흉내)
+
+        def _sched_write(self, filter_query, fields):
+            """화면은 update_count 를 쓴다(r2 ⑦) — 0 이상 행 수, 실패 -1. 옛 db.update 경로도 여기로."""
+            table = "so_delivery_schedule"
+            self.n_sched_update += 1
+            if self.race is not None:
+                for r in self.tables[table]:
+                    if r["sched_id"] == self.race:
+                        r["delivered_qty"] = float(r.get("delivered_qty") or 0) + 1
+                self.race = None
+            if self.raise_after is not None and self.n_sched_update >= self.raise_after:
+                self.writes.append(("update_raise", table, {"filter": filter_query, **fields}))
+                raise RuntimeError("ConnectionError: 시뮬레이션")
+            if self.false_after is not None and self.n_sched_update >= self.false_after:
+                self.writes.append(("update_false", table, {"filter": filter_query, **fields}))
+                return -1
+            if "seq" in fields:
+                for r in self._rows(table, filter_query):
+                    if self._dup(r["soi_id"], fields["seq"], r["sched_id"]):
+                        self.writes.append(("update_409", table, {"filter": filter_query, **fields}))
+                        return -1          # UNIQUE(soi_id, seq) 위반 → PostgREST 409 → -1(db.update 는 False)
+            return None
+
+        def update_count(self, table, filter_query, fields, select="*"):
             if table == "so_delivery_schedule":
-                self.n_sched_update += 1
-                if self.raise_after is not None and self.n_sched_update >= self.raise_after:
-                    self.writes.append(("update_raise", table, {"filter": filter_query, **fields}))
-                    raise RuntimeError("ConnectionError: 시뮬레이션")
-                if self.false_after is not None and self.n_sched_update >= self.false_after:
-                    self.writes.append(("update_false", table, {"filter": filter_query, **fields}))
-                    return False
-                if "seq" in fields:
-                    for r in self._rows(table, filter_query):
-                        if self._dup(r["soi_id"], fields["seq"], r["sched_id"]):
-                            self.writes.append(("update_409", table, {"filter": filter_query, **fields}))
-                            return False          # UNIQUE(soi_id, seq) 위반 → PostgREST 409 → db.update False
-            return super().update(table, filter_query, fields)
+                r = self._sched_write(filter_query, fields)
+                if r is not None:
+                    return r
+            return super().update_count(table, filter_query, fields, select)
+
+        def update(self, table, filter_query, fields):
+            n = self.update_count(table, filter_query, fields)
+            return n >= 0
 
         def insert(self, table, records):
             if table == "so_delivery_schedule":
@@ -84,6 +103,7 @@ def _sched_mock(rounds):
             return len(rows)
 
     m = _M()
+    m.tables.setdefault("shipment_allocations", [])
     total = sum(q for _, _, _, q, _ in rounds)
     done = sum(d for *_, d in rounds)
     m.seed(so_id=101, so_number="PO-SCH", lines=[(SOI, total, done, total - done, "PARTIAL" if done else "PENDING")],
@@ -206,8 +226,8 @@ def test_plan_sched_writes_order_and_tmp():
     p = plan_sched_writes(old, keep)
     assert p["delete"] == [2] and [g["sched_id"] for g in p["gone"]] == [2]
     assert p["phase1"] == [(1, TMP_BASE)], "번호가 바뀌는 유지 회차만 임시 번호(3 은 3 그대로)"
-    assert p["phase2"] == [(1, {"qty": 10, "note": "a", "seq": 2, "delivered_qty": 0}),
-                           (3, {"qty": 30, "note": None, "seq": 3, "delivered_qty": 7})]
+    assert p["phase2"] == [(3, {"qty": 30, "note": None, "seq": 3, "delivered_qty": 7}),
+                           (1, {"qty": 10, "note": "a", "seq": 2, "delivered_qty": 0})],         "r2 ⑤: 납품완료가 늘어나는 행(3) 먼저"
     assert [r["due_date"] for r in p["insert"]] == ["2026-11-05"]
 
 
@@ -303,7 +323,8 @@ def test_r2_phase2_false_stops_with_applied_list(monkeypatch):
     m.false_after = 2            # 임시 번호(1건) 뒤 2단계 첫 update 가 False
     _save(at, m, deleted_rows=[1])
     e = " ".join(_errors(at))
-    assert "2단계(번호·수량) 1번째 회차 저장 실패" in e and "이미 반영: 삭제 1건 · 임시 번호 1건" in e, e
+    assert "2단계(번호·수량) 1번째 회차 — 저장 실패" in e and "이미 반영: 삭제 1건 · 임시 번호 1건" in e, e
+    assert "ROUND_MISMATCH" in e and "app_errors" in e
     assert not any("저장 완료" in f for f in _flash(at))
     assert [w[0] for w in _sched_writes(m)][-1] == "update_false", "실패 뒤 쓰기 없음"
 
@@ -314,7 +335,7 @@ def test_r2_phase1_exception_reports_uncertain(monkeypatch):
     m.raise_after = 1
     _save(at, m, deleted_rows=[1])
     e = " ".join(_errors(at))
-    assert "1단계(임시 번호) 1번째 회차 저장 실패" in e and "반영 여부가 불확실" in e and "이미 반영: 삭제 1건" in e, e
+    assert "1단계(임시 번호) 1번째 회차 — 저장 실패" in e and "반영 여부가 불확실" in e and "이미 반영: 삭제 1건" in e, e
     assert [w[0] for w in _sched_writes(m)][-1] == "update_raise"
 
 
@@ -324,7 +345,7 @@ def test_r2_insert_exception_stops_without_flash(monkeypatch):
     m.insert_raise = True
     _save(at, m, added_rows=[{"납기": "2026-11-20", "수량": 50}])
     e = " ".join(_errors(at))
-    assert "새 회차 1건 추가 실패" in e and "이미 반영: 회차 1 저장" in e, e
+    assert "새 회차 1건 추가 실패" in e and "아무것도 바뀌지 않았습니다" in e, "변동 없는 회차 1 은 건너뜀(r2 ⑩)"
     assert not any("저장 완료" in f for f in _flash(at))
 
 
@@ -367,7 +388,7 @@ def test_r2_duplicate_date_both_delivered_blocked(monkeypatch):
     m = _sched_mock([(1, "2026-11-10", 1, 50, 30), (2, "2026-11-10", 2, 50, 20)])
     at = _open(monkeypatch, m)
     _save(at, m)
-    assert any("납품된 회차(2026-11-10 기납품 20개)는 삭제할 수 없습니다" in e for e in _errors(at)), _errors(at)
+    assert any("같은 날짜에 납품된 회차가 2개" in e and "정합 점검" in e for e in _errors(at)), _errors(at)
     assert not _sched_writes(m), "쓰기 전 차단"
 
 
@@ -390,3 +411,127 @@ def test_r2_d_no_ship_no_html_identical_to_previous_version():
     assert new.transaction_statements_html(BATCH, VMAP, rev_label="정정본 v2") == \
         old.transaction_statements_html(BATCH, VMAP, rev_label="정정본 v2")
     assert new.delivery_list_html(BATCH, draft=True) == old.delivery_list_html(BATCH, draft=True)
+
+
+
+# ── r2 ④~⑮(data·qa 리뷰) ──
+def test_r2_11_empty_table_save_blocked(monkeypatch):
+    m = _sched_mock([(1, "2026-11-10", 1, 100, 0), (2, "2026-11-20", 2, 100, 0)])
+    at = _open(monkeypatch, m)
+    _save(at, m, deleted_rows=[0, 1])
+    assert any("표가 비어 있습니다" in e and "전체 삭제" in e for e in _errors(at)), _errors(at)
+    assert not _sched_writes(m) and len(_sched(m)) == 2
+
+
+def test_r2_12_reduce_below_delivered_blocked(monkeypatch):
+    m = _sched_mock([(1, "2026-11-10", 1, 100, 60), (2, "2026-11-20", 2, 100, 0)])
+    at = _open(monkeypatch, m)
+    _save(at, m, edited_rows={0: {"수량": 50}})
+    assert any("기납품 아래로 줄일 수 없습니다" in e and "2026-11-10 기납품 60개" in e for e in _errors(at)), _errors(at)
+    assert not _sched_writes(m)
+
+
+@pytest.mark.parametrize("kind", ["alloc", "draft_item", "lookup_fail"])
+def test_r2_4_8_referenced_round_delete_blocked(monkeypatch, kind):
+    m = _three()
+    if kind == "alloc":
+        m.tables["shipment_allocations"].append({"alloc_id": 1, "shipment_id": 70, "sched_id": 2, "soi_id": SOI,
+                                                 "qty": 0})
+        m.tables["shipments"].append({"shipment_id": 70, "ship_no": "SH-20261101-01", "ship_date": "2026-11-01",
+                                      "status": "CONFIRMED"})
+    elif kind == "draft_item":
+        m.tables["shipment_items"].append({"si_id": 900, "shipment_id": 71, "soi_id": SOI, "so_id": 101,
+                                           "sched_id": 2, "qty": 5})
+        m.tables["shipments"].append({"shipment_id": 71, "ship_no": "SH-20261105-01", "ship_date": "2026-11-05",
+                                      "status": "DRAFT"})
+    at = _open(monkeypatch, m)
+    if kind == "lookup_fail":
+        import db as _dbmod
+        _orig = _dbmod.fetch
+
+        def _f(table, *a, **k):
+            if table == "shipment_allocations":
+                raise RuntimeError("timeout 시뮬레이션")
+            return _orig(table, *a, **k)
+        monkeypatch.setattr(_dbmod, "fetch", _f)
+    _save(at, m, deleted_rows=[1])
+    e = " ".join(_errors(at))
+    want = {"alloc": "확정 전표 SH-20261101-01 에 연결된 회차", "draft_item": "작성중 전표 SH-20261105-01 가 이 회차를",
+            "lookup_fail": "연결된 전표를 확인하지 못했습니다"}[kind]
+    assert want in e and "아무것도 저장하지 않았습니다" in e, e
+    assert not _sched_writes(m), "쓰기 전 차단"
+
+
+def test_r2_7_concurrent_delivered_change_stops(monkeypatch):
+    """읽은 뒤 납품완료가 바뀐 회차(동시 출고 확정) → update_count 0행 → 중단."""
+    m = _three()
+    at = _open(monkeypatch, m)
+    m.race = 3
+    _save(at, m, deleted_rows=[1])
+    e = " ".join(_errors(at))
+    assert "회차가 바뀌었거나 사라졌습니다" in e and "이미 반영: 삭제 1건" in e, e
+    assert not any("저장 완료" in f for f in _flash(at))
+    assert float(next(r for r in m.tables["so_delivery_schedule"] if r["sched_id"] == 3)["delivered_qty"]) == 1.0, \
+        "동시 반영된 납품완료를 덮어쓰지 않음"
+
+
+def test_r2_10_no_edit_save_writes_nothing(monkeypatch):
+    m = _sched_mock([(1, "2026-11-10", 1, 100, 0), (2, "2026-11-20", 2, 100, 0)])
+    at = _open(monkeypatch, m)
+    _save(at, m)
+    assert not _sched_writes(m), "변동 없는 회차는 PATCH 하지 않음"
+    assert any("저장 완료 — 2개 회차" in f for f in _flash(at))
+
+
+def test_r2_6_data_review_scenario_no_collision(monkeypatch):
+    """data M-1: old P(11-20) seq 2 · Y(11-30) seq 1002, 앞에 W·X 삽입 → 충돌 없이 W1·X2·P3·Y4."""
+    from utils.sched_save import plan_sched_writes
+    old = [{"sched_id": 2, "due_date": "2026-11-20", "seq": 2}, {"sched_id": 3, "due_date": "2026-11-30", "seq": 1002}]
+    keep = [{"due_date": d, "seq": i, "qty": 1, "note": None, "delivered_qty": 0}
+            for i, d in enumerate(["2026-11-05", "2026-11-10", "2026-11-20", "2026-11-30"], 1)]
+    p = plan_sched_writes(old, keep)
+    assert all(t not in (2, 1002) for _, t in p["phase1"])
+    m = _sched_mock([(2, "2026-11-20", 2, 1, 0), (3, "2026-11-30", 1002, 1, 0)])
+    at = _open(monkeypatch, m)
+    _save(at, m, added_rows=[{"납기": "2026-11-05", "수량": 1}, {"납기": "2026-11-10", "수량": 1}])
+    assert not [w for w in m.writes if w[0] in ("update_409", "update_false")]
+    assert [(x[1], x[2]) for x in _sched(m)] == [("2026-11-05", 1), ("2026-11-10", 2), ("2026-11-20", 3),
+                                                ("2026-11-30", 4)]
+
+
+def test_r2_5_phase2_order_increase_first():
+    from utils.sched_save import plan_sched_writes
+    old = [{"sched_id": 1, "due_date": "2026-11-10", "seq": 1, "qty": 100, "delivered_qty": 50},
+           {"sched_id": 2, "due_date": "2026-11-20", "seq": 2, "qty": 100, "delivered_qty": 0},
+           {"sched_id": 3, "due_date": "2026-11-30", "seq": 3, "qty": 100, "delivered_qty": 0}]
+    keep = [{"due_date": "2026-11-10", "seq": 1, "qty": 100, "note": None, "delivered_qty": 0},     # 줄어듦
+            {"due_date": "2026-11-20", "seq": 2, "qty": 90, "note": None, "delivered_qty": 0},      # 같음(수량만)
+            {"due_date": "2026-11-30", "seq": 3, "qty": 100, "note": None, "delivered_qty": 50}]    # 늘어남
+    p = plan_sched_writes(old, keep)
+    assert [sid for sid, _ in p["phase2"]] == [3, 2, 1]
+    assert p["guard"] == {1: 50, 2: 0, 3: 0}
+
+
+def test_r2_14_bulk_delete_disabled_with_delivered_or_refs(monkeypatch):
+    m = _sched_mock([(1, "2026-11-10", 1, 100, 60), (2, "2026-11-20", 2, 100, 0)])
+    at = _open(monkeypatch, m)
+    b = at.button(key=f"sch_reset_{SOI}_ask")
+    assert b.disabled and "납품된 회차" in (b.proto.help or "")
+    m2 = _sched_mock([(1, "2026-11-10", 1, 100, 0)])
+    m2.tables["shipment_items"].append({"si_id": 901, "shipment_id": 72, "soi_id": SOI, "so_id": 101,
+                                        "sched_id": 1, "qty": 5})
+    m2.tables["shipments"].append({"shipment_id": 72, "ship_no": "SH-20261105-02", "ship_date": "2026-11-05",
+                                   "status": "DRAFT"})
+    at2 = _open(monkeypatch, m2)
+    b2 = at2.button(key=f"sch_reset_{SOI}_ask")
+    assert b2.disabled and "SH-20261105-02" in (b2.proto.help or "")
+    m3 = _sched_mock([(1, "2026-11-10", 1, 100, 0)])
+    at3 = _open(monkeypatch, m3)
+    assert not at3.button(key=f"sch_reset_{SOI}_ask").disabled, "납품·참조 없으면 그대로 가능"
+
+
+def test_r2_d_multi_page_each_header_has_ship_no():
+    from utils.statement_generator import transaction_statements_html
+    rows = [{"customer": "갑", "pn": f"P-{i}", "qty": 1, "unit_price": 100, "date": "2026-11-04"} for i in range(30)]
+    html = transaction_statements_html({"date": "2026-11-04", "rows": rows}, {}, ship_no="SH-20261104-09")
+    assert html.count("전표 SH-20261104-09<br>") == html.count("PAGE ") == 2 * 3, "3쪽 × 공급자·공급받는자"
