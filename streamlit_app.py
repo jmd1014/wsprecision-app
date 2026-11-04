@@ -5964,6 +5964,163 @@ elif page == "마스터 관리":
                 except Exception as e:
                     st.error(f"삭제 실패: {e}")
 
+            # ── 후보 32(2026-11-04): 다른 제품의 공정·라우팅 복사 — 비어 있는 대상에만(덮어쓰기 없음).
+            # 업체·단가는 복사하지 않는다(BOM 상세에서 매칭). db.insert 는 새 id 를 돌려주지 않아(db.py 무변경)
+            # 넣은 뒤 대상 BOM 을 다시 읽어 넣기 전 id 를 뺀 새 행을 순서대로 짝짓는다.
+            with st.expander("다른 제품의 공정·라우팅 복사"):
+                _rc_tgt = _bp["product_id"]
+                _rc_opts = {}
+                try:
+                    _rc_ps, _ = _fetch_all_in(
+                        "products", "product_id,pn,item_name,archived_at", "product_id",
+                        sorted(_rt_pids - {_rc_tgt}), quote=True)
+                    _rc_opts = {p["product_id"]: p for p in sorted(
+                        (p for p in _rc_ps if not p.get("archived_at")),
+                        key=lambda p: str(p.get("pn") or ""))}
+                except Exception as e:
+                    st.error(f"원본 후보 조회 실패: {e}")
+                _rc_src = st.selectbox(
+                    "원본 제품(라우팅이 정의된 제품)", list(_rc_opts), index=None,
+                    key=f"rc_src_{_rc_tgt}",
+                    format_func=lambda k: (f"{_rc_opts[k]['pn']} · "
+                                           f"{_rc_opts[k].get('item_name') or '-'}"),
+                    placeholder="원본 제품 선택")
+                if _rc_src:
+                    _rc_sp = _rc_opts[_rc_src]
+                    try:
+                        _rc_bom = fetch("bom", full_select,
+                                        f"product_id=eq.{_fq(_rc_src)}&order=bom_id.asc",
+                                        limit=200)
+                        _rc_rt = fetch("product_routing",
+                                       "seq,step_code,step_name,step_kind,stage,bom_id,confirmed",
+                                       f"product_id=eq.{_fq(_rc_src)}&order=seq.asc", limit=200)
+                    except Exception as e:
+                        st.error(f"원본 조회 실패: {e}")
+                        _rc_bom, _rc_rt = [], []
+                    _rc_proc = [b for b in _rc_bom
+                                if (b.get("process_type") or "MATERIAL") != "MATERIAL"]
+                    _rc_mats = [b for b in _rc_bom
+                                if (b.get("process_type") or "MATERIAL") == "MATERIAL"]
+                    _rc_pids = {b["bom_id"] for b in _rc_proc}
+                    st.markdown(f"**원본 {_rc_sp['pn']} — 공정행 {len(_rc_proc)}**")
+                    if _rc_proc:
+                        st.dataframe(pd.DataFrame([{
+                            "구분": {"HEAT": "열처리", "SURFACE": "표면", "OUTSOURCE": "외주", "PACKING": "포장",
+                                   "LABOR": "노무", "OTHER": "기타"}.get(b.get("process_type"), b.get("process_type")),
+                            "공정명": b.get("raw_material_name") or "-",
+                            "수량/PC": float(b.get("qty_per_pc") or 0),
+                            "분할/LOT": float(b.get("shared_factor") or 1),
+                            "업체(복사 안 함)": "있음" if b.get("process_vendor_id") else "-",
+                            "단가(복사 안 함)": (float(b["unit_price"])
+                                               if b.get("unit_price") else None),
+                        } for b in _rc_proc]), hide_index=True, use_container_width=True)
+                    st.markdown(f"**원본 라우팅 — {len(_rc_rt)}단계**")
+                    if _rc_rt:
+                        st.dataframe(pd.DataFrame([{
+                            "seq": r.get("seq"), "code": r.get("step_code"),
+                            "name": r.get("step_name"), "kind": r.get("step_kind"),
+                            "stage": r.get("stage"),
+                            "BOM 연결": "공정행" if r.get("bom_id") in _rc_pids else "-",
+                            "확정": "예" if r.get("confirmed") else "미확정",
+                        } for r in _rc_rt]), hide_index=True, use_container_width=True)
+                    _rc_tproc = [b for b in brows
+                                 if (b.get("process_type") or "MATERIAL") != "MATERIAL"]
+                    _rc_block = []
+                    if _has_custom or _rc_tproc:
+                        _rc_block.append(
+                            f"대상 {_bp['pn']} 에 라우팅 또는 공정행이 있습니다 — 먼저 "
+                            "'기본 플로우로 되돌리기'와 공정행 삭제 뒤 복사하세요(덮어쓰기 없음).")
+                    if any(not r.get("confirmed") for r in _rc_rt):
+                        _rc_block.append("원본 라우팅에 미확정 단계가 있습니다 — 원본 순서를 먼저 확정하세요.")
+                    if not _rc_rt:
+                        _rc_block.append("원본 라우팅이 비어 있습니다.")
+                    for _m9 in _rc_block:
+                        st.warning(_m9)
+                    _rc_with_mat = False
+                    if not brows and _rc_mats:
+                        _rc_with_mat = st.checkbox(
+                            f"소재행도 복사 ({len(_rc_mats)}행)", value=True,
+                            key=f"rc_mat_{_rc_tgt}",
+                            help="대상 BOM 이 비어 있을 때만 — 설계변경이면 복사 뒤 소재 치수를 확인하세요")
+                    st.caption("업체·단가는 복사하지 않습니다 — 복사 뒤 BOM 상세에서 업체 매칭·단가를 입력하세요."
+                               + (" 설계변경이면 복사 뒤 소재 치수를 확인하세요." if _rc_with_mat else ""))
+                    if st.button("복사", type="primary", disabled=bool(_rc_block),
+                                 key=f"rc_go_{_rc_tgt}") and click_guard("rout_copy"):
+                        _rc_pre = {b["bom_id"] for b in brows}
+                        _rc_ins = ([{
+                            "product_id": _rc_tgt, "material_id": b.get("material_id"),
+                            "raw_material_name": b.get("raw_material_name"),
+                            "qty_per_pc": b.get("qty_per_pc"), "shared_factor": b.get("shared_factor"),
+                            "source": "MANUAL", "verification_status": "AUTO-추정",
+                            "process_type": "MATERIAL", "unit_price": None,
+                            "lot_label": b.get("lot_label"), "process_vendor_id": None,
+                        } for b in _rc_mats] if _rc_with_mat else []) + [{
+                            "product_id": _rc_tgt, "material_id": None,
+                            "raw_material_name": b.get("raw_material_name"),
+                            "qty_per_pc": b.get("qty_per_pc"), "shared_factor": b.get("shared_factor"),
+                            "source": "MANUAL", "verification_status": b.get("verification_status"),
+                            "process_type": b.get("process_type"), "unit_price": None,
+                            "lot_label": b.get("lot_label"), "process_vendor_id": None,
+                        } for b in _rc_proc]
+                        _rc_new = []
+                        try:
+                            _rc_map = {}
+                            if _rc_ins:
+                                _db.insert("bom", _rc_ins)
+                                _rc_after = fetch("bom", "bom_id,process_type,raw_material_name",
+                                                  f"product_id=eq.{_fq(_rc_tgt)}&order=bom_id.asc",
+                                                  limit=500)
+                                _rc_newrows = [b for b in _rc_after if b["bom_id"] not in _rc_pre]
+                                _rc_new = [b["bom_id"] for b in _rc_newrows]
+                                _rc_newproc = [b for b in _rc_newrows
+                                               if (b.get("process_type") or "MATERIAL") != "MATERIAL"]
+                                if (len(_rc_newrows) != len(_rc_ins) or len(_rc_newproc) != len(_rc_proc)
+                                        or any((a.get("process_type"), a.get("raw_material_name"))
+                                               != (n.get("process_type"), n.get("raw_material_name"))
+                                               for a, n in zip(_rc_proc, _rc_newproc))):
+                                    raise RuntimeError(
+                                        f"새 BOM 행 확인 불일치(넣은 {len(_rc_ins)}·읽은 {len(_rc_newrows)})")
+                                _rc_map = {a["bom_id"]: n["bom_id"] for a, n in zip(_rc_proc, _rc_newproc)}
+                            _db.insert("product_routing", [{
+                                "product_id": _rc_tgt, "seq": r.get("seq"),
+                                "step_code": r.get("step_code"), "step_name": r.get("step_name"),
+                                "step_kind": r.get("step_kind"), "stage": r.get("stage"),
+                                "bom_id": _rc_map.get(r.get("bom_id")), "default_vendor": None,
+                                "confirmed": True,
+                            } for r in _rc_rt])
+                        except Exception as e:
+                            if _rc_new:      # best effort — 만든 BOM 행만(넣기 전 id 제외)
+                                try:
+                                    _db.delete("bom", "bom_id=in.({})".format(
+                                        ",".join(str(i) for i in _rc_new)))
+                                except Exception:
+                                    pass
+                            st.error(f"복사 실패 — 만든 BOM 행 {len(_rc_new)}개는 지웠습니다: {e}")
+                        else:
+                            _rc_nm = len(_rc_mats) if _rc_with_mat else 0
+                            if _rc_nm:
+                                try:   # 제품 소재 표기 동기화(진실=BOM, 2026-10-22 교훈)
+                                    _db.update("products", f"product_id=eq.{_fq(_rc_tgt)}",
+                                               {"raw_material_name": _rc_mats[0].get("raw_material_name"),
+                                                "bom_material_name": _rc_mats[0].get("raw_material_name")})
+                                except Exception:
+                                    pass
+                            try:
+                                _db.insert("master_change_log", [{
+                                    "table_name": "product_routing", "record_id": _rc_tgt,
+                                    "field_name": "routing", "old_value": None,
+                                    "new_value": f"{len(_rc_rt)}단계 복사 from {_rc_sp['pn']}",
+                                    "changed_by": current_user_name(),
+                                    "reason": f"라우팅 복사 — 공정행 {len(_rc_proc)}"
+                                              + (f"·소재행 {_rc_nm}" if _rc_nm else ""),
+                                }])
+                            except Exception:
+                                st.warning("변경 이력 기록 실패 — 복사는 저장되었습니다.")
+                            nav_flash(f"라우팅 복사: {_bp['pn']} ← {_rc_sp['pn']} — 공정행 "
+                                      f"{len(_rc_proc)}·순서 {len(_rc_rt)}단계"
+                                      + (f"·소재행 {_rc_nm}" if _rc_nm else ""))
+                            st.rerun()
+
     # ─── Tab: 계정 관리 (2026-08-05) ───
     with tab_acct:
         st.markdown("**로그인 계정 추가·역할 변경·비밀번호 초기화**")
