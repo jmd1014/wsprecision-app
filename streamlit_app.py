@@ -9679,49 +9679,73 @@ elif page == "수주 관리":
                                 # PostgREST 배열 insert 는 키가 모두 같아야
                                 # 한다 (PGRST102 All object keys must match)
                                 _r3.setdefault("note", None)
-                            # 같은 납기 회차는 sched_id 를 유지(update) —
-                            # 전부 지우고 다시 넣으면 확정 전표의 회차 연결
-                            # (shipment_allocations.sched_id)이 끊긴다
-                            # (2026-09-16 리뷰 A9)
-                            _old_by_d = {}
-                            for _o9 in _rows:
-                                _old_by_d.setdefault(
-                                    str(_o9.get("due_date"))[:10], []).append(_o9)
-                            _kept_ids, _ins9 = set(), []
-                            for _r9 in _keep:
-                                _cands = _old_by_d.get(_r9["due_date"]) or []
-                                if _cands:
-                                    _o9 = _cands.pop(0)
-                                    _db.update("so_delivery_schedule",
-                                               f"sched_id=eq.{_fq(_o9['sched_id'])}",
-                                               {"qty": _r9["qty"],
-                                                "note": _r9.get("note"),
-                                                "seq": _r9["seq"],
-                                                "delivered_qty":
-                                                _r9["delivered_qty"]})
-                                    _kept_ids.add(_o9["sched_id"])
+                            # 같은 납기 회차는 sched_id 를 유지(update) — 전부 지우고 다시 넣으면 확정 전표의 회차 연결
+                            # (shipment_allocations.sched_id)이 끊긴다(2026-09-16 리뷰 A9).
+                            # 후보 27(2026-11-05): UNIQUE(soi_id, seq) 때문에 행마다 seq 를 바로 바꾸면 중간 상태에서
+                            # 409 → db.update False 로 조용히 옛 값이 남았다 → 계획(삭제 → 임시 번호 → 최종 번호 →
+                            # 삽입)을 순서대로 실행하고, 쓰기마다 결과를 본다. 실패하면 그 자리에서 멈추고 무엇이
+                            # 반영됐는지 알린다(플래시 없음 — 임시 번호는 다음 저장이 다시 정리).
+                            from utils.sched_save import plan_sched_writes
+                            _plan9 = plan_sched_writes(_rows, _keep)
+                            _done9 = []
+
+                            def _stop9(msg):
+                                st.error(f"저장 중단 — {msg}. "
+                                         + ("이미 반영: " + " · ".join(_done9) + ". " if _done9 else
+                                            "아무것도 바뀌지 않았습니다. ")
+                                         + "화면을 새로고침해 회차를 확인한 뒤 다시 저장하세요.")
+                            _ok9 = True
+                            if _plan9["delete"]:
+                                _n9 = _db.delete("so_delivery_schedule",
+                                                 "sched_id=in.(" + ",".join(
+                                                     str(x) for x in _plan9["delete"]) + ")")
+                                if _n9 != len(_plan9["delete"]):
+                                    _stop9(f"회차 삭제 {len(_plan9['delete'])}건 중 {_n9}건만 지워짐")
+                                    _ok9 = False
                                 else:
-                                    _ins9.append(_r9)
-                            _gone9 = [r["sched_id"] for r in _rows
-                                      if r.get("sched_id") not in _kept_ids]
-                            if _gone9:
-                                _db.delete("so_delivery_schedule",
-                                           "sched_id=in.(" + ",".join(
-                                               str(x) for x in _gone9) + ")")
-                            if _ins9:
-                                _db.insert("so_delivery_schedule", _ins9)
-                            if _keep:
-                                # 라인 납기 = 첫 회차 (화면 납기 표시 기준)
+                                    _done9.append(f"삭제 {_n9}건")
+                            if _ok9:
+                                for _k9, (_sid9, _tmp9) in enumerate(_plan9["phase1"], 1):
+                                    if not _db.update("so_delivery_schedule", f"sched_id=eq.{_fq(_sid9)}",
+                                                      {"seq": _tmp9}):
+                                        if _k9 > 1:
+                                            _done9.append(f"임시 번호 {_k9 - 1}건")
+                                        _stop9(f"1단계(임시 번호) {_k9}번째 회차 저장 실패")
+                                        _ok9 = False
+                                        break
+                                else:
+                                    if _plan9["phase1"]:
+                                        _done9.append(f"임시 번호 {len(_plan9['phase1'])}건")
+                            if _ok9:
+                                for _k9, (_sid9, _f9) in enumerate(_plan9["phase2"], 1):
+                                    if not _db.update("so_delivery_schedule", f"sched_id=eq.{_fq(_sid9)}", _f9):
+                                        _stop9(f"2단계(번호·수량) {_k9}번째 회차 저장 실패")
+                                        _ok9 = False
+                                        break
+                                    _done9.append(f"회차 {_f9['seq']} 저장")
+                            if _ok9 and _plan9["insert"]:
                                 try:
-                                    _db.update("sales_order_items",
-                                        f"soi_id=eq.{_fq(_li['soi_id'])}",
-                                        {"due_date":
-                                         _keep[0]["due_date"]})
+                                    _db.insert("so_delivery_schedule", _plan9["insert"])
+                                    _done9.append(f"새 회차 {len(_plan9['insert'])}건")
+                                except Exception as _e9:
+                                    _stop9(f"새 회차 추가 실패({_e9})")
+                                    _ok9 = False
+                            _due_note9 = ""
+                            if _ok9 and _keep:
+                                # 라인 납기 = 첫 회차 (화면 납기 표시 기준) — 실패해도 회차는 저장됨, 경고만
+                                try:
+                                    _due_ok9 = _db.update("sales_order_items",
+                                                          f"soi_id=eq.{_fq(_li['soi_id'])}",
+                                                          {"due_date": _keep[0]["due_date"]})
                                 except Exception:
-                                    pass
-                            st.session_state[_pend_key] = []
-                            nav_flash(f"{_li_lbl} · 저장 완료 — {len(_keep)}개 회차")
-                            st.rerun()
+                                    _due_ok9 = False
+                                if not _due_ok9:
+                                    _due_note9 = (" · 라인 납기(첫 회차 날짜) 갱신 실패 — 다시 저장하면 "
+                                                  "맞춰집니다")
+                            if _ok9:
+                                st.session_state[_pend_key] = []
+                                nav_flash(f"{_li_lbl} · 저장 완료 — {len(_keep)}개 회차" + _due_note9)
+                                st.rerun()
                         except Exception as e:
                             st.error(f"저장 실패: {e}")
 
