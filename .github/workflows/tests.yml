@@ -17,8 +17,8 @@ jobs:
     name: pytest (py${{ matrix.python-version }})
     runs-on: ubuntu-latest
     # 2026-10-28 실측: py3.14 89분(594 passed 뒤 90분 상한으로 취소, run 40620555996)·py3.11 52분 → 150분
-    # 2026-11-04 xdist 도입(-n auto, 목표 job 당 40분) — 상한은 2회 연속 녹색·측정 뒤 낮춘다
-    timeout-minutes: 150
+    # 2026-11-04 xdist 도입(-n auto, 목표 job 당 40분). r1 실측 py3.11 47분·py3.14 62분(run 41751096220) → 100분
+    timeout-minutes: 100
     strategy:
       # 3.11 = 로컬 개발·기존 기준, 3.14 = Streamlit Cloud 운영 런타임(2026-10-23 관리자 진단, P1-4).
       # 한쪽이 실패해도 다른 쪽 결과는 끝까지 본다.
@@ -36,6 +36,8 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install -r requirements-test.txt
+          # -n auto 가 고르는 워커 수의 근거(러너 코어 수)를 로그에 남긴다
+          nproc; python -c "import os; print(os.cpu_count())"
       - name: Dummy secrets (tests use a mock DB; the app only needs the keys to exist)
         run: |
           mkdir -p .streamlit
@@ -55,8 +57,9 @@ jobs:
         run: |
           # GitHub 의 bash 기본은 -e: pytest 가 실패하면 아래 요약·annotation 코드까지 못 가므로 끈다
           set +e -o pipefail
-          # -n auto = 러너 코어 수, loadfile = 파일 하나는 한 워커에서 원래 순서로 (파일 안 모듈 전역 상태 보호)
-          python -m pytest tests -q -rf -p no:cacheprovider -n auto --dist loadfile --durations=25 2>&1 | tee pytest.log
+          # -n auto = 러너 코어 수. load = 테스트 단위 분배 — loadfile 은 큰 파일이 한 워커에 몰려 꼬리가 길었다
+          # (r1 47·62분, 로컬 load 시험 녹색 2026-11-04). -q 없음: 워커 수·수집 수 줄이 로그에 남게
+          python -m pytest tests -rf -p no:cacheprovider -n auto --dist load --durations=25 2>&1 | tee pytest.log
           status=${PIPESTATUS[0]}
           {
             echo "### pytest py${{ matrix.python-version }} (exit $status)"
