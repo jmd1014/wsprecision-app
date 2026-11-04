@@ -8,6 +8,7 @@ test_bulk_delivery 의 상태 저장 mock 을 그대로 쓴다. 폴백(기존 6�
 """
 import os
 import sys
+import time
 
 import pytest
 
@@ -332,6 +333,10 @@ def test_double_click_calls_rpc_once(ship_db, monkeypatch):
     at2.button(key="cf_go").click()
     at2.run()
     assert not at2.exception
+    # xdist r4: 첫 클릭이 가드를 찍었는지 본 뒤 "방금 눌림" 을 미래 시각으로 고정 — 실제 연타 간격(5초 안)을 벽시계에
+    # 기대면 run 하나가 5초를 넘는 느린 러너(CI r3 py3.11)에서 두 번째 클릭이 통과했다
+    assert at2.session_state["_guard_cf_go"] > 0
+    at2.session_state["_guard_cf_go"] = time.time() + 3600
     if [b for b in at2.button if b.key == "cf_go"]:
         at2.button(key="cf_go").click()
         at2.run()

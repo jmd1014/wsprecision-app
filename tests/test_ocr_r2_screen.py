@@ -230,7 +230,8 @@ def test_c21_retry_after_failure_saves_once_with_dup_ok(monkeypatch):
     _click_save(at)
     assert "이미 장부에 같은 행이 있습니다" in texts()
     # r2-4(qa M1): 시간에 기대지 않게 가드를 직접 — 방금 누른 상태면 막히고(장부 불변), 풀면 다시 저장 시도
-    at.session_state["_guard_sc_save_0"] = time.time()
+    # xdist r4: 벽시계에 기대지 않게 "방금 눌림" 을 미래 시각으로 고정 — 느린 러너에서 run 이 5초를 넘어도 가드 유지
+    at.session_state["_guard_sc_save_0"] = time.time() + 3600
     _click_save(at)
     assert "방금 같은 처리가 실행됐습니다" in texts() and _ledger_inserts(m) == []
     at.session_state["_guard_sc_save_0"] = 0

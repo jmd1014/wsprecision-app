@@ -645,7 +645,8 @@ def test_screen_confirm_gate_follows_selected_order_and_double_click(monkeypatch
     n_rpc = len(m.rpc_calls)
     at.button(key="so_close_101").click()
     at.run()
-    at.session_state["_guard_so_close"] = _time.time()
+    # xdist r4: 미래 시각으로 "방금 눌림" 고정 — run 이 5초를 넘는 느린 러너에서도 가드가 풀리지 않게(CI r3 py3.11)
+    at.session_state["_guard_so_close"] = _time.time() + 3600
     at.button(key="so_close_cfm_ok").click()
     at.run()
     assert len(m.rpc_calls) == n_rpc and m.header(101)["status"] == "PARTIAL"   # 가드가 막음(경고 뒤 rerun 으로 문구는 사라짐)
