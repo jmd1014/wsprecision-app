@@ -1438,13 +1438,15 @@ def toss_grid_edit(rows, *, key, editable_cols=(), num_cols=(), strong_cols=(),
 
 
 def toss_grid(rows, *, key, badge_cols=(), num_cols=(), strong_cols=(),
-              columns=None, height=None):
+              columns=None, height=None, selected=None):
     """토스 스타일 선택 그리드 — 선택된 행 인덱스 반환 (기본 0).
 
     rows: list[dict]. 표시 순서는 columns 로 지정 가능.
     badge_cols: 상태 배지 / num_cols: 우측 정렬·콤마 / strong_cols: 굵게.
     행을 클릭하면 rerun 되어 그 행 인덱스가 반환된다. AgGrid 미탑재
     (테스트 등) 시 st.dataframe 행 선택으로 폴백 — 동작 동일.
+    selected(후보 31, 2026-11-04): 기억해 둔 행 인덱스 — 그리드에 선택이 없을 때(저장 뒤 rerun·탭 복귀)
+    0 대신 이 행을 돌려주고, AgGrid 에서는 그 행을 미리 선택해 보여 준다. 범위 밖이면 무시.
     """
     import pandas as pd   # 전역 pd 부재 대비 (페이지별 지역 import)
     if hasattr(rows, "to_dict"):
@@ -1457,6 +1459,8 @@ def toss_grid(rows, *, key, badge_cols=(), num_cols=(), strong_cols=(),
              else [c for c in rows[0].keys() if not str(c).startswith("_")])
     _df = pd.DataFrame([{**{c: r.get(c) for c in _cols},
                          "_i": i} for i, r in enumerate(rows)])
+    _pre = (int(selected) if isinstance(selected, int) and not isinstance(selected, bool)
+            and 0 <= selected < len(rows) else None)
     try:
         from st_aggrid import AgGrid, GridOptionsBuilder, JsCode
         # AG Grid 신버전은 문자열 반환을 텍스트로 이스케이프하므로
@@ -1510,7 +1514,10 @@ def toss_grid(rows, *, key, badge_cols=(), num_cols=(), strong_cols=(),
                 _kw["cellRenderer"] = _badge_js
             if _kw:
                 gb.configure_column(c, **_kw)
-        gb.configure_selection("single")
+        if _pre is not None:
+            gb.configure_selection("single", pre_selected_rows=[_pre])
+        else:
+            gb.configure_selection("single")
         # 12행 이하는 전체 펼침, 그 이상은 고정 높이 + 리스트 내부 스크롤
         # (2026-09-03 사용자 확정: 전체 펼침은 페이지가 너무 길어 불편).
         # 내부 스크롤이 죽던 원인은 별도로 잡았다 — iframe·컨테이너 폭
@@ -1543,16 +1550,24 @@ def toss_grid(rows, *, key, badge_cols=(), num_cols=(), strong_cols=(),
                 # 같은 key 의 그리드는 이전 검색의 선택(예: 57번째 행)을
                 # 기억한다 — 새 결과가 더 짧으면 범위 밖 → IndexError
                 # (2026-09-03 제품 검색 3건 결과에서 발생). 범위 밖이면 첫 행
-                return _ix if 0 <= _ix < len(rows) else 0
-        return 0
+                return _ix if 0 <= _ix < len(rows) else (_pre or 0)
+        return _pre if _pre is not None else 0
     except Exception:
         # 폴백 — st.dataframe 행 선택 (AppTest·미설치 환경)
         _ev = st.dataframe(_df.drop(columns=["_i"]), hide_index=True,
                            use_container_width=True, on_select="rerun",
                            selection_mode="single-row", key=f"{key}_fb")
         _r = (getattr(getattr(_ev, "selection", None), "rows", None)
-              or [0])
+              or [_pre if _pre is not None else 0])
         return min(_r[0], len(rows) - 1)
+
+
+def _mem_index(rows, id_key, mem_key):
+    """후보 31: session_state[mem_key] 에 기억한 id 의 rows 안 위치(없으면 None) — toss_grid(selected=) 용."""
+    v = st.session_state.get(mem_key)
+    if v is None:
+        return None
+    return next((i for i, r in enumerate(rows) if r.get(id_key) == v), None)
 
 
 # ─── 공정 라우팅 (Migration 036, 2026-08-12) ───
@@ -2720,7 +2735,7 @@ elif page == "마스터 관리":
         "품번별 맞추기",
         "거래처 편집", "제품 편집", "자재 편집", "BOM 편집",
         "정합 점검", "계정 관리", "디자인 데이터 내보내기", "이력 조회"
-    ])
+    ], key="mm_tabs")   # 후보 31: key 가 없으면 저장 뒤 rerun 마다 첫 탭으로 돌아갔다
 
     # ─── Tab: 정합 점검 (Migration 038, 2026-08-19) ───
     # "진실 한 곳" 원칙의 감시 장치 — 데이터가 규칙을 벗어나면 여기에
@@ -3875,8 +3890,10 @@ elif page == "마스터 관리":
                 "상태": "휴면" if r.get("archived_at") else "활성",
             } for r in prows], key="prod_grid",
                 badge_cols=("상태",), strong_cols=("품번",),
-                num_cols=("판매가",))
+                num_cols=("판매가",),
+                selected=_mem_index(prows, "product_id", "prod_sel_pid"))
             _pd = prows[_pd_i if _pd_i is not None else 0]
+            st.session_state["prod_sel_pid"] = _pd["product_id"]    # 후보 31
             _pid = _pd["product_id"]
             # 선택·값이 바뀌면 카드 입력 기본값 리셋 (2026-08-27)
             fresh_keys("pdcard",
@@ -4544,7 +4561,8 @@ elif page == "마스터 관리":
                     "주공급사": r.get("main_supplier") or "-",
                     "조달": r.get("procurement_type") or "-",
                 } for r in mrows], key="mat_grid",
-                    num_cols=("재고",), strong_cols=("자재명",))
+                    num_cols=("재고",), strong_cols=("자재명",),
+                    selected=_mem_index(mrows, "material_id", "mat_sel_mid"))
             else:
                 _md_i = toss_grid([{
                     "자재ID": r["material_id"],
@@ -4553,8 +4571,10 @@ elif page == "마스터 관리":
                     "규격": r.get("spec") or "-",
                     "주공급사": r.get("main_supplier") or "-",
                 } for r in mrows], key=f"mat_grid_{_mat_prefix}",
-                    strong_cols=("자재명",))
+                    strong_cols=("자재명",),
+                    selected=_mem_index(mrows, "material_id", "mat_sel_mid"))
             _md = mrows[_md_i if _md_i is not None else 0]
+            st.session_state["mat_sel_mid"] = _md["material_id"]    # 후보 31
             _mid = _md["material_id"]
             # 선택·값이 바뀌면 카드 입력 기본값 리셋 (2026-08-27)
             fresh_keys("mdcard",
@@ -5194,8 +5214,10 @@ elif page == "마스터 관리":
                            else "기본"),
             } for p in pmatch], key="bom_plist_grid",
                 badge_cols=("라우팅",), num_cols=("공정",),
-                strong_cols=("품번",))
+                strong_cols=("품번",),
+                selected=_mem_index(pmatch, "product_id", "bom_sel_pid"))
             _bp = pmatch[_bp_i if _bp_i is not None else 0]
+            st.session_state["bom_sel_pid"] = _bp["product_id"]     # 후보 31: 저장 뒤 rerun 에도 같은 제품
         if _bp:
             full_select = ("bom_id,product_id,material_id,"
                            "raw_material_name,qty_per_pc,shared_factor,"
