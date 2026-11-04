@@ -17423,8 +17423,8 @@ elif page == "구매 관리":
             from collections import defaultdict
             # ── 거래명세서 스캔 판독 (2026-10-16, 내부 OCR) — 판독 결과는 검토 표에서 고친 뒤 저장 ──
             import utils.stmt_ocr as _socr
-            if not hasattr(_socr, "ocr_row_defaults"):
-                # 배포 직후 Cloud 에 구버전 모듈이 남은 경우(매입 OCR 보완 r1) — 디스크에서 다시 읽는다
+            if not hasattr(_socr, "OCR_RULES_VERSION"):
+                # 배포 직후 Cloud 에 구버전 모듈이 남은 경우(매입 OCR 보완 r1·r2) — 디스크에서 다시 읽는다
                 import importlib as _il
                 _socr = _il.reload(_socr)
             import re as _re_sc
@@ -17504,14 +17504,18 @@ elif page == "구매 관리":
                                 _dflt = _sc_d0.today()
                             _sc_date = sc2.date_input("거래일", value=_dflt, key=f"sc_d_{_sc_nonce}_{_pi}")
                             _sc_no = sc3.text_input("명세서 번호(선택)", key=f"sc_no_{_sc_nonce}_{_pi}")
-                            _sc_rows, _sc_notes = [], []
+                            _sc_rows, _sc_notes, _sc_ocr_rows = [], [], []
                             for _ri, it in enumerate(_pg["items"], 1):
                                 # O7·O4·O5(2026-11-03): 제안 점수 80 미만은 OCR 품명, 단위 못 읽으면 거래처 최빈 단위,
                                 # KG 행 수량 = 중량 왼쪽 숫자(없으면 빈칸) — 규칙은 stmt_ocr.ocr_row_defaults(테스트 T8)
                                 _d = _socr.ocr_row_defaults(it, _pg.get("unit_mode"))
                                 if _d["note"]:
                                     _sc_notes.append(f"{_ri}행 {_d['note']}")
-                                _sc_rows.append({"저장 품명": _d["save_item"], "OCR 품명": _d["ocr_item"],
+                                # OCR r2: 정정 기록용 기본값 행 — 숨김 열 idx 로 저장 행과 짝짓는다(편집기 index 는 행을
+                                # 지우고 추가하면 지운 번호를 다시 쓰므로 쓰지 않음)
+                                _sc_ocr_rows.append({"idx": _ri - 1, **_d, "how": it.get("how"),
+                                                     "fixed_from": it.get("fixed_from")})
+                                _sc_rows.append({"idx": _ri - 1, "저장 품명": _d["save_item"], "OCR 품명": _d["ocr_item"],
                                                  "제안 점수": _d["score"], "단위": _d["unit"],
                                                  "수량": (_d["qty"] if _d["qty"] is not None else float("nan")),
                                                  "중량(kg)": (_d["weight"] if _d["weight"] is not None else float("nan")),
@@ -17523,6 +17527,7 @@ elif page == "구매 관리":
                                 pd.DataFrame(_sc_rows), hide_index=True, use_container_width=True, num_rows="dynamic",
                                 key=f"sc_ed_{_sc_nonce}_{_pi}",
                                 column_config={
+                                    "idx": None,        # 숨김 — 판독 행 번호(추가한 행은 빈칸)
                                     "저장 품명": st.column_config.TextColumn("저장 품명", help="장부에 들어갈 품명 — 제안(기존 품명)이 틀리면 고치세요"),
                                     "OCR 품명": st.column_config.TextColumn("OCR 품명", disabled=True),
                                     "제안 점수": st.column_config.NumberColumn(
@@ -17574,7 +17579,8 @@ elif page == "구매 관리":
                                                   "unit": _u, "qty": _nz2(_r.get("수량")), "weight": _nz2(_r.get("중량(kg)")),
                                                   "unit_price": _nz2(_r.get("단가")), "amount": _a, "vat": _v,
                                                   "total": ((_a or 0) + (_v or 0)) if _a is not None else None,
-                                                  "remark": ("" if pd.isna(_r.get("비고")) else str(_r.get("비고")).strip()) or None})
+                                                  "remark": ("" if pd.isna(_r.get("비고")) else str(_r.get("비고")).strip()) or None,
+                                                  "idx": (None if pd.isna(_r.get("idx")) else int(_r.get("idx")))})
                                 if not _rows:
                                     st.warning("저장할 행이 없습니다.")
                                 else:
@@ -17582,7 +17588,8 @@ elif page == "구매 관리":
                                     # 여기서 부르면 NameError(7ab6e2e 10/16 이후 스캔 저장 불가). 요청만 남기고 정의 뒤에서 처리.
                                     st.session_state["sc_save_req"] = {
                                         "nonce": _sc_nonce, "pi": _pi, "rows": _rows, "date_iso": _sc_date.isoformat(),
-                                        "stmt_no": _sc_no, "dup_ok": _sc_dupok}
+                                        "stmt_no": _sc_no, "dup_ok": _sc_dupok,
+                                        "vendor": str(_sc_vendor or "").strip(), "ocr_rows": _sc_ocr_rows}   # OCR r2 정정 기록
                     if st.button("판독 결과 비우기", key="sc_clear"):
                         st.session_state.pop("sc_pages", None)
                         st.rerun()
@@ -17900,15 +17907,31 @@ elif page == "구매 관리":
         # 꺼낸다 — 예외가 나도 다음 실행에서 다시 저장되지 않게. 새로 판독했으면(nonce 다름) 옛 요청은 버린다.
         _sc_req = st.session_state.pop("sc_save_req", None)
         if _sc_req and _sc_req.get("nonce") == st.session_state.get("sc_nonce", 0):
-            _ok1, _msg1 = _mi_save_rows(_sc_req["rows"], _sc_req["date_iso"], _sc_req["stmt_no"],
-                                        _sc_req["dup_ok"], "SCAN")
+            # idx(정정 기록용 판독 행 번호)는 장부로 보내지 않는다 — 복사본에서 빼고, 원본은 기록에 그대로
+            _ok1, _msg1 = _mi_save_rows([{k: v for k, v in r.items() if k != "idx"} for r in _sc_req["rows"]],
+                                        _sc_req["date_iso"], _sc_req["stmt_no"], _sc_req["dup_ok"], "SCAN")
             if _ok1:
-                _left = [p for i, p in enumerate(st.session_state.get("sc_pages") or [])
-                         if p.get("_sid", i) != _sc_req["pi"]]
+                _all = st.session_state.get("sc_pages") or []
+                _pg1 = next((p for i, p in enumerate(_all) if p.get("_sid", i) == _sc_req["pi"]), None)
+                _left = [p for i, p in enumerate(_all) if p.get("_sid", i) != _sc_req["pi"]]
                 if _left:
                     st.session_state["sc_pages"] = _left
                 else:
                     st.session_state.pop("sc_pages", None)
+                # OCR r2: 저장 성공 뒤에만 장 1행 정정 기록(079). 실패해도 장부 저장·플래시는 그대로
+                try:
+                    from utils import scan_log as _slog
+                    _lr = _slog.scan_log_row(
+                        _pg1, {"vendor": _sc_req.get("vendor"), "date": _sc_req["date_iso"],
+                               "statement_no": _sc_req["stmt_no"]},
+                        _sc_req.get("ocr_rows") or [], _sc_req["rows"], current_user_name(),
+                        (_pg1 or {}).get("file"))
+                    _db.insert("purchase_scan_log", [_lr])
+                    _msg1 += (f" · 정정 기록(셀 {_lr['n_cells_changed']}·행 +{_lr['n_rows_added']}"
+                              f"/−{_lr['n_rows_removed']})")
+                except Exception as _e:
+                    if not str(_e).startswith("purchase_scan_log insert "):     # 응답 오류는 db.insert 가 이미 기록
+                        _db.log_error("db_write", f"스캔 정정 기록 실패: {_e}", table_name="purchase_scan_log")
                 nav_flash(_msg1)
             else:
                 st.session_state["sc_save_err"] = (_sc_req["pi"], _msg1)
