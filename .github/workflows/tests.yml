@@ -17,6 +17,7 @@ jobs:
     name: pytest (py${{ matrix.python-version }})
     runs-on: ubuntu-latest
     # 2026-10-28 실측: py3.14 89분(594 passed 뒤 90분 상한으로 취소, run 40620555996)·py3.11 52분 → 150분
+    # 2026-11-04 xdist 도입(-n auto, 목표 job 당 40분) — 상한은 2회 연속 녹색·측정 뒤 낮춘다
     timeout-minutes: 150
     strategy:
       # 3.11 = 로컬 개발·기존 기준, 3.14 = Streamlit Cloud 운영 런타임(2026-10-23 관리자 진단, P1-4).
@@ -34,7 +35,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install pytest-github-actions-annotate-failures
+          pip install -r requirements-test.txt
       - name: Dummy secrets (tests use a mock DB; the app only needs the keys to exist)
         run: |
           mkdir -p .streamlit
@@ -54,7 +55,8 @@ jobs:
         run: |
           # GitHub 의 bash 기본은 -e: pytest 가 실패하면 아래 요약·annotation 코드까지 못 가므로 끈다
           set +e -o pipefail
-          python -m pytest tests -q -rf -p no:cacheprovider 2>&1 | tee pytest.log
+          # -n auto = 러너 코어 수, loadfile = 파일 하나는 한 워커에서 원래 순서로 (파일 안 모듈 전역 상태 보호)
+          python -m pytest tests -q -rf -p no:cacheprovider -n auto --dist loadfile --durations=25 2>&1 | tee pytest.log
           status=${PIPESTATUS[0]}
           {
             echo "### pytest py${{ matrix.python-version }} (exit $status)"

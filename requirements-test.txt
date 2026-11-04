@@ -1,0 +1,3 @@
+# 테스트·CI 전용 — Streamlit Cloud 는 requirements.txt 만 설치한다 (2026-11-04 xdist 묶음)
+pytest-xdist>=3.6
+pytest-github-actions-annotate-failures
