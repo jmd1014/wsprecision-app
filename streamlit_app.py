@@ -9695,7 +9695,20 @@ elif page == "수주 관리":
                                             "아무것도 바뀌지 않았습니다. ")
                                          + "화면을 새로고침해 회차를 확인한 뒤 다시 저장하세요.")
                             _ok9 = True
-                            if _plan9["delete"]:
+                            # 후보 26: 납품된 회차는 삭제하지 않는다(쓰기 전 차단). 날짜 변경도 옛 날짜 회차의
+                            # 삭제 + 새 날짜 삽입이라 같이 막힌다 — 안내대로 새 날짜 행을 추가하고 옛 행 수량을
+                            # 기납품 이상으로 남긴다
+                            _gone_dl9 = [g for g in _plan9["gone"] if float(g.get("delivered_qty") or 0) > 0]
+                            if _gone_dl9:
+                                st.error(
+                                    "납품된 회차({})는 삭제할 수 없습니다 — 수량을 기납품 이상으로 줄이세요. "
+                                    "날짜를 바꾸려면 옛 행을 지우지 말고 새 날짜 행을 추가한 뒤 옛 행 수량을 "
+                                    "기납품 수량으로 줄이세요. 아무것도 저장하지 않았습니다.".format(
+                                        ", ".join(f"{str(g.get('due_date'))[:10]} 기납품 "
+                                                  f"{float(g.get('delivered_qty') or 0):,.0f}개"
+                                                  for g in _gone_dl9)))
+                                _ok9 = False
+                            if _ok9 and _plan9["delete"]:
                                 _n9 = _db.delete("so_delivery_schedule",
                                                  "sched_id=in.(" + ",".join(
                                                      str(x) for x in _plan9["delete"]) + ")")

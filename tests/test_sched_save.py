@@ -207,3 +207,30 @@ def test_plan_sched_writes_recovers_from_tmp_numbers():
     p = plan_sched_writes(old, keep)
     tmps = [t for _, t in p["phase1"]]
     assert sorted(tmps) == [TMP_BASE + 1, TMP_BASE + TMP_BASE + 1] and len(set(tmps)) == 2
+
+
+# ── B(후보 26) 납품된 회차 삭제 차단 ──
+def test_b_delete_delivered_round_blocked_before_writes(monkeypatch):
+    m = _sched_mock([(1, "2026-11-10", 1, 100, 60), (2, "2026-11-20", 2, 100, 0)])
+    at = _open(monkeypatch, m)
+    before = _sched(m)
+    _save(at, m, deleted_rows=[0])
+    assert any("납품된 회차(2026-11-10 기납품 60개)는 삭제할 수 없습니다" in e for e in _errors(at)), _errors(at)
+    assert _sched(m) == before and not [w for w in m.writes if w[1] == "so_delivery_schedule"], "쓰기 0"
+    assert not any("저장 완료" in f for f in _flash(at))
+
+
+def test_b_date_change_of_delivered_round_blocked(monkeypatch):
+    m = _sched_mock([(1, "2026-11-10", 1, 100, 60), (2, "2026-11-20", 2, 100, 0)])
+    at = _open(monkeypatch, m)
+    _save(at, m, edited_rows={0: {"납기": "2026-11-12"}})
+    assert any("날짜를 바꾸려면" in e for e in _errors(at))
+    assert not [w for w in m.writes if w[1] == "so_delivery_schedule"]
+
+
+def test_b_reduce_delivered_round_to_delivered_qty_allowed(monkeypatch):
+    m = _sched_mock([(1, "2026-11-10", 1, 100, 60), (2, "2026-11-20", 2, 100, 0)])
+    at = _open(monkeypatch, m)
+    _save(at, m, edited_rows={0: {"수량": 60}})
+    assert _sched(m) == [(1, "2026-11-10", 1, 60.0, 60.0), (2, "2026-11-20", 2, 100.0, 0.0)]
+    assert any("저장 완료" in f for f in _flash(at))
