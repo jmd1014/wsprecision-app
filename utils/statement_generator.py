@@ -8,7 +8,18 @@
 품명은 거래처 ERP 표기(customer_part_no)를 우선 사용 — 거래처가
 자기 전산과 대조하기 쉽게.
 """
+from html import escape as _esc
+
 from utils.line_pn import line_pn
+
+
+def _slip_label(batch, ship_no=None):
+    """후보 44(2026-11-05): 출력물에 찍을 전표번호 — 인자 우선, 없으면 batch rows 의 ship_no 유일값(여러 전표를
+    한 장에 합친 경우 ' · '), 그것도 없으면 None(기존 머리 그대로)."""
+    if ship_no:
+        return str(ship_no)
+    vals = list(dict.fromkeys(str(r.get("ship_no")) for r in (batch.get("rows") or []) if r.get("ship_no")))
+    return " · ".join(vals) or None
 
 SUPPLIER = {
     "biz_no": "606-02-14529",
@@ -200,7 +211,7 @@ def _item_rows(rows):
 
 
 def _statement_page(customer, vendor, rows, date_s, accent, copy_label,
-                    page_no, page_cnt):
+                    page_no, page_cnt, slip=None):
     body, sup_sum, vat_sum, missing = _item_rows(rows)
     while len(body) < _ROWS_PER_PAGE:
         body.append("<tr>" + "<td>&nbsp;</td>" * 9 + "</tr>")
@@ -214,7 +225,7 @@ def _statement_page(customer, vendor, rows, date_s, accent, copy_label,
                     if logo_data_uri() else ''}</span>
   <span class="tc"><span class="t">거래명세서</span>
    <span class="copy" style="color:{accent}">({copy_label})</span></span>
-  <span class="meta">{date_s}<br>PAGE {page_no}/{page_cnt}</span>
+  <span class="meta">{('전표 ' + _esc(slip) + '<br>') if slip else ''}{date_s}<br>PAGE {page_no}/{page_cnt}</span>
  </div>
  {_party_table(customer, vendor, accent)}
  <table class="items">
@@ -243,7 +254,7 @@ def _statement_page(customer, vendor, rows, date_s, accent, copy_label,
 """
 
 
-def transaction_statements_html(batch, vendors_map=None, rev_label=None):
+def transaction_statements_html(batch, vendors_map=None, rev_label=None, ship_no=None):
     """거래처별 거래명세서 — 공급자용(주황)·공급받는자용(초록) 각 1장.
 
     batch: {"date": "YYYY-MM-DD", "rows": [{customer, customer_pn, pn,
@@ -251,8 +262,10 @@ def transaction_statements_html(batch, vendors_map=None, rev_label=None):
     vendors_map: {거래처명: vendors 행}
     rev_label: 확정 후 정정된 전표의 재발행 표기 (예: '정정본 v2 · 2026-09-04')
         — 파기되지 않은 옛 출력물과 구분하기 위해 사본 라벨 옆에 찍는다
+    ship_no: 머리에 찍을 전표번호(후보 44 — 출력물로 전표를 찾게). 없으면 rows 의 ship_no 유일값, 그것도 없으면 생략
     """
     vendors_map = vendors_map or {}
+    slip = _slip_label(batch, ship_no)
     date_s = str(batch.get("date") or "")
     by_cust = {}
     for r in batch.get("rows", []):
@@ -270,7 +283,7 @@ def transaction_statements_html(batch, vendors_map=None, rev_label=None):
                 pages.append((accent, _statement_page(
                     cust, vendors_map.get(cust), ch, date_s, accent,
                     label + (f" · {rev_label}" if rev_label else ""),
-                    pi, len(chunks))))
+                    pi, len(chunks), slip=slip)))
     # 강조색은 페이지 생성 시 이미 반영됨 (공급자용 주황 / 받는자용 초록)
     return ("<!doctype html><html><head><meta charset='utf-8'>"
             f"<title>거래명세서 {date_s}</title>"
@@ -280,7 +293,7 @@ def transaction_statements_html(batch, vendors_map=None, rev_label=None):
               "()=>window.print(),300)</script></body></html>")
 
 
-def delivery_list_html(batch, draft=False, rev_label=None, variants=frozenset()):
+def delivery_list_html(batch, draft=False, rev_label=None, variants=frozenset(), ship_no=None):
     """내부 출고 리스트 — 상차·검수 확인용 (A4, 확인란 포함).
 
     사내 품번 기준으로 준비하므로 거래처 표기·수주번호는 싣지 않고
@@ -294,6 +307,7 @@ def delivery_list_html(batch, draft=False, rev_label=None, variants=frozenset())
     """
     date_s = str(batch.get("date") or "")
     rows = batch.get("rows", [])
+    slip = _slip_label(batch, ship_no)       # 후보 44: 전표번호(있으면 머리 meta 앞에)
     title = "출고 리스트" + (" (현장 확인용)" if draft else "")
     extra_th = ('<th style="width:64px">정정 수량</th>' if draft else "")
     body = []
@@ -334,7 +348,7 @@ def delivery_list_html(batch, draft=False, rev_label=None, variants=frozenset())
   <span class="copy">{'(현장 확인용)' if draft
                       else f'(확정 · {rev_label})' if rev_label
                       else '(확정)'}</span>
-  <span class="meta">{date_s} · {len(rows)}건 · 총 {_num(total)}개</span>
+  <span class="meta">{('전표 ' + _esc(slip) + ' · ') if slip else ''}{date_s} · {len(rows)}건 · 총 {_num(total)}개</span>
  </div>
  <table class="items">
   <colgroup><col style="width:30px">

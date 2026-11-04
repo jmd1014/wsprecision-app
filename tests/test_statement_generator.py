@@ -174,3 +174,26 @@ def test_account_statements_one_per_customer_no_sign_line():
         account_statements_xlsx(rows, "2026-09-01", "2026-09-30")))
     assert wb.sheetnames == ["(주)엠제이티", "미진정밀"]
     assert wb["미진정밀"]["B2"].value == "미진정밀"
+
+
+# ─────────────── 후보 44(2026-11-05) — 거래명세서·출고 리스트 머리에 전표번호 ───────────────
+def test_44_statement_header_has_ship_no_with_rev_label():
+    html = transaction_statements_html(BATCH, VMAP, rev_label="정정본 v2 · 2026-11-04", ship_no="SH-20261104-02")
+    assert html.count("전표 SH-20261104-02<br>") == 2 * len({r.get("customer") or "-" for r in BATCH["rows"]}), \
+        "공급자용·공급받는자용 각 페이지 머리"
+    assert "정정본 v2 · 2026-11-04" in html
+
+
+def test_44_ship_no_fallback_from_rows_and_absent_unchanged():
+    base = transaction_statements_html(BATCH, VMAP)
+    assert "전표 " not in base, "ship_no 없는 batch 는 기존 머리 그대로"
+    b2 = {**BATCH, "rows": [dict(r, ship_no=("SH-A" if i % 2 == 0 else "SH-B")) for i, r in enumerate(BATCH["rows"])]}
+    html = transaction_statements_html(b2, VMAP)
+    assert ("전표 SH-A · SH-B<br>" in html) if len(BATCH["rows"]) > 1 else ("전표 SH-A<br>" in html)
+    assert transaction_statements_html(BATCH, VMAP, ship_no="<x>").count("전표 &lt;x&gt;") >= 1, "HTML 이스케이프"
+
+
+def test_44_delivery_list_header_has_ship_no():
+    lst = delivery_list_html(BATCH, ship_no="SH-20261104-02")
+    assert "전표 SH-20261104-02 · " in lst
+    assert "전표 " not in delivery_list_html(BATCH)

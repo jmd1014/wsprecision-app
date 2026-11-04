@@ -10323,8 +10323,8 @@ elif page == "출고 관리":
         from utils.shipment_adjust import split_round_alloc as _cf_split
         import utils.statement_generator as _cf_sg
         import inspect as _cf_insp
-        if "variants" not in _cf_insp.signature(
-                _cf_sg.delivery_list_html).parameters:
+        if ("variants" not in _cf_insp.signature(_cf_sg.delivery_list_html).parameters
+                or "ship_no" not in _cf_insp.signature(_cf_sg.transaction_statements_html).parameters):
             # Cloud 재배포 시 sys.modules 에 옛 모듈이 남아 새 인자를
             # 못 받던 TypeError (2026-09-04) — 영업 보고와 같은 가드
             import importlib as _cf_il
@@ -11282,14 +11282,15 @@ elif page == "출고 관리":
                 pr1, pr2 = st.columns(2)
                 pr1.download_button(
                     "출고 리스트 재발행",
-                    _cf_list(_cf_batch(_cf_items), rev_label=_cf_rev_lbl, variants=_pnv),
+                    _cf_list(_cf_batch(_cf_items), rev_label=_cf_rev_lbl, variants=_pnv,
+                             ship_no=_cf_pick.get("ship_no")),
                     file_name=f"출고리스트_{_cf_pick['ship_no']}.html",
                     mime="text/html", key="cf_dl_list",
                     use_container_width=True)
                 pr2.download_button(
                     "거래명세서 재발행",
                     _cf_stmt(_cf_batch(_cf_items), _cf_vmap(_cf_items),
-                             rev_label=_cf_rev_lbl),
+                             rev_label=_cf_rev_lbl, ship_no=_cf_pick.get("ship_no")),
                     file_name=f"거래명세서_{_cf_pick['ship_no']}.html",
                     mime="text/html", key="cf_dl_stmt", type="primary",
                     use_container_width=True)
@@ -11558,7 +11559,8 @@ elif page == "출고 관리":
                 ac1, ac2, ac3 = st.columns([1, 1, 1])
                 ac1.download_button(
                     "확인용 리스트 인쇄",
-                    _cf_list(_cf_batch(_cf_items), draft=True, variants=_pnv),
+                    _cf_list(_cf_batch(_cf_items), draft=True, variants=_pnv,
+                             ship_no=_cf_pick.get("ship_no")),
                     file_name="출고리스트_확인용_{}.html".format(
                         _cf_pick["ship_no"]),
                     mime="text/html", key="cf_dl_draft",
@@ -22598,7 +22600,8 @@ elif page == "영업 보고":
         import importlib as _sr_il
         _sr = _sr_il.reload(_sr)  # Cloud 재배포 시 sys.modules 캐시 가드
     import utils.statement_generator as _sr_sg
-    if "variants" not in _sr_insp.signature(_sr_sg.delivery_list_html).parameters:
+    if ("variants" not in _sr_insp.signature(_sr_sg.delivery_list_html).parameters
+            or "ship_no" not in _sr_insp.signature(_sr_sg.transaction_statements_html).parameters):
         import importlib as _sr_il2
         _sr_sg = _sr_il2.reload(_sr_sg)   # 같은 가드(PN 묶음 variants 인자)
     _sr_list = _sr_sg.delivery_list_html
@@ -23091,14 +23094,15 @@ elif page == "영업 보고":
             _rb1, _rb2 = st.columns(2)
             _rb1.download_button(
                 "출고 리스트 재발행",
-                _sr_list(_sr_batch(_r_items, _r_pick), rev_label=_sr_rev_lbl, variants=_pnv),
+                _sr_list(_sr_batch(_r_items, _r_pick), rev_label=_sr_rev_lbl, variants=_pnv,
+                         ship_no=_r_pick.get("ship_no")),
                 file_name=f"출고리스트_{_r_pick['ship_no']}.html",
                 mime="text/html", key="sr_re_list",
                 use_container_width=True, disabled=_r_tr)
             _rb2.download_button(
                 "거래명세서 재발행",
                 _sr_stmt(_sr_batch(_r_items, _r_pick),
-                         _sr_vmap(_r_items), rev_label=_sr_rev_lbl),
+                         _sr_vmap(_r_items), rev_label=_sr_rev_lbl, ship_no=_r_pick.get("ship_no")),
                 file_name=f"거래명세서_{_r_pick['ship_no']}.html",
                 mime="text/html", key="sr_re_stmt", type="primary",
                 use_container_width=True, disabled=_r_tr)
