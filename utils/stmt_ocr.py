@@ -475,6 +475,8 @@ def build_known(ledger_rows):
 
 
 MATCH_AUTO_MIN = 80     # O7: 제안 점수가 이 값 이상일 때만 저장 품명 기본값으로
+# 해석 규칙 판 — 정정 기록(purchase_scan_log.rules_version, OCR r2)에 남는다. 규칙을 추록할 때마다 올린다
+OCR_RULES_VERSION = "r2"
 
 
 def ocr_row_defaults(it, unit_mode=None):
