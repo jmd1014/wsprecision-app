@@ -111,3 +111,50 @@ def test_r3_ocr_dims_l_variants_and_guillemet():
     assert (140, 18) in ocr_dims("STS304t = 140 ¢ «18 £"), "`«` 구분자"
     assert (95, 14) in ocr_dims("STS316L& = 95¢ +144")
     assert ocr_dims("95¢ +153") == [(95, 153)], "끝자리 3 은 변형 없음"
+
+
+# ─────────────── O14 psm 합집합(parse_document) — 목 OCR ───────────────
+def _words(texts):
+    """줄 텍스트 목록 → 단어(줄마다 y 를 달리해 group_lines 가 다시 묶게)"""
+    return [{"t": t, "x": j * 100, "y": i * 40, "w": 90, "h": 20, "c": 90.0}
+            for i, line in enumerate(texts) for j, t in enumerate(line.split())]
+
+
+def _run(monkeypatch, by_psm, biz_map, vendors=None):
+    from utils import stmt_ocr as S
+    monkeypatch.setattr(S, "ocr_available", lambda: True)
+    monkeypatch.setattr(S, "render_pages", lambda b, n: ["IMG"])
+    monkeypatch.setattr(S, "best_rotation", lambda img: 0)
+    monkeypatch.setattr(S, "_image_to_words", lambda img, psm: _words(by_psm.get(psm, [])))
+    return S.parse_document(b"x", "scan.pdf", biz_map, {}, vendors=vendors)[0]
+
+
+_HS = {"vendor_id": 1, "name": "혜성철강(주)", "business_no": "615-81-76465"}
+
+
+def test_r3_o14_totals_from_other_psm_vendor_and_date(monkeypatch):
+    import datetime as dt
+    day = (dt.date.today() - dt.timedelta(days=1)).isoformat()
+    a = [f"품목{i} 10 1,000 10,000" for i in range(8)]                     # 8행, 합계줄 없음
+    b = ["등록번호 615-81-76465", f"일자 {day}"] + a[:3] + ["합계 80,000"]   # 3행 + 합계줄(= A 의 라인 합)
+    pg = _run(monkeypatch, {6: a, 11: b, 4: []}, {"6158176465": _HS})
+    assert pg["psm"] == 6 and len(pg["items"]) == 8, "items 는 채택 psm(A) 그대로"
+    assert 80000 in pg["printed_totals"] and pg["sum"] == 80000 and pg["total_ok"] is True, "합계줄은 B 에서"
+    assert (pg["vendor"], pg["vendor_how"]) == (_HS, "biz"), "채택 psm 에 사업자번호 없음 → 다른 psm"
+    assert pg["date"] == day
+    assert pg["lines"][0] == a[0], "lines 는 채택 psm 것"
+
+
+def test_r3_o14_chosen_psm_first_and_biz_before_name(monkeypatch):
+    import datetime as dt
+    d1, d2 = (dt.date.today() - dt.timedelta(days=d) for d in (1, 2))
+    other = {"vendor_id": 2, "name": "위드열처리", "business_no": "000-00-00001"}
+    # 단가가 금액의 10% 가 아니게(5×2,000) — 세액 모양 우연 일치로 합계 ○ 가 되지 않게
+    a = ["위드열처리 거래명세서", f"일자 {d1.isoformat()}"] + [f"품목{i} 5 2,000 10,000" for i in range(4)]
+    b = ["등록번호 615-81-76465", f"일자 {d2.isoformat()}", "품목 5 2,000 10,000"]
+    pg = _run(monkeypatch, {6: a, 11: b}, {"6158176465": _HS, "0000000001": other}, vendors=[_HS, other])
+    assert pg["psm"] == 6 and pg["date"] == d1.isoformat(), "날짜는 채택 psm 먼저"
+    assert (pg["vendor"], pg["vendor_how"]) == (_HS, "biz"), "사업자번호(어느 psm 이든)가 상호 폴백보다 먼저"
+    assert pg["total_ok"] is False and pg["printed_totals"] == []
+    pg = _run(monkeypatch, {6: a, 11: b[1:]}, {"6158176465": _HS, "0000000001": other}, vendors=[_HS, other])
+    assert (pg["vendor"]["name"], pg["vendor_how"]) == ("위드열처리", "name"), "번호가 어디에도 없으면 상호"

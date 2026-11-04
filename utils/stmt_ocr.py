@@ -542,7 +542,8 @@ def vendor_unit_mode(ledger_rows):
 def parse_document(file_bytes, name, biz_map, known_by_vendor, psms=(6, 11, 4), vendors=None):
     """→ [{page, vendor(dict|None), vendor_how('biz'|'name'|None), date, items[{item, unit, a, price, amount, how, match}],
            sum, printed_totals, total_ok, vat_seen, rot, psm}]. OCR 엔진이 없으면 RuntimeError.
-    vendors: 상호 폴백(O11)용 거래처 목록 — 없으면 biz_map 의 거래처들."""
+    vendors: 상호 폴백(O11)용 거래처 목록 — 없으면 biz_map 의 거래처들.
+    O14(OCR r3): printed_totals 는 시도한 모든 psm 줄의 합집합, items·lines·psm 은 채택 psm 것."""
     if not ocr_available():
         raise RuntimeError("OCR 엔진(Tesseract)이 없습니다")
     pages = []
@@ -550,21 +551,30 @@ def parse_document(file_bytes, name, biz_map, known_by_vendor, psms=(6, 11, 4), 
         rot = best_rotation(img)
         if rot:
             img = img.rotate(rot, expand=True)
-        best = None
+        # O14(OCR r3): 시도한 psm 결과를 모두 두고 — 라인 항목은 채택 psm 그대로, 인쇄 합계 후보는 모든 psm 줄의
+        # 합집합에서(합계줄을 다른 psm 이 읽었으면 그 덕을 봄), 거래처·날짜는 채택 psm 먼저 없으면 나머지 psm. 추가 OCR 없음
+        tried = []
         for psm in psms:
             words = _image_to_words(img, psm)
             lines = group_lines(words)
-            items = parse_line_items(lines)
-            s, cands, ok, vat_seen = find_totals(lines, items)
+            tried.append((psm, words, lines, parse_line_items(lines)))
+        all_lines = [l for _, _, ls, _ in tried for l in ls]
+        best = None
+        for psm, words, lines, items in tried:
+            s, cands, ok, vat_seen = find_totals(all_lines, items)
             score = (ok, len(items))
             if best is None or score > best[0]:
                 best = (score, psm, words, lines, items, s, cands, ok, vat_seen)
         _, psm, words, lines, items, s, cands, ok, vat_seen = best
-        vend = find_vendor(words, biz_map)
+        word_sets = [words] + [w for p, w, _, _ in tried if p != psm]
+        names = vendors if vendors is not None else list(biz_map.values())
+        # 사업자번호(정확)를 모든 psm 에서 먼저, 그다음 상호 폴백
+        vend = next((v for v in (find_vendor(ws, biz_map) for ws in word_sets) if v), None)
         vhow = "biz" if vend else None
         if not vend:
-            vend = find_vendor(words, {}, names=vendors if vendors is not None else list(biz_map.values()))
+            vend = next((v for v in (find_vendor(ws, {}, names=names) for ws in word_sets) if v), None)
             vhow = "name" if vend else None
+        date = next((d for d in (find_date(ws) for ws in word_sets) if d), None)
         known = known_by_vendor.get(vendor_key(vend["name"]), {}) if vend else {}
         for it in items:
             raw, sc, how = match_item(it["item"], known, it["price"])
@@ -572,7 +582,7 @@ def parse_document(file_bytes, name, biz_map, known_by_vendor, psms=(6, 11, 4), 
             it["match_score"] = sc
             it["match_how"] = how
         pages.append({"page": pno, "rot": rot, "psm": psm, "vendor": vend, "vendor_how": vhow,
-                      "date": find_date(words), "items": items,
+                      "date": date, "items": items,
                       "sum": s, "printed_totals": cands, "total_ok": ok, "vat_seen": vat_seen,
                       "lines": [l["text"] for l in lines]})
     return pages
