@@ -486,6 +486,8 @@ def _texts(at):
 
 
 def test_r2_9_two_olds_revert_reapply_same_price_keeps_master(monkeypatch):
+    """옛 2건 단가 조정 → A 되돌림(마스터 유지) → A 재적용(같은 값: 쓰기 없음, 그룹 기준 3,285 이어받음, Codex 3차 H)
+    → A 되돌림(B 남음 → 유지) → B 되돌림(마지막 → 3,285 복원)."""
     m = _price_mock()
     m.tables["sales_order_items"].append(dict(m.line(1), soi_id=2, line_no=2))
     at = _open_so_list(monkeypatch, m)
@@ -494,16 +496,38 @@ def test_r2_9_two_olds_revert_reapply_same_price_keeps_master(monkeypatch):
     at.button(key=f"rp_rv_{rp[0]['repl_id']}").click()
     at.run()
     assert m.tables["products"][0]["sale_price"] == 3282 and m.line(1)["price_kind"] is None
+    n_log = len(m.tables["master_change_log"])
     _keep(at, "단가 조정")                       # 되돌린 옛 라인 1 다시 단가 조정 — 마스터는 이미 새 단가
     new = [r for r in m.tables["so_line_replacements"] if r["old_soi_id"] == 1 and not r.get("reverted_at")]
-    assert len(new) == 1 and new[0]["master_updated"] is False and new[0]["master_old_price"] is None, \
-        "같은 값이면 마스터 갱신·로그 생략(r2 ⑥)"
+    assert len(new) == 1 and new[0]["master_updated"] is True and new[0]["master_old_price"] == 3285,         "같은 값이면 쓰기·로그 없이 활성 그룹의 복원 기준을 이어받음"
+    assert len(m.tables["master_change_log"]) == n_log
     assert any("그대로(이미 3,282)" in t for t in _texts(at))
-    n_log = len(m.tables["master_change_log"])
     at.button(key=f"rp_rv_{new[0]['repl_id']}").click()
     at.run()
     assert not at.exception, [str(e.value) for e in at.exception]
-    assert m.tables["products"][0]["sale_price"] == 3282 and len(m.tables["master_change_log"]) == n_log
+    assert m.tables["products"][0]["sale_price"] == 3282, "B 가 남아 있어 유지"
+    b = next(r for r in m.tables["so_line_replacements"] if r["old_soi_id"] == 2)
+    at.button(key=f"rp_rv_{b['repl_id']}").click()
+    at.run()
+    assert not at.exception, [str(e.value) for e in at.exception]
+    assert m.tables["products"][0]["sale_price"] == 3285, "마지막 건 → 최초 옛 단가 복원"
+    assert m.line(2)["price_kind"] is None
+
+
+def test_r2_9b_codex3_reapplied_row_keeps_group_alive(monkeypatch):
+    """Codex 3차 H 순서 그대로: A·B 조정 → A 되돌림 → A 재적용 → B 되돌림 → 마스터 유지(A 활성)."""
+    m = _price_mock()
+    m.tables["sales_order_items"].append(dict(m.line(1), soi_id=2, line_no=2))
+    at = _open_so_list(monkeypatch, m)
+    _keep(at, "단가 조정")
+    rp = list(m.tables["so_line_replacements"])
+    at.button(key=f"rp_rv_{rp[0]['repl_id']}").click()
+    at.run()
+    _keep(at, "단가 조정")
+    at.button(key=f"rp_rv_{rp[1]['repl_id']}").click()
+    at.run()
+    assert not at.exception, [str(e.value) for e in at.exception]
+    assert m.tables["products"][0]["sale_price"] == 3282 and m.line(1)["price_kind"] == "PRICE_ADJ"
 
 
 def test_r2_10_history_insert_failure_keeps_master_and_untags(monkeypatch):
@@ -638,3 +662,14 @@ def test_r2_17_material_edit_remembered_row_and_save(mem_db):
     assert len(ups) == 1 and "M903" in ups[0][2] and ups[0][3].get("main_supplier") == "시험 공급사"
     assert any("(M903) — 상세 편집" in h for h in _md_heads(at)), "저장 뒤 같은 자재"
     assert at.session_state["mat_sel_mid"] == "M903"
+
+
+def test_r2b_rpc_rejected_shows_reason_and_hint(mem_db):
+    import db
+    m = mem_db()
+    m.rpc_exc = db.RpcRejected("P0001", "source_material_archived", 400, hint="M191")
+    at = _open_copy(m)
+    _copy_btn(at).click()
+    at.run()
+    assert not at.exception, [str(e.value) for e in at.exception]
+    assert any("자재가 휴면" in str(e.value) and "(M191)" in str(e.value) for e in at.error)

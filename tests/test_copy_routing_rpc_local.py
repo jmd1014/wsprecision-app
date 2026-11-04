@@ -153,3 +153,36 @@ def test_081_unmapped_step_counted_and_source_snapshot(tx):
     cur.execute("select reason from master_change_log where record_id = %s and table_name = 'product_routing'",
                 (k["tgt"],))
     assert cur.fetchone()[0] == "라우팅 복사 — 공정행 2·연결 못한 단계 1"
+
+
+def test_081_material_name_from_master_and_archived_material_rejected(tx):
+    """r2 ④ 확장: 복사 소재행 이름·제품 소재 표기 = 자재 마스터 raw_name(BOM 텍스트가 드리프트해도).
+    r2 ⑫: 휴면 자재를 가리키는 소재행이면 source_material_archived."""
+    c, cur, k = tx
+    cur.execute("""select b.material_id, m.raw_name from bom b join materials m on m.material_id = b.material_id
+                    where b.product_id = %s and b.process_type = 'MATERIAL'""", (k["src"],))
+    mid, mname = cur.fetchone()
+    assert mname != "T81 소재", "픽스처: BOM 텍스트와 자재 마스터 이름이 다름(드리프트)"
+    cur.execute("savepoint s0")
+    cur.execute("update materials set archived_at = now() where material_id = %s", (mid,))
+    assert _reject(c, cur, k["src"], k["tgt2"], True) == "source_material_archived"
+    assert _call(cur, k["src"], k["tgt2"], False)["mat"] == 0, "소재행 복사를 끄면 휴면 자재와 무관"
+    cur.execute("rollback to savepoint s0")
+    out = _call(cur, k["src"], k["tgt2"], True)
+    assert out["mat"] == 1
+    cur.execute("select raw_material_name from bom where product_id = %s and process_type = 'MATERIAL'",
+                (k["tgt2"],))
+    assert cur.fetchone()[0] == mname
+    cur.execute("select changed_by from master_change_log where record_id = %s and table_name = 'product_routing'",
+                (k["tgt2"],))
+    assert cur.fetchone()[0] == "T81"
+
+
+def test_081_blank_who_logged_as_dash_and_comment(tx):
+    c, cur, k = tx
+    cur.execute("select public.copy_product_routing(%s, %s, false, %s)", (k["src"], k["tgt"], "  "))
+    cur.execute("select changed_by from master_change_log where record_id = %s and table_name = 'product_routing'",
+                (k["tgt"],))
+    assert cur.fetchone()[0] == "-"
+    cur.execute("select obj_description('public.copy_product_routing(text,text,boolean,text)'::regprocedure, 'pg_proc')")
+    assert "081" in (cur.fetchone()[0] or "")

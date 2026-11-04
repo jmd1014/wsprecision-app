@@ -6056,6 +6056,9 @@ elif page == "마스터 관리":
                             "source_unconfirmed": "원본 라우팅에 미확정 단계가 있습니다 — 원본 순서를 먼저 확정하세요",
                             "archived": "보관(휴면) 제품입니다",
                             "not_found": "제품을 찾을 수 없습니다",
+                            "bad_args": "원본·대상 제품이 올바르지 않습니다(같은 제품이거나 비어 있음)",
+                            "source_material_archived": "원본 소재행의 자재가 휴면입니다 — 소재행 복사를 끄거나 "
+                                                        "자재를 다시 활성화하세요",
                         }
                         _rc_out = None
                         try:
@@ -6063,8 +6066,10 @@ elif page == "마스터 관리":
                                 "p_src": _rc_src, "p_tgt": _rc_tgt, "p_with_mat": bool(_rc_with_mat),
                                 "p_who": current_user_name()})
                         except getattr(_db, "RpcRejected", ()) as e:
+                            _rc_hint = (getattr(e, "hint", "") or "").strip()
                             st.error("복사하지 않았습니다 — "
-                                     + _RC_WHY.get(getattr(e, "message", ""), str(e)))
+                                     + _RC_WHY.get(getattr(e, "message", ""), str(e))
+                                     + (f" ({_rc_hint})" if _rc_hint else ""))
                         except getattr(_db, "RpcUnavailable", ()):
                             st.error("복사 기능을 아직 쓸 수 없습니다(서버 함수 081 미적용) — 관리자에게 알려 주세요.")
                         except Exception as e:      # RpcTransportError 등 — 반영 여부 불명 → 대상 라우팅으로 판정
@@ -6864,6 +6869,20 @@ elif page == "수주 관리":
                     _tagged.append(_t)
                 # r2 ③: 결정 이력을 마스터 갱신보다 먼저 — 이력 실패면 마스터는 손대지 않는다
                 _p_old, _p_new, _need = (_rp_master_plan(n) if upd_master else (None, None, False))
+                # Codex 3차 H: 같은 새 라인의 활성 단가 조정 그룹이 이미 마스터를 바꿔 놓았으면(같은 값이라 쓰기 없음)
+                # 그 그룹의 복원 기준(최초 옛 마스터 단가)을 이어받아 그룹의 한 건으로 남긴다 — 마지막 건 되돌리기에서 복원
+                _inh = []
+                if upd_master and not _need:
+                    try:
+                        _inh = [h for h in fetch("so_line_replacements",
+                                                 "repl_id,master_updated,master_old_price,reverted_at,tagged_kind",
+                                                 f"new_soi_id=eq.{_fq(n['soi_id'])}", limit=100)
+                                if h.get("tagged_kind") == "PRICE_ADJ" and h.get("master_updated")
+                                and not h.get("reverted_at")]
+                    except Exception:
+                        _inh = []
+                _h_mu = _need or bool(_inh)
+                _h_old = _p_old if _need else (_inh[0].get("master_old_price") if _inh else None)
                 try:
                     _db.insert("so_line_replacements", [{
                         "old_soi_id": o["soi_id"], "new_soi_id": n["soi_id"],
@@ -6872,8 +6891,8 @@ elif page == "수주 관리":
                         "old_so_status": (_ck_so.get(o["so_id"]) or {}).get("status"),
                         "old_line_status": o.get("status"),
                         "closed_pending_qty": 0, "closed_rounds": [],
-                        "moved_rounds": [], "master_updated": _need,
-                        "master_old_price": (_p_old if _need else None), "reason": None,
+                        "moved_rounds": [], "master_updated": _h_mu,
+                        "master_old_price": _h_old, "reason": None,
                         "tagged_soi_id": (n["soi_id"] if tag_side == "new"
                                           else o["soi_id"]),
                         "tagged_kind": tag_kind} for o in olds])
@@ -7004,10 +7023,10 @@ elif page == "수주 관리":
             return None
         if guard:
             _others = [h for h in fetch("so_line_replacements",
-                                        "repl_id,new_soi_id,master_updated,reverted_at",
+                                        "repl_id,new_soi_id,master_updated,reverted_at,tagged_kind",
                                         f"new_soi_id=eq.{_fq(r['new_soi_id'])}", limit=100)
-                       if h.get("repl_id") != r.get("repl_id") and h.get("master_updated")
-                       and not h.get("reverted_at")]
+                       if h.get("repl_id") != r.get("repl_id") and not h.get("reverted_at")
+                       and (h.get("master_updated") or h.get("tagged_kind") == "PRICE_ADJ")]
             if _others:
                 return (f"마스터 판매 단가는 그대로 — 같은 새 수주의 단가 조정 {len(_others)}건이 남아 있습니다"
                         "(마지막 건을 되돌릴 때 복원)")
