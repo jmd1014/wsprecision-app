@@ -94,6 +94,11 @@ def test_r3_clean_item_grade_variants():
     assert clean_item("515916 ㄴ 환봉") == "STS316L 환봉"
     assert clean_item("STS316& 환봉") == "STS316L 환봉"
     assert clean_item("STS304( 환봉") == "STS304( 환봉", "304 는 L 변형이 없음"
+    # Codex r3 HIGH: 오독 글자가 단어 끝일 때만 — 실제 괄호 설명·'ㄴ자' 는 그대로
+    assert clean_item("STS316(가공) 환봉") == "STS316(가공) 환봉"
+    assert clean_item("STS316[소둔] 환봉") == "STS316[소둔] 환봉"
+    assert clean_item("STS316 ㄴ자 브라켓") == "STS316 ㄴ자 브라켓"
+    assert clean_item("STS316(") == "STS316L", "줄 끝 오독"
     # 기존 규칙 유지
     assert clean_item("STS3048 환봉") == "STS304 환봉"
     assert clean_item("6515304 환봉") == "STS304 환봉"

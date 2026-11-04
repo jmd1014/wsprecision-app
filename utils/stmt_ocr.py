@@ -414,8 +414,9 @@ _LEAD_DATE_RE = re.compile(r"^(?:\d{4}-\d{1,2}-\d{1,2}|\d{1,2}/\d{1,2})\s+")
 _STS_OCR_RE = re.compile(r"^[|/\[]?[56]?[5S8s][1Il\[|][5S8s](?=[349]\d\d|630)")
 # O12: 직원 체크표시(✓)가 품명 앞에 남긴 잡토큰 단어 `Vv`·`/|`·`-|`·`"` (1~3자, 이 글자들만)
 _LEAD_MARK_RE = re.compile(r"^[Vv|/\-\"\[]{1,3}\s+(?=\S)")
-# O12: 등급 뒤 `L` 오독 `STS316[`·`STS316(`·`STS316&`·`STS316 ㄴ` → STS316L (L 변형은 316 만)
-_STS316L_RE = re.compile(r"^STS316(?:[\[(&]|\s?ㄴ)")
+# O12: 등급 뒤 `L` 오독 `STS316[`·`STS316(`·`STS316&`·`STS316 ㄴ` → STS316L (L 변형은 316 만). 오독 글자가 단어 끝일
+# 때만 — `STS316(가공)`·`STS316[소둔]`·`STS316 ㄴ자` 같은 실제 괄호 설명은 그대로(Codex r3 HIGH)
+_STS316L_RE = re.compile(r"^STS316(?:[\[(&]|\s?ㄴ)(?=\s|$)")
 _REMARK_RE = re.compile(r"^/([A-Z0-9-]{4,})$")
 
 
