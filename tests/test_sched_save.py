@@ -191,7 +191,7 @@ def test_plan_sched_writes_order_and_tmp():
             {"due_date": "2026-11-30", "seq": 3, "qty": 30, "note": None, "delivered_qty": 7}]
     p = plan_sched_writes(old, keep)
     assert p["delete"] == [2] and [g["sched_id"] for g in p["gone"]] == [2]
-    assert p["phase1"] == [(1, TMP_BASE + 1)], "번호가 바뀌는 유지 회차만 임시 번호(3 은 3 그대로)"
+    assert p["phase1"] == [(1, TMP_BASE)], "번호가 바뀌는 유지 회차만 임시 번호(3 은 3 그대로)"
     assert p["phase2"] == [(1, {"qty": 10, "note": "a", "seq": 2, "delivered_qty": 0}),
                            (3, {"qty": 30, "note": None, "seq": 3, "delivered_qty": 7})]
     assert [r["due_date"] for r in p["insert"]] == ["2026-11-05"]
@@ -206,7 +206,20 @@ def test_plan_sched_writes_recovers_from_tmp_numbers():
             {"due_date": "2026-11-20", "seq": 2, "qty": 1, "note": None, "delivered_qty": 0}]
     p = plan_sched_writes(old, keep)
     tmps = [t for _, t in p["phase1"]]
-    assert sorted(tmps) == [TMP_BASE + 1, TMP_BASE + TMP_BASE + 1] and len(set(tmps)) == 2
+    assert len(set(tmps)) == 2 and min(tmps) > TMP_BASE + 1, "임시 영역은 남은 임시 번호보다 위"
+
+
+def test_plan_codex1_interrupted_tmp_does_not_collide():
+    """Codex 1차 H: A(11-10)=2·B(11-20)=1002 로 중단된 뒤 두 회차만 다시 저장 — A 2→임시 가 B 의 1002 와 겹치면 안 됨."""
+    from utils.sched_save import plan_sched_writes
+    old = [{"sched_id": 1, "due_date": "2026-11-10", "seq": 2}, {"sched_id": 2, "due_date": "2026-11-20", "seq": 1002}]
+    keep = [{"due_date": "2026-11-10", "seq": 1, "qty": 1, "note": None, "delivered_qty": 0},
+            {"due_date": "2026-11-20", "seq": 2, "qty": 1, "note": None, "delivered_qty": 0}]
+    p = plan_sched_writes(old, keep)
+    occupied = {1002, 2}
+    for sid, t in p["phase1"]:
+        assert t not in occupied, (sid, t)
+        occupied.add(t)
 
 
 # ── B(후보 26) 납품된 회차 삭제 차단 ──
@@ -249,3 +262,12 @@ def test_c_revision_table_shows_so_number(rev_db, monkeypatch):
     df = next(d.value for d in at.dataframe if "정정 수량" in list(d.value.columns))
     assert list(df.columns)[:2] == ["품번", "수주번호"]
     assert "SO-100" in list(df["수주번호"])
+
+
+def test_a_codex1_resave_after_interrupted_phase2(monkeypatch):
+    """화면: 앞 날짜 삽입 저장이 2단계에서 중단(A=2·B=임시) → 새로고침 뒤 두 회차만 다시 저장해도 충돌 없이 정리."""
+    m = _sched_mock([(1, "2026-11-10", 2, 100, 0), (2, "2026-11-20", 1002, 100, 0)])
+    at = _open(monkeypatch, m)
+    _save(at, m)
+    assert not [w for w in m.writes if w[0] in ("update_409", "update_false")], m.writes
+    assert [(x[1], x[2]) for x in _sched(m)] == [("2026-11-10", 1), ("2026-11-20", 2)]

@@ -8,11 +8,12 @@ so_delivery_schedule 은 UNIQUE(soi_id, seq). 예전 저장은 유지 회차를 
 
 계획(화면은 이 순서대로 실행만 하고, 쓰기마다 반환값을 본다):
   1. delete  — 사라지는 회차를 먼저 지워 번호 자리를 비운다
-  2. phase1  — 번호가 바뀌는 유지 회차를 임시 번호(TMP_BASE + 옛 번호)로 — 남은 어떤 행과도 겹치지 않는다
+  2. phase1  — 번호가 바뀌는 유지 회차를 임시 번호로 — 임시 번호는 지금 있는 모든 번호·최종 번호보다 큰 영역
+               (max(TMP_BASE, 최댓값+1) 부터 차례로)이라 남은 어떤 행과도 겹치지 않는다
   3. phase2  — 유지 회차 전부: 최종 번호 + qty·note·delivered_qty
   4. insert  — 새 회차(최종 번호)
-임시 번호(TMP_BASE 이상)가 남은 상태는 다음 저장이 다시 재부여하므로 복구 가능하다(옛 번호가 이미 임시여도
-TMP_BASE + 옛 번호는 서로 다르다).
+임시 번호(TMP_BASE 이상)가 남은 상태는 다음 저장이 다시 재부여하므로 복구 가능하다 — 다음 저장의 임시 영역은
+남아 있는 임시 번호보다도 위에서 시작한다(Codex 1차 H: 1000+옛 번호 방식은 중단으로 남은 1002 와 2→1002 가 겹쳤다).
 """
 
 TMP_BASE = 1000
@@ -28,6 +29,8 @@ def plan_sched_writes(old_rows, keep, tmp_base=TMP_BASE):
     같은 납기 날짜의 옛 회차는 sched_id 를 유지한다(확정 전표 회차 연결 shipment_allocations.sched_id 보존).
     returns {"delete": [sched_id], "phase1": [(sched_id, tmp_seq)], "phase2": [(sched_id, fields)],
              "insert": [row], "gone": [old_row]}"""
+    seqs = [int(o.get("seq") or 0) for o in old_rows] + [int(r["seq"]) for r in keep]
+    tmp_next = max([tmp_base] + [x + 1 for x in seqs])
     by_date = {}
     for o in sorted(old_rows, key=lambda r: (int(r.get("seq") or 0), r.get("sched_id") or 0)):
         by_date.setdefault(_d(o.get("due_date")), []).append(o)
@@ -38,7 +41,8 @@ def plan_sched_writes(old_rows, keep, tmp_base=TMP_BASE):
             o = cands.pop(0)
             kept.add(o["sched_id"])
             if int(o.get("seq") or 0) != int(r["seq"]):
-                phase1.append((o["sched_id"], tmp_base + int(o.get("seq") or 0)))
+                phase1.append((o["sched_id"], tmp_next))
+                tmp_next += 1
             phase2.append((o["sched_id"], {"qty": r["qty"], "note": r.get("note"), "seq": r["seq"],
                                            "delivered_qty": r["delivered_qty"]}))
         else:
