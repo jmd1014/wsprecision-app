@@ -36,7 +36,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install -r requirements-test.txt
-          # -n auto 가 고르는 워커 수의 근거(러너 코어 수)를 로그에 남긴다
+          # 워커 수의 근거(러너 코어 수)를 로그에 남긴다
           nproc; python -c "import os; print(os.cpu_count())"
       - name: Dummy secrets (tests use a mock DB; the app only needs the keys to exist)
         run: |
@@ -57,9 +57,10 @@ jobs:
         run: |
           # GitHub 의 bash 기본은 -e: pytest 가 실패하면 아래 요약·annotation 코드까지 못 가므로 끈다
           set +e -o pipefail
-          # -n auto = 러너 코어 수. load = 테스트 단위 분배 — loadfile 은 큰 파일이 한 워커에 몰려 꼬리가 길었다
+          # -n logical = 논리 코어 수(러너 4). -n auto 는 psutil 이 있으면 물리 코어 수라 2 워커였다(r2 run 41759858005).
+          # load = 테스트 단위 분배 — loadfile 은 큰 파일이 한 워커에 몰려 꼬리가 길었다
           # (r1 47·62분, 로컬 load 시험 녹색 2026-11-04). -q 없음: 워커 수·수집 수 줄이 로그에 남게
-          python -m pytest tests -rf -p no:cacheprovider -n auto --dist load --durations=25 2>&1 | tee pytest.log
+          python -m pytest tests -rf -p no:cacheprovider -n logical --dist load --durations=25 2>&1 | tee pytest.log
           status=${PIPESTATUS[0]}
           {
             echo "### pytest py${{ matrix.python-version }} (exit $status)"
