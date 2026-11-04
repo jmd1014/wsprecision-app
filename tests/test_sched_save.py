@@ -234,3 +234,18 @@ def test_b_reduce_delivered_round_to_delivered_qty_allowed(monkeypatch):
     _save(at, m, edited_rows={0: {"수량": 60}})
     assert _sched(m) == [(1, "2026-11-10", 1, 60.0, 60.0), (2, "2026-11-20", 2, 100.0, 0.0)]
     assert any("저장 완료" in f for f in _flash(at))
+
+
+# ── C(후보 28) 전표 정정 표 수주번호 열 ──
+from tests.test_shipment_revision_flow import rev_db  # noqa: E402,F401  (fixture 재사용)
+
+
+def test_c_revision_table_shows_so_number(rev_db, monkeypatch):
+    from tests import test_shipment_revision_flow as RV
+    from tests.test_so_close_revision import _seed_two_lines, _patch_header
+    _seed_two_lines()
+    _patch_header(monkeypatch, "PARTIAL")
+    at = RV._pick_confirmed(RV._open())
+    df = next(d.value for d in at.dataframe if "정정 수량" in list(d.value.columns))
+    assert list(df.columns)[:2] == ["품번", "수주번호"]
+    assert "SO-100" in list(df["수주번호"])

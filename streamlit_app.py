@@ -11323,6 +11323,7 @@ elif page == "출고 관리":
                                        "[전표 취소] 로 남은 라인을 마저 취소하세요(정정은 할 수 없습니다).")
                         _rv_df = _cf_pd.DataFrame([{
                             "품번": line_pn(x, _pnv, internal_first=True),
+                            "수주번호": x.get("so_number") or "-",     # 후보 28: 같은 품번 여러 수주 구분
                             "품명": _cf_names.get(x.get("si_id")) or "-",
                             "거래처": x.get("customer"),
                             "현재": float(x.get("qty") or 0),
@@ -11337,9 +11338,10 @@ elif page == "출고 관리":
                             column_config={
                                 "정정 수량": st.column_config.NumberColumn(
                                     "정정 수량", min_value=0, step=1),
+                                "품명": st.column_config.Column(disabled=True, width="small"),
                                 **{c: st.column_config.Column(
                                     disabled=True)
-                                   for c in ("품번", "품명", "거래처",
+                                   for c in ("품번", "수주번호", "거래처",
                                              "현재")},
                             })
                         _rv_reason = st.text_input(
