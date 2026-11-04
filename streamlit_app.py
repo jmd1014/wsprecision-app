@@ -6084,9 +6084,12 @@ elif page == "마스터 관리":
                                          f"확인한 뒤 다시 시도하세요. ({e})")
                         if isinstance(_rc_out, dict):
                             _rc_nm = int(_rc_out.get("mat") or 0)
+                            _rc_um = int(_rc_out.get("unmapped") or 0)
                             nav_flash(f"라우팅 복사: {_bp['pn']} ← {_rc_sp['pn']} — 공정행 "
                                       f"{int(_rc_out.get('proc') or 0)}·순서 {int(_rc_out.get('routing') or 0)}단계"
-                                      + (f"·소재행 {_rc_nm}" if _rc_nm else ""))
+                                      + (f"·소재행 {_rc_nm}" if _rc_nm else "")
+                                      + (f" · 연결 못한 단계 {_rc_um}(원본 공정행에 없는 연결 — 순서를 "
+                                         "확인하세요)" if _rc_um else ""))
                             st.rerun()
 
     # ─── Tab: 계정 관리 (2026-08-05) ───
@@ -6340,7 +6343,7 @@ elif page == "마스터 관리":
         st.markdown("##### 마스터 변경 이력")
         _lgc1, _lgc2 = st.columns([1, 2])
         _lg_tbl = _lgc1.selectbox(
-            "대상", ["전체", "products", "materials", "vendors", "bom",
+            "대상", ["전체", "products", "materials", "vendors", "bom", "product_routing",
                     "sales_orders", "sales_order_items", "wo_tracking"],
             key="lg_tbl", help="변경된 테이블로 좁혀 봅니다.")
         _lg_q = _lgc2.text_input(
@@ -6807,16 +6810,22 @@ elif page == "수주 관리":
     except Exception as e:
         st.warning(f"단가 변동 감지 실패: {e}")
 
-    def _rp_master_update(olds, n, why):
-        """새 수주 단가를 마스터 판매 단가로(대체·단가 조정 공통, 후보 34) → (갱신 여부, 옛 마스터 단가)."""
+    def _rp_master_plan(n):
+        """→ (옛 마스터 단가, 새 단가, 갱신 필요). 새 단가 ≤0·제품 없음·이미 같은 값이면 갱신 불필요(r2 ⑥)."""
         if not n.get("product_id"):
-            return False, None
-        _p = _ck_prod.get(n["product_id"]) or {}
-        _m_old = _p.get("sale_price")
+            return None, None, False
+        _m_old = (_ck_prod.get(n["product_id"]) or {}).get("sale_price")
         _new_sp = float(n.get("unit_price") or 0)
-        if _new_sp > 0 and _db.update("products",
-                                      f"product_id=eq.{_fq(n['product_id'])}",
-                                      {"sale_price": _new_sp}):
+        _same = _m_old is not None and abs(float(_m_old) - _new_sp) < 0.5
+        return _m_old, _new_sp, (_new_sp > 0 and not _same)
+
+    def _rp_master_update(olds, n, why):
+        """새 수주 단가를 마스터 판매 단가로(대체·단가 조정 공통, 후보 34) → (갱신 여부, 옛 마스터 단가).
+        이미 같은 값이면 쓰기·로그 없이 (False, 옛 값)."""
+        _m_old, _new_sp, _need = _rp_master_plan(n)
+        if _need and _db.update("products",
+                                f"product_id=eq.{_fq(n['product_id'])}",
+                                {"sale_price": _new_sp}):
             _so_log("products", n["product_id"], "sale_price", _m_old,
                     _new_sp, "수주 {} {} (구 {} {:,.0f} → {:,.0f})"
                     .format(n["so_number"], why,
@@ -6835,31 +6844,67 @@ elif page == "수주 관리":
         try:
             if action == "KEEP":
                 _tags = [n] if tag_side == "new" else olds
+
+                def _untag(ts):           # best effort — 표시만 되돌린다
+                    for _t in ts:
+                        try:
+                            _db.update("sales_order_items", f"soi_id=eq.{_fq(_t['soi_id'])}",
+                                       {"price_kind": None})
+                        except Exception:
+                            pass
+                # r2 ①: 표시 update 반환값 검사 — 허용값 제약(080 미적용)이면 False 로 조용히 실패한다
+                _tagged = []
                 for _t in _tags:
-                    _db.update("sales_order_items", f"soi_id=eq.{_fq(_t['soi_id'])}",
-                               {"price_kind": tag_kind})
-                _m_upd, _m_old = (_rp_master_update(olds, n, "단가 조정") if upd_master
-                                  else (False, None))
-                _db.insert("so_line_replacements", [{
-                    "old_soi_id": o["soi_id"], "new_soi_id": n["soi_id"],
-                    "action": "KEEP", "old_price": o.get("unit_price"),
-                    "new_price": n.get("unit_price"), "created_by": _who,
-                    "old_so_status": (_ck_so.get(o["so_id"]) or {}).get("status"),
-                    "old_line_status": o.get("status"),
-                    "closed_pending_qty": 0, "closed_rounds": [],
-                    "moved_rounds": [], "master_updated": _m_upd,
-                    "master_old_price": (_m_old if _m_upd else None), "reason": None,
-                    "tagged_soi_id": (n["soi_id"] if tag_side == "new"
-                                      else o["soi_id"]),
-                    "tagged_kind": tag_kind} for o in olds])
+                    if not _db.update("sales_order_items", f"soi_id=eq.{_fq(_t['soi_id'])}",
+                                      {"price_kind": tag_kind}):
+                        _untag(_tagged)
+                        st.error("단가 종류 표시를 저장하지 못했습니다 — 허용값 제약(080 미적용?)일 수 있습니다. "
+                                 "마스터 판매 단가·결정 이력은 바꾸지 않았습니다.")
+                        return
+                    _tagged.append(_t)
+                # r2 ③: 결정 이력을 마스터 갱신보다 먼저 — 이력 실패면 마스터는 손대지 않는다
+                _p_old, _p_new, _need = (_rp_master_plan(n) if upd_master else (None, None, False))
+                try:
+                    _db.insert("so_line_replacements", [{
+                        "old_soi_id": o["soi_id"], "new_soi_id": n["soi_id"],
+                        "action": "KEEP", "old_price": o.get("unit_price"),
+                        "new_price": n.get("unit_price"), "created_by": _who,
+                        "old_so_status": (_ck_so.get(o["so_id"]) or {}).get("status"),
+                        "old_line_status": o.get("status"),
+                        "closed_pending_qty": 0, "closed_rounds": [],
+                        "moved_rounds": [], "master_updated": _need,
+                        "master_old_price": (_p_old if _need else None), "reason": None,
+                        "tagged_soi_id": (n["soi_id"] if tag_side == "new"
+                                          else o["soi_id"]),
+                        "tagged_kind": tag_kind} for o in olds])
+                except Exception as e:
+                    _untag(_tagged)
+                    st.error(f"결정 이력을 저장하지 못했습니다 — 단가 종류 표시는 되돌렸고 마스터 판매 단가는 "
+                             f"바꾸지 않았습니다: {e}")
+                    return
+                _m_upd = False
+                if _need:
+                    _m_upd, _ = _rp_master_update(olds, n, "단가 조정")
+                    if not _m_upd:
+                        try:      # 이력의 마스터 갱신 표시를 실제와 맞춘다(되돌리기가 마스터를 건드리지 않게)
+                            _db.update("so_line_replacements",
+                                       f"new_soi_id=eq.{_fq(n['soi_id'])}&action=eq.KEEP&reverted_at=is.null"
+                                       "&old_soi_id=in.({})".format(",".join(str(o["soi_id"]) for o in olds)),
+                                       {"master_updated": False, "master_old_price": None})
+                        except Exception:
+                            pass
+                        st.error("마스터 판매 단가를 갱신하지 못했습니다 — 마스터는 바뀌지 않았고, 결정(옛 수주 단가 "
+                                 "조정 표시)은 저장됐습니다. 제품 편집에서 판매 단가를 직접 고치세요.")
+                        return
                 if tag_kind == "PRICE_ADJ":
                     st.session_state["rp_flash"] = (
                         "{} — 단가 조정: 옛 수주 {}건은 옛 단가 유지, 마스터 판매 단가 {}".format(
                             n.get("pn"), len(olds),
                             "{} → {:,.0f}".format(
-                                f"{float(_m_old):,.0f}" if _m_old is not None else "미설정",
-                                float(n.get("unit_price") or 0))
-                            if _m_upd else "갱신 안 됨(새 단가 없음·저장 실패)"))
+                                f"{float(_p_old):,.0f}" if _p_old is not None else "미설정", _p_new)
+                            if _m_upd else
+                            (f"그대로(이미 {float(_p_old or 0):,.0f})" if upd_master and (_p_new or 0) > 0
+                             else "갱신 안 됨(새 단가 없음)")))
                 else:
                     st.session_state["rp_flash"] = (
                         "{} — 별건 유지: {} 수주를 {} 단가로 표시, 모든 수주 계속 진행 "
@@ -6972,9 +7017,11 @@ elif page == "수주 관리":
                     or abs(float(_cur) - float(r["new_price"])) >= 0.5:
                 return (f"마스터 판매 단가는 복원하지 않았습니다 — 지금 {float(_cur or 0):,.0f}원으로 이후 "
                         "바뀌었습니다. 필요하면 제품 편집에서 직접 고치세요")
-        _db.update("products",
-                   f"product_id=eq.{_fq(_n['product_id'])}",
-                   {"sale_price": r.get("master_old_price")})
+        if not _db.update("products",
+                          f"product_id=eq.{_fq(_n['product_id'])}",
+                          {"sale_price": r.get("master_old_price")}):
+            # r2 ① 확장: 복원 실패면 되돌림을 기록하지 않는다(reverted_at 그대로 → 다시 시도 가능)
+            raise RuntimeError("마스터 판매 단가 복원 실패 — 되돌리기를 기록하지 않았습니다")
         _so_log("products", _n["product_id"], "sale_price",
                 r.get("new_price"), r.get("master_old_price"), why)
         return None
@@ -7021,9 +7068,10 @@ elif page == "수주 관리":
             if r["action"] != "REPLACE":
                 # KEEP — 단가 조정(PRICE_ADJ)은 마스터도 옛 값으로(후보 34, 그룹·이후 변경 보호). 프로젝트·사급은 master_updated False
                 _rv_note = _rp_master_revert(r, "단가 조정 되돌리기", guard=True)
-                _db.update("sales_order_items",
-                           f"soi_id=eq.{_fq(r.get('tagged_soi_id') or r['new_soi_id'])}",
-                           {"price_kind": None})
+                if not _db.update("sales_order_items",
+                                  f"soi_id=eq.{_fq(r.get('tagged_soi_id') or r['new_soi_id'])}",
+                                  {"price_kind": None}):
+                    raise RuntimeError("단가 종류 표시 해제 실패 — 되돌리기를 기록하지 않았습니다")
             _db.update("so_line_replacements", f"repl_id=eq.{_fq(r['repl_id'])}",
                        {"reverted_at": _rp_date.today().isoformat(),
                         "reverted_by": _who})
@@ -7112,7 +7160,8 @@ elif page == "수주 관리":
                                        "단가는 그대로"),
                                  type="secondary" if _is_rep else "primary",
                                  use_container_width=True,
-                                 disabled=not _sel_olds) and click_guard(_k):
+                                 # r2 ⑥: 새 단가가 0 이하면 마스터로 올릴 값이 없어 단가 조정 불가
+                                 disabled=(not _sel_olds) or (_adj and _np <= 0)) and click_guard(_k):
                         if _adj:
                             _rp_apply(_sel_olds, _n, "KEEP", True, False,
                                       tag_side="old", tag_kind="PRICE_ADJ")
@@ -8103,7 +8152,8 @@ elif page == "수주 관리":
                     h1.markdown(
                         "{} · **{}** · {} {} → {} · 단가 {:,.0f} → {:,.0f}{}{} · {} {}"
                         .format(
-                            "대체" if r["action"] == "REPLACE" else "별건 유지",
+                            "대체" if r["action"] == "REPLACE" else
+                            ("단가 조정" if r.get("tagged_kind") == "PRICE_ADJ" else "별건 유지"),
                             line_pn(_ns if _ns.get("canonical_pn") else _os, _pnv),
                             _rp_son.get(_os.get("so_id"), "-"),
                             f"(미납 {float(r.get('closed_pending_qty') or 0):,.0f} 종료)"

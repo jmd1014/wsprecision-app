@@ -41,7 +41,9 @@ def tx():
     (src, src_pn), (tgt, _), (tgt2, _) = ps
     cur.execute("""insert into bom (product_id, material_id, raw_material_name, qty_per_pc, shared_factor, source,
                                     verification_status, process_type, unit_price, lot_label, process_vendor_id)
-                   values (%s, null, 'T81 소재', 1, 1, 'MES', '확인완료', 'MATERIAL', null, null, null),
+                   values (%s, (select material_id from materials where coalesce(btrim(raw_name), '') <> ''
+                                    order by material_id limit 1),
+                           'T81 소재', 1, 1, 'MES', '확인완료', 'MATERIAL', null, null, null),
                           (%s, null, 'T81 열처리', 0.35, 1, 'MES', '확인완료', 'HEAT', 1000, 'KG',
                            (select vendor_id from vendors order by vendor_id limit 1)),
                           (%s, null, 'T81 도금', 1, 1, 'MES', 'AUTO-추정', 'SURFACE', 50, null, null)
@@ -83,7 +85,7 @@ def _reject(c, cur, src, tgt, with_mat):
 def test_081_copy_maps_bom_ids_and_logs(tx):
     c, cur, k = tx
     out = _call(cur, k["src"], k["tgt"], False)
-    assert (out["proc"], out["mat"], out["routing"], out["src_pn"]) == (2, 0, 5, k["src_pn"])
+    assert (out["proc"], out["mat"], out["routing"], out["unmapped"], out["src_pn"]) == (2, 0, 5, 0, k["src_pn"])
     cur.execute("""select bom_id, raw_material_name, process_type, material_id, unit_price, process_vendor_id,
                           source, verification_status, lot_label
                      from bom where product_id = %s order by bom_id""", (k["tgt"],))
@@ -111,8 +113,11 @@ def test_081_with_material_syncs_product_name(tx):
     cur.execute("select process_type, verification_status from bom where product_id = %s order by bom_id",
                 (k["tgt2"],))
     assert cur.fetchall() == [("MATERIAL", "AUTO-추정"), ("HEAT", "확인완료"), ("SURFACE", "AUTO-추정")]
+    cur.execute("""select m.raw_name from bom b join materials m on m.material_id = b.material_id
+                    where b.product_id = %s and b.process_type = 'MATERIAL'""", (k["tgt2"],))
+    mname = cur.fetchone()[0]
     cur.execute("select raw_material_name, bom_material_name from products where product_id = %s", (k["tgt2"],))
-    assert cur.fetchone() == ("T81 소재", "T81 소재")
+    assert cur.fetchone() == (mname, mname), "제품 소재 표기 = 자재 마스터 raw_name(r2 ④)"
     cur.execute("select reason from master_change_log where record_id = %s and table_name = 'product_routing'",
                 (k["tgt2"],))
     assert cur.fetchone()[0] == "라우팅 복사 — 공정행 2·소재행 1"
@@ -133,3 +138,18 @@ def test_081_blocks(tx):
     assert _reject(c, cur, k["tgt"], k["tgt2"], False) == "source_no_routing"
     cur.execute("select count(*) from bom where product_id = %s", (k["tgt2"],))
     assert cur.fetchone()[0] == 0, "거부된 호출은 아무것도 남기지 않음"
+
+
+def test_081_unmapped_step_counted_and_source_snapshot(tx):
+    """원본 라우팅이 소재행(공정행 아님)을 가리키면 연결 없이 복사하고 unmapped 로 센다(r2 ⑨)."""
+    c, cur, k = tx
+    cur.execute("select bom_id from bom where product_id = %s and process_type = 'MATERIAL'", (k["src"],))
+    b_mat = cur.fetchone()[0]
+    cur.execute("update product_routing set bom_id = %s where product_id = %s and seq = 20", (b_mat, k["src"]))
+    out = _call(cur, k["src"], k["tgt"], False)
+    assert (out["routing"], out["unmapped"]) == (5, 1)
+    cur.execute("select bom_id from product_routing where product_id = %s and seq = 20", (k["tgt"],))
+    assert cur.fetchone()[0] is None
+    cur.execute("select reason from master_change_log where record_id = %s and table_name = 'product_routing'",
+                (k["tgt"],))
+    assert cur.fetchone()[0] == "라우팅 복사 — 공정행 2·연결 못한 단계 1"

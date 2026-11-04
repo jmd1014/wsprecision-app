@@ -14,7 +14,10 @@
 --   ⑥ master_change_log 1행(product_routing, 대상 id, 'routing', 'N단계 복사 from 원본 pn')
 -- 거부 사유(ERRCODE P0001, message): bad_args · not_found(HINT 제품 id) · archived(HINT) · target_has_routing ·
 --   target_has_process · target_not_empty(소재행 복사인데 대상 BOM 있음) · source_no_routing · source_unconfirmed
--- 반환: {"proc": 공정행 수, "mat": 소재행 수, "routing": 라우팅 단계 수, "src_pn", "tgt_pn"}
+-- 반환: {"proc": 공정행 수, "mat": 소재행 수, "routing": 라우팅 단계 수, "unmapped": 원본 공정행에 없는
+--        bom_id 라 연결 없이 복사한 단계 수, "src_pn", "tgt_pn"}
+-- 원본 일관성(Codex 2차 H1): 원본 라우팅·BOM 행을 FOR SHARE 로 잠그고 라우팅은 한 번 읽은 스냅샷으로만 검사·복사.
+-- 소재 표기 원천(r2 ④): materials.raw_name 우선, 없으면 bom.raw_material_name.
 -- 멱등성: 두 번째 호출은 target_has_routing 으로 거부된다(응답 유실 뒤 재조회 판정은 화면이 대상 라우팅 유무로).
 -- 보안: SECURITY INVOKER + search_path 고정, anon/authenticated 실행 차단, service_role 만(069·076 과 동일).
 -- 되돌리기: DROP FUNCTION IF EXISTS public.copy_product_routing(text, text, boolean, text);
@@ -38,6 +41,8 @@ DECLARE
     v_mat      integer := 0;
     v_rt       integer := 0;
     v_first    text;
+    v_unmapped integer := 0;
+    v_rts      jsonb := '[]'::jsonb;
     r          record;
 BEGIN
     IF p_src IS NULL OR p_tgt IS NULL OR p_src = p_tgt THEN
@@ -58,7 +63,7 @@ BEGIN
             HINT = CASE WHEN v_tgt_arch IS NOT NULL THEN p_tgt ELSE p_src END;
     END IF;
 
-    -- ② 차단 조건(덮어쓰기 없음)
+    -- ② 차단 조건(덮어쓰기 없음) — 대상
     IF EXISTS (SELECT 1 FROM product_routing WHERE product_id = p_tgt) THEN
         RAISE EXCEPTION 'target_has_routing' USING ERRCODE = 'P0001';
     END IF;
@@ -68,24 +73,33 @@ BEGIN
     IF COALESCE(p_with_mat, false) AND EXISTS (SELECT 1 FROM bom WHERE product_id = p_tgt) THEN
         RAISE EXCEPTION 'target_not_empty' USING ERRCODE = 'P0001';
     END IF;
-    IF NOT EXISTS (SELECT 1 FROM product_routing WHERE product_id = p_src) THEN
+
+    -- 원본 라우팅 스냅샷(Codex 2차 H1): 행을 FOR SHARE 로 잠그고 한 번 읽은 값으로만 검사·복사한다 —
+    -- 검사 뒤 원본에 단계가 추가·삭제돼도 복사 결과가 섞이지 않는다(공정행 삭제의 ON DELETE SET NULL 도 대기).
+    FOR r IN SELECT * FROM product_routing WHERE product_id = p_src ORDER BY seq FOR SHARE LOOP
+        v_rts := v_rts || jsonb_build_array(to_jsonb(r));
+    END LOOP;
+    IF jsonb_array_length(v_rts) = 0 THEN
         RAISE EXCEPTION 'source_no_routing' USING ERRCODE = 'P0001';
     END IF;
-    IF EXISTS (SELECT 1 FROM product_routing WHERE product_id = p_src AND NOT confirmed) THEN
+    IF EXISTS (SELECT 1 FROM jsonb_array_elements(v_rts) e WHERE NOT COALESCE((e ->> 'confirmed')::boolean, false)) THEN
         RAISE EXCEPTION 'source_unconfirmed' USING ERRCODE = 'P0001';
     END IF;
 
-    -- ④ 소재행(선택) — 공정행보다 먼저(화면 표시 순서 = 소재 → 공정)
+    -- ④ 소재행(선택) — 공정행보다 먼저(화면 표시 순서 = 소재 → 공정). 제품 소재 표기 원천은 자재 마스터
+    -- materials.raw_name(없으면 BOM 의 이름) — 화면의 소재행 추가·교체 경로와 같은 원천(r2 ④)
     IF COALESCE(p_with_mat, false) THEN
-        FOR r IN SELECT * FROM bom WHERE product_id = p_src AND COALESCE(process_type, 'MATERIAL') = 'MATERIAL'
-                 ORDER BY bom_id LOOP
+        FOR r IN SELECT b.*, m.raw_name AS m_raw_name
+                   FROM bom b LEFT JOIN materials m ON m.material_id = b.material_id
+                  WHERE b.product_id = p_src AND COALESCE(b.process_type, 'MATERIAL') = 'MATERIAL'
+                  ORDER BY b.bom_id FOR SHARE OF b LOOP
             INSERT INTO bom (product_id, material_id, raw_material_name, qty_per_pc, shared_factor, source,
                              verification_status, process_type, unit_price, lot_label, process_vendor_id)
             VALUES (p_tgt, r.material_id, r.raw_material_name, r.qty_per_pc, r.shared_factor, 'MANUAL',
                     'AUTO-추정', 'MATERIAL', NULL, r.lot_label, NULL);
             v_mat := v_mat + 1;
             IF v_first IS NULL THEN
-                v_first := r.raw_material_name;
+                v_first := COALESCE(NULLIF(btrim(r.m_raw_name), ''), r.raw_material_name);
             END IF;
         END LOOP;
         IF v_first IS NOT NULL THEN
@@ -93,9 +107,9 @@ BEGIN
         END IF;
     END IF;
 
-    -- ③ 공정행 + 매핑
+    -- ③ 공정행 + 매핑(원본 공정행도 FOR SHARE)
     FOR r IN SELECT * FROM bom WHERE product_id = p_src AND COALESCE(process_type, 'MATERIAL') <> 'MATERIAL'
-             ORDER BY bom_id LOOP
+             ORDER BY bom_id FOR SHARE LOOP
         INSERT INTO bom (product_id, material_id, raw_material_name, qty_per_pc, shared_factor, source,
                          verification_status, process_type, unit_price, lot_label, process_vendor_id)
         VALUES (p_tgt, NULL, r.raw_material_name, r.qty_per_pc, r.shared_factor, 'MANUAL',
@@ -105,24 +119,26 @@ BEGIN
         v_proc := v_proc + 1;
     END LOOP;
 
-    -- ⑤ 라우팅
+    -- ⑤ 라우팅 — 스냅샷에서. 원본 공정행에 없는 bom_id(소재행 연결 등)는 NULL 로 복사하고 unmapped 로 센다(r2 ⑨)
+    SELECT count(*) INTO v_unmapped
+      FROM jsonb_array_elements(v_rts) e
+     WHERE e ->> 'bom_id' IS NOT NULL AND NOT (v_map ? (e ->> 'bom_id'));
     INSERT INTO product_routing (product_id, seq, step_code, step_name, step_kind, stage, bom_id,
                                  default_vendor, confirmed)
-    SELECT p_tgt, s.seq, s.step_code, s.step_name, s.step_kind, s.stage,
-           CASE WHEN s.bom_id IS NULL THEN NULL ELSE (v_map ->> s.bom_id::text)::integer END,
-           NULL, true
-      FROM product_routing s
-     WHERE s.product_id = p_src
-     ORDER BY s.seq;
+    SELECT p_tgt, (e ->> 'seq')::integer, e ->> 'step_code', e ->> 'step_name', e ->> 'step_kind', e ->> 'stage',
+           (v_map ->> (e ->> 'bom_id'))::integer, NULL, true
+      FROM jsonb_array_elements(v_rts) e
+     ORDER BY (e ->> 'seq')::integer;
     GET DIAGNOSTICS v_rt = ROW_COUNT;
 
     -- ⑥ 변경 이력
     INSERT INTO master_change_log (table_name, record_id, field_name, old_value, new_value, changed_by, reason)
     VALUES ('product_routing', p_tgt, 'routing', NULL, v_rt || '단계 복사 from ' || v_src_pn,
             NULLIF(btrim(COALESCE(p_who, '')), ''),
-            '라우팅 복사 — 공정행 ' || v_proc || CASE WHEN v_mat > 0 THEN '·소재행 ' || v_mat ELSE '' END);
+            '라우팅 복사 — 공정행 ' || v_proc || CASE WHEN v_mat > 0 THEN '·소재행 ' || v_mat ELSE '' END
+            || CASE WHEN v_unmapped > 0 THEN '·연결 못한 단계 ' || v_unmapped ELSE '' END);
 
-    RETURN jsonb_build_object('proc', v_proc, 'mat', v_mat, 'routing', v_rt,
+    RETURN jsonb_build_object('proc', v_proc, 'mat', v_mat, 'routing', v_rt, 'unmapped', v_unmapped,
                               'src_pn', v_src_pn, 'tgt_pn', v_tgt_pn);
 END;
 $$;

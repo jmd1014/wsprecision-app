@@ -366,7 +366,17 @@ def _price_mock():
             if table not in ("products", "master_change_log"):
                 super()._assert_dash(op, table)
 
+        false_update = ()      # (표, 필드) — db.update 가 False(PostgREST 오류·CHECK 위반)
+        fail_insert = ()       # 표 — insert 예외
+
+        def update(self, table, filter_query, fields):
+            if any(table == t and f in fields for t, f in self.false_update):
+                return False
+            return super().update(table, filter_query, fields)
+
         def insert(self, table, records):      # DashMock 은 id 를 붙인다 — 결정 이력은 repl_id 로 읽는다
+            if table in self.fail_insert:
+                raise RuntimeError(f"{table} insert 500: 시뮬레이션")
             n = super().insert(table, records)
             if table == "so_line_replacements":
                 for r in self.tables[table]:
@@ -468,3 +478,163 @@ def test_34_project_keep_unchanged_no_master_update(monkeypatch):
     assert m.tables["products"][0]["sale_price"] == 3285 and m.tables["master_change_log"] == []
     rp = m.tables["so_line_replacements"][0]
     assert (rp["master_updated"], rp["master_old_price"], rp["tagged_kind"]) == (False, None, "PROJECT")
+
+
+# ─────────────── r2(검토 세션 2026-11-05) — 34 쓰기 순서·반환값 검사·회귀 ───────────────
+def _texts(at):
+    return [str(x.value) for x in list(at.success) + list(at.error) + list(at.warning)]
+
+
+def test_r2_9_two_olds_revert_reapply_same_price_keeps_master(monkeypatch):
+    m = _price_mock()
+    m.tables["sales_order_items"].append(dict(m.line(1), soi_id=2, line_no=2))
+    at = _open_so_list(monkeypatch, m)
+    _keep(at, "단가 조정")
+    rp = m.tables["so_line_replacements"]
+    at.button(key=f"rp_rv_{rp[0]['repl_id']}").click()
+    at.run()
+    assert m.tables["products"][0]["sale_price"] == 3282 and m.line(1)["price_kind"] is None
+    _keep(at, "단가 조정")                       # 되돌린 옛 라인 1 다시 단가 조정 — 마스터는 이미 새 단가
+    new = [r for r in m.tables["so_line_replacements"] if r["old_soi_id"] == 1 and not r.get("reverted_at")]
+    assert len(new) == 1 and new[0]["master_updated"] is False and new[0]["master_old_price"] is None, \
+        "같은 값이면 마스터 갱신·로그 생략(r2 ⑥)"
+    assert any("그대로(이미 3,282)" in t for t in _texts(at))
+    n_log = len(m.tables["master_change_log"])
+    at.button(key=f"rp_rv_{new[0]['repl_id']}").click()
+    at.run()
+    assert not at.exception, [str(e.value) for e in at.exception]
+    assert m.tables["products"][0]["sale_price"] == 3282 and len(m.tables["master_change_log"]) == n_log
+
+
+def test_r2_10_history_insert_failure_keeps_master_and_untags(monkeypatch):
+    m = _price_mock()
+    m.fail_insert = ("so_line_replacements",)
+    at = _open_so_list(monkeypatch, m)
+    _keep(at, "단가 조정")
+    assert m.tables["products"][0]["sale_price"] == 3285 and m.tables["master_change_log"] == []
+    assert m.line(1)["price_kind"] is None, "표시는 되돌림"
+    assert any("결정 이력을 저장하지 못했습니다" in t and "바꾸지 않았습니다" in t for t in _texts(at))
+
+
+def test_r2_11_master_update_false_marks_history_not_updated(monkeypatch):
+    m = _price_mock()
+    m.false_update = (("products", "sale_price"),)
+    at = _open_so_list(monkeypatch, m)
+    _keep(at, "단가 조정")
+    rp = m.tables["so_line_replacements"]
+    assert len(rp) == 1 and rp[0]["master_updated"] is False and rp[0]["master_old_price"] is None
+    assert m.tables["products"][0]["sale_price"] == 3285 and m.tables["master_change_log"] == []
+    assert m.line(1)["price_kind"] == "PRICE_ADJ"
+    assert any("마스터 판매 단가를 갱신하지 못했습니다" in t for t in _texts(at))
+
+
+def test_r2_12_price_kind_update_false_stops_before_master(monkeypatch):
+    m = _price_mock()
+    m.false_update = (("sales_order_items", "price_kind"),)
+    at = _open_so_list(monkeypatch, m)
+    _keep(at, "단가 조정")
+    assert m.tables["so_line_replacements"] == [] and m.tables["master_change_log"] == []
+    assert m.tables["products"][0]["sale_price"] == 3285
+    assert any("080 미적용" in t for t in _texts(at))
+
+
+def test_r2_13_zero_new_price_disables_price_adj(monkeypatch):
+    m = _price_mock()
+    m.line(9)["unit_price"] = 0
+    at = _open_so_list(monkeypatch, m)
+    assert not at.button(key="rp_9_keep").disabled, "프로젝트 별건은 그대로 가능"
+    [s for s in at.selectbox if s.key == "rp_9_t"][0].set_value("단가 조정")
+    at.run()
+    assert at.button(key="rp_9_keep").disabled
+
+
+def test_r2_14_revert_master_update_false_does_not_mark_reverted(monkeypatch):
+    m = _price_mock()
+    at = _open_so_list(monkeypatch, m)
+    _keep(at, "단가 조정")
+    m.false_update = (("products", "sale_price"),)
+    rp = m.tables["so_line_replacements"][0]
+    at.button(key=f"rp_rv_{rp['repl_id']}").click()
+    at.run()
+    assert not at.exception, [str(e.value) for e in at.exception]
+    assert rp["reverted_at"] is None and m.line(1)["price_kind"] == "PRICE_ADJ"
+    assert m.tables["products"][0]["sale_price"] == 3282
+    assert any("복원 실패" in t for t in _texts(at))
+
+
+def test_r2_15_replace_regression_update_and_revert(monkeypatch):
+    m = _price_mock()
+    at = _open_so_list(monkeypatch, m)
+    at.button(key="rp_9_go").click()
+    at.run()
+    assert not at.exception, [str(e.value) for e in at.exception]
+    assert m.tables["products"][0]["sale_price"] == 3282
+    lg = m.tables["master_change_log"]
+    assert len(lg) == 1 and "단가 변경 (구 PO-OLD 3,285 → 3,282)" in lg[0]["reason"]
+    rp = m.tables["so_line_replacements"][0]
+    assert (rp["action"], rp["master_updated"], rp["master_old_price"]) == ("REPLACE", True, 3285)
+    assert m.line(1)["status"] == "REPLACED" and m.line(1)["pending_qty"] == 0
+    at.button(key=f"rp_rv_{rp['repl_id']}").click()
+    at.run()
+    assert not at.exception, [str(e.value) for e in at.exception]
+    assert m.tables["products"][0]["sale_price"] == 3285 and rp["reverted_at"]
+    assert m.line(1)["status"] == "PARTIAL" and m.line(1)["pending_qty"] == 391
+
+
+# ─────────────── r2 qa 17 — 제품·자재 편집: 기억 행 선택·저장 뒤 같은 행(쓰기 1건) ───────────────
+def _form_btn(at, form):
+    return next(b for b in at.button if b.label == "변경 저장" and getattr(b.proto, "form_id", "") == form)
+
+
+def _open_master(m, **sel):
+    import streamlit as st
+    from streamlit.testing.v1 import AppTest
+    for _c in (st.cache_data, st.cache_resource):
+        try:
+            _c.clear()
+        except Exception:
+            pass
+    at = AppTest.from_file(APP_FILE, default_timeout=90)
+    at.secrets["supabase"] = {"url": "https://mock.local", "anon_key": "a", "service_role_key": "s"}
+    at.secrets["auth"] = {"disabled": True}
+    at.run()
+    for k, v in sel.items():
+        at.session_state[k] = v
+    goto(at, "master")
+    assert not at.exception, [str(e.value) for e in at.exception]
+    return at
+
+
+def _md_heads(at):
+    return [str(x.value) for x in at.markdown if "상세 편집" in str(x.value)]
+
+
+def test_r2_17_product_edit_remembered_row_and_save(mem_db):
+    m = mem_db()
+    at = _open_master(m, prod_sel_pid="PT")
+    assert any(h.startswith("##### MM-TGT-1 — 상세 편집") for h in _md_heads(at)), _md_heads(at)
+    [t for t in at.text_input if t.key == "pd_ct_PT"][0].set_value("시험 주의")
+    _form_btn(at, "pd_form_PT").click()
+    at.run()
+    assert not at.exception, [str(e.value) for e in at.exception]
+    ups = [w for w in m.writes if w[0] == "update" and w[1] == "products"]
+    assert len(ups) == 1 and "PT" in ups[0][2] and ups[0][3].get("caution") == "시험 주의"
+    assert any(h.startswith("##### MM-TGT-1 — 상세 편집") for h in _md_heads(at)), "저장 뒤 같은 제품"
+    assert at.session_state["prod_sel_pid"] == "PT"
+
+
+def test_r2_17_material_edit_remembered_row_and_save(mem_db):
+    m = mem_db()
+    m.t["materials"] = [{"material_id": f"M90{i}", "raw_name": f"시험 소재 {i}", "material_type": "SUS304",
+                         "spec": f"Ø{i}0", "unit": "KG", "stock_qty": 0, "main_supplier": None,
+                         "procurement_type": None} for i in (1, 2, 3)]
+    at = _open_master(m, mat_sel_mid="M903")
+    assert any("(M903) — 상세 편집" in h for h in _md_heads(at)), _md_heads(at)
+    [t for t in at.text_input if t.key == "md_su_M903"][0].set_value("시험 공급사")
+    _form_btn(at, "md_form_M903").click()
+    at.run()
+    assert not at.exception, [str(e.value) for e in at.exception]
+    ups = [w for w in m.writes if w[0] == "update" and w[1] == "materials"]
+    assert len(ups) == 1 and "M903" in ups[0][2] and ups[0][3].get("main_supplier") == "시험 공급사"
+    assert any("(M903) — 상세 편집" in h for h in _md_heads(at)), "저장 뒤 같은 자재"
+    assert at.session_state["mat_sel_mid"] == "M903"
