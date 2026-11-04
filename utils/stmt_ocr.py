@@ -315,16 +315,20 @@ def parse_line_items(lines):
     return items
 
 
-def find_totals(lines, items):
+def find_totals(lines, items, extra_lines=()):
+    """→ (라인 합, 인쇄 합계 후보, 합계 검증, 세액 보임). extra_lines(O14, 다른 psm 의 줄)는 합계 키워드 줄의 숫자만
+    인쇄 합계 후보에 더한다 — 일반 숫자(단가 등)까지 합치면 '라인 합+세액이 본문에 있음' 판정이 다른 psm 의 우연한
+    숫자로 맞아 버린다(Codex r3 2차 HIGH). 세액 판정은 이 psm 의 줄로만."""
     s = round(sum(i["amount"] for i in items))
     cands, all_nums = [], set()
-    for ln in lines:
+    for ln in list(lines) + [dict(l, _extra=True) for l in extra_lines]:
         txt = ln["text"].replace(" ", "")
         toks = normalize_tokens(ln["words"])
         nums = [round(v) for _, v in line_nums(toks) if v >= 1000]
         # 천단위 점 한 개(`117.600`)도 합계 대조용으로는 함께 본다(O1 보강)
         nums += [int(w["t"].replace(".", "")) for w in toks if _DOTS_ONE_RE.match(w["t"])]
-        all_nums.update(nums)
+        if not ln.get("_extra"):
+            all_nums.update(nums)
         if any(k in txt for k in ("합계", "공급가액", "공급가", "명세합계", "총액", "소계", "부가세")):
             cands += nums
     vat_seen = round(s * 0.1) in all_nums
@@ -414,9 +418,17 @@ _LEAD_DATE_RE = re.compile(r"^(?:\d{4}-\d{1,2}-\d{1,2}|\d{1,2}/\d{1,2})\s+")
 _STS_OCR_RE = re.compile(r"^[|/\[]?[56]?[5S8s][1Il\[|][5S8s](?=[349]\d\d|630)")
 # O12: 직원 체크표시(✓)가 품명 앞에 남긴 잡토큰 단어 `Vv`·`/|`·`-|`·`"` (1~3자, 이 글자들만)
 _LEAD_MARK_RE = re.compile(r"^[Vv|/\-\"\[]{1,3}\s+(?=\S)")
-# O12: 등급 뒤 `L` 오독 `STS316[`·`STS316(`·`STS316&`·`STS316 ㄴ` → STS316L (L 변형은 316 만). 오독 글자가 단어 끝일
-# 때만 — `STS316(가공)`·`STS316[소둔]`·`STS316 ㄴ자` 같은 실제 괄호 설명은 그대로(Codex r3 HIGH)
-_STS316L_RE = re.compile(r"^STS316(?:[\[(&]|\s?ㄴ)(?=\s|$)")
+# O12: 등급 뒤 `L` 오독 `STS316[`·`STS316(`·`STS316&`·`STS316 ㄴ` → STS316L (L 변형은 316 만). 오독 글자가 단어 끝이고
+# `(`·`[` 는 뒤에 닫는 괄호가 없을 때만 — `STS316(가공)`·`STS316( 가공 )`·`STS316 ㄴ자` 같은 실제 표기는 그대로(Codex r3 HIGH)
+_STS316L_RE = re.compile(r"^STS316(?:([\[(&])|\s?ㄴ)(?=\s|$)")
+_CLOSE = {"(": ")", "[": "]"}
+
+
+def _sts316l(s):
+    m = _STS316L_RE.match(s)
+    if not m or (m.group(1) in _CLOSE and _CLOSE[m.group(1)] in s[m.end():]):
+        return s
+    return "STS316L" + s[m.end():]
 _REMARK_RE = re.compile(r"^/([A-Z0-9-]{4,})$")
 
 
@@ -428,7 +440,7 @@ def clean_item(text):
     s = _LEAD_MARK_RE.sub("", s)
     s = _STS_OCR_RE.sub("STS", s)
     s = re.sub(r"^STS9(?=\d\d)", "STS3", s)
-    s = _STS316L_RE.sub("STS316L", s)
+    s = _sts316l(s)
     s = re.sub(r"STS3048(?!\d)", "STS304", s)
     s = s.replace("환 봉", "환봉").replace("육 각", "육각")
     toks = s.split()
@@ -544,7 +556,7 @@ def parse_document(file_bytes, name, biz_map, known_by_vendor, psms=(6, 11, 4), 
     """→ [{page, vendor(dict|None), vendor_how('biz'|'name'|None), date, items[{item, unit, a, price, amount, how, match}],
            sum, printed_totals, total_ok, vat_seen, rot, psm}]. OCR 엔진이 없으면 RuntimeError.
     vendors: 상호 폴백(O11)용 거래처 목록 — 없으면 biz_map 의 거래처들.
-    O14(OCR r3): printed_totals 는 시도한 모든 psm 줄의 합집합, items·lines·psm 은 채택 psm 것."""
+    O14(OCR r3): printed_totals 는 이 psm 의 합계 줄 + 다른 psm 의 합계 키워드 줄, items·lines·psm 은 채택 psm 것."""
     if not ocr_available():
         raise RuntimeError("OCR 엔진(Tesseract)이 없습니다")
     pages = []
@@ -552,17 +564,17 @@ def parse_document(file_bytes, name, biz_map, known_by_vendor, psms=(6, 11, 4), 
         rot = best_rotation(img)
         if rot:
             img = img.rotate(rot, expand=True)
-        # O14(OCR r3): 시도한 psm 결과를 모두 두고 — 라인 항목은 채택 psm 그대로, 인쇄 합계 후보는 모든 psm 줄의
-        # 합집합에서(합계줄을 다른 psm 이 읽었으면 그 덕을 봄), 거래처·날짜는 채택 psm 먼저 없으면 나머지 psm. 추가 OCR 없음
+        # O14(OCR r3): 시도한 psm 결과를 모두 두고 — 라인 항목은 채택 psm 그대로, 인쇄 합계 후보는 다른 psm 의 합계
+        # 키워드 줄까지(합계줄을 다른 psm 이 읽었으면 그 덕을 봄), 거래처·날짜는 채택 psm 먼저 없으면 나머지 psm. 추가 OCR 없음
         tried = []
         for psm in psms:
             words = _image_to_words(img, psm)
             lines = group_lines(words)
             tried.append((psm, words, lines, parse_line_items(lines)))
-        all_lines = [l for _, _, ls, _ in tried for l in ls]
         best = None
         for psm, words, lines, items in tried:
-            s, cands, ok, vat_seen = find_totals(all_lines, items)
+            others = [l for p, _, ls, _ in tried if p != psm for l in ls]
+            s, cands, ok, vat_seen = find_totals(lines, items, others)
             score = (ok, len(items))
             if best is None or score > best[0]:
                 best = (score, psm, words, lines, items, s, cands, ok, vat_seen)

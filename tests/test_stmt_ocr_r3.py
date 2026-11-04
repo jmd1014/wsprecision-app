@@ -99,6 +99,10 @@ def test_r3_clean_item_grade_variants():
     assert clean_item("STS316[소둔] 환봉") == "STS316[소둔] 환봉"
     assert clean_item("STS316 ㄴ자 브라켓") == "STS316 ㄴ자 브라켓"
     assert clean_item("STS316(") == "STS316L", "줄 끝 오독"
+    # Codex r3 2차 HIGH: 닫는 괄호가 뒤에 있으면 공백이 있어도 실제 괄호 설명
+    assert clean_item("STS316( 가공 ) 환봉") == "STS316( 가공 ) 환봉"
+    assert clean_item("STS316[ 소둔 ] 환봉") == "STS316[ 소둔 ] 환봉"
+    assert clean_item("STS316& 환봉 (가공)") == "STS316L 환봉 (가공)", "& 는 괄호 짝 검사 대상 아님"
     # 기존 규칙 유지
     assert clean_item("STS3048 환봉") == "STS304 환봉"
     assert clean_item("6515304 환봉") == "STS304 환봉"
@@ -163,3 +167,12 @@ def test_r3_o14_chosen_psm_first_and_biz_before_name(monkeypatch):
     assert pg["total_ok"] is False and pg["printed_totals"] == []
     pg = _run(monkeypatch, {6: a, 11: b[1:]}, {"6158176465": _HS, "0000000001": other}, vendors=[_HS, other])
     assert (pg["vendor"]["name"], pg["vendor_how"]) == ("위드열처리", "name"), "번호가 어디에도 없으면 상호"
+
+
+def test_r3_o14_other_psm_plain_numbers_do_not_make_total_ok(monkeypatch):
+    """Codex r3 2차 HIGH: 다른 psm 의 일반 숫자(단가 10,000)가 'A 라인 합 10,000 + 세액 1,000 이 본문에 있음' 을
+    맞춰 행이 많은 A 가 채택되던 것 — 다른 psm 은 합계 키워드 줄만 본다."""
+    a = ["품목A 5 1,000 5,000", "품목B 5 1,000 5,000"]
+    b = ["품목C 10 10,000 100,000", "합계 100,000"]
+    pg = _run(monkeypatch, {6: a, 11: b}, {})
+    assert pg["psm"] == 11 and pg["sum"] == 100000 and pg["total_ok"] is True, "합계가 맞는 B 채택(r2 와 같음)"
