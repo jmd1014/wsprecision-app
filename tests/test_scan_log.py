@@ -80,6 +80,18 @@ def test_qty_compared_exactly_not_by_won():
     assert L.scan_diff(ocr, [_saved(ocr[0], qty=1.0)])["n_cells_changed"] == 1, "수량·중량은 1원 허용 없음"
 
 
+def test_r3_qty_weight_exact_equality_boundaries():
+    """OCR r3(r2 Codex LOW): 수량·중량은 허용 오차 없이 정규화 float 의 == — 문자열·numpy·int 는 같은 값이면 같음."""
+    import numpy as np
+    ocr = [_ocr(0, qty=10.0, weight=21.0)]
+    same = lambda **kw: L.scan_diff(ocr, [_saved(ocr[0], **kw)])["n_cells_changed"]
+    assert same(qty=10.0 + 1e-12) == 1, "예전 1e-9 허용 안쪽 차이도 정정"
+    assert same(weight=21.0000001) == 1
+    assert same(qty="10", weight=np.float64(21.0)) == 0 and same(qty=np.int64(10), weight="21.0") == 0
+    ocr2 = [_ocr(0, qty=1000.0)]
+    assert L.scan_diff(ocr2, [_saved(ocr2[0], qty="1,000")])["n_cells_changed"] == 0, "천단위 쉼표 문자열"
+
+
 def test_float_idx_from_dataframe_and_duplicate_idx():
     ocr = [_ocr(0), _ocr(1)]
     sv = [_saved(ocr[0], idx=0.0), _saved(ocr[1], idx=1.0), _saved(ocr[1], idx=1.0)]

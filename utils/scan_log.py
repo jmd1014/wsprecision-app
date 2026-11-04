@@ -43,7 +43,8 @@ def _same(field, a, b):
         x, y = _num(a), _num(b)
         if x is None or y is None:
             return x is None and y is None
-        return abs(x - y) < (1.0 if field in _MONEY else 1e-9)
+        # 금액은 1원 미만 같음, 수량·중량은 정규화한 float 의 정확 비교(OCR r3, r2 Codex LOW — stmt_ocr O10 과 같은 방식)
+        return abs(x - y) < 1.0 if field in _MONEY else x == y
     sa = "" if a is None or (isinstance(a, float) and not math.isfinite(a)) else str(a).strip()
     sb = "" if b is None or (isinstance(b, float) and not math.isfinite(b)) else str(b).strip()
     if field == "unit":

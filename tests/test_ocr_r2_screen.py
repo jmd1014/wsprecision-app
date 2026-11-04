@@ -166,6 +166,12 @@ def test_r24_missing_page_skips_log_with_one_error(monkeypatch):
     assert len(_ledger_inserts(m)) == 1 and _logs(m) == []
     sw = _swallowed(m)
     assert len(sw) == 1 and "판독 장 99 없음" in sw[0][1]
+    # OCR r3(r2 Codex LOW): 장부 저장 플래시만, 정정 기록 문구 없음 · 다시 실행해도 재저장·기록 없음(요청은 먼저 꺼냄)
+    fl = _flash(at)
+    assert any("장부 추가 1행" in f for f in fl) and not any("정정 기록" in f for f in fl), fl
+    at.run()
+    assert not at.exception, [str(e.value) for e in at.exception]
+    assert len(_ledger_inserts(m)) == 1 and _logs(m) == [] and len(_swallowed(m)) == 1
 
 
 @app_only
