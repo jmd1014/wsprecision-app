@@ -1565,39 +1565,10 @@ def toss_grid(rows, *, key, badge_cols=(), num_cols=(), strong_cols=(),
 def _sched_refs_block(sched_ids):
     """납품 회차 id 들을 전표가 가리키면 사유 문구(없으면 None) — 납기 입력 안정화 r2 ④·⑧·⑭(2026-11-05).
     shipment_allocations(확정 전표 충당, FK ON DELETE CASCADE)·shipment_items(작성중 포함, FK 없음).
-    조회 실패면 차단 문구(fail-closed)."""
-    ids = [str(i) for i in sched_ids if i is not None]
-    if not ids:
-        return None
+    조회 실패면 차단 문구(fail-closed). 핫픽스 1: 조회·분류는 utils.sched_save(충당 행 → si_id → 전표 라인 → 전표)."""
     import db as _dbr
-    try:
-        _al = _dbr.fetch("shipment_allocations", "sched_id,shipment_id",
-                         "sched_id=in.(" + ",".join(ids) + ")", limit=200, cache=False)
-        _si = _dbr.fetch("shipment_items", "sched_id,shipment_id",
-                         "sched_id=in.(" + ",".join(ids) + ")", limit=200, cache=False)
-        _sh_ids = sorted({r.get("shipment_id") for r in list(_al) + list(_si) if r.get("shipment_id") is not None})
-        _sh = ({r["shipment_id"]: r for r in _dbr.fetch(
-            "shipments", "shipment_id,ship_no,status",
-            "shipment_id=in.(" + ",".join(str(x) for x in _sh_ids) + ")", limit=200, cache=False)}
-            if _sh_ids else {})
-    except Exception as e:
-        return f"연결된 전표를 확인하지 못했습니다({e}) — 새로고침 뒤 다시 시도하세요."
-    if not _al and not _si:
-        return None
-    _conf = sorted({(_sh.get(r.get("shipment_id")) or {}).get("ship_no") or str(r.get("shipment_id"))
-                    for r in _al})
-    _draft = sorted({(_sh.get(r.get("shipment_id")) or {}).get("ship_no") or str(r.get("shipment_id"))
-                     for r in _si if (_sh.get(r.get("shipment_id")) or {}).get("status") == "DRAFT"})
-    _other = sorted({(_sh.get(r.get("shipment_id")) or {}).get("ship_no") or str(r.get("shipment_id"))
-                     for r in _si} - set(_draft) - set(_conf))
-    parts = []
-    if _conf:
-        parts.append(f"확정 전표 {', '.join(_conf)} 에 연결된 회차라 삭제할 수 없습니다")
-    if _draft:
-        parts.append(f"작성중 전표 {', '.join(_draft)} 가 이 회차를 가리킵니다 — 전표를 먼저 정리하세요")
-    if _other:
-        parts.append(f"전표 {', '.join(_other)} 가 이 회차를 가리킵니다")
-    return " · ".join(parts) + "."
+    from utils.sched_save import sched_refs_block
+    return sched_refs_block(sched_ids, _dbr.fetch)
 
 
 def _mem_index(rows, id_key, mem_key):

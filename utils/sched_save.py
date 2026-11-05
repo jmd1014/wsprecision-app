@@ -81,3 +81,76 @@ def plan_sched_writes(old_rows, keep, tmp_base=TMP_BASE):
     return {"delete": [o["sched_id"] for o in gone], "phase1": phase1,
             "phase2": [x[2] for x in sorted(p2, key=lambda x: (x[0], x[1]))],
             "insert": insert, "gone": gone, "pairs": pairs, "guard": guard}
+
+
+# ── 납기 입력 핫픽스 1(2026-11-05): 회차 삭제 전 전표 참조 확인 ──
+# cccae4f 는 shipment_allocations 에서 없는 열(shipment_id)을 골라 운영에서 항상 400 → 회차 삭제 저장 전부 차단.
+# 충당 행(shipment_allocations)에는 전표 id 가 없다 — si_id 로 전표 라인(shipment_items)을 거쳐 전표를 찾는다.
+# 테이블별 select 열은 여기 한 곳(tests/test_sched_refs.py 가 마이그레이션 테이블 정의와 대조).
+REFS_SELECT = {
+    "shipment_allocations": "sched_id,si_id",
+    "shipment_items": "si_id,sched_id,shipment_id",
+    "shipments": "shipment_id,ship_no,status",
+}
+REFS_LIMIT = 200
+
+
+def sched_refs_message(allocs, items, alloc_lines, ships):
+    """회차 참조 분류·문구(순수 함수). 문구 또는 None.
+    allocs = 지울 회차의 충당 행(sched_id, si_id) · items = 지울 회차를 가리키는 전표 라인(sched_id 기준) ·
+    alloc_lines = 충당 행의 si_id 로 찾은 전표 라인 · ships = 관련 전표(shipment_id, ship_no, status).
+    충당 행 → 확정 전표, 라인 중 DRAFT 전표 → 작성중, 그 밖 → 전표. 충당 행의 라인을 못 찾으면 "미상" 으로 차단 유지."""
+    allocs, items = list(allocs or []), list(items or [])
+    if not allocs and not items:
+        return None
+    sh = {r.get("shipment_id"): r for r in ships or []}
+    line_ship = {r.get("si_id"): r.get("shipment_id") for r in list(alloc_lines or []) + items}
+
+    def _label(shid):
+        return (sh.get(shid) or {}).get("ship_no") or str(shid)
+
+    conf = set()
+    for a in allocs:
+        shid = line_ship.get(a.get("si_id"))
+        conf.add(_label(shid) if shid is not None else f"미상(전표 라인 {a.get('si_id')})")
+    draft = {_label(r.get("shipment_id")) for r in items
+             if (sh.get(r.get("shipment_id")) or {}).get("status") == "DRAFT"}
+    other = {_label(r.get("shipment_id")) for r in items} - draft - conf
+    parts = []
+    if conf:
+        parts.append(f"확정 전표 {', '.join(sorted(conf))} 에 연결된 회차라 삭제할 수 없습니다")
+    if draft:
+        parts.append(f"작성중 전표 {', '.join(sorted(draft))} 가 이 회차를 가리킵니다 — 전표를 먼저 정리하세요")
+    if other:
+        parts.append(f"전표 {', '.join(sorted(other))} 가 이 회차를 가리킵니다")
+    return " · ".join(parts) + "."
+
+
+def sched_refs_block(sched_ids, fetch):
+    """지울 회차 id 들을 전표가 가리키면 사유 문구(없으면 None). fetch = db.fetch 형태.
+    어느 조회든 실패하면 차단 문구(fail-closed), 반환이 상한(REFS_LIMIT)에 닿으면 잘렸을 수 있어 차단."""
+    ids = [str(i) for i in sched_ids if i is not None]
+    if not ids:
+        return None
+    lim = REFS_LIMIT
+    inn = ",".join(ids)
+    try:
+        al = fetch("shipment_allocations", REFS_SELECT["shipment_allocations"],
+                   f"sched_id=in.({inn})", limit=lim, cache=False) or []
+        si = fetch("shipment_items", REFS_SELECT["shipment_items"],
+                   f"sched_id=in.({inn})", limit=lim, cache=False) or []
+        need = sorted({a.get("si_id") for a in al if a.get("si_id") is not None}
+                      - {r.get("si_id") for r in si})
+        al_lines = (fetch("shipment_items", REFS_SELECT["shipment_items"],
+                          "si_id=in.(" + ",".join(str(x) for x in need) + ")", limit=lim, cache=False) or []
+                    if need else [])
+        sh_ids = sorted({r.get("shipment_id") for r in list(si) + list(al_lines) if r.get("shipment_id") is not None})
+        ships = (fetch("shipments", REFS_SELECT["shipments"],
+                       "shipment_id=in.(" + ",".join(str(x) for x in sh_ids) + ")", limit=lim, cache=False) or []
+                 if sh_ids else [])
+    except Exception as e:
+        return f"연결된 전표를 확인하지 못했습니다({e}) — 새로고침 뒤 다시 시도하세요."
+    if any(len(x) >= lim for x in (al, si, al_lines, ships)):
+        return (f"연결된 전표 기록이 많아({lim}행 이상) 전부 확인하지 못했습니다 — "
+                "회차를 나눠 지우거나 관리자에게 문의하세요.")
+    return sched_refs_message(al, si, al_lines, ships)
