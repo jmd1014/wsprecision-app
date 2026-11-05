@@ -19,6 +19,26 @@ APP_FILE = os.path.join(os.path.dirname(os.path.dirname(__file__)), "streamlit_a
 SOI = 11
 
 
+# 운영 컬럼(2026-11-05 information_schema, 핫픽스 1 지시문) — 목 fetch 가 이 밖의 열 select 를 400 으로 거절
+SHIP_PROD_COLS = {
+    "shipment_allocations": {"alloc_id", "si_id", "sched_id", "qty", "created_at"},
+    "shipment_items": {"si_id", "shipment_id", "soi_id", "so_id", "sched_id", "product_id", "pn", "customer_pn",
+                       "item_name", "customer", "so_number", "qty", "unit", "unit_price"},
+    "shipments": {"shipment_id", "ship_no", "ship_date", "status", "remark", "created_by", "created_at",
+                  "confirmed_at", "rev_no", "revised_at", "cancelled_at", "cancel_reason"},
+}
+
+
+def _alloc(m, alloc_id, si_id, sched_id, shipment_id, ship_no, status="CONFIRMED", line_sched=None):
+    """운영 구조대로 충당 행(si_id·sched_id) + 그 전표 라인(shipment_items) + 전표(shipments)."""
+    m.tables["shipment_allocations"].append({"alloc_id": alloc_id, "si_id": si_id, "sched_id": sched_id, "qty": 0})
+    m.tables["shipment_items"].append({"si_id": si_id, "shipment_id": shipment_id, "soi_id": SOI, "so_id": 101,
+                                       "sched_id": line_sched, "qty": 5})
+    if not any(r["shipment_id"] == shipment_id for r in m.tables["shipments"]):
+        m.tables["shipments"].append({"shipment_id": shipment_id, "ship_no": ship_no, "ship_date": "2026-11-01",
+                                      "status": status})
+
+
 def _sched_mock(rounds):
     """rounds: [(sched_id, due, seq, qty, delivered)]"""
     from tests.so_mock import SOMock
@@ -94,6 +114,19 @@ def _sched_mock(rounds):
                     n += 1
                 return n
             return super().insert(table, records)
+
+        def fetch(self, table, select="*", filter_query="", limit=1000, cache=None):
+            # 핫픽스 1: 전표 3테이블은 운영 컬럼(information_schema 2026-11-05)만 — 없는 열 select 는 PostgREST 400
+            cols = SHIP_PROD_COLS.get(table)
+            if cols is not None and (select or "*").strip() != "*":
+                want = [c.strip() for c in select.split(",") if c.strip()]
+                bad = [c for c in want if c not in cols]
+                if bad:
+                    self.writes.append(("fetch_400", table, {"select": select}))
+                    raise RuntimeError(f'{table} fetch 400: {{"code":"42703","message":"column {table}.{bad[0]} '
+                                       f'does not exist"}}')
+                return [{c: r.get(c) for c in want} for r in super().fetch(table, "*", filter_query, limit, cache)]
+            return super().fetch(table, select, filter_query, limit, cache)
 
         def delete(self, table, filter_query):
             self._assert_dash("delete", table)
@@ -450,10 +483,7 @@ def test_r2_12_reduce_below_delivered_blocked(monkeypatch):
 def test_r2_4_8_referenced_round_delete_blocked(monkeypatch, kind):
     m = _three()
     if kind == "alloc":
-        m.tables["shipment_allocations"].append({"alloc_id": 1, "shipment_id": 70, "sched_id": 2, "soi_id": SOI,
-                                                 "qty": 0})
-        m.tables["shipments"].append({"shipment_id": 70, "ship_no": "SH-20261101-01", "ship_date": "2026-11-01",
-                                      "status": "CONFIRMED"})
+        _alloc(m, 1, 800, 2, 70, "SH-20261101-01")
     elif kind == "draft_item":
         m.tables["shipment_items"].append({"si_id": 900, "shipment_id": 71, "soi_id": SOI, "so_id": 101,
                                            "sched_id": 2, "qty": 5})
@@ -618,10 +648,7 @@ def _open_keep_patch(monkeypatch, m):
 def test_r2c_bulk_delete_guard_alloc_and_lookup_fail(monkeypatch, kind):
     m = _sched_mock([(1, "2026-11-10", 1, 100, 0)])
     if kind == "alloc":
-        m.tables["shipment_allocations"].append({"alloc_id": 2, "shipment_id": 73, "sched_id": 1, "soi_id": SOI,
-                                                 "qty": 0})
-        m.tables["shipments"].append({"shipment_id": 73, "ship_no": "SH-20261102-03", "ship_date": "2026-11-02",
-                                      "status": "CONFIRMED"})
+        _alloc(m, 2, 801, 1, 73, "SH-20261102-03")
         at = _open(monkeypatch, m)
     else:
         import db as _dbmod
