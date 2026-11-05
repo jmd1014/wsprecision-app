@@ -99,12 +99,17 @@ def sched_refs_message(allocs, items, alloc_lines, ships):
     """회차 참조 분류·문구(순수 함수). 문구 또는 None.
     allocs = 지울 회차의 충당 행(sched_id, si_id) · items = 지울 회차를 가리키는 전표 라인(sched_id 기준) ·
     alloc_lines = 충당 행의 si_id 로 찾은 전표 라인 · ships = 관련 전표(shipment_id, ship_no, status).
-    충당 행 → 확정 전표, 라인 중 DRAFT 전표 → 작성중, 그 밖 → 전표. 충당 행의 라인을 못 찾으면 "미상" 으로 차단 유지."""
+    충당 행 → 확정 전표, 라인 중 DRAFT 전표 → 작성중, CANCELLED 전표 → 무시, 그 밖 → 전표.
+    충당 행의 라인을 못 찾으면 "미상" 으로 차단 유지."""
     allocs, items = list(allocs or []), list(items or [])
+    sh = {r.get("shipment_id"): r for r in ships or []}
+    # 핫픽스 2: 취소(CANCELLED) 전표의 라인 참조는 차단 사유가 아니다 — 취소 전표는 되살리는 경로가 없고
+    # 앱이 그 라인의 sched_id 를 읽지 않는다(지워진 회차를 가리켜도 무해). 라인은 건드리지 않는다.
+    # 충당 행은 전표 상태와 무관하게 아래에서 차단(보수적).
+    line_ship = {r.get("si_id"): r.get("shipment_id") for r in list(alloc_lines or []) + items}  # 거르기 전(충당 라벨용)
+    items = [r for r in items if (sh.get(r.get("shipment_id")) or {}).get("status") != "CANCELLED"]
     if not allocs and not items:
         return None
-    sh = {r.get("shipment_id"): r for r in ships or []}
-    line_ship = {r.get("si_id"): r.get("shipment_id") for r in list(alloc_lines or []) + items}
 
     def _label(shid):
         return (sh.get(shid) or {}).get("ship_no") or str(shid)

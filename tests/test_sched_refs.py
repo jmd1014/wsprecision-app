@@ -289,6 +289,14 @@ def test_hf2_msg_alloc_on_cancelled_shipment_still_blocks():
     assert msg == "확정 전표 SH-20261020-02 에 연결된 회차라 삭제할 수 없습니다.", msg
 
 
+def test_hf2_msg_alloc_line_loaded_via_items_keeps_label():
+    """충당 행의 라인이 sched_id 조회(items)로만 들어온 취소 전표 라인이어도 라벨은 전표번호(미상 아님)."""
+    from utils.sched_save import sched_refs_message
+    msg = sched_refs_message([{"sched_id": 2, "si_id": 902}], [{"si_id": 902, "sched_id": 2, "shipment_id": 72}],
+                             [], _ships())
+    assert msg == "확정 전표 SH-20261020-02 에 연결된 회차라 삭제할 수 없습니다.", msg
+
+
 def test_hf2_msg_unknown_shipment_row_blocks():
     """전표 행을 못 찾음(상태 미상) → 차단 유지."""
     from utils.sched_save import sched_refs_message
