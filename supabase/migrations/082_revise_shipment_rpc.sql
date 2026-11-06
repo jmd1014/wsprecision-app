@@ -187,6 +187,47 @@ BEGIN
        OR COALESCE(p_payload->>'action', '') NOT IN ('EDIT', 'CANCEL') THEN
         RAISE EXCEPTION 'bad_version' USING ERRCODE = 'P0001';
     END IF;
+    -- 배열·원소 형식(utils/shipment_revise.shape_ok 와 같은 규칙) — 숫자 자리에 숫자가 아니면 캐스트 오류(22P02)가
+    -- 아니라 bad_version 으로. md5·검증의 캐스트보다 앞
+    v_lines := COALESCE(NULLIF(p_payload->'lines', 'null'::jsonb), '[]'::jsonb);
+    v_inc   := COALESCE(NULLIF(p_payload->'inc', 'null'::jsonb), '{}'::jsonb);
+    IF jsonb_typeof(v_lines) <> 'array' OR jsonb_typeof(v_inc) <> 'object'
+       OR (jsonb_typeof(p_payload->'allow_over') IS NOT NULL
+           AND jsonb_typeof(p_payload->'allow_over') NOT IN ('boolean', 'null')) THEN
+        RAISE EXCEPTION 'bad_version' USING ERRCODE = 'P0001', HINT = 'shape';
+    END IF;
+    v_exp    := COALESCE(NULLIF(v_inc->'expected_received_before', 'null'::jsonb), '[]'::jsonb);
+    v_scheds := COALESCE(NULLIF(v_inc->'scheds', 'null'::jsonb), '[]'::jsonb);
+    v_allocs := COALESCE(NULLIF(v_inc->'allocs', 'null'::jsonb), '[]'::jsonb);
+    v_txns   := COALESCE(NULLIF(v_inc->'txns', 'null'::jsonb), '[]'::jsonb);
+    IF jsonb_typeof(v_exp) <> 'array' OR jsonb_typeof(v_scheds) <> 'array'
+       OR jsonb_typeof(v_allocs) <> 'array' OR jsonb_typeof(v_txns) <> 'array' THEN
+        RAISE EXCEPTION 'bad_version' USING ERRCODE = 'P0001', HINT = 'shape';
+    END IF;
+    IF EXISTS (SELECT 1 FROM jsonb_array_elements(v_lines) e
+                WHERE jsonb_typeof(e) <> 'object' OR NOT COALESCE(jsonb_typeof(e->'si_id') = 'number' AND (e->'si_id' #>> '{}') ~ '^-?[0-9]+$', false)
+                   OR jsonb_typeof(e->'qty_before') IS DISTINCT FROM 'number'
+                   OR jsonb_typeof(e->'qty_after') IS DISTINCT FROM 'number')
+       OR EXISTS (SELECT 1 FROM jsonb_array_elements(v_exp) e
+                   WHERE jsonb_typeof(e) <> 'object' OR NOT COALESCE(jsonb_typeof(e->'soi_id') = 'number' AND (e->'soi_id' #>> '{}') ~ '^-?[0-9]+$', false)
+                      OR jsonb_typeof(e->'received') IS DISTINCT FROM 'number')
+       OR EXISTS (SELECT 1 FROM jsonb_array_elements(v_scheds) e
+                   WHERE jsonb_typeof(e) <> 'object' OR NOT COALESCE(jsonb_typeof(e->'sched_id') = 'number' AND (e->'sched_id' #>> '{}') ~ '^-?[0-9]+$', false)
+                      OR NOT COALESCE(jsonb_typeof(e->'soi_id') = 'number' AND (e->'soi_id' #>> '{}') ~ '^-?[0-9]+$', false)
+                      OR jsonb_typeof(e->'delta') IS DISTINCT FROM 'number')
+       OR EXISTS (SELECT 1 FROM jsonb_array_elements(v_allocs) e
+                   WHERE jsonb_typeof(e) <> 'object' OR NOT COALESCE(jsonb_typeof(e->'si_id') = 'number' AND (e->'si_id' #>> '{}') ~ '^-?[0-9]+$', false)
+                      OR NOT COALESCE(jsonb_typeof(e->'sched_id') = 'number' AND (e->'sched_id' #>> '{}') ~ '^-?[0-9]+$', false)
+                      OR jsonb_typeof(e->'qty') IS DISTINCT FROM 'number')
+       OR EXISTS (SELECT 1 FROM jsonb_array_elements(v_txns) e
+                   WHERE jsonb_typeof(e) <> 'object' OR NOT COALESCE(jsonb_typeof(e->'si_id') = 'number' AND (e->'si_id' #>> '{}') ~ '^-?[0-9]+$', false)
+                      OR jsonb_typeof(e->'qty') IS DISTINCT FROM 'number'
+                      OR COALESCE(jsonb_typeof(e->'product_id'), 'null') NOT IN ('string', 'null')
+                      OR COALESCE(jsonb_typeof(e->'unit'), 'null') NOT IN ('string', 'null')
+                      OR COALESCE(jsonb_typeof(e->'lot_number'), 'null') NOT IN ('string', 'null')
+                      OR COALESCE(jsonb_typeof(e->'work_order'), 'null') NOT IN ('string', 'null')) THEN
+        RAISE EXCEPTION 'bad_version' USING ERRCODE = 'P0001', HINT = 'shape';
+    END IF;
     IF jsonb_typeof(p_payload->'request_id') IS DISTINCT FROM 'string'
        OR (p_payload->>'request_id') !~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$' THEN
         RAISE EXCEPTION 'bad_version' USING ERRCODE = 'P0001', HINT = 'request_id';
@@ -200,19 +241,6 @@ BEGIN
     v_reason  := btrim(COALESCE(p_payload->>'reason', ''));
     v_who     := p_payload->>'who';
     v_allow   := COALESCE((p_payload->>'allow_over')::boolean, false);
-    v_lines   := COALESCE(p_payload->'lines', '[]'::jsonb);
-    v_inc     := COALESCE(p_payload->'inc', '{}'::jsonb);
-    IF jsonb_typeof(v_lines) <> 'array' OR jsonb_typeof(v_inc) <> 'object' THEN
-        RAISE EXCEPTION 'bad_version' USING ERRCODE = 'P0001', HINT = 'shape';
-    END IF;
-    v_exp    := COALESCE(v_inc->'expected_received_before', '[]'::jsonb);
-    v_scheds := COALESCE(v_inc->'scheds', '[]'::jsonb);
-    v_allocs := COALESCE(v_inc->'allocs', '[]'::jsonb);
-    v_txns   := COALESCE(v_inc->'txns', '[]'::jsonb);
-    IF jsonb_typeof(v_exp) <> 'array' OR jsonb_typeof(v_scheds) <> 'array'
-       OR jsonb_typeof(v_allocs) <> 'array' OR jsonb_typeof(v_txns) <> 'array' THEN
-        RAISE EXCEPTION 'bad_version' USING ERRCODE = 'P0001', HINT = 'inc arrays';
-    END IF;
 
     -- ① 전표 잠금 → 재실행 판정(상태 검사보다 앞, 나머지 잠금 전)
     SELECT shipment_id, ship_no, ship_date, status, rev_no INTO v_sh

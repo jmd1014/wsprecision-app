@@ -188,10 +188,56 @@ def plan_revision(state, request, today, now="<NOW>"):
     return res, st
 
 
+def _is_int(v):
+    return isinstance(v, int) and not isinstance(v, bool)
+
+
+def _is_num(v):
+    return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+
+def _is_opt_str(v):
+    return v is None or isinstance(v, str)
+
+
+SHAPE = {   # 배열 원소 형식(082 0단계와 같은 규칙): 키 → 'int' | 'num' | 'str?'
+    "lines": {"si_id": "int", "qty_before": "num", "qty_after": "num"},
+    "expected_received_before": {"soi_id": "int", "received": "num"},
+    "scheds": {"sched_id": "int", "soi_id": "int", "delta": "num"},
+    "allocs": {"si_id": "int", "sched_id": "int", "qty": "num"},
+    "txns": {"si_id": "int", "qty": "num", "product_id": "str?", "unit": "str?", "lot_number": "str?",
+             "work_order": "str?"},
+}
+
+
+def shape_ok(req):
+    """payload 배열 원소의 형식 — 숫자 자리에 숫자가 아니면 bad_version(SQL 이 캐스트 오류 22P02 를 내지 않게)."""
+    if req.get("allow_over") is not None and not isinstance(req.get("allow_over"), bool):
+        return False
+    inc = req.get("inc") or {}
+    if not isinstance(req.get("lines") or [], list) or not isinstance(inc, dict):
+        return False
+    for key, spec in SHAPE.items():
+        arr = (req.get("lines") if key == "lines" else inc.get(key)) or []
+        if not isinstance(arr, list):
+            return False
+        for e in arr:
+            if not isinstance(e, dict):
+                return False
+            for k, kind in spec.items():
+                v = e.get(k)
+                ok = (_is_int(v) if kind == "int" else _is_num(v) if kind == "num" else _is_opt_str(v))
+                if not ok:
+                    return False
+    return True
+
+
 def _apply(st, req, today, now):
     # 0. 형식
     if not isinstance(req, dict) or str(req.get("v")) != "1" or req.get("action") not in ("EDIT", "CANCEL"):
         raise Reject("bad_version")
+    if not shape_ok(req):
+        raise Reject("bad_version", "shape")
     if not _is_uuid(req.get("request_id")):
         raise Reject("bad_version", "request_id")
     if req.get("expected_rev_no") is None or not re.fullmatch(r"-?\d+", str(req.get("expected_rev_no"))):

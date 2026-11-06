@@ -483,6 +483,14 @@ def g_reject_line_duplicate(n):
     return st, req
 
 
+def g_reject_bad_version_non_numeric(n):
+    """배열 원소의 숫자 자리에 숫자가 아님(si_id "501a", 증가 qty "x") → bad_version(SQL 캐스트 오류 22P02 가 아님)."""
+    st, req = _edit(n, _w(), {501: 700})
+    req["lines"] = [dict(req["lines"][0], si_id="501a")]
+    req["inc"]["txns"] = [dict(req["inc"]["txns"][0], qty="x")]
+    return st, req
+
+
 def g_reject_bad_version_no_rev(n):
     """expected_rev_no 누락 → bad_version."""
     st, req = _cancel(n, _w())
