@@ -70,3 +70,43 @@ def test_a_t5_archived_hint_no_bom_is_empty():
     r = pn_candidates([], {}, dict(HINT_92))
     assert r["cands"] == [] and r["labels"] == []
     assert r["notice"] == NOTICE_92
+
+
+# ── r2 D-1·D-2: 앞서 고른 선택 판정(선택 상자를 만들기 전 세션의 옛 라벨) ──
+def _pv(prev, cands, labels):
+    from utils.wo_input import prev_selection      # 함수 안 import — 수정 전 코드에서도 이 파일의 다른 테스트는 돈다
+    return prev_selection(prev, cands, labels)
+
+
+C2 = [{"pn": "HA80-80093", "product_id": "P0883"}, {"pn": "HA80-80099", "product_id": "P0999"}]
+
+
+def test_prev_none():
+    assert _pv(None, C2, ["HA80-80093 ← 미납 500", "HA80-80099"]) == {"state": "none", "pn": None, "index": None}
+
+
+def test_prev_same():
+    r = _pv("HA80-80099", C2, ["HA80-80093 ← 미납 500", "HA80-80099"])
+    assert r == {"state": "same", "pn": "HA80-80099", "index": 1}, r
+
+
+def test_prev_relabel_new_position():
+    r = _pv("HA80-80099 ← 미납 300", C2, ["HA80-80093 ← 미납 500", "HA80-80099 ← 미납 200"])
+    assert r == {"state": "relabel", "pn": "HA80-80099", "index": 1}, r
+    r = _pv("HA80-80093 (발주 라인 기준)", list(reversed(C2)), ["HA80-80099 ← 미납 5", "HA80-80093"])
+    assert r == {"state": "relabel", "pn": "HA80-80093", "index": 1}, r
+
+
+def test_prev_gone():
+    r = _pv("HA80-80092 (발주 라인 기준)", C2[:1], ["HA80-80093 ← 미납 500"])
+    assert r == {"state": "gone", "pn": None, "index": None}, r
+    r = _pv("HA80-80092 (발주 라인 기준)", [], [])           # 후보 0개 → 직접 입력 칸
+    assert r["state"] == "gone", r
+
+
+def test_prev_prefix_two_matches_longest():
+    cands = [{"pn": "PN-1", "product_id": "A"}, {"pn": "PN-1 (R)", "product_id": "B"}]
+    r = _pv("PN-1 (R) (발주 라인 기준)", cands, ["PN-1 ← 미납 3", "PN-1 (R) ← 미납 9"])
+    assert r == {"state": "relabel", "pn": "PN-1 (R)", "index": 1}, r
+    r = _pv("PN-1 ← 미납 4", cands, ["PN-1 ← 미납 3", "PN-1 (R) ← 미납 9"])
+    assert r == {"state": "relabel", "pn": "PN-1", "index": 0}, r

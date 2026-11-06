@@ -129,7 +129,8 @@ def _sched_mock(rounds):
             return super().fetch(table, select, filter_query, limit, cache)
 
         def _seen(self, table, rows):
-            """지운 회차 id 도 발급 기록에 남긴다 — 운영 SERIAL 처럼 재사용 없음(후보 53 L-2)."""
+            """지운 회차 id 도 발급 기록에 남긴다 — 운영 SERIAL 처럼 재사용 없음(후보 53 L-2).
+            _seq 초기값(만들 때 max)만으로는 목을 만든 뒤 테스트가 더 큰 id 의 회차를 붙였다가 지우면 그 id 를 다시 줄 수 있다."""
             if table == "so_delivery_schedule" and rows:
                 self._seq[table] = max([self._seq.get(table, 0)] + [int(r["sched_id"]) for r in rows])
 

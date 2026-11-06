@@ -444,6 +444,14 @@ def test_b_t8_delete_cancelled_ref_round_keeps_delivered_sum(monkeypatch):
     left = _sched(m)
     assert [x[0] for x in left] == [1, 3], left
     assert sum(x[4] for x in left) == float(line["received_qty"]) - float(line.get("presched_qty") or 0) == 50.0
+    # r2(qa R-7): 남은 회차의 수량·납품완료는 그대로(회차 3 은 번호만 2 로 당겨짐)
+    assert left == [(1, "2026-11-10", 1, 100.0, 50.0), (3, "2026-11-30", 2, 100.0, 0.0)], left
+    # 번호 당김 update 가 delivered_qty 를 함께 쓰더라도 원래 값 그대로여야 한다(회차 1: 50, 회차 3: 0)
+    orig = {1: 50.0, 3: 0.0}
+    for op, t, p in m.writes:
+        if t == "so_delivery_schedule" and op == "update" and "delivered_qty" in p:
+            sid = int(re.search(r"sched_id=eq\.(\d+)", p["filter"]).group(1))
+            assert float(p["delivered_qty"]) == orig[sid], (sid, p)
 
 
 @pytest.mark.skipif(not _HAS_ST, reason="streamlit 미설치 — AppTest 불가")
