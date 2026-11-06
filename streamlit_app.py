@@ -19220,11 +19220,15 @@ elif page == "공정 관리":
                 # 위치를 넘겨 유지(D-2), 후보에서 빠졌으면 이 run 은 등록 차단(D-1).
                 # 옛 라벨의 품번은 직전 run 이 남긴 「라벨 → 품번」 표로 찾는다 —
                 # 라벨 문자열을 해석하지 않는다(r2b D-3, 표 없음·다른 LOT 은 차단)
+                # 직전 run 이 직접 입력 칸이었는데 이제 후보가 생겼으면(휴면 해제·BOM
+                # 등록 등) 입력한 품번 대신 기본 후보로 등록되지 않게 그 run 차단(r2c)
                 _pn_prev_lbl = st.session_state.get(f"pe_in_pnsel_{_sel_lot}")
+                _pn_prev_direct = st.session_state.get("pe_in_pn")
                 _ps = _wo_in.prev_selection(
                     _pn_prev_lbl, _cands, _pn_labels,
-                    st.session_state.get("pe_in_pnsel_tbl"), lot=_sel_lot)
-                _sel_gone = _ps["state"] == "gone"
+                    st.session_state.get("pe_in_pnsel_tbl"), lot=_sel_lot,
+                    direct_input=_pn_prev_direct)
+                _sel_gone = _ps["state"] in ("gone", "direct")
                 if _cands:
                     _pn_sel = st.selectbox(
                         f"품번 (후보 {len(_cands)}건 — 작업지시서 품번과 같은지 확인)",
@@ -19247,8 +19251,10 @@ elif page == "공정 관리":
                 # 후보 0개면 빈 표). 뒤쪽 코드가 예외로 끊겨도 남도록 선택 상자 바로 뒤
                 st.session_state["pe_in_pnsel_tbl"] = _wo_in.selection_table(
                     _sel_lot, _pn_labels, _cands)
-                if _sel_gone:
+                if _ps["state"] == "gone":
                     st.error(_wo_in.gone_message(_pn_prev_lbl))
+                elif _ps["state"] == "direct":
+                    st.error(_wo_in.direct_input_message(_pn_prev_direct))
                 if _pc["notice"]:
                     st.warning(_pc["notice"])
 
@@ -19396,7 +19402,8 @@ elif page == "공정 관리":
                         disabled=not (_wo_ok and _in_qty > 0
                                       and _in_prod_qty > 0
                                       and not _pn_archived
-                                      and not _sel_gone),
+                                      and not _sel_gone
+                                      and bool((_in_pn or "").strip())),
                         key="pe_in_submit"):
                     try:
                         _wo = _wo_no.strip()

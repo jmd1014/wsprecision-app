@@ -364,8 +364,7 @@ def test_r1f_only_candidate_archived_switches_to_direct_input(monkeypatch):
     assert not any("앞서 고른 품번" in str(e.value) for e in at.error), [str(e.value) for e in at.error]
     # r2c(qa T-1 · M-3): 품번 칸이 비어 있으면 [투입 등록] 비활성 — 품번 없는 작업지시를 만들지 않는다
     assert at.text_input(key="pe_in_pn").value == ""
-    assert at.button(key="pe_in_submit").disabled
-    _click(at)
+    assert at.button(key="pe_in_submit").disabled          # (AppTest 는 비활성 버튼 클릭 자체를 거부한다)
     assert _no_input_writes(m), m.writes
     at.text_input(key="pe_in_pn").set_value("HA80-80093")
     at.run()

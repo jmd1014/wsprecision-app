@@ -68,7 +68,7 @@ def selection_table(lot, labels, cands):
     return {"lot": lot, "map": {lb: c["pn"] for lb, c in zip(labels or [], cands or [])}}
 
 
-def prev_selection(prev_label, cands, labels, prev_map=None, lot=None):
+def prev_selection(prev_label, cands, labels, prev_map=None, lot=None, direct_input=None):
     """옛 선택 라벨 + 직전 run 표 → {"state", "pn", "index"}.
 
     none    : 옛 값 없음(처음 그림·LOT 바꿈)
@@ -76,9 +76,13 @@ def prev_selection(prev_label, cands, labels, prev_map=None, lot=None):
     relabel : 직전 표로 찾은 품번이 새 후보에 있고 라벨·위치만 바뀜 → 화면은 index 로 그 위치를 넘겨 선택 유지(D-2)
     gone    : 그 품번이 새 후보에 없음(휴면 처리 등, 후보 0개 포함) → 그 run 은 등록 차단(D-1).
               표가 없거나·다른 LOT 의 표거나·옛 라벨이 표에 없거나·같은 라벨이 다른 품번을 가리키면 gone(fail-closed)
+    direct  : 옛 선택은 없는데 직전 run 이 직접 입력 칸이었고 값이 있음(direct_input) + 이제 후보가 생김
+              → 입력한 품번 대신 기본 후보로 등록되지 않게 그 run 은 gone 과 같이 차단(r2c, qa r2 M-2)
     """
     gone = {"state": "gone", "pn": None, "index": None}
     if prev_label is None:
+        if cands and str(direct_input or "").strip():
+            return {"state": "direct", "pn": None, "index": None}
         return {"state": "none", "pn": None, "index": None}
     labels, cands = list(labels or []), list(cands or [])
     tbl = (prev_map or {}).get("map") if (prev_map and (lot is None or prev_map.get("lot") == lot)) else None
@@ -94,6 +98,11 @@ def prev_selection(prev_label, cands, labels, prev_map=None, lot=None):
     if i is None:
         return gone
     return {"state": "relabel", "pn": pn_prev, "index": i}
+
+
+def direct_input_message(value):
+    return (f"직접 입력한 품번 {str(value or '').strip()} 대신 후보 목록이 생겼습니다 — 품번을 다시 확인하세요. "
+            "방금 [투입 등록] 을 눌렀다면 등록되지 않았습니다.")
 
 
 def gone_message(prev_label):
