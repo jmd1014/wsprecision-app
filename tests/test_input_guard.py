@@ -289,8 +289,8 @@ def _pick_y_and_change(monkeypatch, change, lot="W6000"):
 
 def _assert_y(m, at):
     assert not [str(e.value) for e in at.error], [str(e.value) for e in at.error]
-    # D-2 는 index 인자로 선택을 유지한다 — 세션 상태를 직접 쓰지 않으므로 Streamlit 경고가 없어야 한다
-    assert not [str(w.value) for w in at.warning if "Session State" in str(w.value)], [str(w.value) for w in at.warning]
+    # D-2 는 index 인자로 선택을 유지한다 — 세션 상태를 직접 쓰지 않는다(코드로 확인). Streamlit 의 위젯 경고는
+    # 로그로만 남고 AppTest 에선 검사 자체가 꺼져 있어 단언하지 않는다(qa r2 L-2)
     for t in ("wo_tracking", "wo_batches"):
         rows = _ins(m, t)
         assert len(rows) == 1 and rows[0]["pn"] == "HA80-80099" and rows[0]["product_id"] == "P0999", (t, rows)
@@ -301,8 +301,8 @@ def test_r1c_selected_label_changes_keeps_selection(monkeypatch):
     _assert_y(*_pick_y_and_change(monkeypatch, lambda m: _set_pend(m, "P0999", 200)))
 
 
-def test_r1c2_relabel_run_without_click_keeps_selection_no_warning(monkeypatch):
-    """클릭 없이 다시 그려도(라벨 변동 run) 선택이 Y 의 새 라벨로 유지되고 Streamlit 경고·오류가 없다(D-2 index 방식)."""
+def test_r1c2_relabel_run_without_click_keeps_selection(monkeypatch):
+    """클릭 없이 다시 그려도(라벨 변동 run) 선택이 Y 의 새 라벨로 유지되고 오류가 없다(D-2 index 방식)."""
     m = _mock()
     _add_prod(m, "P0999", "HA80-80099", 300)
     _lot(m, "W6200", "M191", 100)
@@ -315,8 +315,7 @@ def test_r1c2_relabel_run_without_click_keeps_selection_no_warning(monkeypatch):
     at.run()
     assert not at.exception, [str(e.value) for e in at.exception]
     assert _sel(at, "W6200").value == "HA80-80099 ← 미납 200", _sel(at, "W6200").value
-    assert not [str(e.value) for e in at.error] and not [str(w.value) for w in at.warning
-                                                          if "Session State" in str(w.value)]
+    assert not [str(e.value) for e in at.error], [str(e.value) for e in at.error]
 
 
 def test_r1d_other_label_changes_keeps_selection(monkeypatch):
@@ -363,12 +362,87 @@ def test_r1f_only_candidate_archived_switches_to_direct_input(monkeypatch):
     assert not at.exception, [str(e.value) for e in at.exception]
     assert "pe_in_pnsel_W7000" not in at.session_state
     assert not any("앞서 고른 품번" in str(e.value) for e in at.error), [str(e.value) for e in at.error]
+    # r2c(qa T-1 · M-3): 품번 칸이 비어 있으면 [투입 등록] 비활성 — 품번 없는 작업지시를 만들지 않는다
+    assert at.text_input(key="pe_in_pn").value == ""
+    assert at.button(key="pe_in_submit").disabled
+    _click(at)
+    assert _no_input_writes(m), m.writes
     at.text_input(key="pe_in_pn").set_value("HA80-80093")
     at.run()
     assert not at.button(key="pe_in_submit").disabled, [str(e.value) for e in at.error]
     _click(at)
     rows = _ins(m, "wo_tracking")
-    assert len(rows) == 1 and rows[0]["pn"] == "HA80-80093", rows
+    assert len(rows) == 1 and rows[0]["pn"] == "HA80-80093" and rows[0]["product_id"] == "P0883", rows
+
+
+# ── r2c(2026-11-06): qa r2 M-2·M-3·T-2·T-4 ──
+DIRECT_93 = ("직접 입력한 품번 HA80-80093 대신 후보 목록이 생겼습니다 — 품번을 다시 확인하세요. "
+             "방금 [투입 등록] 을 눌렀다면 등록되지 않았습니다.")
+
+
+def test_t2_direct_input_then_candidates_appear_blocks(monkeypatch):
+    """W7000(P0738 휴면, BOM 없음) → 직접 입력 HA80-80093·지시 → P0738 휴면 해제(후보 생김) → 클릭
+    → 그 run 쓰기 0 + 문구. 다음 run 은 선택 상자(기본 = 발주 라인 힌트)로 차단 없음."""
+    m = _mock()
+    _lot(m, "W7000", "M500", 30, poi=326, poi_item="HA80-80092", poi_pid="P0738")
+    at = _open(monkeypatch, m)
+    assert not [s for s in at.selectbox if s.key == "pe_in_pnsel_W7000"]
+    at.text_input(key="pe_in_pn").set_value("HA80-80093")
+    _wo(at, "20261106-020")
+    _set_arch(m, "P0738", None)
+    _click(at)
+    assert _no_input_writes(m), m.writes
+    assert DIRECT_93 in [str(e.value) for e in at.error], [str(e.value) for e in at.error]
+    assert _sel(at, "W7000").options == ["HA80-80092 (발주 라인 기준)"]
+    at.run()
+    assert not at.exception, [str(e.value) for e in at.exception]
+    assert not any("직접 입력한 품번" in str(e.value) for e in at.error), [str(e.value) for e in at.error]
+    assert not at.button(key="pe_in_submit").disabled
+
+
+def test_t4_bom_candidate_archived_is_gone(monkeypatch):
+    """힌트가 아닌 BOM 후보 Y 를 고른 뒤 Y 휴면 → 클릭 → 쓰기 0·gone 문구, 다음 run 은 X 기본·버튼 활성."""
+    m = _mock()
+    _add_prod(m, "P0999", "HA80-80099", 300)
+    _lot(m, "W6300", "M191", 100)
+    _bom(m, "P0883", "M191")
+    _bom(m, "P0999", "M191")
+    at = _open(monkeypatch, m)
+    _sel(at, "W6300").set_value("HA80-80099 ← 미납 300")
+    at.run()
+    _wo(at, "20261106-022")
+    _set_arch(m, "P0999", ARCHIVED)
+    _click(at)
+    assert _no_input_writes(m), m.writes
+    gone = ("앞서 고른 품번 HA80-80099 ← 미납 300 이 후보에서 빠졌습니다(휴면 처리 등) — 품번을 다시 확인하세요. "
+            "방금 [투입 등록] 을 눌렀다면 등록되지 않았습니다.")
+    assert gone in [str(e.value) for e in at.error], [str(e.value) for e in at.error]
+    at.run()
+    assert _sel(at, "W6300").value == "HA80-80093 ← 미납 500"
+    assert not at.button(key="pe_in_submit").disabled, [str(e.value) for e in at.error]
+
+
+def test_ctrl_lot_switch_from_direct_input_does_not_block(monkeypatch):
+    """대조: 직접 입력 LOT(W3000)에서 품번을 쓴 뒤 후보 있는 LOT(W1257)으로 바꾸면 차단 없음
+    (LOT 전환 때 fresh_keys 가 pe_in_pn 을 지우는 기존 동작 고정)."""
+    from tests.test_so_close import _hook_aggrid, SEL, GRIDS
+    GRIDS.clear()
+    SEL.clear()
+    _hook_aggrid(monkeypatch)
+    m = _mock()
+    _lot(m, "W3000", "M500", 50)
+    _w1257(m)
+    at = _open(monkeypatch, m)                     # 잔여 LOT 은 번호 내림차순 — 0 = W3000(직접 입력)
+    at.text_input(key="pe_in_pn").set_value("HA80-80093")
+    at.run()
+    SEL["pe_w_grid"] = 1                           # W1257 로 전환
+    at.run()
+    assert not at.exception, [str(e.value) for e in at.exception]
+    assert _sel(at, "W1257").options == ["HA80-80093 ← 미납 500"]
+    assert not any("직접 입력한 품번" in str(e.value) or "앞서 고른 품번" in str(e.value) for e in at.error), \
+        [str(e.value) for e in at.error]
+    _wo(at, "20261106-023")
+    assert not at.button(key="pe_in_submit").disabled
 
 
 # ── r2b D-3: 품번 자체가 표시 꼬리로 끝나는 경우(Codex r2 HIGH) — 직전 run 의 「라벨 → 품번」 표로 찾는다 ──

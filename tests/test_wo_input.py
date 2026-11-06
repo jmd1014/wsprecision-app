@@ -75,12 +75,15 @@ def test_a_t5_archived_hint_no_bom_is_empty():
 
 
 # ── r2 D-1·D-2 · r2b D-3: 앞서 고른 선택 판정(선택 상자를 만들기 전 세션의 옛 라벨 + 직전 run 의 「라벨 → 품번」 표) ──
-def _pv(prev, cands, labels, prev_map=None, lot=None):
+def _pv(prev, cands, labels, prev_map=None, lot=None, direct=None):
     from utils.wo_input import prev_selection      # 함수 안 import — 수정 전 코드에서도 이 파일의 다른 테스트는 돈다
     try:
-        return prev_selection(prev, cands, labels, prev_map, lot=lot)
-    except TypeError:                               # 02a 재현용: r2(be25433)의 3인자 판정(라벨 꼬리 역산)으로 호출
-        return prev_selection(prev, cands, labels)
+        return prev_selection(prev, cands, labels, prev_map, lot=lot, direct_input=direct)
+    except TypeError:                               # 02a 재현용: 옛 시그니처(r2 3인자 · r2b direct_input 없음)로 호출
+        try:
+            return prev_selection(prev, cands, labels, prev_map, lot=lot)
+        except TypeError:
+            return prev_selection(prev, cands, labels)
 
 
 def _tbl(lot, labels, pns):
@@ -164,3 +167,27 @@ def test_d3_same_label_now_other_pn_is_gone():
     t = _tbl("W8", ["HB10-100 (발주 라인 기준)"], ["HB10-100 (발주 라인 기준)"])
     r = _pv("HB10-100 (발주 라인 기준)", XT[:1], ["HB10-100 (발주 라인 기준)"], t, "W8")
     assert r["state"] == "gone", r
+
+
+# ── r2c(qa r2 M-2): 직전 run 이 직접 입력 칸이었는데 후보가 생김 → 그 run 차단 ──
+def test_r2c_direct_input_then_candidates_is_direct():
+    r = _pv(None, C2, ["HA80-80093 ← 미납 500", "HA80-80099"], None, "W1", direct="HA80-80093")
+    assert r == {"state": "direct", "pn": None, "index": None}, r
+
+
+@pytest.mark.parametrize("direct", [None, "", "   "])
+def test_r2c_no_direct_value_is_none(direct):
+    r = _pv(None, C2, ["HA80-80093 ← 미납 500", "HA80-80099"], None, "W1", direct=direct)
+    assert r["state"] == "none", r
+
+
+def test_r2c_direct_value_without_candidates_is_none():
+    """후보 0개(아직 직접 입력 칸)면 판정 대상 아님."""
+    assert _pv(None, [], [], None, "W1", direct="HA80-80093")["state"] == "none"
+
+
+def test_r2c_direct_message():
+    from utils.wo_input import direct_input_message
+    assert direct_input_message("HA80-80093") == (
+        "직접 입력한 품번 HA80-80093 대신 후보 목록이 생겼습니다 — 품번을 다시 확인하세요. "
+        "방금 [투입 등록] 을 눌렀다면 등록되지 않았습니다.")
