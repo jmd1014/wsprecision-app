@@ -7,9 +7,8 @@
   (2026-09-16 T16ABV/20ABV 오등록 사고 — 작업지시서 품번과 대조해 고르도록 선택창을 항상 보인다).
   BOM 후보에 없으면 맨 앞에 끼워 넣는다.
 - 힌트가 휴면 품번이면 힌트로 쓰지 않고 후보에서도 빼며 안내 문구를 돌려준다(2026-11-06 후보 49).
-- 앞서 고른 선택이 라벨 변동으로 풀리거나 후보에서 빠졌는지 판정한다(prev_selection, 2026-11-06 r2).
+- 앞서 고른 선택이 라벨 변동으로 풀리거나 후보에서 빠졌는지 판정한다(prev_selection, 2026-11-06 r2·r2b).
 """
-import re
 
 
 def order_bom_candidates(bom_rows, open_pids):
@@ -57,47 +56,46 @@ def pn_candidates(bom_rows, open_pend, hint=None, open_pids=None):
     return {"cands": cands, "labels": labels, "default": default, "notice": notice}
 
 
-# ── 앞서 고른 선택 판정 (2026-11-06 r2 D-1·D-2) ──
+# ── 앞서 고른 선택 판정 (2026-11-06 r2 D-1·D-2 · r2b D-3) ──
 # 선택 상자 라벨에 미납 수량·「(발주 라인 기준)」이 들어 있어, 라벨이 바뀌면 Streamlit 은 그 선택을 못 찾고
 # index(기본값)로 되돌린다 → 같은 run 의 [투입 등록] 클릭이 사용자가 본 것과 다른 품번으로 등록됐다.
-# 화면은 선택 상자를 만들기 전에 세션의 옛 라벨을 읽어 이 함수로 판정한다.
-_SRC_SUFFIX = re.compile(r"^(.*) \([^()]* 기준\)$")
-_OPEN_SUFFIX = re.compile(r"^(.*) ← 미납 [-\d,.]+$")
+# 화면은 선택 상자를 만들기 전에 세션의 옛 라벨과 직전 run 의 「라벨 → 품번」 표(selection_table)를 읽어
+# 이 함수로 판정한다. 라벨 문자열을 해석하지 않는다(r2b D-3 — 품번 자체가 꼬리 글자로 끝나도 정확).
 
 
-def label_pn(label):
-    """pn_candidates 가 만든 라벨에서 품번을 되찾는다 — 「 (… 기준)」·「 ← 미납 N」 꼬리를 뗀 나머지(정확 일치용)."""
-    s = str(label or "")
-    m = _SRC_SUFFIX.match(s)
-    if m:
-        s = m.group(1)
-    m = _OPEN_SUFFIX.match(s)
-    if m:
-        s = m.group(1)
-    return s
+def selection_table(lot, labels, cands):
+    """이번 run 의 「라벨 → 품번」 표 — 화면이 선택 상자 직후 세션의 위젯 아닌 키 하나에 남긴다(LOT 바뀌면 덮어씀)."""
+    return {"lot": lot, "map": {lb: c["pn"] for lb, c in zip(labels or [], cands or [])}}
 
 
-def prev_selection(prev_label, cands, labels):
-    """옛 선택 라벨 → {"state", "pn", "index"}.
+def prev_selection(prev_label, cands, labels, prev_map=None, lot=None):
+    """옛 선택 라벨 + 직전 run 표 → {"state", "pn", "index"}.
 
     none    : 옛 값 없음(처음 그림·LOT 바꿈)
-    same    : 옛 라벨이 새 라벨에 그대로 있음
-    relabel : 같은 품번이 새 후보에 있고 라벨·위치만 바뀜 → 화면은 index 로 그 위치를 넘겨 선택 유지(D-2)
-    gone    : 옛 품번이 새 후보에 없음(휴면 처리 등, 후보 0개 포함) → 그 run 은 등록 차단(D-1)
+    same    : 옛 라벨이 새 라벨에 그대로 있고 같은 품번을 가리킴
+    relabel : 직전 표로 찾은 품번이 새 후보에 있고 라벨·위치만 바뀜 → 화면은 index 로 그 위치를 넘겨 선택 유지(D-2)
+    gone    : 그 품번이 새 후보에 없음(휴면 처리 등, 후보 0개 포함) → 그 run 은 등록 차단(D-1).
+              표가 없거나·다른 LOT 의 표거나·옛 라벨이 표에 없거나·같은 라벨이 다른 품번을 가리키면 gone(fail-closed)
     """
+    gone = {"state": "gone", "pn": None, "index": None}
     if prev_label is None:
         return {"state": "none", "pn": None, "index": None}
-    labels = list(labels or [])
+    labels, cands = list(labels or []), list(cands or [])
+    tbl = (prev_map or {}).get("map") if (prev_map and (lot is None or prev_map.get("lot") == lot)) else None
+    pn_prev = (tbl or {}).get(prev_label)
     if prev_label in labels:
         i = labels.index(prev_label)
-        return {"state": "same", "pn": cands[i]["pn"], "index": i}
-    pn = label_pn(prev_label)
-    i = next((k for k, c in enumerate(cands or []) if c["pn"] == pn), None)
+        if pn_prev is None or cands[i]["pn"] == pn_prev:
+            return {"state": "same", "pn": cands[i]["pn"], "index": i}
+        return gone                                 # 같은 라벨이 다른 품번 — 이론상 꼬리 품번 충돌
+    if pn_prev is None:
+        return gone
+    i = next((k for k, c in enumerate(cands) if c["pn"] == pn_prev), None)
     if i is None:
-        return {"state": "gone", "pn": None, "index": None}
-    return {"state": "relabel", "pn": pn, "index": i}
+        return gone
+    return {"state": "relabel", "pn": pn_prev, "index": i}
 
 
 def gone_message(prev_label):
     return (f"앞서 고른 품번 {prev_label} 이 후보에서 빠졌습니다(휴면 처리 등) — "
-            "품번을 다시 확인하세요. 이번 클릭은 등록하지 않았습니다.")
+            "품번을 다시 확인하세요. 방금 [투입 등록] 을 눌렀다면 등록되지 않았습니다.")

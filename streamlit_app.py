@@ -19217,9 +19217,13 @@ elif page == "공정 관리":
                 # 기준)이 바뀌면 Streamlit 이 선택을 index(기본값)로 되돌려, 같은 run 의
                 # 클릭이 사용자가 본 것과 다른 품번으로 등록됐다. 선택 상자를 만들기
                 # 전에 세션의 옛 라벨을 읽는다 — 같은 품번이 남아 있으면 index 로 그
-                # 위치를 넘겨 유지(D-2), 후보에서 빠졌으면 이 run 은 등록 차단(D-1)
+                # 위치를 넘겨 유지(D-2), 후보에서 빠졌으면 이 run 은 등록 차단(D-1).
+                # 옛 라벨의 품번은 직전 run 이 남긴 「라벨 → 품번」 표로 찾는다 —
+                # 라벨 문자열을 해석하지 않는다(r2b D-3, 표 없음·다른 LOT 은 차단)
                 _pn_prev_lbl = st.session_state.get(f"pe_in_pnsel_{_sel_lot}")
-                _ps = _wo_in.prev_selection(_pn_prev_lbl, _cands, _pn_labels)
+                _ps = _wo_in.prev_selection(
+                    _pn_prev_lbl, _cands, _pn_labels,
+                    st.session_state.get("pe_in_pnsel_tbl"), lot=_sel_lot)
                 _sel_gone = _ps["state"] == "gone"
                 if _cands:
                     _pn_sel = st.selectbox(
@@ -19239,6 +19243,10 @@ elif page == "공정 관리":
                         help="이 소재를 쓰는 제품이 BOM 에 없습니다. "
                              "마스터 관리 → BOM 편집에서 등록하면 "
                              "다음부터 자동 제안됩니다.")
+                # 이번 run 의 「라벨 → 품번」 표 — 위젯 아닌 키 하나(LOT 바뀌면 덮어씀,
+                # 후보 0개면 빈 표). 뒤쪽 코드가 예외로 끊겨도 남도록 선택 상자 바로 뒤
+                st.session_state["pe_in_pnsel_tbl"] = _wo_in.selection_table(
+                    _sel_lot, _pn_labels, _cands)
                 if _sel_gone:
                     st.error(_wo_in.gone_message(_pn_prev_lbl))
                 if _pc["notice"]:
