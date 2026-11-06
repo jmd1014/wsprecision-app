@@ -6,6 +6,8 @@ A-T1~T3 은 대조군(이동 전 화면 동작과 같아야 한다), A-T4·T5 �
 import os
 import sys
 
+import pytest
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from utils.wo_input import pn_candidates  # noqa: E402
@@ -72,41 +74,93 @@ def test_a_t5_archived_hint_no_bom_is_empty():
     assert r["notice"] == NOTICE_92
 
 
-# ── r2 D-1·D-2: 앞서 고른 선택 판정(선택 상자를 만들기 전 세션의 옛 라벨) ──
-def _pv(prev, cands, labels):
+# ── r2 D-1·D-2 · r2b D-3: 앞서 고른 선택 판정(선택 상자를 만들기 전 세션의 옛 라벨 + 직전 run 의 「라벨 → 품번」 표) ──
+def _pv(prev, cands, labels, prev_map=None, lot=None):
     from utils.wo_input import prev_selection      # 함수 안 import — 수정 전 코드에서도 이 파일의 다른 테스트는 돈다
-    return prev_selection(prev, cands, labels)
+    try:
+        return prev_selection(prev, cands, labels, prev_map, lot=lot)
+    except TypeError:                               # 02a 재현용: r2(be25433)의 3인자 판정(라벨 꼬리 역산)으로 호출
+        return prev_selection(prev, cands, labels)
+
+
+def _tbl(lot, labels, pns):
+    return {"lot": lot, "map": dict(zip(labels, pns))}
 
 
 C2 = [{"pn": "HA80-80093", "product_id": "P0883"}, {"pn": "HA80-80099", "product_id": "P0999"}]
+L_OLD = ["HA80-80093 ← 미납 500", "HA80-80099 ← 미납 300"]
+T_OLD = _tbl("W1", L_OLD, ["HA80-80093", "HA80-80099"])
 
 
 def test_prev_none():
-    assert _pv(None, C2, ["HA80-80093 ← 미납 500", "HA80-80099"]) == {"state": "none", "pn": None, "index": None}
+    assert _pv(None, C2, ["HA80-80093 ← 미납 500", "HA80-80099"], T_OLD, "W1") == \
+        {"state": "none", "pn": None, "index": None}
 
 
 def test_prev_same():
-    r = _pv("HA80-80099", C2, ["HA80-80093 ← 미납 500", "HA80-80099"])
+    r = _pv("HA80-80099 ← 미납 300", C2, L_OLD, T_OLD, "W1")
     assert r == {"state": "same", "pn": "HA80-80099", "index": 1}, r
 
 
 def test_prev_relabel_new_position():
-    r = _pv("HA80-80099 ← 미납 300", C2, ["HA80-80093 ← 미납 500", "HA80-80099 ← 미납 200"])
+    r = _pv("HA80-80099 ← 미납 300", C2, ["HA80-80093 ← 미납 500", "HA80-80099 ← 미납 200"], T_OLD, "W1")
     assert r == {"state": "relabel", "pn": "HA80-80099", "index": 1}, r
-    r = _pv("HA80-80093 (발주 라인 기준)", list(reversed(C2)), ["HA80-80099 ← 미납 5", "HA80-80093"])
+    t = _tbl("W1", ["HA80-80093 (발주 라인 기준)", "HA80-80099"], ["HA80-80093", "HA80-80099"])
+    r = _pv("HA80-80093 (발주 라인 기준)", list(reversed(C2)), ["HA80-80099 ← 미납 5", "HA80-80093"], t, "W1")
     assert r == {"state": "relabel", "pn": "HA80-80093", "index": 1}, r
 
 
 def test_prev_gone():
-    r = _pv("HA80-80092 (발주 라인 기준)", C2[:1], ["HA80-80093 ← 미납 500"])
+    t = _tbl("W1", ["HA80-80093 ← 미납 500", "HA80-80092 (발주 라인 기준)"], ["HA80-80093", "HA80-80092"])
+    r = _pv("HA80-80092 (발주 라인 기준)", C2[:1], ["HA80-80093 ← 미납 500"], t, "W1")
     assert r == {"state": "gone", "pn": None, "index": None}, r
-    r = _pv("HA80-80092 (발주 라인 기준)", [], [])           # 후보 0개 → 직접 입력 칸
+    r = _pv("HA80-80092 (발주 라인 기준)", [], [], t, "W1")      # 후보 0개 → 직접 입력 칸
     assert r["state"] == "gone", r
 
 
-def test_prev_prefix_two_matches_longest():
-    cands = [{"pn": "PN-1", "product_id": "A"}, {"pn": "PN-1 (R)", "product_id": "B"}]
-    r = _pv("PN-1 (R) (발주 라인 기준)", cands, ["PN-1 ← 미납 3", "PN-1 (R) ← 미납 9"])
-    assert r == {"state": "relabel", "pn": "PN-1 (R)", "index": 1}, r
-    r = _pv("PN-1 ← 미납 4", cands, ["PN-1 ← 미납 3", "PN-1 (R) ← 미납 9"])
-    assert r == {"state": "relabel", "pn": "PN-1", "index": 0}, r
+# ── D-3: 품번 자체가 표시 꼬리로 끝나는 경우(Codex r2 HIGH) — be25433 에서 실패해야 한다(02a) ──
+XT = [{"pn": "HB10-100", "product_id": "PX"}, {"pn": "HB10-100 (발주 라인 기준)", "product_id": "PT"}]
+XA = [{"pn": "HB10-100", "product_id": "PX"}, {"pn": "HB10-100 ← 미납 5", "product_id": "PA"}]
+
+
+def test_d3_tail_src_pn_relabel_to_itself():
+    """후보 X·「X (발주 라인 기준)」(실제 품번), 뒤쪽 선택, 그 품번 미납 0 → 200 → relabel 위치 = 뒤쪽(X 아님)."""
+    old = ["HB10-100 ← 미납 500", "HB10-100 (발주 라인 기준)"]
+    new = ["HB10-100 ← 미납 500", "HB10-100 (발주 라인 기준) ← 미납 200"]
+    r = _pv(old[1], XT, new, _tbl("W8", old, [c["pn"] for c in XT]), "W8")
+    assert r == {"state": "relabel", "pn": "HB10-100 (발주 라인 기준)", "index": 1}, r
+
+
+def test_d3_tail_open_pn_relabel_to_itself():
+    """후보 X·「X ← 미납 5」(실제 품번), 뒤쪽 선택(미납 0), 미납 0 → 양수 → relabel 위치 = 뒤쪽."""
+    old = ["HB10-100 ← 미납 500", "HB10-100 ← 미납 5"]
+    new = ["HB10-100 ← 미납 500", "HB10-100 ← 미납 5 ← 미납 30"]
+    r = _pv(old[1], XA, new, _tbl("W8", old, [c["pn"] for c in XA]), "W8")
+    assert r == {"state": "relabel", "pn": "HB10-100 ← 미납 5", "index": 1}, r
+
+
+def test_d3_tail_pn_gone_is_not_relabelled_to_short_pn():
+    """꼬리 품번이 후보에서 빠지고 X 만 남음 → gone(X 로 relabel 되지 않음)."""
+    old = ["HB10-100", "HB10-100 (발주 라인 기준)"]
+    r = _pv(old[1], XT[:1], ["HB10-100"], _tbl("W8", old, [c["pn"] for c in XT]), "W8")
+    assert r == {"state": "gone", "pn": None, "index": None}, r
+
+
+@pytest.mark.parametrize("case", ["no_table", "other_lot", "label_not_in_table"])
+def test_d3_missing_or_foreign_table_is_gone(case):
+    """표 없음 / 다른 LOT 의 표 / 옛 라벨이 표에 없음 → gone(fail-closed)."""
+    new = ["HA80-80093 ← 미납 500", "HA80-80099 ← 미납 200"]
+    if case == "no_table":
+        r = _pv("HA80-80099 ← 미납 300", C2, new, None, "W1")
+    elif case == "other_lot":
+        r = _pv("HA80-80099 ← 미납 300", C2, new, T_OLD, "W2")
+    else:
+        r = _pv("HA80-80099 ← 미납 999", C2, new, T_OLD, "W1")
+    assert r == {"state": "gone", "pn": None, "index": None}, r
+
+
+def test_d3_same_label_now_other_pn_is_gone():
+    """같은 라벨 문자열이 직전과 다른 품번을 가리키면(이론상 꼬리 품번 충돌) 같음으로 보지 않고 gone."""
+    t = _tbl("W8", ["HB10-100 (발주 라인 기준)"], ["HB10-100 (발주 라인 기준)"])
+    r = _pv("HB10-100 (발주 라인 기준)", XT[:1], ["HB10-100 (발주 라인 기준)"], t, "W8")
+    assert r["state"] == "gone", r

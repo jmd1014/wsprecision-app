@@ -195,7 +195,7 @@ def test_a_t8b_direct_input_active_pn_still_allowed(monkeypatch):
 
 # ── r2(2026-11-06): 리뷰 REQUIRED TESTS + R-1 탐침으로 찾은 선택 바뀜(D-1·D-2) ──
 GONE_92 = ("앞서 고른 품번 HA80-80092 (발주 라인 기준) 이 후보에서 빠졌습니다(휴면 처리 등) — "
-           "품번을 다시 확인하세요. 이번 클릭은 등록하지 않았습니다.")
+           "품번을 다시 확인하세요. 방금 [투입 등록] 을 눌렀다면 등록되지 않았습니다.")   # r2b 문구
 WRITE_TABLES = ("wo_tracking", "wo_batches", "inventory_transactions")
 
 
@@ -358,6 +358,53 @@ def test_r1f_only_candidate_archived_switches_to_direct_input(monkeypatch):
     assert [t for t in at.text_input if t.key == "pe_in_pn"], "직접 입력 칸"
     assert GONE_92 in [str(e.value) for e in at.error], [str(e.value) for e in at.error]
     assert NOTICE_92 in _texts(at)
+    # r2b: 다음 run — 선택 상자가 그려지지 않은 run 뒤 세션의 선택 값이 지워져 gone 문구·차단이 풀린다(영구 차단 아님)
+    at.run()
+    assert not at.exception, [str(e.value) for e in at.exception]
+    assert "pe_in_pnsel_W7000" not in at.session_state
+    assert not any("앞서 고른 품번" in str(e.value) for e in at.error), [str(e.value) for e in at.error]
+    at.text_input(key="pe_in_pn").set_value("HA80-80093")
+    at.run()
+    assert not at.button(key="pe_in_submit").disabled, [str(e.value) for e in at.error]
+    _click(at)
+    rows = _ins(m, "wo_tracking")
+    assert len(rows) == 1 and rows[0]["pn"] == "HA80-80093", rows
+
+
+# ── r2b D-3: 품번 자체가 표시 꼬리로 끝나는 경우(Codex r2 HIGH) — 직전 run 의 「라벨 → 품번」 표로 찾는다 ──
+def _tail_pick(monkeypatch):
+    """후보 X=HB10-100(미납 500, 기본), T=「HB10-100 (발주 라인 기준)」(실제 품번, 미납 0). T 를 고른 뒤 T 미납 0 → 200."""
+    m = _mock()
+    _add_prod(m, "PX", "HB10-100", 500)
+    _add_prod(m, "PT", "HB10-100 (발주 라인 기준)", 0)
+    _lot(m, "W8000", "M191", 100)
+    _bom(m, "PX", "M191")
+    _bom(m, "PT", "M191")
+    at = _open(monkeypatch, m)
+    sb = _sel(at, "W8000")
+    assert sb.options == ["HB10-100 ← 미납 500", "HB10-100 (발주 라인 기준)"] and sb.index == 0, sb.options
+    sb.set_value("HB10-100 (발주 라인 기준)")
+    at.run()
+    _wo(at, "20261106-021")
+    _set_pend(m, "PT", 200)
+    return m, at
+
+
+def test_d3_tail_pn_kept_on_rerun(monkeypatch):
+    m, at = _tail_pick(monkeypatch)
+    at.run()
+    assert not at.exception, [str(e.value) for e in at.exception]
+    assert _sel(at, "W8000").value == "HB10-100 (발주 라인 기준) ← 미납 200", _sel(at, "W8000").value
+    assert not [str(e.value) for e in at.error]
+
+
+def test_d3_tail_pn_registered_on_click(monkeypatch):
+    m, at = _tail_pick(monkeypatch)
+    _click(at)
+    assert not [str(e.value) for e in at.error], [str(e.value) for e in at.error]
+    for t in ("wo_tracking", "wo_batches"):
+        rows = _ins(m, t)
+        assert len(rows) == 1 and rows[0]["pn"] == "HB10-100 (발주 라인 기준)" and rows[0]["product_id"] == "PT", (t, rows)
 
 
 def test_r2_archived_by_product_id_with_active_item_name(monkeypatch):
