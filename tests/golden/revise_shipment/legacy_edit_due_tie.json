@@ -1,0 +1,624 @@
+{
+ "action": "EDIT",
+ "after": {
+  "inventory_transactions": [
+   {
+    "created_by": "테스트",
+    "lot_number": "W01",
+    "material_id": null,
+    "product_id": "P1",
+    "qty": -300,
+    "ref_id": 501,
+    "ref_table": "shipment_items",
+    "remark": "출고 SH-20261101-01: SO-100",
+    "txn_date": "2026-11-01",
+    "txn_id": 1,
+    "txn_type": "ISSUE",
+    "unit": "EA",
+    "work_order": "W01"
+   },
+   {
+    "created_by": "테스트",
+    "lot_number": "W02",
+    "material_id": null,
+    "product_id": "P1",
+    "qty": -200,
+    "ref_id": 501,
+    "ref_table": "shipment_items",
+    "remark": "출고 SH-20261101-01: SO-100",
+    "txn_date": "2026-11-01",
+    "txn_id": 2,
+    "txn_type": "ISSUE",
+    "unit": "EA",
+    "work_order": "W02"
+   },
+   {
+    "created_by": "테스트",
+    "lot_number": "W02",
+    "material_id": null,
+    "product_id": "P1",
+    "qty": 200,
+    "ref_id": 501,
+    "ref_table": "shipment_items",
+    "remark": "출고 정정 SH-20261101-01: SO-100 (거래처 착오)",
+    "txn_date": "<TODAY>",
+    "txn_id": 3,
+    "txn_type": "ISSUE",
+    "unit": "EA",
+    "work_order": "W02"
+   }
+  ],
+  "sales_order_items": [
+   {
+    "canonical_pn": "4PDVN-03",
+    "close_reason": null,
+    "closed_qty": 0,
+    "closed_rounds": null,
+    "customer_item_name": null,
+    "customer_part_no": "4S4PDVN-03",
+    "due_date": null,
+    "line_no": 1,
+    "pending_qty": 1700,
+    "presched_qty": 0,
+    "product_id": "P1",
+    "qty": 2000,
+    "received_qty": 300,
+    "replaced_by_soi": null,
+    "so_id": 100,
+    "soi_id": 11,
+    "status": "PARTIAL",
+    "unit": "EA",
+    "unit_price": 1000
+   }
+  ],
+  "sales_orders": [
+   {
+    "customer": "㈜엠제이티",
+    "due_date": null,
+    "remark": null,
+    "so_date": "2026-10-01",
+    "so_id": 100,
+    "so_number": "SO-100",
+    "status": "PARTIAL",
+    "total_amount": 0
+   }
+  ],
+  "shipment_allocations": [
+   {
+    "alloc_id": 1,
+    "qty": 100,
+    "sched_id": 1,
+    "si_id": 501
+   },
+   {
+    "alloc_id": 2,
+    "qty": 200,
+    "sched_id": 4,
+    "si_id": 501
+   }
+  ],
+  "shipment_items": [
+   {
+    "customer": "㈜엠제이티",
+    "customer_pn": "4S4PDVN-03",
+    "item_name": null,
+    "pn": "4PDVN-03",
+    "product_id": "P1",
+    "qty": 300,
+    "sched_id": 1,
+    "shipment_id": 50,
+    "si_id": 501,
+    "so_id": 100,
+    "so_number": "SO-100",
+    "soi_id": 11,
+    "unit": "EA",
+    "unit_price": 1000
+   }
+  ],
+  "shipment_revisions": [
+   {
+    "action": "EDIT",
+    "created_by": "테스트",
+    "pn": "4PDVN-03",
+    "qty_after": 300,
+    "qty_before": 500,
+    "reason": "거래처 착오",
+    "rev_id": 1,
+    "rev_no": 1,
+    "shipment_id": 50,
+    "si_id": 501
+   }
+  ],
+  "shipments": [
+   {
+    "cancel_reason": null,
+    "cancelled_at": null,
+    "confirmed_at": "2026-11-01T01:05:00+00:00",
+    "created_at": "2026-11-01T01:00:00+00:00",
+    "created_by": "테스트",
+    "remark": null,
+    "rev_no": 1,
+    "revised_at": "<NOW>",
+    "ship_date": "2026-11-01",
+    "ship_no": "SH-20261101-01",
+    "shipment_id": 50,
+    "status": "CONFIRMED"
+   }
+  ],
+  "so_delivery_schedule": [
+   {
+    "delivered_qty": 100,
+    "due_date": "2026-11-01",
+    "note": null,
+    "qty": 300,
+    "sched_id": 1,
+    "seq": 1,
+    "so_id": 100,
+    "soi_id": 11
+   },
+   {
+    "delivered_qty": 0,
+    "due_date": "2026-11-10",
+    "note": null,
+    "qty": 500,
+    "sched_id": 2,
+    "seq": 3,
+    "so_id": 100,
+    "soi_id": 11
+   },
+   {
+    "delivered_qty": 200,
+    "due_date": "2026-11-01",
+    "note": null,
+    "qty": 200,
+    "sched_id": 4,
+    "seq": 2,
+    "so_id": 100,
+    "soi_id": 11
+   }
+  ]
+ },
+ "allow_over": false,
+ "before": {
+  "inventory_transactions": [
+   {
+    "created_by": "테스트",
+    "lot_number": "W01",
+    "material_id": null,
+    "product_id": "P1",
+    "qty": -300,
+    "ref_id": 501,
+    "ref_table": "shipment_items",
+    "remark": "출고 SH-20261101-01: SO-100",
+    "txn_date": "2026-11-01",
+    "txn_id": 1,
+    "txn_type": "ISSUE",
+    "unit": "EA",
+    "work_order": "W01"
+   },
+   {
+    "created_by": "테스트",
+    "lot_number": "W02",
+    "material_id": null,
+    "product_id": "P1",
+    "qty": -200,
+    "ref_id": 501,
+    "ref_table": "shipment_items",
+    "remark": "출고 SH-20261101-01: SO-100",
+    "txn_date": "2026-11-01",
+    "txn_id": 2,
+    "txn_type": "ISSUE",
+    "unit": "EA",
+    "work_order": "W02"
+   }
+  ],
+  "sales_order_items": [
+   {
+    "canonical_pn": "4PDVN-03",
+    "close_reason": null,
+    "closed_qty": 0,
+    "closed_rounds": null,
+    "customer_item_name": null,
+    "customer_part_no": "4S4PDVN-03",
+    "due_date": null,
+    "line_no": 1,
+    "pending_qty": 1500,
+    "presched_qty": 0,
+    "product_id": "P1",
+    "qty": 2000,
+    "received_qty": 500,
+    "replaced_by_soi": null,
+    "so_id": 100,
+    "soi_id": 11,
+    "status": "PARTIAL",
+    "unit": "EA",
+    "unit_price": 1000
+   }
+  ],
+  "sales_orders": [
+   {
+    "customer": "㈜엠제이티",
+    "due_date": null,
+    "remark": null,
+    "so_date": "2026-10-01",
+    "so_id": 100,
+    "so_number": "SO-100",
+    "status": "PARTIAL",
+    "total_amount": 0
+   }
+  ],
+  "shipment_allocations": [
+   {
+    "alloc_id": 1,
+    "qty": 300,
+    "sched_id": 1,
+    "si_id": 501
+   },
+   {
+    "alloc_id": 2,
+    "qty": 200,
+    "sched_id": 4,
+    "si_id": 501
+   }
+  ],
+  "shipment_items": [
+   {
+    "customer": "㈜엠제이티",
+    "customer_pn": "4S4PDVN-03",
+    "item_name": null,
+    "pn": "4PDVN-03",
+    "product_id": "P1",
+    "qty": 500,
+    "sched_id": 1,
+    "shipment_id": 50,
+    "si_id": 501,
+    "so_id": 100,
+    "so_number": "SO-100",
+    "soi_id": 11,
+    "unit": "EA",
+    "unit_price": 1000
+   }
+  ],
+  "shipment_revisions": [],
+  "shipments": [
+   {
+    "cancel_reason": null,
+    "cancelled_at": null,
+    "confirmed_at": "2026-11-01T01:05:00+00:00",
+    "created_at": "2026-11-01T01:00:00+00:00",
+    "created_by": "테스트",
+    "remark": null,
+    "rev_no": 0,
+    "revised_at": null,
+    "ship_date": "2026-11-01",
+    "ship_no": "SH-20261101-01",
+    "shipment_id": 50,
+    "status": "CONFIRMED"
+   }
+  ],
+  "so_delivery_schedule": [
+   {
+    "delivered_qty": 300,
+    "due_date": "2026-11-01",
+    "note": null,
+    "qty": 300,
+    "sched_id": 1,
+    "seq": 1,
+    "so_id": 100,
+    "soi_id": 11
+   },
+   {
+    "delivered_qty": 0,
+    "due_date": "2026-11-10",
+    "note": null,
+    "qty": 500,
+    "sched_id": 2,
+    "seq": 3,
+    "so_id": 100,
+    "soi_id": 11
+   },
+   {
+    "delivered_qty": 200,
+    "due_date": "2026-11-01",
+    "note": null,
+    "qty": 200,
+    "sched_id": 4,
+    "seq": 2,
+    "so_id": 100,
+    "soi_id": 11
+   }
+  ]
+ },
+ "doc": "충당 2행이 납기 같은 회차(1·4)에 → 200 감소: 납기 최근순 안정 정렬(동률은 alloc_id 오름차순).",
+ "messages": [
+  [
+   "success",
+   "정정 완료 — 1개 라인. 문서를 재발행하세요 (정정본 표기)."
+  ],
+  [
+   "toast",
+   "정정 완료 — 1개 라인. 문서를 재발행하세요 (정정본 표기)."
+  ]
+ ],
+ "name": "edit_due_tie",
+ "new_qtys": {
+  "501": 300
+ },
+ "reason": "거래처 착오",
+ "world": {
+  "inventory_transactions": [
+   {
+    "created_by": "테스트",
+    "lot_number": "W01",
+    "material_id": null,
+    "product_id": "P1",
+    "qty": -300,
+    "ref_id": 501,
+    "ref_table": "shipment_items",
+    "remark": "출고 SH-20261101-01: SO-100",
+    "txn_date": "2026-11-01",
+    "txn_id": 1,
+    "txn_type": "ISSUE",
+    "unit": "EA",
+    "work_order": "W01"
+   },
+   {
+    "created_by": "테스트",
+    "lot_number": "W02",
+    "material_id": null,
+    "product_id": "P1",
+    "qty": -200,
+    "ref_id": 501,
+    "ref_table": "shipment_items",
+    "remark": "출고 SH-20261101-01: SO-100",
+    "txn_date": "2026-11-01",
+    "txn_id": 2,
+    "txn_type": "ISSUE",
+    "unit": "EA",
+    "work_order": "W02"
+   }
+  ],
+  "product_lot_stock_v": [
+   {
+    "first_output_date": "2026-10-01",
+    "lot_number": "W03",
+    "product_id": "P1",
+    "remain_qty": 300
+   },
+   {
+    "first_output_date": "2026-10-05",
+    "lot_number": "W04",
+    "product_id": "P1",
+    "remain_qty": 700
+   }
+  ],
+  "product_stock_v": [
+   {
+    "current_stock": 1000,
+    "customer": "㈜엠제이티",
+    "pn": "4PDVN-03",
+    "product_id": "P1"
+   },
+   {
+    "current_stock": 1000,
+    "customer": "㈜엠제이티",
+    "pn": "4PDVN-05",
+    "product_id": "P2"
+   }
+  ],
+  "products": [
+   {
+    "archived_at": null,
+    "pn": "4PDVN-03",
+    "product_id": "P1"
+   },
+   {
+    "archived_at": null,
+    "pn": "4PDVN-05",
+    "product_id": "P2"
+   }
+  ],
+  "sales_month_close": [],
+  "sales_order_items": [
+   {
+    "canonical_pn": "4PDVN-03",
+    "close_reason": null,
+    "closed_qty": 0,
+    "closed_rounds": null,
+    "customer_item_name": null,
+    "customer_part_no": "4S4PDVN-03",
+    "due_date": null,
+    "line_no": 1,
+    "pending_qty": 1500,
+    "presched_qty": 0,
+    "product_id": "P1",
+    "qty": 2000,
+    "received_qty": 500,
+    "replaced_by_soi": null,
+    "so_id": 100,
+    "soi_id": 11,
+    "status": "PARTIAL",
+    "unit": "EA",
+    "unit_price": 1000
+   }
+  ],
+  "sales_orders": [
+   {
+    "customer": "㈜엠제이티",
+    "due_date": null,
+    "remark": null,
+    "so_date": "2026-10-01",
+    "so_id": 100,
+    "so_number": "SO-100",
+    "status": "PARTIAL",
+    "total_amount": 0
+   }
+  ],
+  "shipment_allocations": [
+   {
+    "alloc_id": 1,
+    "qty": 300,
+    "sched_id": 1,
+    "si_id": 501
+   },
+   {
+    "alloc_id": 2,
+    "qty": 200,
+    "sched_id": 4,
+    "si_id": 501
+   }
+  ],
+  "shipment_items": [
+   {
+    "customer": "㈜엠제이티",
+    "customer_pn": "4S4PDVN-03",
+    "item_name": null,
+    "pn": "4PDVN-03",
+    "product_id": "P1",
+    "qty": 500,
+    "sched_id": 1,
+    "shipment_id": 50,
+    "si_id": 501,
+    "so_id": 100,
+    "so_number": "SO-100",
+    "soi_id": 11,
+    "unit": "EA",
+    "unit_price": 1000
+   }
+  ],
+  "shipment_revisions": [],
+  "shipments": [
+   {
+    "cancel_reason": null,
+    "cancelled_at": null,
+    "confirmed_at": "2026-11-01T01:05:00+00:00",
+    "created_at": "2026-11-01T01:00:00+00:00",
+    "created_by": "테스트",
+    "remark": null,
+    "rev_no": 0,
+    "revised_at": null,
+    "ship_date": "2026-11-01",
+    "ship_no": "SH-20261101-01",
+    "shipment_id": 50,
+    "status": "CONFIRMED"
+   }
+  ],
+  "so_delivery_schedule": [
+   {
+    "delivered_qty": 300,
+    "due_date": "2026-11-01",
+    "note": null,
+    "qty": 300,
+    "sched_id": 1,
+    "seq": 1,
+    "so_id": 100,
+    "soi_id": 11
+   },
+   {
+    "delivered_qty": 200,
+    "due_date": "2026-11-01",
+    "note": null,
+    "qty": 200,
+    "sched_id": 4,
+    "seq": 2,
+    "so_id": 100,
+    "soi_id": 11
+   },
+   {
+    "delivered_qty": 0,
+    "due_date": "2026-11-10",
+    "note": null,
+    "qty": 500,
+    "sched_id": 2,
+    "seq": 3,
+    "so_id": 100,
+    "soi_id": 11
+   }
+  ]
+ },
+ "writes": [
+  [
+   "update",
+   "sales_order_items",
+   {
+    "filter": "soi_id=eq.11&status=eq.PARTIAL&received_qty=eq.500.0",
+    "n": 1,
+    "pending_qty": 1700,
+    "received_qty": 300,
+    "status": "PARTIAL"
+   }
+  ],
+  [
+   "update",
+   "so_delivery_schedule",
+   {
+    "delivered_qty": 100,
+    "filter": "sched_id=eq.1",
+    "n": 1
+   }
+  ],
+  [
+   "update",
+   "shipment_allocations",
+   {
+    "filter": "alloc_id=eq.1",
+    "n": 1,
+    "qty": 100
+   }
+  ],
+  [
+   "update",
+   "shipment_items",
+   {
+    "filter": "si_id=eq.501",
+    "n": 1,
+    "qty": 300
+   }
+  ],
+  [
+   "insert",
+   "inventory_transactions",
+   {
+    "created_by": "테스트",
+    "lot_number": "W02",
+    "material_id": null,
+    "product_id": "P1",
+    "qty": 200,
+    "ref_id": 501,
+    "ref_table": "shipment_items",
+    "remark": "출고 정정 SH-20261101-01: SO-100 (거래처 착오)",
+    "txn_date": "<TODAY>",
+    "txn_id": 3,
+    "txn_type": "ISSUE",
+    "unit": "EA",
+    "work_order": "W02"
+   }
+  ],
+  [
+   "insert",
+   "shipment_revisions",
+   {
+    "action": "EDIT",
+    "created_by": "테스트",
+    "pn": "4PDVN-03",
+    "qty_after": 300,
+    "qty_before": 500,
+    "reason": "거래처 착오",
+    "rev_id": 1,
+    "rev_no": 1,
+    "shipment_id": 50,
+    "si_id": 501
+   }
+  ],
+  [
+   "update",
+   "shipments",
+   {
+    "filter": "shipment_id=eq.50",
+    "n": 1,
+    "rev_no": 1,
+    "revised_at": "<NOW>"
+   }
+  ]
+ ]
+}
