@@ -1,5 +1,5 @@
 {
- "python": "ce76b379e0162ce9f28fba48b7a00fe8",
- "sql": null,
- "local_sql_check": null
+ "python": "d36bb670148c4d4f071d731c2d650db4",
+ "sql": "c3760058b350fc970b8bff79b5f4361f",
+ "local_sql_check": "pending — 커밋 3(082 작성), 로컬 SQL 등가성은 커밋 4 에서"
 }

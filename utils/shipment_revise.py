@@ -14,9 +14,8 @@ P3-1a (2026-11-06, 계획서 v3 — §18 이 본문보다 우선). 이 모듈은
 """
 import copy
 import hashlib
-import json
 import re
-import uuid as _uuid
+from decimal import Decimal
 
 from utils.delivery_alloc import allocate_rounds
 from utils.shipment_adjust import net_issued_by_lot, split_round_alloc
@@ -46,44 +45,46 @@ def _f(v):
 
 
 def _num(v):
-    """정규화 숫자 표기(500.0 → 500) — md5 입력용."""
-    x = _f(v)
-    return int(x) if abs(x - round(x)) < EPS else round(x, 6)
+    """정규화 숫자 표기 — SQL `trim_scale(round(x::numeric, 6))::text` 와 같은 글자(500.0 → '500', 12.50 → '12.5')."""
+    d = Decimal(repr(round(_f(v), 6))).normalize()
+    s = format(d, "f")
+    return "0" if s in ("-0", "0") else s
 
 
 # ── 재실행 내용 대조(§18 A5) ──
 def request_md5(req):
-    """action · lines(si 오름차순) · allow_over · inc(배열 정렬) · reason 의 정규화 md5. who 는 제외."""
+    """action · reason · allow_over · lines(si 오름차순) · inc(배열 정렬)의 정규화 문자열 md5. who 는 제외.
+
+    082 `revise_shipment` 가 같은 문자열을 만든다(정렬은 숫자 순, 문자열은 C 정렬):
+      a=<action>|r=<reason>|o=<1|0>|l=<si:전:후;…>|e=<soi:납품;…>|s=<sched:soi:delta;…>|c=<si:sched:qty;…>
+      |t=<si:product:qty:unit:lot:work_order;…>
+    """
     inc = req.get("inc") or {}
-    norm = {
-        "action": str(req.get("action") or ""),
-        "reason": str(req.get("reason") or "").strip(),
-        "allow_over": bool(req.get("allow_over") or False),
-        "lines": sorted([[int(l["si_id"]), _num(l.get("qty_before")), _num(l.get("qty_after"))]
-                         for l in (req.get("lines") or [])]),
-        "inc": {
-            "exp": sorted([[int(e["soi_id"]), _num(e.get("received"))]
-                           for e in (inc.get("expected_received_before") or [])]),
-            "scheds": sorted([[int(s["sched_id"]), int(s["soi_id"]), _num(s.get("delta"))]
-                              for s in (inc.get("scheds") or [])]),
-            "allocs": sorted([[int(a["si_id"]), int(a["sched_id"]), _num(a.get("qty"))]
-                              for a in (inc.get("allocs") or [])]),
-            "txns": sorted([[int(t["si_id"]), str(t.get("product_id") or ""), _num(t.get("qty")),
-                             str(t.get("unit") or ""), str(t.get("lot_number") or ""),
-                             str(t.get("work_order") or "")]
-                            for t in (inc.get("txns") or [])]),
-        },
-    }
-    return hashlib.md5(json.dumps(norm, ensure_ascii=False, sort_keys=True,
-                                  separators=(",", ":")).encode("utf-8")).hexdigest()
+    lines = sorted((int(l["si_id"]), _f(l.get("qty_before")), _f(l.get("qty_after")))
+                   for l in (req.get("lines") or []))
+    exp = sorted((int(e["soi_id"]), _f(e.get("received"))) for e in (inc.get("expected_received_before") or []))
+    sch = sorted((int(s["sched_id"]), int(s["soi_id"]), _f(s.get("delta"))) for s in (inc.get("scheds") or []))
+    alc = sorted((int(a["si_id"]), int(a["sched_id"]), _f(a.get("qty"))) for a in (inc.get("allocs") or []))
+    txs = sorted((int(t["si_id"]), str(t.get("product_id") or ""), _f(t.get("qty")), str(t.get("unit") or ""),
+                  str(t.get("lot_number") or ""), str(t.get("work_order") or "")) for t in (inc.get("txns") or []))
+    s = "|".join([
+        "a=" + str(req.get("action") or ""),
+        "r=" + str(req.get("reason") or "").strip(),
+        "o=" + ("1" if req.get("allow_over") else "0"),
+        "l=" + ";".join(f"{a}:{_num(b)}:{_num(c)}" for a, b, c in lines),
+        "e=" + ";".join(f"{a}:{_num(b)}" for a, b in exp),
+        "s=" + ";".join(f"{a}:{b}:{_num(c)}" for a, b, c in sch),
+        "c=" + ";".join(f"{a}:{b}:{_num(c)}" for a, b, c in alc),
+        "t=" + ";".join(f"{a}:{b}:{_num(c)}:{d}:{e}:{g}" for a, b, c, d, e, g in txs),
+    ])
+    return hashlib.md5(s.encode("utf-8")).hexdigest()
+
+
+_UUID_RE = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
 
 
 def _is_uuid(v):
-    try:
-        _uuid.UUID(str(v))
-        return bool(re.fullmatch(r"[0-9a-fA-F-]{36}", str(v)))
-    except (TypeError, ValueError):
-        return False
+    return isinstance(v, str) and bool(_UUID_RE.fullmatch(v))
 
 
 def tag(action, ship_no, so_number, reason):
@@ -313,7 +314,8 @@ def _apply(st, req, today, now):
                 a["qty"] = _f(a["qty"]) - take
                 left -= take
                 released += 1
-            st["shipment_allocations"] = [a for a in st["shipment_allocations"] if _f(a["qty"]) > EPS]
+            st["shipment_allocations"] = [a for a in st["shipment_allocations"]
+                                          if a["si_id"] != si or _f(a["qty"]) > EPS]
             if left > EPS:
                 info.append({"si_id": si, "kind": "unallocated", "qty": left})
             if li.get("status") in LINE_INACTIVE:                 # 닫힌 채 남는 라인: 열린 회차를 닫는다(077)
@@ -362,12 +364,12 @@ def _apply(st, req, today, now):
                     or _f(s.get("delta")) < 0 or int(s["soi_id"]) not in need):
                 raise Reject("sched_mismatch")
             sum_d[r["sched_id"]] = sum_d.get(r["sched_id"], 0.0) + _f(s.get("delta"))
-        for soi in need:
-            tot = sum(_f(s.get("delta")) for s in scheds if int(s["soi_id"]) == soi)
-            if tot > need[soi] + EPS:
-                raise Reject("sched_mismatch", f"soi {soi}")
-            if tot < need[soi] - EPS:
-                info.append({"soi_id": soi, "kind": "unallocated", "qty": need[soi] - tot})
+        tots = {soi: sum(_f(s.get("delta")) for s in scheds if int(s["soi_id"]) == soi) for soi in need}
+        if any(tots[soi] > need[soi] + EPS for soi in need):
+            raise Reject("sched_mismatch", "per soi")
+        for soi in sorted(need):
+            if tots[soi] < need[soi] - EPS:
+                info.append({"soi_id": soi, "kind": "unallocated", "qty": need[soi] - tots[soi]})
         si_alloc = {}
         for a in allocs:
             si = int(a.get("si_id")) if a.get("si_id") is not None else None

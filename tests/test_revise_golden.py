@@ -569,6 +569,14 @@ def test_golden_files_have_no_strays():
     assert names == set(SCEN), (names ^ set(SCEN))
 
 
+def write_stamp(local_sql_check):
+    """도장 기록 — 로컬 SQL 등가성 시험(L1)이 통과 결과와 함께 부른다. 수동: STAMP_REVISE_HASH="메모" 환경 변수."""
+    py, sql = _code_hash()
+    with open(os.path.join(GOLD, "HASH.json"), "w", encoding="utf-8", newline="\n") as f:
+        json.dump({"python": py, "sql": sql, "local_sql_check": local_sql_check}, f, ensure_ascii=False, indent=1)
+        f.write("\n")
+
+
 def test_hash_stamp_matches_code():
     """모델·공용 함수·082 가 바뀌었는데 도장이 그대로면 실패 — 로컬 SQL 등가성(L1)을 다시 돌려 도장을 갱신할 것."""
     path = os.path.join(GOLD, "HASH.json")
@@ -578,6 +586,8 @@ def test_hash_stamp_matches_code():
         with open(path, "w", encoding="utf-8", newline="\n") as f:
             json.dump({"python": py, "sql": sql, "local_sql_check": None}, f, indent=1)
             f.write("\n")
+    if os.environ.get("STAMP_REVISE_HASH"):
+        write_stamp(os.environ["STAMP_REVISE_HASH"])
     stamp = json.load(open(path, encoding="utf-8"))
     assert stamp["python"] == py, "파이썬 모델·공용 계산 함수가 바뀜 — 골든·로컬 SQL 등가성을 다시 확인하고 도장 갱신"
     assert stamp["sql"] == sql, "082 본문이 바뀜(또는 새로 생김) — 로컬 SQL 등가성(L1)을 다시 돌려 도장 갱신"
