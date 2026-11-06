@@ -388,8 +388,12 @@
   status 재계산. 증가분은 확정과 같은 규칙(미납 한도·재고 검사·회차 충당·FIFO).
   이력은 `shipment_revisions`(이전/이후 수량·사유·담당), 헤더 `rev_no`/`revised_at`,
   재발행 문서에 '정정본 vN · 날짜' 표기(옛 출력물 파기 안내). **[전표 취소]** 는 전
-  라인 0 역반영 + CANCELLED(라인 수량은 기록 보존, 사유 필수). 순수 계산은
-  utils/shipment_adjust.py(tests/test_shipment_adjust.py), 흐름은
+  라인 0 역반영 + CANCELLED(라인 수량은 기록 보존, 사유 필수).
+  **CANCELLED 는 종착 상태 — 취소 전표는 되살리지 않는다**(되살리는 update·RPC 없음, 다시 내보낼
+  때는 새 전표). 회차 삭제·날짜 변경 전 참조 검사(`utils/sched_save.sched_refs_message`)가 취소 전표
+  라인을 차단 사유에서 빼는 근거이고(2026-11-05 핫픽스 2), 취소 전표 라인의 `sched_id` 는 지워진
+  회차를 가리킬 수 있다(FK 없음). 취소 전표를 되살리는 기능을 만들려면 이 검사부터 다시 본다.
+  순수 계산은 utils/shipment_adjust.py(tests/test_shipment_adjust.py), 흐름은
   tests/test_shipment_revision_flow.py. 거래명세서 수령 확인 단계는 규모가 커지면
   추가(현재는 부가 업무라 보류 — 사용자 결정)
 - **마감 조회 = 기간 + 거래처** (영업 보고 > 마감 조회, 2026-09-30). 거래처마다 마감일이
