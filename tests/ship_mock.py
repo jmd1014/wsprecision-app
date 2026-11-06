@@ -80,6 +80,9 @@ class ShipMock(SOMock):
         raise AssertionError(f"ship_mock: 미등록 RPC {name}")
 
     # ── 비교용 ──
+    def state(self):
+        return {t: copy.deepcopy(self.tables.get(t, [])) for t in TABLES}
+
     def snapshot(self, tables=SNAP_TABLES):
         out = {}
         for t in tables:
@@ -87,3 +90,78 @@ class ShipMock(SOMock):
             out[t] = sorted((copy.deepcopy(r) for r in self.tables.get(t, [])),
                             key=lambda r, pk=pk: (str(type(r.get(pk))), r.get(pk) if r.get(pk) is not None else 0))
         return out
+
+
+class ReviseMock(ShipMock):
+    """082 revise_shipment·revise_shipment_check 의 가짜 RPC — 파이썬 모델(plan_revision)을 목의 상태에 적용한다.
+
+    faults: 호출마다 하나씩 소비 —
+      "transport_after"  반영한 뒤 응답 유실(RpcTransportError)
+      "transport_before" 반영 없이 응답 유실
+      "na:<code>"        미반영 확정(RpcRejected 40P01·55P03·57014)
+      "abnormal"         반영 없이 비정상 본문({})
+      "unavailable"      함수 없음(RpcUnavailable)
+      "hold"             계산은 하되 커밋 보류(응답 유실) — commit_held() 로 나중에 반영(지연 커밋)
+    check_fail: revise_shipment_check 가 예외(조회 실패) / check_unavailable: 함수 없음.
+    """
+
+    def __init__(self, world=None):
+        super().__init__(world)
+        self.faults = []
+        self.check_fail = False
+        self.check_unavailable = False
+        self.held = None
+        self.applied = 0
+
+    def _today(self):
+        import datetime as _dt
+        return (_dt.datetime.now(_dt.timezone.utc) + _dt.timedelta(hours=9)).date().isoformat()
+
+    def _set_state(self, st):
+        for t in WRITABLE_SHIP:
+            if t in st:
+                self.tables[t] = st[t]
+
+    def commit_held(self):
+        st, self.held = self.held, None
+        self._set_state(st)
+        self.applied += 1
+
+    def rpc(self, name, params=None, timeout=None):
+        import db as _db
+        from utils.shipment_revise import plan_revision, check
+        self.rpc_calls.append((name, copy.deepcopy(dict(params or {}))))
+        p = dict(params or {})
+        if name == "revise_shipment_check":
+            if self.check_unavailable:
+                raise _db.RpcUnavailable(name)
+            if self.check_fail:
+                raise _db.RpcTransportError(f"{name}: timeout")
+            r = check(self.state(), p["p_shipment_id"])
+            if r.get("ok"):
+                r["lines"] = {str(k): v for k, v in r["lines"].items()}
+            return r
+        if name != "revise_shipment":
+            raise AssertionError(f"ReviseMock: 미등록 RPC {name}")
+        fault = self.faults.pop(0) if self.faults else None
+        if fault == "unavailable":
+            raise _db.RpcUnavailable(name)
+        if fault and fault.startswith("na:"):
+            raise _db.RpcRejected(fault[3:], "canceling statement due to lock timeout", 500)
+        if fault in ("transport_before", "abnormal"):
+            if fault == "abnormal":
+                return {}
+            raise _db.RpcTransportError(f"{name}: ReadTimeout")
+        req = dict(p["p_payload"], shipment_id=p["p_shipment_id"])
+        res, st = plan_revision(self.state(), req, self._today(), now="2026-11-06T07:00:00+00:00")
+        if not res.get("ok"):
+            raise _db.RpcRejected("P0001", res["error"], 400, hint=str(res.get("hint") or ""))
+        if fault == "hold":
+            self.held = st
+            raise _db.RpcTransportError(f"{name}: ReadTimeout")
+        if not res.get("replayed"):
+            self._set_state(st)
+            self.applied += 1
+        if fault == "transport_after":
+            raise _db.RpcTransportError(f"{name}: ReadTimeout")
+        return res
