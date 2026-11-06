@@ -279,8 +279,8 @@ def test_c6_switching_shipment_drops_confirm(monkeypatch):
     """전표 A 의 정정 확인 창 상태에서 B 가 선택되면 B 에 확인 창이 없고, A 의 계획으로 B 를 실행하지 않는다."""
     from tests.ship_mock import ReviseMock
     w = _w()
-    w["shipments"].append(dict(w["shipments"][0], shipment_id=51, ship_no="SH-20261101-02"))
-    w["shipment_items"].append(dict(_si(511, 11, 100, 1, "P1", "4PDVN-03", 100), shipment_id=51))
+    w["shipments"].append(dict(w["shipments"][0], shipment_id=49, ship_no="SH-20261101-02"))   # 기본 정렬에서 A 뒤
+    w["shipment_items"].append(dict(_si(491, 11, 100, 1, "P1", "4PDVN-03", 100), shipment_id=49))
     m = ReviseMock(w)
     at = _open(monkeypatch, m)
     _edit(at, m, {501: 400}, confirm=False)

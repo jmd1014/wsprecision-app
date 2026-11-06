@@ -10454,6 +10454,136 @@ elif page == "출고 관리":
                 st.session_state.pop("cf_alloc_warn", None)
                 st.rerun()
 
+        # ── 확정 전표 정정·취소 = DB 함수 revise_shipment 한 번(082, P3-1a 2026-11-06) ──
+        # 옛 엔진(_cf_apply_deltas — REST 요청 N개)을 대체한다. 감소는 서버가 계산, 증가는 화면이 계획(069 형식)하고
+        # 서버가 검증, 실패하면 전부 롤백. 호출 상태 기계·문구는 utils/shipment_revise(run_call·recheck·reject_text).
+        def _cf_rv_requery(sid, rid):
+            """같은 request_id 의 이력을 캐시 없이 — 있으면 {rev_no, action, info}. 조회 실패는 '모름'(None)."""
+            try:
+                _rows = fetch("shipment_revisions", "rev_no,action,info",
+                              f"shipment_id=eq.{_fq(sid)}&request_id=eq.{_fq(rid)}", limit=5, cache=False)
+            except Exception:
+                return None
+            if not _rows:
+                return None
+            _inf = _rows[0].get("info") or {}
+            return {"rev_no": _rows[0].get("rev_no"), "action": _rows[0].get("action"),
+                    "info": (_inf.get("info") if isinstance(_inf, dict) else None) or []}
+
+        def _cf_rv_state(pick, items, seen_rev):
+            """증가 계획용 상태(캐시 없이) — 전표 라인·충당·ISSUE·수주 라인·회차·LOT 재고. 실패·절단이면 None."""
+            try:
+                _sis = [x["si_id"] for x in items]
+                _sois = sorted({x["soi_id"] for x in items if x.get("soi_id") is not None})
+                _pids = sorted({x["product_id"] for x in items if x.get("product_id")})
+                _al, _t1 = _fetch_all_in("shipment_allocations", "alloc_id,si_id,sched_id,qty", "si_id", _sis,
+                                         order="alloc_id.asc", cache=False)
+                _tx, _t2 = _fetch_all_in("inventory_transactions",
+                                         "txn_id,ref_table,ref_id,txn_type,lot_number,qty,product_id,material_id",
+                                         "ref_id", _sis, "ref_table=eq.shipment_items&txn_type=eq.ISSUE",
+                                         order="txn_id.asc", cache=False)
+                _li, _t3 = _fetch_all_in("sales_order_items",
+                                         "soi_id,so_id,qty,received_qty,pending_qty,unit,status",
+                                         "soi_id", _sois, cache=False)
+                _rd, _t4 = _fetch_all_in("so_delivery_schedule",
+                                         "sched_id,so_id,soi_id,seq,due_date,qty,delivered_qty",
+                                         "soi_id", _sois, order="sched_id.asc", cache=False)
+                _lv = (fetch("product_lot_stock_v", "product_id,lot_number,remain_qty,first_output_date",
+                             "product_id=in.({})&remain_qty=gt.0&order=first_output_date.asc,lot_number.asc"
+                             .format(",".join(f'"{p}"' for p in _pids)), limit=1000, cache=False)
+                       if _pids else [])
+                _t5 = len(_lv) >= 1000          # 뷰는 기본 키가 없어 fetch_all 대신 한 번에 — 상한이면 중단
+            except Exception as e:
+                st.error(f"정정 준비 조회 실패: {e} — 아무것도 바뀌지 않았습니다.")
+                return None
+            if _t1 or _t2 or _t3 or _t4 or _t5:
+                st.error(f"정정 준비 조회 {TRUNC_MSG} — 아무것도 바뀌지 않았습니다.")
+                return None
+            return {"shipments": [dict(pick, rev_no=seen_rev)], "shipment_items": [dict(x) for x in items],
+                    "shipment_allocations": _al, "inventory_transactions": _tx, "sales_order_items": _li,
+                    "so_delivery_schedule": _rd, "product_lot_stock_v": _lv}
+
+        def _cf_rv_done(pick, items, action, res, summary):
+            """성공(반영·재실행·재조회 확인) — 캐시·미납 캐시 비우기, 안내는 rerun 뒤(nav_flash), 알림 1회."""
+            from utils import shipment_revise as _srv0
+            st.session_state.pop("mr_cache", None)               # 정정 → 미납 변동 (F9)
+            try:
+                _db.clear_cache()
+            except Exception:
+                pass
+            _info = _srv0.info_text((res or {}).get("info") or [], items)
+            _tail = (" · " + _info) if _info else ""
+            if action == "EDIT":
+                st.session_state["ship_open_no"] = pick["ship_no"]
+                _sk.notify(_sk.fmt_ship_edit(pick["ship_no"], [x.get("customer") for x in items],
+                                             summary.get("changes") or [], current_user_name(),
+                                             summary.get("reason")))
+                nav_flash(f"정정 완료 — {summary.get('n') or len(summary.get('changes') or [])}개 라인. "
+                          f"문서를 재발행하세요 (정정본 표기).{_tail}")
+            else:
+                _live = [x for x in items if float(x.get("qty") or 0) > 0]
+                _sk.notify(_sk.fmt_ship_cancel(pick.get("ship_no") or "-", [x.get("customer") for x in _live],
+                                               len(_live), sum(float(x.get("qty") or 0) for x in _live),
+                                               current_user_name(), summary.get("reason")))
+                nav_flash(f"전표 취소 — 수주·재고 역반영 완료{_tail}")
+            st.rerun()
+
+        def _cf_rv_run(pick, items, action, payload, summary):
+            """revise_shipment 호출(같은 request_id) — 성공/거부/미반영 확정/함수 없음/확인 대기."""
+            from utils import shipment_revise as _srv0
+            import time as _rv_time
+            _sid0, _rid0 = pick["shipment_id"], payload["request_id"]
+            _r = _srv0.run_call(
+                lambda: _db.rpc("revise_shipment", {"p_shipment_id": _sid0, "p_payload": payload}),
+                lambda: _cf_rv_requery(_sid0, _rid0), _rv_time.sleep, wait=float(__import__("os").environ.get("WS_CF_RECHECK_SEC", "2")))
+            if _r["state"] == "ok":
+                _cf_rv_done(pick, items, action, _r["res"], summary)
+            elif _r["state"] == "rejected":
+                st.error(_srv0.reject_text(_r.get("code")))
+            elif _r["state"] == "not_applied":
+                st.error(_srv0.NOT_APPLIED_TEXT)
+            elif _r["state"] == "unavailable":
+                st.error(_srv0.UNAVAILABLE_TEXT)
+            else:                                                  # 확인 대기 — 기록 유지·버튼 잠금
+                st.session_state["cf_rv_inflight"] = {
+                    "shipment_id": _sid0, "ship_no": pick.get("ship_no"), "request_id": _rid0, "action": action,
+                    "started_at": _r["started_at"], "summary": summary,
+                    "items": [{k: x.get(k) for k in ("si_id", "soi_id", "pn", "qty", "customer", "so_number")}
+                              for x in items]}
+                try:
+                    _db.log_error("manual", f"[rpc_unknown] revise_shipment (shipment {_sid0}, "
+                                            f"request {_rid0}): 응답 불명 — 확인 대기", table_name="shipments")
+                except Exception:
+                    pass
+                st.rerun()
+
+        # 확인 대기(응답 불명) — 전표 목록·필터와 무관하게 맨 위에서 확인한다(반영됐으면 확정 목록에서 빠지므로)
+        _rv_note = st.session_state.pop("cf_rv_note", None)
+        if _rv_note:
+            st.error(_rv_note)
+        _rv_inf_top = st.session_state.get("cf_rv_inflight") or {}
+        if _rv_inf_top:
+            from utils import shipment_revise as _srv_t
+            st.warning("전표 {} {} — {}".format(_rv_inf_top.get("ship_no") or "-",
+                                               "정정" if _rv_inf_top.get("action") == "EDIT" else "취소",
+                                               _srv_t.PENDING_TEXT))
+            if st.button("결과 다시 확인", key="cf_rv_recheck"):
+                _rv_r = _srv_t.recheck(lambda: _cf_rv_requery(_rv_inf_top["shipment_id"], _rv_inf_top["request_id"]),
+                                       _rv_inf_top["started_at"])
+                if _rv_r["state"] == "ok":
+                    st.session_state.pop("cf_rv_inflight", None)
+                    _cf_rv_done({"shipment_id": _rv_inf_top["shipment_id"], "ship_no": _rv_inf_top.get("ship_no")},
+                                _rv_inf_top.get("items") or [], _rv_inf_top["action"], _rv_r["res"],
+                                _rv_inf_top.get("summary") or {})
+                elif _rv_r["state"] == "not_applied":
+                    st.session_state.pop("cf_rv_inflight", None)
+                    st.session_state["cf_rv_note"] = ("전표 {} 의 요청이 반영되지 않았습니다(10초 동안 기록 없음) — "
+                                                      "화면을 확인한 뒤 다시 시도하세요.".format(
+                                                          _rv_inf_top.get("ship_no") or "-"))
+                    st.rerun()
+                else:
+                    st.info("아직 확인되지 않았습니다 — 잠시 뒤 다시 누르세요.")
+
         # 월 마감 잠금 — 마감된 월의 전표는 확정·정정·취소 차단
         # (영업 보고 > 마감 조회에서 잠금/해제, Migration 053)
         try:
@@ -10503,6 +10633,22 @@ elif page == "출고 관리":
         except Exception as e:
             st.error(f"전표 조회 실패: {e}")
             _cf_ships = []
+        # 정정·취소 확인 중이던 전표가 목록에서 빠짐(그 사이 취소·필터 변경) — 남은 계획은 실행하지 않고 알린다
+        _rv_ids_now = {s.get("shipment_id") for s in _cf_ships}
+        _rv_lost = False
+        _rv_pl_l = st.session_state.get("cf_rv_plan") or {}
+        if _rv_pl_l and _rv_pl_l.get("shipment_id") not in _rv_ids_now:
+            st.session_state.pop("cf_rv_plan", None)
+            st.session_state.pop(f"cfm_cf_rv_{_rv_pl_l.get('shipment_id')}", None)
+            _rv_lost = True
+        for _k in [k for k in st.session_state if str(k).startswith("cfm_cf_cancel_")]:
+            _v = st.session_state.get(_k)
+            if isinstance(_v, dict) and str(_k).rsplit("_", 1)[-1] not in {str(i) for i in _rv_ids_now}:
+                st.session_state.pop(_k, None)
+                _rv_lost = True
+        if _rv_lost:
+            st.warning("정정·취소를 확인하던 전표가 목록에서 빠졌습니다(그 사이 취소됐거나 확정 전표가 아닙니다, "
+                       "또는 필터 변경) — 실행하지 않았습니다. 아무것도 바뀌지 않았습니다.")
         if not _cf_ships:
             st.info("검색 결과가 없습니다." if (_cf_search or "").strip()
                     else "전표가 없습니다 — '출고 등록' 화면에서 리스트를 담아 "
@@ -10534,7 +10680,8 @@ elif page == "출고 관리":
             # (전표 A 확인창 상태에서 B 가 선택돼도 B 에 확인창이 뜨지 않게, 2026-10-19 §5-2)
             _cf_sid_sfx = f"_{_cf_pick['shipment_id']}"
             for _k in [k for k in st.session_state
-                       if k.startswith("cfm_cf_cancel") and not k.endswith(_cf_sid_sfx)]:
+                       if (k.startswith("cfm_cf_cancel") or k.startswith("cfm_cf_rv_"))
+                       and not k.endswith(_cf_sid_sfx)]:
                 st.session_state.pop(_k, None)
             _cf_ym = str(_cf_pick.get("ship_date") or "")[:7]
             _cf_locked = _cf_ym in _cf_closed
@@ -10809,476 +10956,6 @@ elif page == "출고 관리":
                     st.error(_stop_msg)          # status 바깥 최상위에 (QA H1)
                 return _res
 
-            def _cf_apply_deltas(pick, items, new_qtys, reason,
-                                 action="EDIT", allow_over=False,
-                                 keep_line_qty=False):
-                """returns (처리 라인 수, 경고 목록). 경고가 있어도 처리된
-                라인은 반영된 상태 — 사전 검증 실패는 (0, [오류]) 로 중단."""
-                from datetime import datetime as _rv_now, date as _rv_dt
-                from utils.shipment_adjust import (
-                    plan_line_deltas, plan_lot_restore,
-                    plan_round_release, split_round_alloc, line_status)
-                _deltas = plan_line_deltas(items, new_qtys)
-                if not _deltas:
-                    return 0, ["변경된 수량이 없습니다."]
-                if action == "CANCEL":
-                    # 1차 취소가 라인은 되돌리고 머리글만 실패하면 전표가
-                    # CONFIRMED 로 남아 다시 취소할 수 있다 → 이중 역반영
-                    # (2026-10-12 QA 리뷰 H3). 이력에 CANCEL 이 있으면 머리글만.
-                    try:
-                        _prev_cx = fetch("shipment_revisions", "rev_id,si_id",
-                                         f"shipment_id=eq.{_fq(pick['shipment_id'])}"
-                                         "&action=eq.CANCEL", limit=500)
-                    except Exception as e:
-                        # D18 fail-closed: 이력을 모르면 기처리 라인을 다시 역반영할 수 있다 → 쓰기 없이 중단
-                        _db.log_error("db_read", f"취소 이력 조회 실패(전표 {pick.get('ship_no')}): {e}",
-                                      table_name="shipment_revisions")
-                        return 0, ["정정 중단 — 취소 이력 조회 실패. 화면을 새로 열고 다시 "
-                                   "시도하세요(쓰기 없음)."]
-                    # 라인 단위(r3 QA B-1): 부분 중단 뒤 재취소는 이력 없는 라인만 역반영한다
-                    _done_si = {r.get("si_id") for r in _prev_cx if r.get("si_id") is not None}
-                    _todo_cx = [t for t in _deltas if t[0]["si_id"] not in _done_si]
-                    if _prev_cx and _todo_cx and _done_si:
-                        _deltas = _todo_cx
-                    if _prev_cx and not _todo_cx:
-                        _hdr0 = {"status": "CANCELLED",
-                                 "cancelled_at": _rv_now.now().isoformat(),
-                                 "cancel_reason": reason or None}
-                        _ok0 = False
-                        try:
-                            _ok0 = bool(_db.update(
-                                "shipments",
-                                f"shipment_id=eq.{_fq(pick['shipment_id'])}",
-                                _hdr0))
-                        except Exception:
-                            _ok0 = False
-                        return (1 if _ok0 else 0), [
-                            "이 전표는 이미 취소 역반영이 끝난 전표입니다 — "
-                            + ("전표 상태만 취소로 저장했습니다."
-                               if _ok0 else
-                               "전표 상태 저장에 실패했습니다. 잠시 후 다시 "
-                               "시도하세요.")]
-                _ship_no = pick["ship_no"]
-                _sdate = str(pick.get("ship_date"))
-                _today = _rv_dt.today().isoformat()
-                _user = current_user_name()
-                _rev = int(pick.get("rev_no") or 0) + 1
-                _si_ids = [x["si_id"] for x, _, _, _ in _deltas]
-                _soi_ids = sorted({x["soi_id"] for x, _, _, _ in _deltas
-                                   if x.get("soi_id") is not None})
-                _txn_by, _alloc_by, _li_by = {}, {}, {}
-                try:
-                    _tx9, _tr9a = _fetch_all_in(                   # 끝까지(2차 묶음 F)
-                        "inventory_transactions", "txn_id,ref_id,lot_number,qty", "ref_id", _si_ids,
-                        "ref_table=eq.shipment_items&txn_type=eq.ISSUE", order="txn_id.asc")
-                    for t in _tx9:
-                        _txn_by.setdefault(t["ref_id"], []).append(t)
-                    _al9, _tr9b = _fetch_all_in("shipment_allocations", "alloc_id,si_id,sched_id,qty",
-                                                "si_id", _si_ids, order="alloc_id.asc")
-                    for a in _al9:
-                        _alloc_by.setdefault(a["si_id"], []).append(a)
-                    if _tr9a or _tr9b:      # 일부만 읽고 역분개·회차 환원하면 어긋난다 → 정정 중단
-                        return 0, [f"정정 준비 조회 {TRUNC_MSG} — 정정을 중단했습니다."]
-                    if _soi_ids:
-                        _li_by = {l["soi_id"]: l for l in fetch(
-                            "sales_order_items",
-                            "soi_id,so_id,qty,received_qty,pending_qty,"
-                            "unit,status,closed_qty,closed_rounds", "soi_id=in.({})".format(
-                                ",".join(str(s) for s in _soi_ids)),
-                            limit=200)}
-                    # 종결·취소 머리글 아래 라인은 전부 비활성 취급 (D15) — 머리글 상태 1회 조회
-                    _hdr_by = {}
-                    _so_pre = sorted({l.get("so_id") for l in _li_by.values() if l.get("so_id")})
-                    if _so_pre:
-                        _hdr_by = {h["so_id"]: h.get("status") for h in fetch(
-                            "sales_orders", "so_id,status",
-                            "so_id=in.({})".format(",".join(str(x) for x in _so_pre)), limit=200)}
-                except Exception as e:
-                    return 0, [f"정정 준비 조회 실패: {e}"]
-                # 증가분 사전 검증 — 수주 미납 한도 · 완성 재고
-                _inc = [(x, d) for x, _, _, d in _deltas if d > 0]
-                _stock9, _lots9, _used9 = {}, {}, {}
-                _pids9 = {x.get("product_id") for x, _ in _inc
-                          if x.get("product_id")}
-                if _pids9:
-                    _pstr9 = ",".join(f'"{p}"' for p in _pids9)
-                    try:
-                        _stock9 = {s["product_id"]:
-                                   float(s.get("current_stock") or 0)
-                                   for s in fetch("product_stock_v",
-                                       "product_id,current_stock",
-                                       f"product_id=in.({_pstr9})",
-                                       limit=300)}
-                        for _l in fetch("product_lot_stock_v",
-                                "product_id,lot_number,remain_qty",
-                                f"product_id=in.({_pstr9})"
-                                "&remain_qty=gt.0"
-                                "&order=first_output_date.asc,"
-                                "lot_number.asc", limit=500):
-                            _lots9.setdefault(
-                                _l["product_id"], []).append(_l)
-                    except Exception:
-                        pass
-                _errs = []
-                _need_pend, _need_stk = {}, {}
-                for x, d in _inc:
-                    if x.get("soi_id") is not None:
-                        _need_pend[x["soi_id"]] = (
-                            _need_pend.get(x["soi_id"], 0) + d)
-                    if x.get("product_id"):
-                        _need_stk[x["product_id"]] = (
-                            _need_stk.get(x["product_id"], 0) + d)
-                for _soi9, _n9 in _need_pend.items():
-                    _l9 = _li_by.get(_soi9)
-                    if _l9 and _soc.is_inactive(_hdr_by.get(_l9.get("so_id"))):
-                        _errs.append(
-                            "종결·취소된 수주 — 수주 목록에서 되돌린 뒤 정정하세요 "
-                            "(soi {})".format(_soi9))
-                        continue
-                    if _l9 and str(_l9.get("status") or "").upper() in _soc.LINE_INACTIVE:
-                        _errs.append(
-                            "종결·취소·대체된 수주 라인 — 수주 목록에서 되돌리거나 "
-                            "전표에서 그 라인을 빼세요 (soi {})".format(_soi9))
-                        continue
-                    if _l9 and _n9 > float(_l9.get("pending_qty") or 0) \
-                            + 1e-9:
-                        _errs.append(
-                            "수주 미납 한도 초과 — 증가 {:,.0f} > 미납 "
-                            "{:,.0f}".format(
-                                _n9, float(_l9.get("pending_qty") or 0)))
-                if not allow_over:
-                    for _p9, _n9 in _need_stk.items():
-                        if _n9 > _stock9.get(_p9, 0) + 1e-9:
-                            _errs.append(
-                                "완성 재고 부족 — {} 증가 {:,.0f} > 재고 "
-                                "{:,.0f}".format(
-                                    _p9, _n9, _stock9.get(_p9, 0)))
-                if _errs:
-                    return 0, _errs
-
-                _warns, _txns9, _revs9, _n_ok = [], [], [], 0
-                _so_ids9 = set()
-                _stopped = False
-
-                def _line_patch(_li_, _nr_, _pn_=None):
-                    """정정의 수주 라인 갱신 → (행 수, 쓴 값). 읽은 status·received 를 조건으로(D16, Codex r2 H2):
-                    그 사이 종결·확정 등으로 바뀌었으면 0행 → 호출부가 남은 라인 처리를 멈춘다.
-                    PATCH 직전 머리글을 캐시 없이 재조회해 D15(종결·취소 머리글 아래 라인 전부 비활성)를
-                    적용한다 — 완납 라인은 라인 조건만으로 머리글 변화를 못 잡기 때문(r3 QA H-2)."""
-                    _so_ = _li_.get("so_id")
-                    _hs_ = _hdr_by.get(_so_)
-                    if _so_ is not None:
-                        # D18 fail-closed: 재조회가 실패하거나 비면 옛 값으로 계산하지 않고 그 라인부터 중단
-                        try:
-                            _hf_ = fetch("sales_orders", "so_id,status",
-                                         f"so_id=eq.{_fq(_so_)}", limit=1, cache=False)
-                        except Exception as e:
-                            _db.log_error("db_read", f"정정 머리글 재조회 실패(so {_so_}): {e}",
-                                          table_name="sales_orders")
-                            return -9, {"_why": "수주 머리글 조회 실패"}
-                        if not _hf_:
-                            return -9, {"_why": "수주 머리글 없음(조회 결과 0건)"}
-                        _hs_ = _hf_[0].get("status")
-                        _hdr_by[_so_] = _hs_
-                    _lf_ = _soc.revise_line_fields(_li_, _nr_, _hs_)
-                    if (_lf_.get("status") in _soc.LINE_INACTIVE
-                            and str(_li_.get("status") or "").upper() not in _soc.LINE_INACTIVE
-                            and not _li_.get("closed_rounds")):
-                        # D15 로 정정이 처음 닫는 라인: 되돌리기가 회차 계획을 복원할 수 있게
-                        # 회차 스냅샷(내리기 전)을 closed_rounds 에 함께 쓴다 (Data r3 H1)
-                        try:
-                            _lf_["closed_rounds"] = [
-                                {"sched_id": _rc0["sched_id"],
-                                 "qty_before": float(_rc0.get("qty") or 0),
-                                 "delivered": float(_rc0.get("delivered_qty") or 0)}
-                                for _rc0 in fetch("so_delivery_schedule",
-                                                  "sched_id,qty,delivered_qty",
-                                                  f"soi_id=eq.{_fq(_li_['soi_id'])}&order=sched_id.asc",
-                                                  limit=200)]
-                            _lf_["close_reason"] = f"출고 정정 {_ship_no}"
-                        except Exception as e:
-                            # D18 fail-closed: 스냅샷 없이 닫으면 되돌리기가 회차를 복원 못 한다 → 중단
-                            _db.log_error("db_read", f"정정 회차 스냅샷 조회 실패(soi {_li_['soi_id']}): {e}",
-                                          table_name="so_delivery_schedule")
-                            return -9, {"_why": "납품 회차 조회 실패"}
-                    _rv_cond = ("received_qty=is.null" if _li_.get("received_qty") is None
-                                else "received_qty=eq.{}".format(_fq(float(_li_.get("received_qty") or 0))))
-                    _flt = "soi_id=eq.{}&status=eq.{}&{}".format(
-                        _fq(_li_["soi_id"]), _fq(str(_li_.get("status") or "")), _rv_cond)
-                    try:
-                        return _db.update_count("sales_order_items", _flt, _lf_), _lf_
-                    except Exception as e:
-                        _db.log_error("db_write", f"정정 라인 갱신 실패(soi {_li_['soi_id']}): {e}",
-                                      table_name="sales_order_items")
-                        return -1, _lf_
-
-                def _stop_msg(_n_, _pn_, _soi_, _why_=None):
-                    if _n_ == -9:
-                        return ("정정 중단 — {} {} (soi {}). 전표는 그대로 두었습니다. "
-                                "화면을 새로 열고 다시 시도하세요(이 라인부터 쓰기 없음, "
-                                "앞 라인은 반영됨).".format(_pn_, _why_ or "조회 실패", _soi_))
-                    if _n_ == 0:
-                        return ("정정 중단 — {} 수주 라인 상태가 그 사이 바뀌었습니다 (soi {}). "
-                                "전표는 그대로 두었습니다. 화면을 새로 열고 남은 라인만 다시 "
-                                "정정하세요(앞 라인은 반영됨).".format(_pn_, _soi_))
-                    return ("정정 중단 — {} 수주 라인 갱신 실패(통신·서버 오류, soi {}). "
-                            "전표는 그대로 두었습니다. 잠시 후 같은 화면에서 남은 라인만 다시 "
-                            "정정하세요(앞 라인은 반영됨).".format(_pn_, _soi_))
-
-                for x, old, new, d in _deltas:
-                    if _stopped:
-                        break
-                    _si = x["si_id"]
-                    _soi = x.get("soi_id")
-                    _li = _li_by.get(_soi) if _soi is not None else None
-                    _pid = x.get("product_id")
-                    _unit = (_li or {}).get("unit") or x.get("unit") or "EA"
-                    _tag = "{} {}: {} ({})".format(
-                        "출고 취소" if action == "CANCEL" else "출고 정정",
-                        _ship_no, x.get("so_number") or "-",
-                        reason or "-")
-                    if d < 0:
-                        _q = -d
-                        # ③→① 수주 라인 먼저, 조건부 (D16): 다른 쓰기에 의존하지 않으므로 선행 가능
-                        if _li:
-                            _nr = max(float(_li.get("received_qty") or 0)
-                                      - _q, 0.0)
-                            # 비활성 라인·종결 머리글 아래 라인은 received 만 조정 — 잔량을
-                            # 되살리지 않는다 (076 D11, D15)
-                            _n9, _lf9 = _line_patch(_li, _nr, x.get("pn"))
-                            if _n9 != 1:
-                                _warns.append(_stop_msg(_n9, line_pn(x, _pnv, internal_first=True), _soi, _lf9.get("_why")))
-                                _db.log_error("db_write",
-                                              f"정정 중단: soi {_soi} 조건부 갱신 {_n9}행 (전표 {_ship_no})",
-                                              table_name="sales_order_items")
-                                _stopped = True
-                                break
-                            _li.update(_lf9)
-                        # ① LOT 복원 — 마지막 차감 LOT 부터, 양수 ISSUE
-                        _plan, _rest = plan_lot_restore(
-                            _txn_by.get(_si, []), _q)
-                        for _lot, _rq in _plan:
-                            _txns9.append({
-                                "material_id": None, "product_id": _pid,
-                                "txn_type": "ISSUE", "qty": _rq,
-                                "unit": _unit, "lot_number": _lot,
-                                "work_order": _lot,
-                                "ref_table": "shipment_items",
-                                "ref_id": _si, "txn_date": _today,
-                                "remark": _tag, "created_by": _user})
-                        if _rest > 1e-9:
-                            _warns.append(
-                                "{} — 원장에 차감 기록이 없는 {:,.0f}개는 "
-                                "재고 복원 없이 수주만 되돌렸습니다.".format(
-                                    line_pn(x, _pnv, internal_first=True), _rest))
-                        # ② 회차 충당 되돌림
-                        if _li:
-                            try:
-                                _rr9 = fetch("so_delivery_schedule",
-                                    "sched_id,due_date,qty,delivered_qty",
-                                    f"soi_id=eq.{_fq(_soi)}"
-                                    "&order=due_date.asc,seq.asc",
-                                    limit=100)
-                                _nd9, _au9, _rest9 = plan_round_release(
-                                    _alloc_by.get(_si, []), _rr9, _q,
-                                    x.get("sched_id"))
-                                for _sid9, _v9 in _nd9.items():
-                                    _db.update("so_delivery_schedule",
-                                               f"sched_id=eq.{_fq(_sid9)}",
-                                               {"delivered_qty": _v9})
-                                for _aid9, _aq9 in _au9:
-                                    if _aid9 is None:
-                                        continue
-                                    if _aq9 <= 1e-9:
-                                        _db.delete("shipment_allocations",
-                                                   f"alloc_id=eq.{_fq(_aid9)}")
-                                    else:
-                                        _db.update("shipment_allocations",
-                                                   f"alloc_id=eq.{_fq(_aid9)}",
-                                                   {"qty": _aq9})
-                                if _rest9 > 1e-9:
-                                    _warns.append(
-                                        "{} — 회차 납품완료에서 {:,.0f}개를 "
-                                        "되돌리지 못했습니다 (납품 스케줄 "
-                                        "확인).".format(line_pn(x, _pnv, internal_first=True), _rest9))
-                            except Exception as e:
-                                _warns.append(f"{line_pn(x, _pnv, internal_first=True)} 회차 되돌림 "
-                                              f"실패: {e}")
-                            if _lf9.get("status") in _soc.LINE_INACTIVE:
-                                # 닫힌 회차는 닫힌 채로: delivered 가 줄어든 만큼 qty 도
-                                # 내려 "열린 회차"가 생기지 않게 (QA H-2 — 되돌리기가
-                                # qty = delivered 인 회차만 복원). 조건부 갱신(R4),
-                                # closed_rounds 는 건드리지 않는다(복원 정보 보존)
-                                try:
-                                    for _rc9 in fetch("so_delivery_schedule",
-                                                      "sched_id,qty,delivered_qty",
-                                                      f"soi_id=eq.{_fq(_soi)}", limit=200):
-                                        _dv9 = float(_rc9.get("delivered_qty") or 0)
-                                        if float(_rc9.get("qty") or 0) > _dv9 + 1e-9:
-                                            _nc9 = _db.update_count(
-                                                "so_delivery_schedule",
-                                                f"sched_id=eq.{_fq(_rc9['sched_id'])}&qty=gt.{_fq(_dv9)}",
-                                                {"qty": _dv9})
-                                            if _nc9 != 1:
-                                                _warns.append(
-                                                    f"{line_pn(x, _pnv, internal_first=True)} 닫힌 회차 {_rc9['sched_id']} 정리 "
-                                                    f"미반영({_nc9}) — 납품 스케줄에서 확인")
-                                                _db.log_error("db_write",
-                                                              f"닫힌 회차 정리 {_nc9}행: sched {_rc9['sched_id']}",
-                                                              table_name="so_delivery_schedule")
-                                except Exception as e:
-                                    _warns.append(f"{line_pn(x, _pnv, internal_first=True)} 닫힌 회차 정리 실패: {e}")
-                                    _db.log_error("db_write", f"닫힌 회차 정리 예외: {e}",
-                                                  table_name="so_delivery_schedule")
-                    else:
-                        # 증가: 수주 반영 → 회차 충당(지정 회차 우선) →
-                        # LOT FIFO 차감 — 확정과 같은 규칙
-                        if _li:
-                            _nr = float(_li.get("received_qty") or 0) + d
-                            _n9, _lf9 = _line_patch(_li, _nr, x.get("pn"))
-                            if _n9 != 1:
-                                _warns.append(_stop_msg(_n9, line_pn(x, _pnv, internal_first=True), _soi, _lf9.get("_why")))
-                                _db.log_error("db_write",
-                                              f"정정 중단: soi {_soi} 조건부 갱신 {_n9}행 (전표 {_ship_no})",
-                                              table_name="sales_order_items")
-                                _stopped = True
-                                break
-                            _li.update(_lf9)
-                            try:
-                                _rr9 = fetch("so_delivery_schedule",
-                                    "sched_id,due_date,qty,delivered_qty",
-                                    f"soi_id=eq.{_fq(_soi)}"
-                                    "&order=due_date.asc,seq.asc",
-                                    limit=100)
-                                _prev9 = {r["sched_id"]:
-                                          float(r.get("delivered_qty") or 0)
-                                          for r in _rr9}
-                                _rr2 = [dict(r) for r in _rr9]
-                                _al9, _left9 = {}, d
-                                _own = next((r for r in _rr2 if r["sched_id"]
-                                             == x.get("sched_id")), None)
-                                if _own:
-                                    _room = (float(_own.get("qty") or 0)
-                                             - _prev9[_own["sched_id"]])
-                                    _tk = min(max(_room, 0), _left9)
-                                    if _tk > 0:
-                                        _own["delivered_qty"] = (
-                                            _prev9[_own["sched_id"]] + _tk)
-                                        _al9[_own["sched_id"]] = \
-                                            _own["delivered_qty"]
-                                        _left9 -= _tk
-                                if _left9 > 1e-9:
-                                    _al9.update(_cf_alloc(_rr2, _left9,
-                                                          _sdate))
-                                for _sid9, _v9 in _al9.items():
-                                    _db.update("so_delivery_schedule",
-                                               f"sched_id=eq.{_fq(_sid9)}",
-                                               {"delivered_qty": _v9})
-                                _dl9 = {s: v - _prev9.get(s, 0)
-                                        for s, v in _al9.items()}
-                                _rows9 = [{"si_id": _si, "sched_id": s,
-                                           "qty": q}
-                                          for _, s, q in split_round_alloc(
-                                              [(_si, d, x.get("sched_id"))],
-                                              _dl9)]
-                                if _rows9:
-                                    _db.insert("shipment_allocations",
-                                               _rows9)
-                            except Exception as e:
-                                _warns.append(f"{line_pn(x, _pnv, internal_first=True)} 회차 충당 "
-                                              f"실패: {e}")
-                        if _pid:
-                            _left5 = d
-                            for _lot5 in _lots9.get(_pid, []):
-                                if _left5 <= 1e-9:
-                                    break
-                                _k5 = (_pid, _lot5["lot_number"])
-                                _lr = (float(_lot5.get("remain_qty") or 0)
-                                       - _used9.get(_k5, 0))
-                                _tk = min(_left5, max(_lr, 0))
-                                if _tk <= 0:
-                                    continue
-                                _used9[_k5] = _used9.get(_k5, 0) + _tk
-                                _txns9.append({
-                                    "material_id": None, "product_id": _pid,
-                                    "txn_type": "ISSUE", "qty": -_tk,
-                                    "unit": _unit,
-                                    "lot_number": _lot5["lot_number"],
-                                    "work_order": _lot5["lot_number"],
-                                    "ref_table": "shipment_items",
-                                    "ref_id": _si, "txn_date": _today,
-                                    "remark": _tag, "created_by": _user})
-                                _left5 -= _tk
-                            if _left5 > 1e-9:
-                                _txns9.append({
-                                    "material_id": None, "product_id": _pid,
-                                    "txn_type": "ISSUE", "qty": -_left5,
-                                    "unit": _unit, "lot_number": None,
-                                    "work_order": None,
-                                    "ref_table": "shipment_items",
-                                    "ref_id": _si, "txn_date": _today,
-                                    "remark": _tag + " (LOT 미지정)",
-                                    "created_by": _user})
-                    if not keep_line_qty:
-                        _db.update("shipment_items", f"si_id=eq.{_fq(_si)}",
-                                   {"qty": new})
-                    _revs9.append({
-                        "shipment_id": pick["shipment_id"], "rev_no": _rev,
-                        "action": action, "si_id": _si, "pn": x.get("pn"),
-                        "qty_before": old, "qty_after": new,
-                        "reason": reason or None, "created_by": _user})
-                    if x.get("so_id"):
-                        _so_ids9.add(x["so_id"])
-                    _n_ok += 1
-                if _txns9:
-                    try:
-                        _db.insert("inventory_transactions", _txns9)
-                    except Exception as e:
-                        _warns.append(f"재고 원장 기록 실패: {e}")
-                if _revs9:               # 중단으로 처리 라인이 0 이면 빈 이력을 넣지 않는다
-                    try:
-                        _db.insert("shipment_revisions", _revs9)
-                    except Exception as e:
-                        _warns.append(f"정정 이력 기록 실패: {e}")
-                for _sid7 in _so_ids9:
-                    try:
-                        _soc.recompute_header(_db, _sid7)
-                    except Exception:
-                        pass
-                if _n_ok:
-                    st.session_state.pop("mr_cache", None)   # 정정 → 미납 변동 (F9)
-                if _stopped:
-                    # 중단: 전표는 CONFIRMED·rev_no 그대로 — 남은 라인을 같은 화면에서 다시 정정·취소할 수
-                    # 있어야 한다. 취소(CANCEL)를 CANCELLED 로 저장하면 역반영 안 된 라인이 취소 전표 뒤에
-                    # 묻힌다 (Data r3 B1). 호출부는 '정정 중단' 경고를 보고 성공 안내·알림을 내지 않는다.
-                    return _n_ok, _warns
-                _hdr = {"rev_no": _rev,
-                        "revised_at": _rv_now.now().isoformat()}
-                if action == "CANCEL":
-                    _hdr.update({"status": "CANCELLED",
-                                 "cancelled_at": _rv_now.now().isoformat(),
-                                 "cancel_reason": reason or None})
-                _hdr_ok9 = False
-                for _try9 in range(3):
-                    try:
-                        _hdr_ok9 = bool(_db.update(
-                            "shipments",
-                            f"shipment_id=eq.{_fq(pick['shipment_id'])}", _hdr))
-                    except Exception as e:
-                        _hdr_ok9 = False
-                        _warns.append(f"전표 헤더 갱신 실패({_try9 + 1}회): {e}")
-                    if _hdr_ok9:
-                        break
-                    import time as _rv_time
-                    _rv_time.sleep(0.5)
-                if not _hdr_ok9:
-                    _warns.append(
-                        f"{_ship_no}: 라인 역반영은 끝났지만 전표 상태 저장에 "
-                        "3회 실패했습니다. 같은 전표를 다시 취소해도 이중 "
-                        "역반영은 되지 않으니(이력 확인) 잠시 후 다시 "
-                        "시도하세요.")
-                return _n_ok, _warns
-
             def _cf_rev_history(pick):
                 try:
                     _rvs = fetch("shipment_revisions",
@@ -11307,6 +10984,17 @@ elif page == "출고 관리":
                         } for r in _rvs], num_cols=("이전", "이후"),
                             strong_cols=("품번",))
 
+            # 확정 전표 정정·취소 계획이 남아 있는데 그 사이 상태가 바뀜(다른 사용자가 취소 등) — 실행하지 않고 알린다
+            _rv_pl0 = st.session_state.get("cf_rv_plan") or {}
+            _cx_f0 = st.session_state.get(f"cfm_cf_cancel_{_cf_pick['shipment_id']}")
+            if _cf_pick.get("status") != "CONFIRMED" and (
+                    _rv_pl0.get("shipment_id") == _cf_pick["shipment_id"] or isinstance(_cx_f0, dict)):
+                st.session_state.pop("cf_rv_plan", None)
+                st.session_state.pop(f"cfm_cf_rv_{_cf_pick['shipment_id']}", None)
+                if isinstance(_cx_f0, dict):
+                    st.session_state.pop(f"cfm_cf_cancel_{_cf_pick['shipment_id']}", None)
+                st.warning("이 전표는 그 사이 다른 사용자가 취소했거나 확정 전표가 아닙니다 — 정정·취소를 "
+                           "실행하지 않았습니다. 아무것도 바뀌지 않았습니다.")
             if not _cf_items:
                 st.info("전표에 품목이 없습니다.")
                 if _cf_pick.get("status") == "DRAFT":
@@ -11400,27 +11088,45 @@ elif page == "출고 관리":
                             "없습니다. 필요하면 영업 보고 > 마감 조회에서 "
                             "마감을 해제하세요 (관리자).")
                 else:
-                    # D19: CANCEL 이력이 일부 라인에만 있는 전표(부분 취소 상태)는 정정(EDIT) 진입을 막고
-                    # 취소 재개만 허용한다. 이력 조회가 실패하면 EDIT·CANCEL 모두 차단(D18 fail-closed).
-                    _cx_done_si, _cx_hist_fail = set(), False
+                    # ── 확정 전표 정정·취소 — revise_shipment 한 번(082, P3-1a). 고정 데이터 사유(옛 전표 12장 등)·
+                    # 부분 취소·확인 대기는 먼저 잠근다(§4-5·§18 A6·A9). 버튼 키 cf_rv_go·cf_cancel 은 그대로(§18 A14)
+                    import uuid as _rv_uuid
+                    from datetime import datetime as _rv_dt, timedelta as _rv_td, timezone as _rv_tz
+                    from utils import shipment_revise as _srv
+                    _rv_sid = _cf_pick["shipment_id"]
+                    _rv_rev = int(_cf_pick.get("rev_no") or 0)
+                    _rv_today = (_rv_dt.now(_rv_tz.utc) + _rv_td(hours=9)).date().isoformat()
+                    _rv_inf = st.session_state.get("cf_rv_inflight") or {}
+                    _rv_inf = _rv_inf if _rv_inf.get("shipment_id") == _rv_sid else {}
+                    _rv_chk, _rv_chk_err = {}, None
                     try:
-                        _cx_done_si = {r.get("si_id") for r in fetch(
-                            "shipment_revisions", "si_id",
-                            f"shipment_id=eq.{_fq(_cf_pick['shipment_id'])}&action=eq.CANCEL",
-                            limit=500) if r.get("si_id") is not None}
+                        _rv_chk = _db.rpc("revise_shipment_check", {"p_shipment_id": _rv_sid}) or {}
+                        if not (isinstance(_rv_chk, dict) and _rv_chk.get("ok")):
+                            _rv_chk_err = "fail"
+                    except getattr(_db, "RpcUnavailable", ()):
+                        _rv_chk_err = "unavailable"
                     except Exception:
-                        _cx_hist_fail = True
-                    _cx_live_si = {x["si_id"] for x in _cf_items if float(x.get("qty") or 0) > 0}
-                    _cx_partial = bool(_cx_done_si) and bool(_cx_live_si - _cx_done_si)
-                    _rv_blocked = _cx_hist_fail or _cx_partial
+                        _rv_chk_err = "fail"
+                    _rv_blk = {} if _rv_chk_err else {int(k): v for k, v in (_rv_chk.get("lines") or {}).items()}
+                    _rv_partial = bool(not _rv_chk_err and _rv_chk.get("partial_cancel_legacy"))
+                    _rv_all_blocked = bool(_rv_chk_err or _rv_partial or _rv_inf
+                                           or (not _rv_chk_err and _rv_chk.get("month_closed")))
+                    if _rv_chk_err == "unavailable":
+                        st.error(_srv.UNAVAILABLE_TEXT)
+                    elif _rv_chk_err:
+                        st.error("정정·취소 가능 여부를 확인하지 못했습니다 — 화면을 새로 열고 다시 시도하세요. "
+                                 "정정·취소를 잠급니다.")
+                    elif _rv_partial:
+                        st.error("예전에 일부 라인만 취소된(부분 취소) 전표입니다 — 정정·취소를 모두 잠급니다. "
+                                 "관리자에게 전표번호를 알려 주세요.")
+                    if _rv_blk:
+                        st.warning(_srv.blocked_notice(_cf_pick.get("ship_no"), _cf_items,
+                                                       {str(k): v for k, v in _rv_blk.items()}))
+                    if _rv_inf:
+                        # 확인 대기(응답 불명) — 결과를 확인하기 전에는 새 요청을 만들지 않는다(§18 A6)
+                        st.info("이 전표의 이전 요청 결과를 확인하는 중입니다 — 화면 위 [결과 다시 확인] 을 누르세요.")
                     # ── 전표 정정: 같은 전표번호 유지, 차이만 역반영 ──
                     with st.expander("전표 정정 (수량 변경 · 라인 제외)"):
-                        if _cx_hist_fail:
-                            st.error("취소 이력 조회 실패 — 화면을 새로 열고 다시 시도하세요. "
-                                     "정정·취소를 진행하지 않습니다.")
-                        elif _cx_partial:
-                            st.warning("부분 취소 상태 — 이 전표는 일부 라인만 취소 역반영됐습니다. "
-                                       "[전표 취소] 로 남은 라인을 마저 취소하세요(정정은 할 수 없습니다).")
                         _rv_df = _cf_pd.DataFrame([{
                             "품번": line_pn(x, _pnv, internal_first=True),
                             "수주번호": x.get("so_number") or "-",     # 후보 28: 같은 품번 여러 수주 구분
@@ -11432,9 +11138,7 @@ elif page == "출고 관리":
                         _rv_ed = st.data_editor(
                             _rv_df, hide_index=True,
                             use_container_width=True,
-                            key="cf_rv_ed_{}_{}".format(
-                                _cf_pick["shipment_id"],
-                                _cf_pick.get("rev_no") or 0),
+                            key="cf_rv_ed_{}_{}".format(_rv_sid, _rv_rev),
                             column_config={
                                 "정정 수량": st.column_config.NumberColumn(
                                     "정정 수량", min_value=0, step=1),
@@ -11445,8 +11149,7 @@ elif page == "출고 관리":
                                              "현재")},
                             })
                         _rv_reason = st.text_input(
-                            "정정 사유 (필수)", key="cf_rv_reason_{}".format(
-                                _cf_pick["shipment_id"]),
+                            "정정 사유 (필수)", key="cf_rv_reason_{}".format(_rv_sid),
                             placeholder="예: 현장 확인 수량 착오, 라인 중복")
                         _rv_over = st.checkbox(
                             "재고 없이 증가 허용", value=False,
@@ -11462,6 +11165,10 @@ elif page == "출고 관리":
                             (x, _rv_new[x["si_id"]]) for x in _cf_items
                             if abs(_rv_new[x["si_id"]]
                                    - float(x.get("qty") or 0)) > 1e-9]
+                        _rv_bad = [x for x, _n in _rv_changed if x["si_id"] in _rv_blk]
+                        if _rv_bad:
+                            st.error("기록이 불완전한 라인({})은 바꿀 수 없습니다 — 다른 라인만 정정하세요.".format(
+                                ", ".join(line_pn(x, _pnv, internal_first=True) for x in _rv_bad)))
                         if _rv_changed:
                             st.caption("변경 {}건 — ".format(len(_rv_changed))
                                        + ", ".join(
@@ -11471,92 +11178,81 @@ elif page == "출고 관리":
                         if st.button("정정 적용", key="cf_rv_go",
                                      type="primary",
                                      help="고친 수량의 차이만큼만 수주 납품·회차·"
-                                          "완성 LOT 재고를 되돌리거나 더 차감합니다. "
-                                          "0 = 라인 제외. 전표번호는 유지되고 정정 "
+                                          "완성 LOT 재고를 되돌리거나 더 차감합니다(한 번에 전부 반영 또는 "
+                                          "전부 취소). 0 = 라인 제외. 전표번호는 유지되고 정정 "
                                           "이력이 남으며 재발행 문서에 정정본 표기가 "
                                           "찍힙니다 — 이미 나간 명세서는 회수 후 "
                                           "재발행하세요",
-                                     disabled=_rv_blocked or not (_rv_changed
-                                                                   and _rv_reason.strip())):
-                            st.session_state["cfm_cf_rv"] = True
-                            st.session_state["cf_rv_plan"] = (
-                                _rv_new, _rv_reason.strip(), _rv_over)
-                        if st.session_state.get("cfm_cf_rv") \
-                                and not _rv_blocked \
-                                and confirm_gate("cf_rv",
+                                     disabled=(_rv_all_blocked or bool(_rv_bad)
+                                               or not (_rv_changed and _rv_reason.strip()))):
+                            # 클릭마다 새 request_id — 계획에 전표·rev 와 함께(§4-6 6)
+                            st.session_state["cf_rv_plan"] = {
+                                "shipment_id": _rv_sid, "rev_no": _rv_rev, "request_id": str(_rv_uuid.uuid4()),
+                                "new_qtys": dict(_rv_new), "reason": _rv_reason.strip(), "over": bool(_rv_over),
+                                "changes": [(line_pn(x, _pnv, internal_first=True), float(x.get("qty") or 0), n)
+                                            for x, n in _rv_changed]}
+                            st.session_state[f"cfm_cf_rv_{_rv_sid}"] = True
+                        _rv_pl = st.session_state.get("cf_rv_plan") or {}
+                        if st.session_state.get(f"cfm_cf_rv_{_rv_sid}"):
+                            if _rv_pl.get("shipment_id") != _rv_sid or _rv_all_blocked:
+                                # 계획이 없거나 다른 전표의 것 — 현재 위젯 값으로 대체하지 않는다(§4-6 6)
+                                st.session_state.pop(f"cfm_cf_rv_{_rv_sid}", None)
+                                st.session_state.pop("cf_rv_plan", None)
+                            elif _rv_pl.get("rev_no") != _rv_rev:
+                                st.session_state.pop(f"cfm_cf_rv_{_rv_sid}", None)
+                                st.session_state.pop("cf_rv_plan", None)
+                                st.error("다른 사용자가 그 사이 이 전표를 정정·취소했습니다 — 화면 내용을 다시 "
+                                         "확인한 뒤 다시 정정하세요. " + _srv.NOTHING)
+                            elif confirm_gate("cf_rv",
                                     "전표 {} 를 정정합니다 — 변경 {}건의 "
                                     "차이만큼 수주 납품·회차·재고를 "
                                     "되돌리거나 추가 차감합니다. "
                                     "실행할까요?".format(
                                         _cf_pick["ship_no"],
-                                        len(_rv_changed))) \
-                                and click_guard("cf_rv"):
-                            _pl = st.session_state.pop("cf_rv_plan", None) \
-                                or (_rv_new, _rv_reason.strip(), _rv_over)
-                            _n_ok, _ws = _cf_apply_deltas(
-                                _cf_pick, _cf_items, _pl[0], _pl[1],
-                                action="EDIT", allow_over=_pl[2])
-                            _stop9 = any(str(w).startswith("정정 중단") for w in _ws)
-                            for _w in _ws:
-                                (st.warning if (_n_ok and not _stop9) else st.error)(_w)
-                            if _n_ok and not _stop9:
-                                st.session_state["ship_open_no"] = \
-                                    _cf_pick["ship_no"]
-                                _sk.notify(_sk.fmt_ship_edit(
-                                    _cf_pick["ship_no"],
-                                    [x.get("customer") for x in _cf_items],
-                                    [(line_pn(x, _pnv, internal_first=True), float(x.get("qty") or 0),
-                                      float(_pl[0].get(x["si_id"]) or 0))
-                                     for x in _cf_items
-                                     if abs(float(_pl[0].get(
-                                         x["si_id"], x.get("qty") or 0) or 0)
-                                         - float(x.get("qty") or 0)) > 1e-9],
-                                    current_user_name(), _pl[1]))
-                                nav_flash(
-                                    f"정정 완료 — {_n_ok}개 라인. 문서를 "
-                                    "재발행하세요 (정정본 표기).")
-                                st.rerun()
+                                        len(_rv_pl.get("changes") or [])), scope=_rv_sid) \
+                                    and click_guard("cf_rv"):
+                                st.session_state.pop("cf_rv_plan", None)
+                                _rv_st = _cf_rv_state(_cf_pick, _cf_items, _rv_pl["rev_no"])
+                                if _rv_st is not None:
+                                    _rv_pay = _srv.build_payload(
+                                        _rv_st, _rv_sid, _rv_pl["new_qtys"], _rv_pl["reason"],
+                                        current_user_name(), _rv_pl["over"], _rv_pl["request_id"], _rv_today)
+                                    _cf_rv_run(_cf_pick, _cf_items, "EDIT", _rv_pay,
+                                               {"reason": _rv_pl["reason"], "changes": _rv_pl.get("changes") or [],
+                                                "n": len(_rv_pay.get("lines") or [])})
 
                     # ── 전체 취소: 모든 라인을 0 으로 역반영, 번호 보존 ──
                     _cx_reason = st.text_input(
                         "취소 사유 (전표 취소 시 필수)",
-                        key="cf_cx_reason_{}".format(_cf_pick["shipment_id"]),
+                        key="cf_cx_reason_{}".format(_rv_sid),
                         placeholder="예: 거래처 착오, 납품일 오류")
                     if st.button("전표 취소 (전체 역반영)", key="cf_cancel",
-                                 disabled=not _cx_reason.strip() or _cx_hist_fail):
-                        st.session_state[f"cfm_cf_cancel_{_cf_pick['shipment_id']}"] = True
+                                 disabled=(not _cx_reason.strip() or _rv_all_blocked or bool(_rv_blk))):
+                        # 클릭마다 새 request_id — 전표별 확인 플래그 값으로(본 rev 와 함께)
+                        st.session_state[f"cfm_cf_cancel_{_rv_sid}"] = {
+                            "request_id": str(_rv_uuid.uuid4()), "rev_no": _rv_rev}
                     # 사유가 비면 확인창도 띄우지 않는다 — 플래그만 남은 상태(전표 전환·
                     # 재진입)에서 사유 없이 역반영되는 일을 막는다 (§5-2 (2))
-                    if st.session_state.get(f"cfm_cf_cancel_{_cf_pick['shipment_id']}") \
-                            and _cx_reason.strip() and not _cx_hist_fail \
+                    _cx_fl = st.session_state.get(f"cfm_cf_cancel_{_rv_sid}")
+                    if isinstance(_cx_fl, dict) and _cx_fl.get("rev_no") != _rv_rev:
+                        st.session_state.pop(f"cfm_cf_cancel_{_rv_sid}", None)
+                        st.error("다른 사용자가 그 사이 이 전표를 정정·취소했습니다 — 화면 내용을 다시 확인한 뒤 "
+                                 "다시 하세요. " + _srv.NOTHING)
+                    elif isinstance(_cx_fl, dict) and _cx_reason.strip() and not _rv_all_blocked \
+                            and not _rv_blk \
                             and confirm_gate("cf_cancel",
                                 "확정된 전표 {}를 취소합니다 — 전 라인의 "
                                 "수주 납품·회차 충당·완성 재고 차감을 "
                                 "되돌립니다. 전표번호와 라인은 기록으로 "
                                 "남습니다. 실행할까요?".format(
                                     _cf_pick.get("ship_no") or ""),
-                                scope=_cf_pick["shipment_id"]) \
+                                scope=_rv_sid) \
                             and click_guard("cf_cancel"):
-                        _n_ok, _ws = _cf_apply_deltas(
-                            _cf_pick, _cf_items,
-                            {x["si_id"]: 0.0 for x in _cf_items},
-                            _cx_reason.strip(), action="CANCEL",
-                            keep_line_qty=True)
-                        _stop9 = any(str(w).startswith("정정 중단") for w in _ws)
-                        for _w in _ws:
-                            (st.warning if (_n_ok and not _stop9) else st.error)(_w)
-                        if _n_ok and not _stop9:
-                            _cx_live = [x for x in _cf_items
-                                        if float(x.get("qty") or 0) > 0]
-                            _sk.notify(_sk.fmt_ship_cancel(
-                                _cf_pick.get("ship_no") or "-",
-                                [x.get("customer") for x in _cx_live],
-                                len(_cx_live),
-                                sum(float(x.get("qty") or 0)
-                                    for x in _cx_live),
-                                current_user_name(), _cx_reason.strip()))
-                            nav_flash("전표 취소 — 수주·재고 역반영 완료")
-                            st.rerun()
+                        _cx_pay = _srv.build_payload(
+                            {"shipments": [dict(_cf_pick, rev_no=_cx_fl["rev_no"])], "shipment_items": _cf_items},
+                            _rv_sid, {}, _cx_reason.strip(), current_user_name(), False, _cx_fl["request_id"],
+                            _rv_today, action="CANCEL")
+                        _cf_rv_run(_cf_pick, _cf_items, "CANCEL", _cx_pay, {"reason": _cx_reason.strip()})
             else:
                 # ── DRAFT: 확인용 인쇄 → 정정 저장 → 확정 ──
                 import pandas as _cf_pd

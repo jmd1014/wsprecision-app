@@ -650,3 +650,164 @@ def build_payload(state, shipment_id, new_qtys, reason, who, allow_over, request
     req["inc"] = {"expected_received_before": [{"soi_id": s, "received": v} for s, v in sorted(exp.items())],
                   "scheds": scheds, "allocs": allocs, "txns": txns}
     return req
+
+
+# ── 호출 상태 기계(§4-6 · §18 A6) ──
+import time as _time
+
+_clock = _time.monotonic                 # 테스트가 바꿔 끼운다(10초 규칙)
+NOT_APPLIED = ("40P01", "55P03", "57014")  # 교착·잠금 대기 초과·문장 시간 초과 — 함수는 롤백됨(미반영 확정)
+NOT_APPLIED_RETRIES = 2
+UNKNOWN_RETRIES = 1
+PENDING_SEC = 10.0                       # 서버 문장 제한 8초 + 여유
+
+
+def run_call(call, requery, sleep, clock=None, wait=2.0):
+    """revise_shipment 한 번의 요청(같은 request_id)을 끝까지.
+
+    call(): RPC 1회 — dict 반환 또는 db.RpcUnavailable / db.RpcRejected / 그 밖의 예외.
+    requery(): 이력에서 같은 request_id 를 캐시 없이 찾기 → {rev_no, action, info} 또는 None.
+    반환 {"state": ok|rejected|not_applied|pending|unavailable, "res", "code", "unknown", "via", "started_at"}
+      - 성공(ok) / 거부(P0001 — 쓰기 없음 확정) / 미반영 확정(자동 재시도 뒤에도) / 함수 없음
+      - 불명(전송 오류·비정상 본문)이 한 번이라도 있었으면 최종 판정은 재조회로만 — 없으면 pending(확인 대기)
+    """
+    import db as _db
+    clock = clock or _clock
+    unknown = False
+    n_na = n_unk = 0
+    started = clock()
+    while True:
+        started = clock()
+        try:
+            r = call()
+        except _db.RpcUnavailable:
+            if unknown:
+                break
+            return {"state": "unavailable", "unknown": False, "started_at": started}
+        except _db.RpcRejected as e:
+            code = str(getattr(e, "code", "") or "")
+            if code in NOT_APPLIED:
+                if n_na < NOT_APPLIED_RETRIES:
+                    n_na += 1
+                    sleep(wait)
+                    continue
+                if unknown:
+                    break
+                return {"state": "not_applied", "code": code, "unknown": False, "started_at": started}
+            if unknown:
+                break
+            return {"state": "rejected", "code": str(getattr(e, "message", "") or e), "unknown": False,
+                    "started_at": started}
+        except Exception:                                    # 전송 오류 — 반영 여부 불명
+            unknown = True
+            if n_unk < UNKNOWN_RETRIES:
+                n_unk += 1
+                sleep(wait)
+                continue
+            break
+        else:
+            if isinstance(r, dict) and r.get("ok") is True:
+                return {"state": "ok", "res": r, "unknown": unknown, "via": "call", "started_at": started}
+            unknown = True                                   # None·{}·{"ok": false}·목록 — 비정상 본문
+            if n_unk < UNKNOWN_RETRIES:
+                n_unk += 1
+                sleep(wait)
+                continue
+            break
+    found = requery()
+    if found:
+        return {"state": "ok", "res": dict(found, ok=True, replayed=True), "unknown": True, "via": "requery",
+                "started_at": started}
+    return {"state": "pending", "unknown": True, "started_at": started}
+
+
+def recheck(requery, started_at, now=None):
+    """확인 대기 중 [결과 다시 확인]: 이력에 있으면 성공, 없고 마지막 호출 시작 뒤 10초가 지났으면 미반영 확정."""
+    now = _clock() if now is None else now
+    found = requery()
+    if found:
+        return {"state": "ok", "res": dict(found, ok=True, replayed=True)}
+    if now - float(started_at) >= PENDING_SEC:
+        return {"state": "not_applied"}
+    return {"state": "pending"}
+
+
+# ── 화면 문구 ──
+NOTHING = "아무것도 바뀌지 않았습니다."
+REASON_TEXT = {
+    "legacy_no_alloc": "회차 충당 기록이 없는 옛 전표 라인",
+    "issue_mismatch": "출고 재고 차감 기록이 라인 수량과 맞지 않음",
+    "round_short": "납품 회차의 납품완료보다 충당 기록이 많음",
+    "recv_underflow": "수주 납품량이 줄일 수량보다 적음",
+}
+_REJECT = {
+    "bad_version": "요청 형식이 맞지 않습니다 — 화면을 새로 고친 뒤 다시 시도하세요.",
+    "not_found": "전표를 찾지 못했습니다 — 화면을 새로 고치세요.",
+    "not_confirmed": "이 전표는 이미 취소됐거나 확정 전표가 아닙니다 — 화면을 새로 고쳐 상태를 확인하세요.",
+    "stale_rev": "다른 사용자가 먼저 이 전표를 정정·취소했습니다 — 화면을 새로 고쳐 확인한 뒤 다시 하세요.",
+    "stale_line": "전표 라인 수량이 그 사이 바뀌었습니다 — 화면을 새로 고치세요.",
+    "stale": "그 사이 수주 납품량이 바뀌었습니다 — 화면을 새로 고친 뒤 다시 정정하세요.",
+    "request_conflict": "같은 요청 번호로 다른 내용이 들어왔습니다 — 화면을 새로 고친 뒤 다시 하세요.",
+    "month_closed": "마감된 달의 전표입니다 — 정정·취소하려면 영업 보고 > 마감 조회에서 마감을 해제하세요(관리자).",
+    "partial_cancel_legacy": "예전에 일부 라인만 취소된 전표입니다 — 관리자에게 알려 주세요.",
+    "use_cancel": "모든 라인을 0 으로 하려면 [전표 취소] 를 쓰세요.",
+    "reason_required": "사유를 입력하세요.",
+    "nothing_to_apply": "바꾼 수량이 없습니다.",
+    "line_mismatch": "정정 라인이 이 전표와 맞지 않습니다 — 화면을 새로 고치세요.",
+    "line_unlinked": "수주 또는 제품이 연결되지 않은 라인은 수량을 늘릴 수 없습니다.",
+    "line_closed": "종결·취소·대체된 수주 라인은 수량을 늘릴 수 없습니다 — 수주 목록에서 되돌린 뒤 정정하세요.",
+    "over_pending": "수주 미납보다 많이 늘릴 수 없습니다.",
+    "sched_mismatch": "회차 계획이 맞지 않습니다 — 화면을 새로 고친 뒤 다시 하세요.",
+    "sched_over": "납품 회차 수량을 넘습니다 — 화면을 새로 고친 뒤 다시 하세요.",
+    "alloc_mismatch": "회차 충당 계획이 맞지 않습니다 — 화면을 새로 고친 뒤 다시 하세요.",
+    "txn_mismatch": "재고 차감 계획이 맞지 않습니다 — 화면을 새로 고친 뒤 다시 하세요.",
+}
+
+
+def reject_text(code):
+    c = str(code or "")
+    base, _, tail = c.partition(":")
+    if base in REASON_TEXT:
+        t = f"기록이 불완전한 라인이 있어 정정·취소할 수 없습니다 — {REASON_TEXT[base]}. 관리자에게 알려 주세요."
+    elif base == "stock":
+        t = f"완성 재고 부족 — {tail}. [재고 없이 증가 허용] 을 확인하거나 재고를 확인하세요."
+    elif base == "postcondition":
+        t = f"서버 검증에 걸려 중단했습니다({tail}) — 관리자에게 알려 주세요."
+    else:
+        t = _REJECT.get(base, f"정정·취소가 거부됐습니다({c}).")
+    return f"{t} {NOTHING}"
+
+
+NOT_APPLIED_TEXT = "다른 처리와 겹쳐 반영되지 않았습니다 — 잠시 후 다시 시도하세요."
+PENDING_TEXT = ("반영 여부를 확인하지 못했습니다 — 잠시 뒤 [결과 다시 확인] 을 누르세요. "
+                "확인될 때까지 이 전표의 정정·취소는 잠급니다.")
+UNAVAILABLE_TEXT = "정정·취소 기능(서버 함수)을 쓸 수 없습니다 — 관리자에게 알려 주세요. " + NOTHING
+
+
+def blocked_notice(ship_no, items, lines_map):
+    """revise_shipment_check 의 라인별 사유 → 안내(한 라인의 사유는 전부)."""
+    by = {str(x["si_id"]): x for x in items}
+    rows = []
+    for si, codes in sorted((lines_map or {}).items(), key=lambda kv: int(kv[0])):
+        x = by.get(str(si), {})
+        rows.append("- {} · 수주 {} · {:,.0f}개: {}".format(
+            x.get("pn") or "-", x.get("so_number") or "-", _f(x.get("qty")),
+            " / ".join(REASON_TEXT.get(c, c) for c in codes)))
+    return ("전표 {} 의 아래 라인은 기록이 불완전해 정정·취소할 수 없습니다(아무것도 바뀌지 않았습니다).\n{}\n"
+            "다른 라인의 정정은 할 수 있습니다. 필요하면 관리자에게 전표번호·원하는 결과·사유를 전달하세요."
+            .format(ship_no, "\n".join(rows)))
+
+
+def info_text(info, items):
+    """안내(info) → 품번으로 풀어 쓴 문구(감소 = si_id, 증가 미충당 = soi_id)."""
+    out = []
+    for e in info or []:
+        if e.get("kind") != "unallocated":
+            continue
+        if e.get("si_id") is not None:
+            x = next((i for i in items if i.get("si_id") == e["si_id"]), {})
+        else:
+            x = next((i for i in items if i.get("soi_id") == e.get("soi_id")), {})
+        out.append("{}: 회차에 싣지 않은 {:,.0f}개 — 납품 스케줄을 확인하세요".format(x.get("pn") or "-",
+                                                                         _f(e.get("qty"))))
+    return " · ".join(out)
