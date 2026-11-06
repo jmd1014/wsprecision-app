@@ -493,40 +493,6 @@ def test_confirm_plan_error_label_without_variants(rev_db):
     assert any("4PDVN-03: 수주 라인 없음" in e for e in errs), errs
 
 
-def _cancel_without_ledger(at, monkeypatch):
-    """취소 성공 경로는 경고를 그린 직후 st.rerun 이라 최종 화면엔 남지 않는다(기존 동작) → 호출을 기록."""
-    import streamlit as _st
-    seen, orig = [], _st.warning
-
-    def _rec(body, *a, **k):
-        seen.append(str(body))
-        return orig(body, *a, **k)
-    monkeypatch.setattr(_st, "warning", _rec)
-    rf.TXNS[:] = []                                     # 차감 기록 없음 → "원장에 차감 기록이 없는" 경고
-    at.text_input(key="cf_cx_reason_1").set_value("확인")
-    at.run()
-    at.button(key="cf_cancel").click()
-    at.run()
-    at.button(key="cf_cancel_cfm_ok").click()
-    at.run()
-    assert not at.exception, [str(e.value) for e in at.exception]
-    return seen + [str(e.value) for e in at.error]
-
-
-def test_cancel_warning_label(rev_db, monkeypatch):
-    rf._seed()
-    _with_variants(monkeypatch, [{"product_id": "P1", "customer_part_no": "4S4PDVN-03",
-                                  "kind": "variant"}])
-    ws = _cancel_without_ledger(rf._pick_confirmed(rf._open()), monkeypatch)
-    assert any(w.startswith("4PDVN-03 (4S4PDVN-03) — 원장에 차감 기록이 없는") for w in ws), ws
-
-
-def test_cancel_warning_label_without_variants(rev_db, monkeypatch):
-    rf._seed()
-    ws = _cancel_without_ledger(rf._pick_confirmed(rf._open()), monkeypatch)
-    assert any(w.startswith("4PDVN-03 — 원장에 차감 기록이 없는") for w in ws), ws
-
-
 # ── T6 variant 조회 실패(열 없음 모사) → 묶음 전 표시, 예외 없음 ──
 def test_variant_fetch_failure_falls_back(ship_db, monkeypatch):
     import db
@@ -569,3 +535,8 @@ def test_po_requirement_pending_lines_variant_column(monkeypatch):
 def test_po_requirement_pending_lines_without_variant_unchanged(monkeypatch):
     t = _po_req(monkeypatch, "alias")
     assert ">품번<" not in t and "CP-991" not in t, t                # 묶음 전 표(열 없음)
+
+
+# P3-1a(2026-11-06): 취소 경고(「원장에 차감 기록이 없는」)의 출하 품번 표기 테스트 2건은 새 경로로 이식 —
+#   차감 기록 없는 라인은 issue_mismatch 로 사전 잠금되고 안내에 같은 표기(line_pn)가 쓰인다:
+#   tests/test_revise_screen.py::test_blocked_notice_uses_variant_label[True|False]

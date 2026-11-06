@@ -218,26 +218,6 @@ def test_slip_effects_truncation_locks_everything(rev_db, monkeypatch):
 
 
 @app_only
-def test_revision_prep_truncation_writes_nothing(rev_db, monkeypatch):
-    """정정 준비(LOT·충당) 조회가 잘리면 정정 중단 — 역분개·회차 되돌림 쓰기 0."""
-    from tests import test_shipment_revision_flow as rf
-    _trunc_when(monkeypatch, lambda t, s, f: t == "inventory_transactions" and "lot_number" in s)
-    rf._seed()
-    at = rf._pick_confirmed(rf._open())
-    at.text_input(key="cf_cx_reason_1").set_value("거래처 착오")
-    at.run()
-    at.button(key="cf_cancel").click()
-    at.run()
-    at.button(key="cf_cancel_cfm_ok").click()
-    at.run()
-    assert not at.exception, [str(e.value) for e in at.exception]
-    assert any("정정 준비 조회" in str(e.value) for e in at.error), [str(e.value) for e in at.error]
-    assert not [t for t, _ in rf.INSERTED if t in ("inventory_transactions", "shipment_revisions")]
-    assert not [1 for t, _f, _v in rf.UPDATED if t in ("so_delivery_schedule", "sales_order_items")]
-    assert rf.SHIPMENTS[0]["status"] == "CONFIRMED"
-
-
-@app_only
 def test_ship_register_draft_lines_truncated_blocks_add_to_draft(monkeypatch):
     from tests.test_hotfix2_followup_a import _mock, _open
     m = _mock()
@@ -519,26 +499,6 @@ def test_slip_recheck_effects_use_cache_false(ship_db, monkeypatch):
 
 
 @app_only
-def test_revision_prep_alloc_truncation_writes_nothing(rev_db, monkeypatch):
-    from tests import test_shipment_revision_flow as rf
-    _trunc_when(monkeypatch, lambda t, s, f: t == "shipment_allocations" and "sched_id" in s)
-    rf._seed()
-    at = rf._pick_confirmed(rf._open())
-    at.text_input(key="cf_cx_reason_1").set_value("거래처 착오")
-    at.run()
-    at.button(key="cf_cancel").click()
-    at.run()
-    at.button(key="cf_cancel_cfm_ok").click()
-    at.run()
-    assert not at.exception, [str(e.value) for e in at.exception]
-    assert any("정정 준비 조회" in str(e.value) for e in at.error), [str(e.value) for e in at.error]
-    assert not [t for t, _ in rf.INSERTED if t in ("inventory_transactions", "shipment_revisions")]
-    assert not [1 for t, _f, _v in rf.UPDATED if t in ("so_delivery_schedule", "sales_order_items")]
-    assert not [1 for t, _f in rf.DELETED if t == "shipment_allocations"]
-    assert rf.SHIPMENTS[0]["status"] == "CONFIRMED"
-
-
-@app_only
 def test_sales_report_line_exception_blocks_all_three_tabs(monkeypatch):
     from tests.test_hotfix2_followup_a import _open
     from tests.test_hotfix2_2nd_e_month_close import MONTH_OUTPUTS, _dl
@@ -557,3 +517,8 @@ def test_sales_report_line_exception_blocks_all_three_tabs(monkeypatch):
     at.session_state["cfm_sr_mc_close"] = True
     at.run()
     assert not [w for w in m.writes if w[1] == "sales_month_close"], m.writes
+
+
+# P3-1a(2026-11-06): 정정 준비 조회 절단 테스트 2건은 새 경로로 이식 —
+#   tests/test_revise_screen.py::test_revision_prep_truncation_calls_nothing[inventory_transactions|shipment_allocations]
+#   (취소는 서버가 계산해 준비 조회가 없다 — 절단 검사는 증가 계획의 정정에만)

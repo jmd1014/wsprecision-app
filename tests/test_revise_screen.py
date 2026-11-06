@@ -407,3 +407,74 @@ def test_pending_ten_seconds_then_not_applied(monkeypatch):
     assert not _inflight(at), "확인 대기 기록이 지워져야 한다"
     assert not at.button(key="cf_cancel").disabled
     assert m.applied == 0
+
+
+# ── 이식: §5-2 확인 창 전표 단위·사유 필수(옛 test_cancel_gate_is_scoped_to_slip_and_needs_reason) ──
+def test_cancel_gate_is_scoped_to_slip_and_needs_reason(monkeypatch):
+    """전표 A 의 취소 확인 창 상태에서 B(작성중)가 선택되면 B 에 확인 창이 없고 아무것도 취소되지 않는다. A 로 돌아와도
+    다시 눌러야 뜬다. 사유가 비면 플래그가 있어도 확인 창이 없다. 정상 경로(사유 + 확인)는 동작."""
+    from tests.ship_mock import ReviseMock
+    w = _w()
+    w["shipments"].append(dict(w["shipments"][0], shipment_id=49, ship_no="SH-20261031-01", status="DRAFT",
+                               confirmed_at=None))
+    m = ReviseMock(w)
+    at = _open(monkeypatch, m)
+    next(r for r in at.radio if r.key == "cf_filter").set_value("전체")
+
+    def _show(no):
+        at.session_state["ship_open_no"] = no
+        at.run()
+        assert not at.exception, [str(e.value) for e in at.exception]
+    A, B = SHIP_NO, "SH-20261031-01"
+    _show(A)
+    at.text_input(key=f"cf_cx_reason_{SID}").set_value(REASON)
+    _show(A)
+    at.button(key="cf_cancel").click()
+    _show(A)
+    assert [b for b in at.button if b.key == "cf_cancel_cfm_ok"], "A 확인 창"
+    _show(B)
+    assert not [b for b in at.button if b.key == "cf_cancel_cfm_ok"], "B 에 확인 창 없음"
+    assert not _revise_calls(m) and _ship(m)["status"] == "CONFIRMED"
+    _show(A)
+    assert not [b for b in at.button if b.key == "cf_cancel_cfm_ok"], "다른 전표 선택으로 A 플래그 정리"
+    at.session_state[f"cfm_cf_cancel_{SID}"] = {"request_id": "6f1c1d2e-0000-4000-8000-000000000001", "rev_no": 0}
+    _show(A)
+    assert not [b for b in at.button if b.key == "cf_cancel_cfm_ok"], "사유 없음 → 확인 창 없음"
+    at.text_input(key=f"cf_cx_reason_{SID}").set_value(REASON)
+    _show(A)
+    at.button(key="cf_cancel_cfm_ok").click()
+    _show(A)
+    assert _ship(m)["status"] == "CANCELLED" and len(_revise_calls(m)) == 1
+
+
+# ── 이식: 정정 준비 조회 절단(옛 test_hotfix2_2nd_f_in_chunks::test_revision_prep_*) ──
+@pytest.mark.parametrize("table", ["inventory_transactions", "shipment_allocations"])
+def test_revision_prep_truncation_calls_nothing(monkeypatch, table):
+    """증가 계획용 조회(충당·ISSUE)가 잘리면 정정 중단 — RPC 호출 0·쓰기 0."""
+    import db
+    from tests.ship_mock import ReviseMock
+    m = ReviseMock(_w())
+    at = _open(monkeypatch, m)
+    real = db.fetch_all
+
+    def _w2(t, select="*", filter_query="", *a, **kw):
+        rows, tr = real(t, select, filter_query, *a, **kw)
+        return rows, (tr or t == table)
+    monkeypatch.setattr(db, "fetch_all", _w2)
+    before = m.snapshot()
+    _edit(at, m, {501: 700})
+    assert any("정정 준비 조회" in t for t in _texts(at)), _texts(at)
+    assert not _revise_calls(m) and m.snapshot() == before
+
+
+# ── 이식: 출하 품번 병기(옛 test_pn_display::test_cancel_warning_label*) — 선차단 안내의 라인 표기 ──
+@pytest.mark.parametrize("variants", [True, False])
+def test_blocked_notice_uses_variant_label(monkeypatch, variants):
+    from tests.ship_mock import ReviseMock
+    m = ReviseMock(_w(inventory_transactions=[]))                     # 차감 기록 없음 → issue_mismatch
+    if variants:
+        m.tables["customer_part_mapping"] = [{"product_id": "P1", "customer_part_no": "4S4PDVN-03", "kind": "variant"}]
+    at = _open(monkeypatch, m)
+    t = "\n".join(_texts(at))
+    head = "- 4PDVN-03 (4S4PDVN-03) · 수주 SO-100" if variants else "- 4PDVN-03 · 수주 SO-100"
+    assert any(l.startswith(head) for l in t.splitlines()), t

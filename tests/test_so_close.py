@@ -267,7 +267,8 @@ def test_static_no_manual_selectbox_no_confirmed_header_write_no_direct_recalc()
     assert "_soc.header_status(" not in SRC                        # 본체는 recompute_header 만
     assert '"status": r["old_so_status"]' not in SRC               # _rp_revert 과거 상태 덮기 제거 (F5)
     assert "line_status(_nq" not in SRC                            # 정정 라인 값은 revise_line_fields 만 (F3)
-    assert SRC.count("_soc.revise_line_fields(") == 1 and SRC.count("_soc.recompute_header(") == 3   # 정정은 _line_patch 한 곳
+    # 정정·취소 라인 값·머리글 재집계는 082 revise_shipment(모델 utils/shipment_revise)로 옮김(P3-1a) — 화면은 호출만
+    assert SRC.count("_soc.revise_line_fields(") == 0 and SRC.count("_soc.recompute_header(") == 2
     lines = SRC.splitlines()
     for i, ln in enumerate(lines):
         if 'update("sales_orders"' in ln:
@@ -505,7 +506,7 @@ def test_reopen_transport_retry_message_and_ok():
 def test_static_r2b_guards_present():
     assert SRC.count("_soc.replacement_revert_block(") == 1 and 'force=True' in SRC
     assert "종결·취소·대체된 수주 라인 — 수주 목록에서" in SRC            # 폴백·증가 정정 가드 (M-3·L-5)
-    assert SRC.count("_soc.LINE_INACTIVE") >= 4
+    assert SRC.count("_soc.LINE_INACTIVE") >= 2      # 정정 증가 가드는 082 line_closed 로(P3-1a)
     assert '"소,unit,status"' not in SRC and '"soi_id,so_id,qty,received_qty,pending_qty,unit,status"' in SRC
     assert "or _r.get(\"retried\")" in SRC                                     # F9 재호출 경로
     assert "mode mismatch" in SQL076 and "v_active_open" in SQL076 and "ORDER BY soi_id FOR UPDATE" in SQL076
@@ -592,25 +593,15 @@ def test_migration_077_declares_all_rounds_and_final_rules():
     assert "DROP COLUMN" not in SQL077 and "DELETE FROM" not in SQL077.upper()
 
 
-def test_static_r3_revision_conditional_and_order():
-    i_patch = SRC.index("def _line_patch(_li_, _nr_, _pn_=None)")
-    assert "soi_id=eq.{}&status=eq.{}&{}" in SRC and '"received_qty=eq.{}".format(_fq(float(' in SRC   # D16 조건부
-    assert SRC.count("_n9, _lf9 = _line_patch(_li, _nr, x.get(\"pn\"))") == 2    # 감소·증가 두 경로
-    dec = SRC.index("# ③→① 수주 라인 먼저, 조건부 (D16)")
-    lot = SRC.index("# ① LOT 복원 — 마지막 차감 LOT 부터", dec)
-    rnd = SRC.index("# ② 회차 충당 되돌림", dec)
-    assert i_patch < dec < lot < rnd                                             # 라인 → LOT → 회차
-    assert "_hdr_by[_so_] = _hs_" in SRC and "cache=False" in SRC[SRC.index("def _line_patch"):SRC.index("def _stop_msg")]   # D15 + H-2 재조회
-    assert "종결·취소된 수주 — 수주 목록에서 되돌린 뒤 정정하세요" in SRC             # M-1 증가 정정 머리글 검사
-    assert "_todo_cx" in SRC and '"rev_id,si_id"' in SRC                            # B-1 권장 2 라인 단위 재취소
-    assert "갱신 실패(통신·서버 오류" in SRC                                          # B-1 권장 3 (-1 구분)
-    assert SRC.count('return -9, {"_why": ') == 3 and "_rv_blocked" in SRC and "_cx_hist_fail" in SRC   # r4 D18·D19
-    assert 'except Exception:\n                            pass\n                    _lf_ = _soc.revise_line_fields' not in SRC   # fail-open 제거
-    assert "sched_id=eq.{_fq(_rc9['sched_id'])}&qty=gt.{_fq(_dv9)}" in SRC          # R4 조건부 회차 정리
-    assert SRC.count("정정 중단 — ") == 4 and "앞 라인은 반영됨" in SRC          # 0행·−1·조회 실패(-9)·취소 이력 조회 실패
-    assert "received_qty=is.null" in SRC                                          # H2 NULL received
-    assert 'startswith("정정 중단")' in SRC and SRC.count("not _stop9") >= 4         # B1·M4 호출부
-    assert "if _stopped:\n                    # 중단: 전표는 CONFIRMED" in SRC          # B1 머리글 무변경
+def test_static_r3_revision_moved_to_rpc():
+    """옛 r3(정정 조건부 갱신·라인 → LOT → 회차 순서·D15 재조회·D18/D19)는 082 revise_shipment 한 트랜잭션으로 옮김(P3-1a).
+    화면에는 옛 엔진 흔적이 없고, 정정·취소는 run_call(revise_shipment)·사전 점검(revise_shipment_check)만 쓴다."""
+    for gone in ("def _line_patch(", "def _cf_apply_deltas(", "_todo_cx", "_cx_hist_fail", "정정 중단 — ",
+                 "plan_round_release", "plan_lot_restore"):
+        assert gone not in SRC, gone
+    assert '"revise_shipment_check"' in SRC and '"revise_shipment"' in SRC and "_srv0.run_call(" in SRC
+    assert SRC.count('_db.rpc("revise_shipment",') == 1                          # 호출 자리 한 곳
+    assert "not _stop9" not in SRC and "_stopped" not in SRC                      # 부분 반영 상태(중단) 경로 없음
 
 
 @app_test

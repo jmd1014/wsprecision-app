@@ -784,22 +784,23 @@ PENDING_TEXT = ("반영 여부를 확인하지 못했습니다 — 잠시 뒤 [�
 UNAVAILABLE_TEXT = "정정·취소 기능(서버 함수)을 쓸 수 없습니다 — 관리자에게 알려 주세요. " + NOTHING
 
 
-def blocked_notice(ship_no, items, lines_map):
-    """revise_shipment_check 의 라인별 사유 → 안내(한 라인의 사유는 전부)."""
+def blocked_notice(ship_no, items, lines_map, label=None):
+    """revise_shipment_check 의 라인별 사유 → 안내(한 라인의 사유는 전부). label(라인) = 화면의 품번 표기
+    (출하 품번 병기 line_pn) — 없으면 내부 품번."""
     by = {str(x["si_id"]): x for x in items}
     rows = []
     for si, codes in sorted((lines_map or {}).items(), key=lambda kv: int(kv[0])):
         x = by.get(str(si), {})
         rows.append("- {} · 수주 {} · {:,.0f}개: {}".format(
-            x.get("pn") or "-", x.get("so_number") or "-", _f(x.get("qty")),
+            (label(x) if (label and x) else x.get("pn")) or "-", x.get("so_number") or "-", _f(x.get("qty")),
             " / ".join(REASON_TEXT.get(c, c) for c in codes)))
     return ("전표 {} 의 아래 라인은 기록이 불완전해 정정·취소할 수 없습니다(아무것도 바뀌지 않았습니다).\n{}\n"
             "다른 라인의 정정은 할 수 있습니다. 필요하면 관리자에게 전표번호·원하는 결과·사유를 전달하세요."
             .format(ship_no, "\n".join(rows)))
 
 
-def info_text(info, items):
-    """안내(info) → 품번으로 풀어 쓴 문구(감소 = si_id, 증가 미충당 = soi_id)."""
+def info_text(info, items, label=None):
+    """안내(info) → 품번으로 풀어 쓴 문구(감소 = si_id, 증가 미충당 = soi_id). label = 화면의 품번 표기."""
     out = []
     for e in info or []:
         if e.get("kind") != "unallocated":
@@ -808,6 +809,6 @@ def info_text(info, items):
             x = next((i for i in items if i.get("si_id") == e["si_id"]), {})
         else:
             x = next((i for i in items if i.get("soi_id") == e.get("soi_id")), {})
-        out.append("{}: 회차에 싣지 않은 {:,.0f}개 — 납품 스케줄을 확인하세요".format(x.get("pn") or "-",
-                                                                         _f(e.get("qty"))))
+        out.append("{}: 회차에 싣지 않은 {:,.0f}개 — 납품 스케줄을 확인하세요".format(
+            (label(x) if (label and x) else x.get("pn")) or "-", _f(e.get("qty"))))
     return " · ".join(out)

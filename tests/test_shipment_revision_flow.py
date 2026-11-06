@@ -214,51 +214,6 @@ def _pick_confirmed(at):
     return at
 
 
-def test_confirmed_cancel_reverses_delta_and_keeps_number(rev_db):
-    """확정 전표 전체 취소: LOT 복원(양수 ISSUE)·회차·수주 되돌림·이력."""
-    _seed()
-    at = _pick_confirmed(_open())
-    # 정정 expander 와 취소 입력이 보인다
-    assert any("전표 정정" in (getattr(e, "label", "") or "")
-               for e in at.expander)
-    at.text_input(key="cf_cx_reason_1").set_value("거래처 착오")
-    at.run()
-    at.button(key="cf_cancel").click()
-    at.run()
-    assert not at.exception, [str(e.value) for e in at.exception]
-    at.button(key="cf_cancel_cfm_ok").click()
-    at.run()
-    assert not at.exception, [str(e.value) for e in at.exception]
-
-    txns = [r for t, recs in INSERTED
-            if t == "inventory_transactions" for r in recs]
-    assert sorted((r["lot_number"], r["qty"]) for r in txns) == \
-        [("W01", 300), ("W02", 200)]          # 양수 ISSUE = 복원
-    assert all(r["ref_id"] == 1 and r["txn_type"] == "ISSUE"
-               for r in txns)
-
-    sched = {f: v for t, f, v in UPDATED if t == "so_delivery_schedule"}
-    assert sched["sched_id=eq.1"]["delivered_qty"] == 0
-    assert ("shipment_allocations", "alloc_id=eq.1") in DELETED
-
-    line = [v for t, f, v in UPDATED
-            if t == "sales_order_items" and "soi_id=eq.11" in f][-1]
-    assert line == {"received_qty": 0, "pending_qty": 2000,
-                    "status": "PENDING"}
-
-    revs = [r for t, recs in INSERTED
-            if t == "shipment_revisions" for r in recs]
-    assert len(revs) == 1 and revs[0]["action"] == "CANCEL"
-    assert (revs[0]["qty_before"], revs[0]["qty_after"]) == (500, 0)
-    assert revs[0]["reason"] == "거래처 착오"
-
-    # 전표 라인 수량은 기록으로 보존, 번호 유지, 상태만 CANCELLED
-    assert not [1 for t, f, v in UPDATED if t == "shipment_items"]
-    s = SHIPMENTS[0]
-    assert s["status"] == "CANCELLED" and s["ship_no"] == "SH-20260901-01"
-    assert s["cancel_reason"] == "거래처 착오" and s["rev_no"] == 1
-
-
 def test_month_close_locks_confirm_and_revision(rev_db):
     """마감된 달: 작성중 전표 확정 버튼 잠금, 확정 전표 정정·취소 숨김."""
     _seed(closed=True)
@@ -434,49 +389,6 @@ def test_confirm_header_failure_is_surfaced_and_recoverable(rev_db, monkeypatch)
     assert at.button(key="cf_go").proto.disabled
 
 
-def test_confirmed_cancel_twice_does_not_double_reverse(rev_db, monkeypatch):
-    """확정 전표 취소: 라인 역반영 뒤 머리글 저장이 실패해 CONFIRMED 로 남아도,
-    두 번째 취소는 이력(CANCEL)을 보고 라인을 다시 되돌리지 않는다 (QA H3)."""
-    _seed()
-    import db
-    calls = {"n": 0}
-
-    def _upd(table, filter_query, fields):
-        if table == "shipments" and fields.get("status") == "CANCELLED":
-            calls["n"] += 1
-            if calls["n"] <= 3:          # 1차 취소의 재시도 3회 모두 실패
-                UPDATED.append((table, filter_query, fields))
-                return False
-        return _update(table, filter_query, fields)
-    monkeypatch.setattr(db, "update", _upd)
-    at = _pick_confirmed(_open())
-    at.text_input(key="cf_cx_reason_1").set_value("납품일 오류")
-    at.run()
-    at.button(key="cf_cancel").click()
-    at.run()
-    at.button(key="cf_cancel_cfm_ok").click()
-    at.run()
-    assert not at.exception, [str(e.value) for e in at.exception]
-    assert SHIPMENTS[0]["status"] == "CONFIRMED"      # 머리글 실패
-    n_line1 = len([1 for t, fq, _ in UPDATED
-                   if t == "sales_order_items" and "soi_id=eq.11" in fq])
-    assert n_line1 == 1
-    assert REVS and REVS[0]["action"] == "CANCEL"
-    # 두 번째 취소 — 머리글만
-    at.run()
-    at.text_input(key="cf_cx_reason_1").set_value("납품일 오류")
-    at.run()
-    at.button(key="cf_cancel").click()
-    at.run()
-    at.button(key="cf_cancel_cfm_ok").click()
-    at.run()
-    assert not at.exception, [str(e.value) for e in at.exception]
-    n_line2 = len([1 for t, fq, _ in UPDATED
-                   if t == "sales_order_items" and "soi_id=eq.11" in fq])
-    assert n_line2 == 1, "두 번째 취소가 수주 라인을 다시 되돌리면 안 됨"
-    assert SHIPMENTS[0]["status"] == "CANCELLED"
-
-
 def test_fix_header_zero_rows_is_reported(rev_db, monkeypatch):
     """[확정 상태로 저장]이 0행(이미 상태가 바뀜)이면 성공으로 표시하지 않는다
     (2026-10-13 069: status=eq.DRAFT 조건부 갱신)."""
@@ -496,44 +408,7 @@ def test_fix_header_zero_rows_is_reported(rev_db, monkeypatch):
     assert not any("확정으로 저장했습니다" in str(x.value) for x in at.success)
 
 
-def test_cancel_gate_is_scoped_to_slip_and_needs_reason(rev_db):
-    """§5-2 (2026-10-19): 전표 A 의 취소 확인창 상태에서 B 가 선택되면(ship_open_no 로 첫 행 교체)
-    B 에 확인창이 뜨지 않고 아무것도 취소되지 않는다. A 로 돌아와도 다시 눌러야 뜬다(다른 전표 플래그 정리).
-    사유가 비어 있으면 플래그가 있어도 확인창이 뜨지 않는다. 정상 경로(사유 + 확인)는 그대로 동작.
-    ship_open_no 는 한 번 소비되므로 A 를 다룰 때마다 다시 넣는다(기본 정렬은 B 가 첫 행)."""
-    _seed()
-    at = _open()
-    next(r for r in at.radio if r.key == "cf_filter").set_value("전체")
-
-    def _show(no):
-        at.session_state["ship_open_no"] = no
-        at.run()
-        assert not at.exception, [str(e.value) for e in at.exception]
-
-    A, B = "SH-20260901-01", "SH-20260902-01"
-    _show(A)
-    at.text_input(key="cf_cx_reason_1").set_value("거래처 착오")
-    _show(A)
-    at.button(key="cf_cancel").click()
-    _show(A)
-    assert [b for b in at.button if b.key == "cf_cancel_cfm_ok"], "A 확인창"
-    # 전표 B(작성중, id 2)가 첫 행으로 — 확인창이 따라오지 않고, 아무것도 취소되지 않음
-    _show(B)
-    assert not [b for b in at.button if b.key == "cf_cancel_cfm_ok"], "B 에 확인창 없음"
-    assert not REVS and SHIPMENTS[0]["status"] == "CONFIRMED" and SHIPMENTS[1]["status"] == "DRAFT"
-    assert not [u for u in UPDATED if u[0] == "shipments" and u[2].get("status") == "CANCELLED"]
-    # A 로 돌아와도 확인창은 다시 눌러야 뜬다 (다른 전표가 선택되면서 A 플래그 정리, 사유 위젯도 비어 있음)
-    _show(A)
-    assert not [b for b in at.button if b.key == "cf_cancel_cfm_ok"]
-    # 사유 없이 플래그만 있으면 확인창 자체가 안 뜬다
-    at.session_state["cfm_cf_cancel_1"] = True
-    _show(A)
-    assert not [b for b in at.button if b.key == "cf_cancel_cfm_ok"], "사유 없음 → 확인창 없음"
-    assert not REVS
-    # 정상 경로: 사유 → (플래그 유지) 확인창 → 실행 확정 → 취소
-    at.text_input(key="cf_cx_reason_1").set_value("거래처 착오")
-    _show(A)
-    assert [b for b in at.button if b.key == "cf_cancel_cfm_ok"]
-    at.button(key="cf_cancel_cfm_ok").click()
-    _show(A)
-    assert REVS and REVS[0]["action"] == "CANCEL"
+# P3-1a(2026-11-06): 확정 전표 정정·취소 흐름(옛 엔진)은 tests/test_revise_screen.py 로 이식 —
+#   test_confirmed_cancel_reverses_delta_and_keeps_number → test_cancel_reverses_and_keeps_number
+#   test_confirmed_cancel_twice_does_not_double_reverse   → test_c1_response_lost_then_replay_applies_once(재실행)
+#   test_cancel_gate_is_scoped_to_slip_and_needs_reason   → test_cancel_gate_is_scoped_to_slip_and_needs_reason

@@ -36,8 +36,8 @@ RECHECK = ("— 새 전표 상태 쓰기 경로입니다. CLAUDE.md 출고 절 '
            "utils/sched_save.sched_refs_message(취소 전표 라인 무시)를 다시 검토한 뒤 이 테스트를 고치세요.")
 WRITE_METHODS = {"insert", "update", "update_count", "upsert", "delete", "_uc"}
 # 승인된 shipments 쓰기 자리(파일, 메서드) — 줄 번호가 아니라 종류·개수로 고정한다
-APPROVED = sorted([("streamlit_app.py", "insert"), ("streamlit_app.py", "_uc"),
-                   ("streamlit_app.py", "update"), ("streamlit_app.py", "update"), ("streamlit_app.py", "update")])
+# P3-1a(2026-11-06): 확정 전표 정정·취소가 082 revise_shipment 로 옮겨 앱의 shipments update 는 작성중 빈 전표 취소 1곳만
+APPROVED = sorted([("streamlit_app.py", "insert"), ("streamlit_app.py", "_uc"), ("streamlit_app.py", "update")])
 HELPER = "_cf_set_status_if_draft"
 
 
@@ -272,9 +272,10 @@ def _variant(name):
         py["utils/_v3_mut.py"] = ('import db as _db\n\n\ndef revive(sid):\n'
                                   '    return _db.update("shipments", f"shipment_id=eq.{sid}", {"status": "DRAFT"})\n')
     elif name == "V4_var_status":
-        a = '                _hdr_ok9 = False\n                for _try9 in range(3):\n'
-        assert app.count(a) == 1, app.count(a)
-        py["streamlit_app.py"] = app.replace(a, '                _hdr["status"] = _next_status\n' + a)
+        # 변수 payload 의 상태값(첨자 대입) — 해석 불가. P3-1a 뒤 앱에 변수 payload update 자리가 없어 새로 넣는다
+        py["streamlit_app.py"] = _inject_before(app, ins_anchor,
+                                                '_hdr9 = {"rev_no": 1}; _hdr9["status"] = _next_status; '
+                                                '_db.update("shipments", "shipment_id=eq.1", _hdr9)')
     elif name == "V5_helper_filter":
         a = '_flt = f"shipment_id=eq.{_fq(shipment_id)}&status=eq.DRAFT"'
         assert app.count(a) == 1

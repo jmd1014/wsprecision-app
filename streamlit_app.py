@@ -10488,11 +10488,10 @@ elif page == "출고 관리":
                 _rd, _t4 = _fetch_all_in("so_delivery_schedule",
                                          "sched_id,so_id,soi_id,seq,due_date,qty,delivered_qty",
                                          "soi_id", _sois, order="sched_id.asc", cache=False)
-                _lv = (fetch("product_lot_stock_v", "product_id,lot_number,remain_qty,first_output_date",
-                             "product_id=in.({})&remain_qty=gt.0&order=first_output_date.asc,lot_number.asc"
-                             .format(",".join(f'"{p}"' for p in _pids)), limit=1000, cache=False)
-                       if _pids else [])
-                _t5 = len(_lv) >= 1000          # 뷰는 기본 키가 없어 fetch_all 대신 한 번에 — 상한이면 중단
+                _lv, _t5 = _fetch_all_in("product_lot_stock_v", "product_id,lot_number,remain_qty,first_output_date",
+                                         "product_id", _pids, "remain_qty=gt.0", quote=True,
+                                         order="first_output_date.asc,lot_number.asc",
+                                         pk=("product_id", "lot_number"), cache=False)
             except Exception as e:
                 st.error(f"정정 준비 조회 실패: {e} — 아무것도 바뀌지 않았습니다.")
                 return None
@@ -10511,7 +10510,8 @@ elif page == "출고 관리":
                 _db.clear_cache()
             except Exception:
                 pass
-            _info = _srv0.info_text((res or {}).get("info") or [], items)
+            _info = _srv0.info_text((res or {}).get("info") or [], items,
+                                    label=lambda x: line_pn(x, _pnv, internal_first=True))
             _tail = (" · " + _info) if _info else ""
             if action == "EDIT":
                 st.session_state["ship_open_no"] = pick["ship_no"]
@@ -11121,7 +11121,8 @@ elif page == "출고 관리":
                                  "관리자에게 전표번호를 알려 주세요.")
                     if _rv_blk:
                         st.warning(_srv.blocked_notice(_cf_pick.get("ship_no"), _cf_items,
-                                                       {str(k): v for k, v in _rv_blk.items()}))
+                                                       {str(k): v for k, v in _rv_blk.items()},
+                                                       label=lambda x: line_pn(x, _pnv, internal_first=True)))
                     if _rv_inf:
                         # 확인 대기(응답 불명) — 결과를 확인하기 전에는 새 요청을 만들지 않는다(§18 A6)
                         st.info("이 전표의 이전 요청 결과를 확인하는 중입니다 — 화면 위 [결과 다시 확인] 을 누르세요.")
