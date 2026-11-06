@@ -6,7 +6,7 @@ P3-1a (2026-11-06, 계획서 v3 — §18 이 본문보다 우선). 이 모듈은
 - `plan_revision(state, request, today, now)` — 082 `revise_shipment` 와 **같은 규칙**의 파이썬 모델.
   입력 state = 표 이름 → 행 목록(ship_mock 세계와 같은 모양), 출력 = (결과 dict, 새 state).
   CI 는 이것을 가짜 RPC 로 쓰고, 로컬 복원 DB 시험(L1)은 같은 골든 벡터로 실제 SQL 과 대조한다.
-- `build_payload(state, shipment_id, new_qtys, reason, who, allow_over, today)` — 화면이 보낼 payload.
+- `build_payload(state, shipment_id, new_qtys, reason, who, allow_over, request_id)` — 화면이 보낼 payload.
   감소는 서버가 계산하므로 lines 만, 증가는 확정(069)처럼 화면이 회차·충당·LOT 를 계획한다(감소 반영 뒤 기준).
 - `request_md5(request)` — 재실행 내용 대조용 정규화 해시(§18 A5). who 제외.
 
@@ -15,7 +15,7 @@ P3-1a (2026-11-06, 계획서 v3 — §18 이 본문보다 우선). 이 모듈은
 import copy
 import hashlib
 import re
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
 from utils.delivery_alloc import allocate_rounds
 from utils.shipment_adjust import net_issued_by_lot, split_round_alloc
@@ -44,11 +44,33 @@ def _f(v):
         return 0.0
 
 
+_Q6 = Decimal("0.000001")
+
+
+def _dec(v):
+    """JSON 숫자 → Decimal(글자 그대로 — float 는 repr, SQL 의 jsonb 숫자 → numeric 과 같은 값)."""
+    if isinstance(v, Decimal):
+        return v
+    if isinstance(v, bool) or v is None:
+        return Decimal(0)
+    try:
+        return Decimal(repr(v)) if isinstance(v, float) else Decimal(str(v))
+    except (InvalidOperation, ValueError):
+        return Decimal(0)
+
+
 def _num(v):
-    """정규화 숫자 표기 — SQL `trim_scale(round(x::numeric, 6))::text` 와 같은 글자(500.0 → '500', 12.50 → '12.5')."""
-    d = Decimal(repr(round(_f(v), 6))).normalize()
+    """정규화 숫자 표기 — SQL `trim_scale(round(x::numeric, 6))::text` 와 같은 글자(500.0 → '500', 12.50 → '12.5').
+    반올림은 SQL round(numeric, 6) 과 같은 0 에서 먼 쪽 반올림(ROUND_HALF_UP) — r2 Codex M2."""
+    d = _dec(v).quantize(_Q6, rounding=ROUND_HALF_UP).normalize()
     s = format(d, "f")
     return "0" if s in ("-0", "0") else s
+
+
+def over_precision(v):
+    """소수 6자리를 넘는 수량(SQL: q <> round(q, 6)) — r2 Codex M2."""
+    d = _dec(v)
+    return d != d.quantize(_Q6, rounding=ROUND_HALF_UP)
 
 
 # ── 재실행 내용 대조(§18 A5) ──
@@ -69,7 +91,7 @@ def request_md5(req):
                   str(t.get("lot_number") or ""), str(t.get("work_order") or "")) for t in (inc.get("txns") or []))
     s = "|".join([
         "a=" + str(req.get("action") or ""),
-        "r=" + str(req.get("reason") or "").strip(),
+        "r=" + str(req.get("reason") or "").strip(" "),          # SQL btrim(공백만)
         "o=" + ("1" if req.get("allow_over") else "0"),
         "l=" + ";".join(f"{a}:{_num(b)}:{_num(c)}" for a, b, c in lines),
         "e=" + ";".join(f"{a}:{_num(b)}" for a, b in exp),
@@ -210,15 +232,21 @@ SHAPE = {   # 배열 원소 형식(082 0단계와 같은 규칙): 키 → 'int' 
 }
 
 
+def _dflt(v, d):
+    """SQL `COALESCE(NULLIF(x, 'null'), 기본)` — 누락·None 만 기본값, 빈 객체·빈 배열·false·0·"" 는 원래 타입 그대로
+    (r2 Codex M1 — 모델이 `or []` 로 SQL 이 거부하는 입력을 통과시키던 것)."""
+    return d if v is None else v
+
+
 def shape_ok(req):
     """payload 배열 원소의 형식 — 숫자 자리에 숫자가 아니면 bad_version(SQL 이 캐스트 오류 22P02 를 내지 않게)."""
     if req.get("allow_over") is not None and not isinstance(req.get("allow_over"), bool):
         return False
-    inc = req.get("inc") or {}
-    if not isinstance(req.get("lines") or [], list) or not isinstance(inc, dict):
+    inc = _dflt(req.get("inc"), {})
+    if not isinstance(_dflt(req.get("lines"), []), list) or not isinstance(inc, dict):
         return False
     for key, spec in SHAPE.items():
-        arr = (req.get("lines") if key == "lines" else inc.get(key)) or []
+        arr = _dflt(req.get("lines") if key == "lines" else inc.get(key), [])
         if not isinstance(arr, list):
             return False
         for e in arr:
@@ -232,14 +260,28 @@ def shape_ok(req):
     return True
 
 
+def precision_ok(req):
+    """수량 자리(소수 6자리 이하) — SQL 의 HINT 'precision' 검사와 같은 대상."""
+    inc = _dflt(req.get("inc"), {})
+    for key, spec in SHAPE.items():
+        for e in _dflt(req.get("lines") if key == "lines" else inc.get(key), []):
+            for k, kind in spec.items():
+                if kind == "num" and over_precision(e.get(k)):
+                    return False
+    return True
+
+
 def _apply(st, req, today, now):
     # 0. 형식
     if not isinstance(req, dict) or str(req.get("v")) != "1" or req.get("action") not in ("EDIT", "CANCEL"):
         raise Reject("bad_version")
     if not shape_ok(req):
         raise Reject("bad_version", "shape")
+    if not precision_ok(req):
+        raise Reject("bad_version", "precision")
     if not _is_uuid(req.get("request_id")):
         raise Reject("bad_version", "request_id")
+    rid = req["request_id"].lower()          # SQL 은 uuid 값으로 비교·저장(소문자 표준형) — r2 Codex M3
     if req.get("expected_rev_no") is None or not re.fullmatch(r"-?\d+", str(req.get("expected_rev_no"))):
         raise Reject("bad_version", "expected_rev_no")
     action = req["action"]
@@ -250,7 +292,7 @@ def _apply(st, req, today, now):
         raise Reject("not_found")
     md5 = request_md5(req)
     prev = [r for r in st["shipment_revisions"] if r.get("shipment_id") == sid
-            and r.get("request_id") == str(req["request_id"])]
+            and str(r.get("request_id") or "").lower() == rid]
     if prev:
         info = prev[0].get("info") or {}
         if info.get("payload_md5") != md5:
@@ -262,7 +304,7 @@ def _apply(st, req, today, now):
         raise Reject("not_confirmed:{}".format(sh.get("status")))
     if int(sh.get("rev_no") or 0) != int(req["expected_rev_no"]):
         raise Reject("stale_rev")
-    reason = str(req.get("reason") or "").strip()
+    reason = str(req.get("reason") or "").strip(" ")            # SQL btrim(공백만)
     if not reason:
         raise Reject("reason_required")
     if any(m.get("ym") == str(sh.get("ship_date") or "")[:7] for m in st.get("sales_month_close", [])):
@@ -302,6 +344,8 @@ def _apply(st, req, today, now):
     inc_q = {si: a - b for si, (b, a) in chg.items() if a > b + EPS}
     for code, ids in data_reasons(st, sid, target, dec):
         raise Reject(code, ",".join(str(i) for i in ids))
+    # 건드리는 회차(사후 조건 용 — 환원 전 충당 회차 + 증가 payload 회차), SQL v_rounds 와 같은 집합
+    touched = {a["sched_id"] for a in st["shipment_allocations"] if a["si_id"] in chg}
     # 증가분 형식 검사(값 검사는 감소 적용 뒤)
     inc = req.get("inc") or {}
     if inc_q:
@@ -386,6 +430,7 @@ def _apply(st, req, today, now):
 
     # ⑤ 증가분 — 감소 적용 뒤 상태 기준 검증
     n_inc_alloc = n_inc_txn = 0
+    touched |= {int(s["sched_id"]) for s in (inc.get("scheds") or [])}
     if inc_q:
         exp = {int(e["soi_id"]): _f(e.get("received")) for e in inc.get("expected_received_before") or []}
         for soi, v in exp.items():
@@ -484,7 +529,7 @@ def _apply(st, req, today, now):
         st["shipment_revisions"].append({
             "rev_id": _next(st, "shipment_revisions", "rev_id"), "shipment_id": sid, "rev_no": rev,
             "action": action, "si_id": si, "pn": pn, "qty_before": b, "qty_after": a, "reason": reason,
-            "created_by": who, "request_id": str(req["request_id"]), "info": copy.deepcopy(meta)})
+            "created_by": who, "request_id": rid, "info": copy.deepcopy(meta)})
     # ⑧ 수주 머리글 — 활성 라인만, 비활성 머리글 무접촉
     so_ids = sorted({lines_by[s]["so_id"] for s in changed_soi})
     for so in so_ids:
@@ -497,7 +542,7 @@ def _apply(st, req, today, now):
     if action == "CANCEL":
         sh.update({"status": "CANCELLED", "cancelled_at": now, "cancel_reason": reason})
     # ⑩ 사후 조건(§18 A1)
-    _postconditions(st, sid, action, changed_soi)
+    _postconditions(st, sid, action, changed_soi, sorted(chg), touched)
     return {"ok": True, "replayed": False, "action": action, "rev_no": rev, "lines": len(chg),
             "restored_txns": restored, "released_allocs": released, "inc_allocs": n_inc_alloc,
             "inc_txns": n_inc_txn, "so_ids": so_ids, "info": info}
@@ -515,15 +560,35 @@ def _txn(st, pid, qty, unit, lot, si, today, remark, who, work_order="__lot__"):
         "ref_table": "shipment_items", "ref_id": si, "txn_date": today, "remark": remark, "created_by": who})
 
 
-def _postconditions(st, sid, action, changed_soi):
+def _issue_net(st, si):
+    return sum(_f(t["qty"]) for t in st["inventory_transactions"] if t.get("ref_table") == "shipment_items"
+               and t.get("txn_type") == "ISSUE" and t.get("ref_id") == si)
+
+
+def _postconditions(st, sid, action, changed_soi, target=(), touched=()):
     sis = {x["si_id"] for x in st["shipment_items"] if x["shipment_id"] == sid}
     if action == "CANCEL":
         if any(a["si_id"] in sis for a in st["shipment_allocations"]):
             raise Reject("postcondition:alloc_left")
         for si in sis:
-            if abs(sum(_f(t["qty"]) for t in st["inventory_transactions"] if t.get("ref_table") == "shipment_items"
-                       and t.get("txn_type") == "ISSUE" and t.get("ref_id") == si)) > EPS:
+            if abs(_issue_net(st, si)) > EPS:
                 raise Reject("postcondition:issue_left")
+    else:
+        # r2(data M3): 바뀐 라인 — 제품 연결이면 ISSUE 순합 = −정정 수량, Σ충당 ≤ 정정 수량
+        items = _by([x for x in st["shipment_items"] if x["shipment_id"] == sid], "si_id")
+        for si in target:
+            x = items[si]
+            if x.get("product_id") and abs(_issue_net(st, si) + _f(x.get("qty"))) > EPS:
+                raise Reject("postcondition:issue_net")
+        for si in target:
+            if sum(_f(a["qty"]) for a in st["shipment_allocations"] if a["si_id"] == si) > _f(items[si].get("qty")) + EPS:
+                raise Reject("postcondition:alloc_over")
+    # r2(data M3): 건드린 회차 — 납품완료 ≥ Σ충당(모든 전표) ≥ 0
+    rby = _by(st["so_delivery_schedule"], "sched_id")
+    for sc in touched:
+        al = sum(_f(a["qty"]) for a in st["shipment_allocations"] if a["sched_id"] == sc)
+        if sc in rby and (_f(rby[sc].get("delivered_qty")) < al - EPS or al < -EPS):
+            raise Reject("postcondition:round")
     lines_by = _by(st["sales_order_items"], "soi_id")
     for soi in changed_soi:
         li = lines_by[soi]
@@ -541,12 +606,37 @@ def _postconditions(st, sid, action, changed_soi):
 
 
 # ── 화면 payload 조립 ──
-def build_payload(state, shipment_id, new_qtys, reason, who, allow_over, request_id, today, action="EDIT"):
+def _r6(v):
+    """payload 수량 — 소수 6자리로(부동소수 찌꺼기 199.99999999999997 이 정밀도 검사 bad_version 에 걸리지 않게).
+    정수면 int(골든·SQL 글자 동일)."""
+    d = _dec(v).quantize(_Q6, rounding=ROUND_HALF_UP)
+    return int(d) if d == d.to_integral_value() else float(d)
+
+
+def _round_payload(req):
+    for l in req.get("lines") or []:
+        l["qty_before"], l["qty_after"] = _r6(l["qty_before"]), _r6(l["qty_after"])
+    inc = req.get("inc") or {}
+    for key, spec in SHAPE.items():
+        if key == "lines":
+            continue
+        for e in inc.get(key) or []:
+            for k, kind in spec.items():
+                if kind == "num":
+                    e[k] = _r6(e[k])
+    return req
+
+
+def build_payload(state, shipment_id, new_qtys, reason, who, allow_over, request_id, action="EDIT"):
     """화면이 보낼 payload. 증가분은 확정과 같은 규칙으로 화면이 계획한다 — 감소 반영 뒤 회차 여유 기준
     (지정 회차 여유 → 납품일 회차 → 오래된 회차, allocate_rounds), LOT 선입선출(product_lot_stock_v 순서,
     부족분은 LOT 미지정). 감소 전부를 먼저 반영한 회차 상태로 계획하므로 같은 수주 라인의 증감 혼합도 실린다.
     LOT 후보에는 같은 요청의 복원량을 더한다 — 뷰 LOT 은 위치 유지, 뷰에 없던 복원 LOT 은 뒤에(LOT NULL 제외)."""
     sh = next(s for s in state["shipments"] if s["shipment_id"] == shipment_id)
+    # 전달받은 라인을 쓴다 — 전표 번호(shipment_id)가 없는 행은 거부(조회 select 누락을 조용히 넘기지 않게, r2 QA B1).
+    # state 가 여러 전표의 세계(골든·시험)면 이 전표 행만.
+    if any("shipment_id" not in x for x in state["shipment_items"]):
+        raise ValueError("build_payload: 전표 라인에 shipment_id 가 없음 — 품목 조회 select 확인")
     items = sorted([x for x in state["shipment_items"] if x["shipment_id"] == shipment_id],
                    key=lambda x: x["si_id"])
     req = {"v": "1", "action": action, "shipment_id": shipment_id, "request_id": str(request_id),
@@ -559,7 +649,7 @@ def build_payload(state, shipment_id, new_qtys, reason, who, allow_over, request
     req["lines"] = [{"si_id": x["si_id"], "qty_before": b, "qty_after": a} for x, b, a in chg]
     inc = [(x, a - b) for x, b, a in chg if a > b + EPS]
     if not inc:
-        return req
+        return _round_payload(req)
     # 감소 반영 뒤 회차 상태(서버와 같은 환원 순서) + 같은 요청의 LOT 복원량
     sim = copy.deepcopy(state)
     rby = _by(sim["so_delivery_schedule"], "sched_id")
@@ -649,17 +739,19 @@ def build_payload(state, shipment_id, new_qtys, reason, who, allow_over, request
                              "lot_number": None, "work_order": None})
     req["inc"] = {"expected_received_before": [{"soi_id": s, "received": v} for s, v in sorted(exp.items())],
                   "scheds": scheds, "allocs": allocs, "txns": txns}
-    return req
+    return _round_payload(req)
 
 
 # ── 호출 상태 기계(§4-6 · §18 A6) ──
 import time as _time
 
-_clock = _time.monotonic                 # 테스트가 바꿔 끼운다(10초 규칙)
+_clock = _time.monotonic                 # 테스트가 바꿔 끼운다(20초 규칙)
 NOT_APPLIED = ("40P01", "55P03", "57014")  # 교착·잠금 대기 초과·문장 시간 초과 — 함수는 롤백됨(미반영 확정)
 NOT_APPLIED_RETRIES = 2
 UNKNOWN_RETRIES = 1
-PENDING_SEC = 10.0                       # 서버 문장 제한 8초 + 여유
+# 확인 대기 → 미반영으로 볼 때까지(r2, data M5·qa M2): 서버 문장 제한 8초 + PostgREST 연결 풀 대기 10초 + 여유.
+# 기준 시각 = 마지막 「불명」 응답을 받은 시각(그 요청이 서버에서 아직 대기·실행 중일 수 있는 마지막 근거)
+PENDING_SEC = 20.0
 
 
 class _LookupFailed:
@@ -683,7 +775,8 @@ def run_call(call, requery, sleep, clock=None, wait=2.0):
     call(): RPC 1회 — dict 반환 또는 db.RpcUnavailable / db.RpcRejected / 그 밖의 예외.
     requery(): 이력에서 같은 request_id 를 캐시 없이 찾기 → {rev_no, action, info} · None(조회 성공·없음)
       · LOOKUP_FAILED(조회 실패 — 결과는 pending, lookup_failed=True).
-    반환 {"state": ok|rejected|not_applied|pending|unavailable, "res", "code", "unknown", "via", "started_at"}
+    반환 {"state": ok|rejected|not_applied|pending|unavailable, "res", "code", "unknown", "via", "started_at",
+          "since"(pending — 마지막 불명 응답을 받은 시각, recheck 의 기준)}
       - 성공(ok) / 거부(P0001 — 쓰기 없음 확정) / 미반영 확정(자동 재시도 뒤에도) / 함수 없음
       - 불명(전송 오류·비정상 본문)이 한 번이라도 있었으면 최종 판정은 재조회로만 — 없으면 pending(확인 대기)
     """
@@ -692,6 +785,7 @@ def run_call(call, requery, sleep, clock=None, wait=2.0):
     unknown = False
     n_na = n_unk = 0
     started = clock()
+    since = None
     while True:
         started = clock()
         try:
@@ -716,6 +810,7 @@ def run_call(call, requery, sleep, clock=None, wait=2.0):
                     "started_at": started}
         except Exception:                                    # 전송 오류 — 반영 여부 불명
             unknown = True
+            since = clock()
             if n_unk < UNKNOWN_RETRIES:
                 n_unk += 1
                 sleep(wait)
@@ -725,6 +820,7 @@ def run_call(call, requery, sleep, clock=None, wait=2.0):
             if isinstance(r, dict) and r.get("ok") is True:
                 return {"state": "ok", "res": r, "unknown": unknown, "via": "call", "started_at": started}
             unknown = True                                   # None·{}·{"ok": false}·목록 — 비정상 본문
+            since = clock()
             if n_unk < UNKNOWN_RETRIES:
                 n_unk += 1
                 sleep(wait)
@@ -734,19 +830,20 @@ def run_call(call, requery, sleep, clock=None, wait=2.0):
     if found is not LOOKUP_FAILED and found:
         return {"state": "ok", "res": dict(found, ok=True, replayed=True), "unknown": True, "via": "requery",
                 "started_at": started}
-    return {"state": "pending", "unknown": True, "started_at": started, "lookup_failed": found is LOOKUP_FAILED}
+    return {"state": "pending", "unknown": True, "started_at": started, "since": since if since is not None else started,
+            "lookup_failed": found is LOOKUP_FAILED}
 
 
-def recheck(requery, started_at, now=None):
-    """확인 대기 중 [결과 다시 확인]: 이력에 있으면 성공, 조회 성공·기록 없음이고 마지막 호출 시작 뒤 10초가 지났으면
-    미반영 확정. 조회 실패(LOOKUP_FAILED)는 시간과 무관하게 계속 대기(기록·잠금 유지)."""
+def recheck(requery, since, now=None):
+    """확인 대기 중 [결과 다시 확인]: 이력에 있으면 성공, 조회 성공·기록 없음이고 기준 시각(마지막 불명 응답) 뒤
+    20초가 지났으면 미반영으로 본다. 조회 실패(LOOKUP_FAILED)는 시간과 무관하게 계속 대기(기록·잠금 유지)."""
     now = _clock() if now is None else now
     found = requery()
     if found is LOOKUP_FAILED:
         return {"state": "pending", "lookup_failed": True}
     if found:
         return {"state": "ok", "res": dict(found, ok=True, replayed=True)}
-    if now - float(started_at) >= PENDING_SEC:
+    if now - float(since) >= PENDING_SEC:
         return {"state": "not_applied"}
     return {"state": "pending", "lookup_failed": False}
 
@@ -800,6 +897,8 @@ def reject_text(code):
 NOT_APPLIED_TEXT = "다른 처리와 겹쳐 반영되지 않았습니다 — 잠시 후 다시 시도하세요."
 PENDING_TEXT = ("반영 여부를 확인하지 못했습니다 — 잠시 뒤 [결과 다시 확인] 을 누르세요. "
                 "확인될 때까지 모든 전표의 정정·취소를 잠급니다.")
+RECHECK_NONE_TEXT = ("20초 동안 기록이 없습니다 — 반영되지 않은 것으로 보입니다. "
+                     "화면을 새로 열어 전표의 정정본 번호를 확인한 뒤 다시 시도하세요.")
 LOOKUP_FAILED_TEXT = "정정·취소 기록을 조회하지 못했습니다(통신·서버 오류) — 잠시 뒤 다시 누르세요. 확인 대기는 그대로 둡니다."
 UNAVAILABLE_TEXT = "정정·취소 기능(서버 함수)을 쓸 수 없습니다 — 관리자에게 알려 주세요. " + NOTHING
 

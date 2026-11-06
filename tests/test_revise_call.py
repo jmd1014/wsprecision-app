@@ -3,7 +3,7 @@
 
 호출별 분류 4가지: 성공 / 거부(P0001) / 미반영 확정(40P01·55P03·57014 — 같은 request_id 로 자동 재시도 최대 2회) /
 불명(전송 오류·비정상 본문). 불명이 한 번이라도 있었으면 최종 판정은 request_id 재조회로만 하고, 없으면 '확인 대기'
-(마지막 호출 시작 뒤 10초가 지나 재조회에 없으면 미반영 확정).
+(마지막 불명 응답을 받은 뒤 20초가 지나 재조회에 없으면 미반영으로 본다 — r2 data M5·qa M2).
 """
 import os
 import sys
@@ -115,11 +115,12 @@ def test_unavailable_first_is_blocked():
 
 
 def test_recheck_ten_second_rule():
-    """Codex REQUIRED 5: 확인 대기 → 10초 전 재조회 없음 = 계속 대기, 10초 뒤 없음 = 미반영 확정, 있으면 성공."""
+    """Codex REQUIRED 5(r2: 20초): 확인 대기 → 20초 전 재조회 없음 = 계속 대기, 20초 뒤 없음 = 미반영, 있으면 성공."""
     from utils.shipment_revise import recheck
-    assert recheck(lambda: None, started_at=100.0, now=105.0)["state"] == "pending"
-    assert recheck(lambda: None, started_at=100.0, now=110.5)["state"] == "not_applied"
-    assert recheck(lambda: {"rev_no": 2, "action": "EDIT", "info": []}, started_at=100.0, now=101.0)["state"] == "ok"
+    assert recheck(lambda: None, since=100.0, now=110.5)["state"] == "pending"
+    assert recheck(lambda: None, since=100.0, now=119.9)["state"] == "pending"
+    assert recheck(lambda: None, since=100.0, now=120.0)["state"] == "not_applied"
+    assert recheck(lambda: {"rev_no": 2, "action": "EDIT", "info": []}, since=100.0, now=101.0)["state"] == "ok"
 
 
 def test_lookup_failure_is_never_not_applied():
@@ -127,9 +128,9 @@ def test_lookup_failure_is_never_not_applied():
     from utils.shipment_revise import LOOKUP_FAILED, recheck
     assert not LOOKUP_FAILED
     for now in (101.0, 110.5, 10_000.0):
-        r = recheck(lambda: LOOKUP_FAILED, started_at=100.0, now=now)
+        r = recheck(lambda: LOOKUP_FAILED, since=100.0, now=now)
         assert r == {"state": "pending", "lookup_failed": True}, (now, r)
-    assert recheck(lambda: None, started_at=100.0, now=105.0) == {"state": "pending", "lookup_failed": False}
+    assert recheck(lambda: None, since=100.0, now=105.0) == {"state": "pending", "lookup_failed": False}
 
 
 def test_run_call_unknown_then_lookup_failure_is_pending():
@@ -174,3 +175,34 @@ def test_info_text_names_part_numbers():
     t = info_text([{"si_id": 501, "kind": "unallocated", "qty": 100},
                    {"soi_id": 12, "kind": "unallocated", "qty": 30}], items)
     assert "4PDVN-03" in t and "100" in t and "4PDVN-05" in t and "30" in t, t
+
+
+def test_since_is_last_unknown_response_not_call_start():
+    """qa REQUIRED 4(r2 data M5·qa M2): 1차 호출이 9초 걸린 뒤 전송 오류, 2차는 즉시 전송 오류 → 확인 대기의 기준 시각은
+    마지막 불명 응답을 받은 시각. 1차 시작 뒤 10초·20초 시점의 재확인은 미반영이 아니다(서버에서 아직 대기 중일 수 있음)."""
+    from utils.shipment_revise import recheck
+    clock = Clock()
+    t0 = clock.t
+    n = []
+
+    def call():
+        n.append(1)
+        if len(n) == 1:
+            clock.t += 9                     # 1차: 9초 걸려 응답 유실
+        raise db.RpcTransportError("reset")
+
+    r, _ = _run(call, clock=clock)
+    assert r["state"] == "pending" and len(n) == 2, (r, n)
+    assert r["since"] == t0 + 9 + 2.0, r     # 2차(재시도 대기 2초 뒤) 오류를 받은 시각
+    assert recheck(lambda: None, r["since"], now=t0 + 10)["state"] == "pending"
+    assert recheck(lambda: None, r["since"], now=t0 + 20)["state"] == "pending"
+    assert recheck(lambda: None, r["since"], now=r["since"] + 20)["state"] == "not_applied"
+
+
+def test_since_after_unknown_then_not_applied_retries():
+    """불명 뒤 재호출이 미반영 확정(55P03)만 받아도 기준은 마지막 불명 응답 — 그 뒤의 미반영 응답이 아니다."""
+    clock = Clock()
+    t0 = clock.t
+    r, _ = _run(_seq(db.RpcTransportError("timeout"), db.RpcRejected("55P03", "lock"), db.RpcRejected("55P03", "lock"),
+                     db.RpcRejected("55P03", "lock")), clock=clock)
+    assert r["state"] == "pending" and r["since"] == t0, r

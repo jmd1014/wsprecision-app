@@ -46,11 +46,11 @@ def _state(w):
 
 
 def _edit(name, w, new_qtys, allow_over=False):
-    return _state(w), SR.build_payload(_state(w), SID, new_qtys, REASON, WHO, allow_over, _rid(name), TODAY)
+    return _state(w), SR.build_payload(_state(w), SID, new_qtys, REASON, WHO, allow_over, _rid(name))
 
 
 def _cancel(name, w):
-    return _state(w), SR.build_payload(_state(w), SID, {}, REASON, WHO, False, _rid(name), TODAY, action="CANCEL")
+    return _state(w), SR.build_payload(_state(w), SID, {}, REASON, WHO, False, _rid(name), action="CANCEL")
 
 
 def _w(**patch):
@@ -521,6 +521,58 @@ def g_reject_txn_mismatch(n):
     return st, req
 
 
+# ── r1 리뷰 분류(2026-11-06 16:49) 추가분 ──
+def g_increase_two_lines_same_soi(n):
+    """Codex REQ 6: 같은 수주 라인(soi 11)의 두 전표 라인을 함께 +100·+100 → 회차 2 에 delta 두 행(합 200)·충당 각 100,
+    ISSUE 는 W03 에서 100·100(선입선출, 같은 LOT 사용량 누적), 수주 납품 500 → 700."""
+    return _edit(n, _two_lines([_lot("P1", "W03", 300, "2026-10-01"), _lot("P1", "W04", 700, "2026-10-05")], 1000),
+                 {501: 400, 502: 300})
+
+
+def g_reject_recv_null(n):
+    """qa M4: 수주 라인 납품량 NULL(운영 0건) → SQL COALESCE 0 < 줄일 500 → recv_underflow(옛 엔진은 0 으로 깎음)."""
+    return _cancel(n, _w(sales_order_items=[dict(_soi(11, 100, "P1", "4PDVN-03", 2000, 500), received_qty=None)]))
+
+
+def g_reject_bad_version_precision(n):
+    """Codex M2: 수량이 소수 6자리를 넘음(400.0000001) → bad_version(md5 정규화와 처리값이 어긋나지 않게)."""
+    st, req = _edit(n, _w(), {501: 400})
+    req["lines"] = [dict(req["lines"][0], qty_after=400.0000001)]
+    return st, req
+
+
+def g_reject_bad_version_cancel_inc_array(n):
+    """Codex M1: 취소에 inc = [] (객체 자리에 배열) → bad_version(모델이 `or {}` 로 통과시키던 것)."""
+    st, req = _cancel(n, _w())
+    return st, dict(req, inc=[])
+
+
+def g_reject_bad_version_lines_object(n):
+    """Codex M1: 정정에 lines = {} (배열 자리에 객체) → bad_version."""
+    st, req = _edit(n, _w(), {501: 400})
+    return st, dict(req, lines={})
+
+
+def g_reject_bad_version_allow_over_zero(n):
+    """Codex M1: allow_over = 0 (불리언 자리에 숫자) → bad_version."""
+    st, req = _cancel(n, _w())
+    return st, dict(req, allow_over=0)
+
+
+def g_cancel_null_lines_inc(n):
+    """Codex M1 의 짝: lines·inc 가 JSON null → 누락과 같음(기본값) → 정상 취소(g_cancel_basic 과 같은 결과)."""
+    st, req = _cancel(n, _w())
+    return st, dict(req, lines=None, inc=None)
+
+
+def g_replay_uppercase_request_id(n):
+    """Codex M3: 같은 요청을 request_id 대문자로 재호출 → SQL 은 uuid 값 비교로 replayed — 모델도 소문자 표준형으로."""
+    st, req = _cancel(n, _w())
+    res, st2 = SR.plan_revision(st, req, TODAY)
+    assert res["ok"], res
+    return dict({t: st2[t] for t in STATE_TABLES}, _requests={req["request_id"]: req}),         dict(req, request_id=req["request_id"].upper())
+
+
 SCEN = {k[2:]: v for k, v in sorted(globals().items()) if k.startswith("g_") and callable(v)}
 
 
@@ -617,10 +669,9 @@ def _legacy_compare(name):
     st = _state(d["world"])
     if d["action"] == "EDIT":
         req = SR.build_payload(st, SID, {int(k): v for k, v in d["new_qtys"].items()}, d["reason"], WHO,
-                               d["allow_over"], _rid("legacy/" + name), "<TODAY>")
+                               d["allow_over"], _rid("legacy/" + name))
     else:
-        req = SR.build_payload(st, SID, {}, d["reason"], WHO, False, _rid("legacy/" + name), "<TODAY>",
-                               action="CANCEL")
+        req = SR.build_payload(st, SID, {}, d["reason"], WHO, False, _rid("legacy/" + name), action="CANCEL")
     res, after = SR.plan_revision(st, req, "<TODAY>", now="<NOW>")
     if not res["ok"]:
         return {"result": res["error"]}

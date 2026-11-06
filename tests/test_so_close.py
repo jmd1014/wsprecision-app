@@ -595,11 +595,12 @@ def test_migration_077_declares_all_rounds_and_final_rules():
 
 def test_static_r3_revision_moved_to_rpc():
     """옛 r3(정정 조건부 갱신·라인 → LOT → 회차 순서·D15 재조회·D18/D19)는 082 revise_shipment 한 트랜잭션으로 옮김(P3-1a).
-    화면에는 옛 엔진 흔적이 없고, 정정·취소는 run_call(revise_shipment)·사전 점검(revise_shipment_check)만 쓴다."""
+    화면에는 옛 엔진 흔적이 없고, 정정·취소는 run_call(revise_shipment)·사전 점검(뷰 shipment_revise_blockers_v)만 쓴다."""
     for gone in ("def _line_patch(", "def _cf_apply_deltas(", "_todo_cx", "_cx_hist_fail", "정정 중단 — ",
                  "plan_round_release", "plan_lot_restore"):
         assert gone not in SRC, gone
-    assert '"revise_shipment_check"' in SRC and '"revise_shipment"' in SRC and "_srv0.run_call(" in SRC
+    assert '"shipment_revise_blockers_v"' in SRC and '"revise_shipment"' in SRC and "_srv0.run_call(" in SRC
+    assert '_db.rpc("revise_shipment_check"' not in SRC          # 사전 점검을 RPC 로 부르면 매 렌더 캐시 비움(r2 qa M3)
     assert SRC.count('_db.rpc("revise_shipment",') == 1                          # 호출 자리 한 곳
     assert "not _stop9" not in SRC and "_stopped" not in SRC                      # 부분 반영 상태(중단) 경로 없음
 

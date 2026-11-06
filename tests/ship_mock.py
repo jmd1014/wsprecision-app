@@ -129,6 +129,35 @@ class ReviseMock(ShipMock):
         self._set_state(st)
         self.applied += 1
 
+    def fetch(self, table, select="*", filter_query="", limit=1000, cache=None):
+        """뷰 shipment_revise_blockers_v(082 r2) = 확정 전표마다 revise_shipment_check(모델 check).
+        check_fail → 조회 실패, check_unavailable → 뷰 없음(PostgREST 404 PGRST205 — 082 미적용)."""
+        if table != "shipment_revise_blockers_v":
+            return super().fetch(table, select, filter_query, limit, cache)
+        from utils.shipment_revise import check
+        self.fetch_calls.append((table, filter_query or ""))
+        if self.check_unavailable:
+            raise RuntimeError('shipment_revise_blockers_v fetch 404: {"code":"PGRST205","message":"Could not find '
+                               'the table \'public.shipment_revise_blockers_v\' in the schema cache"}')
+        if self.check_fail:
+            raise RuntimeError("shipment_revise_blockers_v fetch 500: timeout")
+        st = self.state()
+        rows = []
+        for s in sorted(st["shipments"], key=lambda s: s["shipment_id"]):
+            if s.get("status") != "CONFIRMED":
+                continue
+            r = check(st, s["shipment_id"])
+            if r.get("ok"):
+                r["lines"] = {str(k): v for k, v in r["lines"].items()}
+            rows.append({"shipment_id": s["shipment_id"], "chk": r})
+        for part in (filter_query or "").split("&"):
+            if part.startswith("shipment_id=eq."):
+                rows = [r for r in rows if str(r["shipment_id"]) == part[len("shipment_id=eq."):]]
+        cols = [c.strip() for c in (select or "*").split(",") if c.strip()]
+        if cols != ["*"]:
+            rows = [{c: r.get(c) for c in cols} for r in rows]
+        return rows[:limit]
+
     def rpc(self, name, params=None, timeout=None):
         import db as _db
         from utils.shipment_revise import plan_revision, check

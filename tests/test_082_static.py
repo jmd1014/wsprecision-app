@@ -81,7 +81,8 @@ def test_data_reasons_in_one_place():
 def test_postconditions_present():
     b = _body("revise_shipment")
     for name in ("postcondition:alloc_left", "postcondition:issue_left", "postcondition:line_state",
-                 "postcondition:header"):
+                 "postcondition:header", "postcondition:issue_net", "postcondition:alloc_over",
+                 "postcondition:round"):                                   # r2 data M3
         assert name in b, name
     assert "'REPLACED'" in b[b.index("postcondition:issue_left"):]            # 상태별(§18 A1)
 
@@ -106,3 +107,22 @@ def test_existing_functions_untouched():
     """confirm_shipment·so_close_lines·so_reopen_lines 본문은 건드리지 않는다(지시문 §6)."""
     for f in ("confirm_shipment", "so_close_lines", "so_reopen_lines"):
         assert f"FUNCTION public.{f}" not in CODE, f
+
+
+def test_request_index_not_unique_and_view_locked_down():
+    """r2: request_id 인덱스는 유니크가 아님(data M1 — FK si_id SET NULL 충돌), 화면용 뷰는 security_invoker·권한 회수(qa M3)."""
+    assert "CREATE UNIQUE INDEX" not in CODE.upper()
+    assert re.search(r"CREATE INDEX IF NOT EXISTS shipment_revisions_request_idx\s+ON public\.shipment_revisions "
+                     r"\(shipment_id, request_id\)\s+WHERE request_id IS NOT NULL;", CODE)
+    v = re.search(r"CREATE OR REPLACE VIEW public\.shipment_revise_blockers_v(.*?);", CODE, re.S).group(1)
+    assert "security_invoker = true" in v and "public.revise_shipment_check(s.shipment_id)" in v
+    assert "REVOKE ALL ON public.shipment_revise_blockers_v FROM PUBLIC, anon, authenticated;" in CODE
+    assert "GRANT SELECT ON public.shipment_revise_blockers_v TO service_role;" in CODE
+    assert CODE.index("shipment_revise_blockers_v") < CODE.index("NOTIFY pgrst")
+
+
+def test_precision_check_before_md5_and_casts():
+    """r2 Codex M2: 소수 6자리 초과 수량 → bad_version(precision), md5·재실행 판정보다 앞."""
+    b = _body("revise_shipment")
+    i_prec = b.index("HINT = 'precision'")
+    assert b.index("HINT = 'shape'") < i_prec < b.index("v_md5 := md5(") < b.index("request_id = v_req")

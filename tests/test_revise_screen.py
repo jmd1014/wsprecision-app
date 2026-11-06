@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """확정 전표 정정·취소 화면 흐름(새 경로) — P3-1a 커밋 5(이 시점 실패) (계획서 §4-6 · §18 A6·A9·A14 · 지시문 §6).
 
-목 DB = tests/ship_mock.ReviseMock(가짜 revise_shipment·revise_shipment_check = 파이썬 모델). 옛 엔진(_cf_apply_deltas)의
+목 DB = tests/ship_mock.ReviseMock(가짜 revise_shipment · 뷰 shipment_revise_blockers_v = 파이썬 모델, select 적용). 옛 엔진(_cf_apply_deltas)의
 화면 흐름 테스트(test_shipment_revision_flow · test_so_close_revision)에서 정정·취소 엔진을 타던 것을 새 경로 기대값으로
 옮기고(이식 표는 패키지 README), qa REQUIRED C1~C9 · Codex REQUIRED 5·6 · 「그린 뒤 데이터가 바뀌고 클릭」을 더한다.
 버튼 키는 그대로(cf_rv_go · cf_cancel — 작성중 취소와 공용, §18 A14).
@@ -374,7 +374,7 @@ def test_editing_blocked_line_is_refused_on_screen(monkeypatch):
 # ── Codex REQUIRED 5: 지연 커밋 ──
 def test_delayed_commit_pending_then_recheck_success_once(monkeypatch):
     """첫 호출 미커밋(응답 유실) → 재호출 미반영 확정 반복 → 재조회 없음 → 확인 대기(버튼 잠금·기록 유지) → 이후 커밋
-    → [결과 다시 확인] → 성공 안내 1회. 10초 규칙은 시계 주입."""
+    → [결과 다시 확인] → 성공 안내 1회. 20초 규칙은 시계 주입."""
     from tests.ship_mock import ReviseMock
     clock = {"t": 1000.0}
     m = ReviseMock(_w())
@@ -401,11 +401,15 @@ def test_pending_ten_seconds_then_not_applied(monkeypatch):
     at = _open(monkeypatch, m, clock=lambda: clock["t"])
     _cancel(at)
     assert _inflight(at)
-    clock["t"] += 11
+    clock["t"] += 19
+    at.button(key="cf_rv_recheck").click()
+    at.run()
+    assert _inflight(at), "20초 전에는 확인 대기 유지(r2)"
+    clock["t"] += 2
     at.button(key="cf_rv_recheck").click()
     at.run()
     t = " ".join(_texts(at))
-    assert "반영되지 않았습니다" in t, t
+    assert "20초 동안 기록이 없습니다" in t and "반영되지 않은 것으로 보입니다" in t, t
     assert not _inflight(at), "확인 대기 기록이 지워져야 한다"
     assert not at.button(key="cf_cancel").disabled
     assert m.applied == 0
@@ -493,7 +497,7 @@ def test_mock_returns_only_selected_columns():
 
 
 def test_recheck_lookup_failure_keeps_pending(monkeypatch):
-    """r1 Codex H1·QA H1: 반영됐는데 응답 유실 → 재조회도 실패 → 확인 대기. 10초가 지나도 이력 조회가 실패하면
+    """r1 Codex H1·QA H1: 반영됐는데 응답 유실 → 재조회도 실패 → 확인 대기. 20초가 지나도 이력 조회가 실패하면
     「반영되지 않았습니다」가 아니라 조회 실패 안내 + 기록·잠금 유지. 조회가 살아나면 성공 안내 1회."""
     from tests.ship_mock import ReviseMock
     clock = {"t": 1000.0}
@@ -505,12 +509,12 @@ def test_recheck_lookup_failure_keeps_pending(monkeypatch):
     assert m.applied == 1 and _ship(m)["status"] == "CANCELLED"        # 서버에는 반영됨(확정 목록에서 빠짐)
     assert (_inflight(at) or {}).get("shipment_id") == SID
     assert [b for b in at.button if b.key == "cf_rv_recheck"]
-    clock["t"] += 11
+    clock["t"] += 21
     at.button(key="cf_rv_recheck").click()
     at.run()
     assert not at.exception, [str(e.value) for e in at.exception]
     t = " ".join(_texts(at))
-    assert "조회하지 못했습니다" in t and "반영되지 않았습니다" not in t, t
+    assert "조회하지 못했습니다" in t and "반영되지 않은 것으로" not in t, t
     assert (_inflight(at) or {}).get("shipment_id") == SID, "조회 실패로 확인 대기 기록을 지우면 안 된다"
     m.fetch_raise_for = None
     clock["t"] += 5
@@ -518,7 +522,7 @@ def test_recheck_lookup_failure_keeps_pending(monkeypatch):
     at.run()
     assert not at.exception, [str(e.value) for e in at.exception]
     t = " ".join(_texts(at))
-    assert "취소" in t and "반영" in t and "반영되지 않았습니다" not in t, t
+    assert "취소" in t and "반영" in t and "반영되지 않은 것으로" not in t, t
     assert not _inflight(at) and m.applied == 1
 
 
@@ -529,7 +533,7 @@ def test_pending_on_other_shipment_locks_this_one(monkeypatch):
     m = ReviseMock(_w())
     at = _open(monkeypatch, m)
     other = {"shipment_id": 777, "ship_no": "SH-20261105-09", "request_id": "11111111-2222-4333-8444-555555555555",
-             "action": "CANCEL", "started_at": 0.0, "summary": {}, "items": []}
+             "action": "CANCEL", "since": 0.0, "summary": {}, "items": []}
     at.text_input(key=f"cf_cx_reason_{SID}").set_value(REASON)       # 사유가 있어야 잠금이 「대기」 때문임을 본다
     at.run()
     assert not at.button(key="cf_cancel").disabled, "대기 없음 + 사유 있음이면 취소 버튼이 열려 있어야(대조)"
@@ -546,3 +550,85 @@ def test_pending_on_other_shipment_locks_this_one(monkeypatch):
         at.run()
     assert not _revise_calls(m) and m.applied == 0
     assert _inflight(at) == other
+
+
+def test_pending_does_not_lock_draft_confirm(monkeypatch):
+    """r1 분류 H2: 확인 대기가 있어도 작성중 전표의 [출고 확정] 은 잠그지 않는다(정정·취소만 잠금)."""
+    from tests.ship_mock import ReviseMock
+    w = _w()
+    w["shipments"].append(dict(w["shipments"][0], shipment_id=49, ship_no="SH-20261031-01", status="DRAFT",
+                               confirmed_at=None))
+    w["shipment_items"].append(dict(_si(601, 11, 100, 2, "P1", "4PDVN-03", 50), shipment_id=49))
+    m = ReviseMock(w)
+    at = _open(monkeypatch, m)
+    at.session_state["cf_rv_inflight"] = {"shipment_id": SID, "ship_no": SHIP_NO, "action": "CANCEL", "since": 0.0,
+                                          "request_id": "11111111-2222-4333-8444-555555555555", "summary": {},
+                                          "items": []}
+    next(r for r in at.radio if r.key == "cf_filter").set_value("전체")
+    at.session_state["ship_open_no"] = "SH-20261031-01"
+    at.run()
+    assert not at.exception, [str(e.value) for e in at.exception]
+    assert not at.button(key="cf_go").disabled, "작성중 전표 확정은 확인 대기와 무관"
+    assert _inflight(at)["shipment_id"] == SID
+
+
+def test_partial_cancel_forced_plan_and_flags_do_nothing(monkeypatch):
+    """qa M4(옛 D19 단언 이식): 부분 취소 전표에 정정 계획·확인 플래그·취소 플래그를 억지로 넣어도 확인 창이 없고 RPC 0."""
+    from tests.ship_mock import ReviseMock
+    m = ReviseMock(_w(shipment_revisions=[{"rev_id": 1, "shipment_id": SID, "rev_no": 0, "action": "CANCEL",
+                                           "si_id": 501, "pn": "4PDVN-03", "qty_before": 500, "qty_after": 0,
+                                           "reason": "옛 취소", "created_by": "테스트", "request_id": None,
+                                           "info": None}]))
+    at = _open(monkeypatch, m)
+    at.session_state["cf_rv_plan"] = {"shipment_id": SID, "rev_no": 0, "request_id": "aaaaaaaa-bbbb-4ccc-8ddd-000000000001",
+                                      "new_qtys": {501: 400}, "reason": REASON, "over": False,
+                                      "changes": [{"si_id": 501, "before": 500, "after": 400}]}
+    at.session_state[f"cfm_cf_rv_{SID}"] = True
+    at.session_state[f"cf_cx_reason_{SID}"] = REASON
+    at.session_state[f"cfm_cf_cancel_{SID}"] = {"request_id": "aaaaaaaa-bbbb-4ccc-8ddd-000000000002", "rev_no": 0}
+    at.run()
+    assert not at.exception, [str(e.value) for e in at.exception]
+    keys = {b.key for b in at.button}
+    assert "cf_rv_cfm_ok" not in keys and "cf_cancel_cfm_ok" not in keys, keys
+    assert not _revise_calls(m) and m.applied == 0
+
+
+def test_recv_null_cancel_rejected_on_screen(monkeypatch):
+    """qa M4: 수주 납품량 NULL 라인 취소 → 서버(모델) recv_underflow 거부, 쓰기 0, 사유 문구."""
+    from tests.ship_mock import ReviseMock
+    m = ReviseMock(_w(sales_order_items=[dict(_soi(11, 100, "P1", "4PDVN-03", 2000, 500), received_qty=None)]))
+    at = _open(monkeypatch, m)
+    before = copy.deepcopy(m.snapshot())
+    _cancel(at)
+    assert len(_revise_calls(m)) == 1 and m.applied == 0
+    assert m.snapshot() == before
+    t = " ".join(_texts(at))
+    assert "수주 납품량이 줄일 수량보다 적음" in t and "아무것도 바뀌지 않았습니다" in t, t
+
+
+def test_render_reads_blockers_view_without_rpc(monkeypatch):
+    """qa M3(qa REQUIRED 5): 확정 전표를 그릴 때 사전 점검은 뷰 조회(캐시) — RPC 호출 0(RPC 성공은 앱 캐시를 비운다)."""
+    import db as _dbmod
+    from tests.ship_mock import ReviseMock
+    m = ReviseMock(_w())
+    at = _open(monkeypatch, m)
+    n = {"clear": 0}
+    monkeypatch.setattr(_dbmod, "clear_cache", lambda *a, **k: n.__setitem__("clear", n["clear"] + 1))
+    m.rpc_calls.clear()
+    m.fetch_calls.clear()
+    at.run()
+    assert not at.exception, [str(e.value) for e in at.exception]
+    assert not m.rpc_calls, m.rpc_calls
+    assert ("shipment_revise_blockers_v", f"shipment_id=eq.{SID}") in m.fetch_calls, m.fetch_calls
+    assert n["clear"] == 0
+
+
+def test_blockers_view_missing_is_unavailable(monkeypatch):
+    """뷰가 없음(082 미적용 — PostgREST 404 PGRST205) → '서버 함수를 쓸 수 없음' + 정정·취소 잠금(옛 엔진 없음)."""
+    from tests.ship_mock import ReviseMock
+    from utils.shipment_revise import UNAVAILABLE_TEXT
+    m = ReviseMock(_w())
+    m.check_unavailable = True
+    at = _open(monkeypatch, m)
+    assert at.button(key="cf_cancel").disabled and at.button(key="cf_rv_go").disabled
+    assert UNAVAILABLE_TEXT in _texts(at), _texts(at)

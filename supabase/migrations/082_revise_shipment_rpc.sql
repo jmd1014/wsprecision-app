@@ -4,9 +4,11 @@
 -- 파이썬 모델 utils/shipment_revise.plan_revision 과 같은 규칙·같은 거부 순서. 골든 tests/golden/revise_shipment/g_*.json
 --
 -- 만드는 것
---   ① shipment_revisions.request_id uuid · info jsonb (+ 부분 유니크 인덱스, 머리글 이력 si NULL 은 COALESCE(si_id,0))
+--   ① shipment_revisions.request_id uuid · info jsonb (+ 부분 인덱스 (shipment_id, request_id) — 유니크 아님, r2:
+--      FK si_id ON DELETE SET NULL 과 충돌하지 않게. 이중 삽입은 전표 잠금 + rev 검사가 막는다)
 --   ② revise_shipment_reasons(shipment, 대상 라인, 감소량) — 데이터 사유 판정 한 곳(§4-5 · §18 A2·A8)
 --   ③ revise_shipment(shipment, payload) — 쓰기 / ④ revise_shipment_check(shipment) — 읽기(STABLE, §18 A9)
+--   ⑤ 뷰 shipment_revise_blockers_v(shipment_id, chk) — 확정 전표마다 ④ (화면이 캐시되는 조회로 읽는다, r2)
 --   전부 SECURITY INVOKER · search_path 고정 · 실행 권한 service_role 만
 --
 -- 잠금 순서(§4-3 ② · §18 A3·A11): 전표 → (재실행 판정) → 전표 라인 → 영향 수주의 전 라인(soi 오름차순)
@@ -17,10 +19,11 @@
 --
 -- 시간: 원장 txn_date 는 KST 오늘 (now() AT TIME ZONE 'Asia/Seoul')::date. 시간대 없는 timestamptz 상수 없음.
 -- 되돌리기(코드 revert 뒤, 꼭 필요할 때만 — request_id 는 재실행 근거라 남기는 것이 기본):
+--   DROP VIEW IF EXISTS public.shipment_revise_blockers_v;
 --   DROP FUNCTION IF EXISTS public.revise_shipment_check(integer);
 --   DROP FUNCTION IF EXISTS public.revise_shipment(integer, jsonb);
 --   DROP FUNCTION IF EXISTS public.revise_shipment_reasons(integer, integer[], jsonb);
---   DROP INDEX IF EXISTS public.shipment_revisions_request_uq;
+--   DROP INDEX IF EXISTS public.shipment_revisions_request_idx;
 --   ALTER TABLE public.shipment_revisions DROP COLUMN IF EXISTS info, DROP COLUMN IF EXISTS request_id;
 -- ════════════════════════════════════════════════════════════
 
@@ -32,8 +35,11 @@ COMMENT ON COLUMN public.shipment_revisions.request_id IS
 COMMENT ON COLUMN public.shipment_revisions.info IS
     '{payload_md5, info:[{si_id|soi_id, kind:"unallocated", qty}]} — 재실행 내용 대조·안내 보존(082)';
 
-CREATE UNIQUE INDEX IF NOT EXISTS shipment_revisions_request_uq
-    ON public.shipment_revisions (shipment_id, request_id, COALESCE(si_id, 0))
+-- r2(data M1): 유니크 인덱스 COALESCE(si_id,0) 는 FK si_id ON DELETE SET NULL 과 충돌(라인 삭제 → 같은 키 여러 행)
+-- → 일반 부분 인덱스. 같은 요청의 이중 삽입은 전표 FOR UPDATE + 재실행 판정 + expected_rev_no 가 막는다.
+DROP INDEX IF EXISTS public.shipment_revisions_request_uq;      -- r1 판을 적용한 로컬 사본 정리(운영에는 없음)
+CREATE INDEX IF NOT EXISTS shipment_revisions_request_idx
+    ON public.shipment_revisions (shipment_id, request_id)
     WHERE request_id IS NOT NULL;
 
 
@@ -165,6 +171,7 @@ DECLARE
     v_incq      jsonb := '{}'::jsonb;     -- {"si": 증가량}
     v_need      jsonb := '{}'::jsonb;     -- {"soi": 증가 합}
     v_target    integer[];
+    v_rounds    integer[];                -- 이 요청이 건드리는 회차(감소 대상 라인의 충당 회차 ∪ 증가 회차) — 사후 조건
     v_sois      integer[];
     v_sos       integer[];
     v_changed   integer[] := '{}';
@@ -227,6 +234,17 @@ BEGIN
                       OR COALESCE(jsonb_typeof(e->'lot_number'), 'null') NOT IN ('string', 'null')
                       OR COALESCE(jsonb_typeof(e->'work_order'), 'null') NOT IN ('string', 'null')) THEN
         RAISE EXCEPTION 'bad_version' USING ERRCODE = 'P0001', HINT = 'shape';
+    END IF;
+    -- 수량 정밀도(r2, Codex M2): 소수 6자리를 넘는 수량은 거부 — md5 정규화(round 6)와 처리값이 어긋나지 않게
+    IF EXISTS (SELECT 1 FROM (
+                 SELECT (e->>'qty_before')::numeric AS q FROM jsonb_array_elements(v_lines) e
+                 UNION ALL SELECT (e->>'qty_after')::numeric FROM jsonb_array_elements(v_lines) e
+                 UNION ALL SELECT (e->>'received')::numeric FROM jsonb_array_elements(v_exp) e
+                 UNION ALL SELECT (e->>'delta')::numeric FROM jsonb_array_elements(v_scheds) e
+                 UNION ALL SELECT (e->>'qty')::numeric FROM jsonb_array_elements(v_allocs) e
+                 UNION ALL SELECT (e->>'qty')::numeric FROM jsonb_array_elements(v_txns) e) x
+                WHERE x.q <> round(x.q, 6)) THEN
+        RAISE EXCEPTION 'bad_version' USING ERRCODE = 'P0001', HINT = 'precision';
     END IF;
     IF jsonb_typeof(p_payload->'request_id') IS DISTINCT FROM 'string'
        OR (p_payload->>'request_id') !~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$' THEN
@@ -404,6 +422,12 @@ BEGIN
           + jsonb_array_length(v_txns) > 0 THEN
         RAISE EXCEPTION 'bad_version' USING ERRCODE = 'P0001', HINT = 'inc without increase';
     END IF;
+
+    -- 건드리는 회차(사후 조건 ⑩ 용 — 환원 전 충당 회차 + 증가 payload 회차)
+    SELECT COALESCE(array_agg(DISTINCT a.sched_id ORDER BY a.sched_id), '{}') INTO v_rounds
+      FROM shipment_allocations a WHERE a.si_id = ANY (v_target);
+    v_rounds := v_rounds || COALESCE((SELECT array_agg(DISTINCT (s->>'sched_id')::integer)
+                                        FROM jsonb_array_elements(v_scheds) s), '{}');
 
     -- ④ 감소분 — si 오름차순, 한 줄씩(집합 UPDATE 금지)
     FOR v_si IN SELECT k::integer FROM jsonb_object_keys(v_dec) k ORDER BY 1 LOOP
@@ -710,6 +734,29 @@ BEGIN
                     GROUP BY si.si_id HAVING abs(SUM(t.qty)) > 1e-9) THEN
             RAISE EXCEPTION 'postcondition:issue_left' USING ERRCODE = 'P0001';
         END IF;
+    ELSE
+        -- r2(data M3): 바뀐 라인 — 제품 연결이면 ISSUE 순합 = −정정 수량, Σ충당 ≤ 정정 수량
+        IF EXISTS (SELECT 1 FROM shipment_items si
+                    WHERE si.si_id = ANY (v_target) AND NULLIF(si.product_id, '') IS NOT NULL
+                      AND abs(COALESCE((SELECT SUM(t.qty) FROM inventory_transactions t
+                                         WHERE t.ref_table = 'shipment_items' AND t.txn_type = 'ISSUE'
+                                           AND t.ref_id = si.si_id), 0) + COALESCE(si.qty, 0)) > 1e-9) THEN
+            RAISE EXCEPTION 'postcondition:issue_net' USING ERRCODE = 'P0001';
+        END IF;
+        IF EXISTS (SELECT 1 FROM shipment_items si
+                    WHERE si.si_id = ANY (v_target)
+                      AND COALESCE((SELECT SUM(a.qty) FROM shipment_allocations a WHERE a.si_id = si.si_id), 0)
+                          > COALESCE(si.qty, 0) + 1e-9) THEN
+            RAISE EXCEPTION 'postcondition:alloc_over' USING ERRCODE = 'P0001';
+        END IF;
+    END IF;
+    -- r2(data M3): 건드린 회차 — 납품완료 ≥ Σ충당(모든 전표) ≥ 0
+    IF EXISTS (SELECT 1 FROM so_delivery_schedule d
+                CROSS JOIN LATERAL (SELECT COALESCE(SUM(a.qty), 0) AS al FROM shipment_allocations a
+                                     WHERE a.sched_id = d.sched_id) x
+                WHERE d.sched_id = ANY (v_rounds)
+                  AND (COALESCE(d.delivered_qty, 0) < x.al - 1e-9 OR x.al < -1e-9)) THEN
+        RAISE EXCEPTION 'postcondition:round' USING ERRCODE = 'P0001';
     END IF;
     SELECT count(*) INTO v_n
       FROM sales_order_items l
@@ -797,6 +844,20 @@ COMMENT ON FUNCTION public.revise_shipment_check(integer) IS
 REVOKE EXECUTE ON FUNCTION public.revise_shipment_check(integer) FROM PUBLIC, anon, authenticated;
 GRANT  EXECUTE ON FUNCTION public.revise_shipment_check(integer) TO service_role;
 
+
+-- ── ⑤ 화면용 뷰(r2, qa M3) — 확정 전표마다 revise_shipment_check. 화면은 캐시되는 조회(fetch)로 읽는다
+--   (RPC 호출은 성공할 때마다 앱의 읽기 캐시를 전부 비운다). 판정은 함수 한 곳 그대로.
+--   security_invoker = true(호출자 권한 — 함수 실행 권한이 있는 service_role 만 의미 있음), anon·authenticated 회수
+CREATE OR REPLACE VIEW public.shipment_revise_blockers_v
+WITH (security_invoker = true) AS
+SELECT s.shipment_id, public.revise_shipment_check(s.shipment_id) AS chk
+  FROM public.shipments s
+ WHERE s.status = 'CONFIRMED';
+COMMENT ON VIEW public.shipment_revise_blockers_v IS
+    '확정 전표별 정정·취소 사전 점검(revise_shipment_check 결과 chk) — 화면 선차단용 읽기(082 r2)';
+REVOKE ALL ON public.shipment_revise_blockers_v FROM PUBLIC, anon, authenticated;
+GRANT SELECT ON public.shipment_revise_blockers_v TO service_role;
+
 NOTIFY pgrst, 'reload schema';
 
 -- 적용 후 검증(검토 세션, REST 경유 — 쓰기 없음):
@@ -806,3 +867,8 @@ NOTIFY pgrst, 'reload schema';
 --   POST /rpc/revise_shipment {"p_shipment_id": -1, "p_payload": {"v":"1","action":"CANCEL","request_id":"<uuid>","expected_rev_no":0,"reason":"x"}} → not_found
 --   POST /rpc/revise_shipment {실제 확정 전표, expected_rev_no:-1, …} → stale_rev (잠금·권한·열 이름을 ③ 까지 확인)
 --   POST /rpc/revise_shipment_check {"p_shipment_id": <옛 전표 12장 각각>} → lines 에 사유
+--   GET /shipment_revise_blockers_v?select=shipment_id,chk&shipment_id=eq.<옛 전표> → 같은 chk (service_role)
+--   select relname, reloptions from pg_class where relname='shipment_revise_blockers_v'  → security_invoker=true
+--   select grantee, privilege_type from information_schema.role_table_grants
+--    where table_name='shipment_revise_blockers_v' order by 1   → service_role 만(+ 소유자)
+--   select indexname, indexdef from pg_indexes where tablename='shipment_revisions' → request_idx(유니크 아님), request_uq 없음

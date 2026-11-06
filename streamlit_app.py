@@ -10553,7 +10553,7 @@ elif page == "출고 관리":
             else:                                                  # 확인 대기 — 기록 유지·버튼 잠금
                 st.session_state["cf_rv_inflight"] = {
                     "shipment_id": _sid0, "ship_no": pick.get("ship_no"), "request_id": _rid0, "action": action,
-                    "started_at": _r["started_at"], "summary": summary,
+                    "since": _r["since"], "summary": summary,          # 기준 = 마지막 불명 응답 시각(r2)
                     "items": [{k: x.get(k) for k in ("si_id", "shipment_id", "soi_id", "product_id", "pn", "customer_pn",
                                                      "qty", "customer", "so_number")}
                               for x in items]}
@@ -10576,7 +10576,7 @@ elif page == "출고 관리":
                                                _srv_t.PENDING_TEXT))
             if st.button("결과 다시 확인", key="cf_rv_recheck"):
                 _rv_r = _srv_t.recheck(lambda: _cf_rv_requery(_rv_inf_top["shipment_id"], _rv_inf_top["request_id"]),
-                                       _rv_inf_top["started_at"])
+                                       _rv_inf_top["since"])
                 if _rv_r["state"] == "ok":
                     st.session_state.pop("cf_rv_inflight", None)
                     _cf_rv_done({"shipment_id": _rv_inf_top["shipment_id"], "ship_no": _rv_inf_top.get("ship_no")},
@@ -10584,9 +10584,8 @@ elif page == "출고 관리":
                                 _rv_inf_top.get("summary") or {})
                 elif _rv_r["state"] == "not_applied":
                     st.session_state.pop("cf_rv_inflight", None)
-                    st.session_state["cf_rv_note"] = ("전표 {} 의 요청이 반영되지 않았습니다(10초 동안 기록 없음) — "
-                                                      "화면을 확인한 뒤 다시 시도하세요.".format(
-                                                          _rv_inf_top.get("ship_no") or "-"))
+                    st.session_state["cf_rv_note"] = "전표 {} — {}".format(_rv_inf_top.get("ship_no") or "-",
+                                                                          _srv_t.RECHECK_NONE_TEXT)
                     st.rerun()
                 elif _rv_r.get("lookup_failed"):
                     st.error(_srv_t.LOOKUP_FAILED_TEXT)
@@ -11100,23 +11099,24 @@ elif page == "출고 관리":
                     # ── 확정 전표 정정·취소 — revise_shipment 한 번(082, P3-1a). 고정 데이터 사유(옛 전표 12장 등)·
                     # 부분 취소·확인 대기는 먼저 잠근다(§4-5·§18 A6·A9). 버튼 키 cf_rv_go·cf_cancel 은 그대로(§18 A14)
                     import uuid as _rv_uuid
-                    from datetime import datetime as _rv_dt, timedelta as _rv_td, timezone as _rv_tz
                     from utils import shipment_revise as _srv
                     _rv_sid = _cf_pick["shipment_id"]
                     _rv_rev = int(_cf_pick.get("rev_no") or 0)
-                    _rv_today = (_rv_dt.now(_rv_tz.utc) + _rv_td(hours=9)).date().isoformat()
                     # 확인 대기 기록은 세션에 하나 — 어느 전표든 대기가 있으면 모든 전표의 정정·취소를 잠근다
                     # (다른 전표의 응답 불명이 앞 기록을 덮지 않게, r1 Codex H2·QA M1)
                     _rv_inf = st.session_state.get("cf_rv_inflight") or {}
                     _rv_chk, _rv_chk_err = {}, None
+                    # 사전 점검 = 뷰 shipment_revise_blockers_v(= revise_shipment_check) 를 캐시되는 조회로(r2 qa M3 —
+                    # RPC 는 성공할 때마다 앱 읽기 캐시를 전부 비운다). 행 없음·실패 = 잠금(fail-closed), 뷰 없음 = 함수 없음
                     try:
-                        _rv_chk = _db.rpc("revise_shipment_check", {"p_shipment_id": _rv_sid}) or {}
+                        _rv_rows = fetch("shipment_revise_blockers_v", "shipment_id,chk",
+                                         f"shipment_id=eq.{_fq(_rv_sid)}", limit=1)
+                        _rv_chk = (_rv_rows[0].get("chk") if _rv_rows else None) or {}
                         if not (isinstance(_rv_chk, dict) and _rv_chk.get("ok")):
                             _rv_chk_err = "fail"
-                    except getattr(_db, "RpcUnavailable", ()):
-                        _rv_chk_err = "unavailable"
-                    except Exception:
-                        _rv_chk_err = "fail"
+                    except Exception as _rv_e:
+                        _rv_chk_err = ("unavailable" if any(t in str(_rv_e) for t in ("PGRST205", "42P01"))
+                                       else "fail")
                     _rv_blk = {} if _rv_chk_err else {int(k): v for k, v in (_rv_chk.get("lines") or {}).items()}
                     _rv_partial = bool(not _rv_chk_err and _rv_chk.get("partial_cancel_legacy"))
                     _rv_all_blocked = bool(_rv_chk_err or _rv_partial or _rv_inf
@@ -11227,10 +11227,18 @@ elif page == "출고 관리":
                                     and click_guard("cf_rv"):
                                 st.session_state.pop("cf_rv_plan", None)
                                 _rv_st = _cf_rv_state(_cf_pick, _cf_items, _rv_pl["rev_no"])
+                                _rv_pay = None
                                 if _rv_st is not None:
-                                    _rv_pay = _srv.build_payload(
-                                        _rv_st, _rv_sid, _rv_pl["new_qtys"], _rv_pl["reason"],
-                                        current_user_name(), _rv_pl["over"], _rv_pl["request_id"], _rv_today)
+                                    try:
+                                        _rv_pay = _srv.build_payload(
+                                            _rv_st, _rv_sid, _rv_pl["new_qtys"], _rv_pl["reason"],
+                                            current_user_name(), _rv_pl["over"], _rv_pl["request_id"])
+                                    except Exception as _rv_be:
+                                        _db.log_error("manual", f"정정 준비 실패(shipment {_rv_sid}): {_rv_be}",
+                                                      table_name="shipments")
+                                        st.error("정정 내용을 준비하지 못했습니다 — 화면을 새로 고친 뒤 다시 하세요. "
+                                                 + _srv.NOTHING)
+                                if _rv_pay is not None:
                                     _cf_rv_run(_cf_pick, _cf_items, "EDIT", _rv_pay,
                                                {"reason": _rv_pl["reason"], "changes": _rv_pl.get("changes") or [],
                                                 "n": len(_rv_pay.get("lines") or [])})
@@ -11262,11 +11270,18 @@ elif page == "출고 관리":
                                     _cf_pick.get("ship_no") or ""),
                                 scope=_rv_sid) \
                             and click_guard("cf_cancel"):
-                        _cx_pay = _srv.build_payload(
-                            {"shipments": [dict(_cf_pick, rev_no=_cx_fl["rev_no"])], "shipment_items": _cf_items},
-                            _rv_sid, {}, _cx_reason.strip(), current_user_name(), False, _cx_fl["request_id"],
-                            _rv_today, action="CANCEL")
-                        _cf_rv_run(_cf_pick, _cf_items, "CANCEL", _cx_pay, {"reason": _cx_reason.strip()})
+                        try:
+                            _cx_pay = _srv.build_payload(
+                                {"shipments": [dict(_cf_pick, rev_no=_cx_fl["rev_no"])], "shipment_items": _cf_items},
+                                _rv_sid, {}, _cx_reason.strip(), current_user_name(), False, _cx_fl["request_id"],
+                                action="CANCEL")
+                        except Exception as _cx_be:
+                            _cx_pay = None
+                            _db.log_error("manual", f"취소 준비 실패(shipment {_rv_sid}): {_cx_be}",
+                                          table_name="shipments")
+                            st.error("취소 내용을 준비하지 못했습니다 — 화면을 새로 고친 뒤 다시 하세요. " + _srv.NOTHING)
+                        if _cx_pay is not None:
+                            _cf_rv_run(_cf_pick, _cf_items, "CANCEL", _cx_pay, {"reason": _cx_reason.strip()})
             else:
                 # ── DRAFT: 확인용 인쇄 → 정정 저장 → 확정 ──
                 import pandas as _cf_pd

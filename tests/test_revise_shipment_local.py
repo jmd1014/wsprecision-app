@@ -458,7 +458,7 @@ def rand_case(seed):
         w["sales_month_close"].append({"ym": "2026-11", "closed_by": "관리자"})
     rid = str(uuid.uuid5(uuid.NAMESPACE_URL, "p3-1a/rand/%d" % seed))
     if rng.random() < .4:
-        req = build_payload(w, 50, {}, "무작위", "테스트", rng.random() < .2, rid, "2026-11-06", action="CANCEL")
+        req = build_payload(w, 50, {}, "무작위", "테스트", rng.random() < .2, rid, action="CANCEL")
     else:
         new = {}
         for x in w["shipment_items"]:
@@ -466,7 +466,7 @@ def rand_case(seed):
                 new[x["si_id"]] = max(0, x["qty"] + rng.randrange(-x["qty"] - 20, 300, 10))
         if not any(new.get(x["si_id"], x["qty"]) != x["qty"] for x in w["shipment_items"]):
             new[w["shipment_items"][0]["si_id"]] = w["shipment_items"][0]["qty"] + 10
-        req = build_payload(w, 50, new, "무작위", "테스트", rng.random() < .2, rid, "2026-11-06")
+        req = build_payload(w, 50, new, "무작위", "테스트", rng.random() < .2, rid)
     return w, req
 
 
@@ -888,11 +888,12 @@ def test_l7_failures_leave_tables_unchanged(pg):
     RESULTS["L7"] = "pass"
 
 
-@pytest.mark.parametrize("kind", ["alloc_left", "line_state"])
+@pytest.mark.parametrize("kind", ["alloc_left", "line_state", "issue_net", "alloc_over", "round"])
 def test_l7b_postconditions_catch_defect(pg, kind):
-    """사후 조건(§18 A1)이 실제로 걸리는지 — 임시 트리거로 구현 결함 상태를 만든다(같은 트랜잭션, 롤백으로 사라짐).
-    alloc_left: 충당 삭제를 막아 취소 뒤 충당이 남음 / line_state: 수주 라인 갱신 때 pending 을 어긋나게."""
-    g = _gold("cancel_basic")
+    """사후 조건(§18 A1 · r2 data M3)이 실제로 걸리는지 — 임시 트리거로 구현 결함 상태를 만든다(같은 트랜잭션, 롤백).
+    alloc_left: 충당 삭제를 막아 취소 뒤 충당이 남음 / line_state: 수주 라인 갱신 때 pending 을 어긋나게 /
+    (정정 500→400) issue_net: 복원 ISSUE 를 두 배로 / alloc_over: 충당 감소·삭제를 막음 / round: 회차 납품완료를 1 덜."""
+    g = _gold("edit_decrease" if kind in ("issue_net", "alloc_over", "round") else "cancel_basic")
     c = pg()
     try:
         cur = c.cursor()
@@ -903,6 +904,21 @@ def test_l7b_postconditions_catch_defect(pg, kind):
                            $$ begin return null; end $$""")
             cur.execute("create trigger p31_keep before delete on shipment_allocations for each row "
                         "execute function pg_temp.p31_keep()")
+        elif kind == "issue_net":
+            cur.execute("""create function pg_temp.p31_dbl() returns trigger language plpgsql as
+                           $$ begin new.qty := new.qty * 2; return new; end $$""")
+            cur.execute("create trigger p31_dbl before insert on inventory_transactions for each row "
+                        "execute function pg_temp.p31_dbl()")
+        elif kind == "alloc_over":
+            cur.execute("""create function pg_temp.p31_keep() returns trigger language plpgsql as
+                           $$ begin return null; end $$""")
+            cur.execute("create trigger p31_keep before update or delete on shipment_allocations for each row "
+                        "execute function pg_temp.p31_keep()")
+        elif kind == "round":
+            cur.execute("""create function pg_temp.p31_short() returns trigger language plpgsql as
+                           $$ begin new.delivered_qty := new.delivered_qty - 1; return new; end $$""")
+            cur.execute("create trigger p31_short before update on so_delivery_schedule for each row "
+                        "execute function pg_temp.p31_short()")
         else:
             cur.execute("""create function pg_temp.p31_skew() returns trigger language plpgsql as
                            $$ begin new.pending_qty := coalesce(new.pending_qty, 0) + 1; return new; end $$""")
@@ -1113,21 +1129,98 @@ def test_l12_permissions_tz_and_reapply(pg):
     RESULTS["L12"] = "pass"
 
 
-# ── L13 ──
+# ── L13 ── 전수 드라이런(복원 DB 의 실제 확정 전표, 전표마다 SAVEPOINT → ROLLBACK)
+DATA_REASON_CODES = {"legacy_no_alloc", "issue_mismatch", "round_short", "recv_underflow"}
+DQ_CODES = ("ROUND_MISMATCH", "SHIP_ALLOC_MISMATCH")
+
+
+def _inv(cur, sid):
+    """외부 불변식 스냅샷(r2 data M4) — 이 전표 라인·영향 수주 라인·그 회차·머리글·dq 건수."""
+    cur.execute("select si_id, soi_id, nullif(product_id, ''), coalesce(qty, 0) from shipment_items "
+                "where shipment_id = %s order by si_id", (sid,))
+    items = cur.fetchall()
+    sois = sorted({x[1] for x in items if x[1] is not None})
+    cur.execute("select distinct so_id from sales_order_items where soi_id = any(%s)", (sois,))
+    sos = sorted(r[0] for r in cur.fetchall() if r[0] is not None)
+    cur.execute("""select d.sched_id from so_delivery_schedule d
+                   cross join lateral (select coalesce(sum(a.qty), 0) al from shipment_allocations a
+                                        where a.sched_id = d.sched_id) x
+                   where d.soi_id in (select soi_id from sales_order_items where so_id = any(%s))
+                     and (coalesce(d.delivered_qty, 0) < x.al - 1e-9 or x.al < -1e-9)""", (sos,))
+    bad_rounds = {r[0] for r in cur.fetchall()}
+    cur.execute("""select d.sched_id from so_delivery_schedule d join sales_order_items l on l.soi_id = d.soi_id
+                   where l.so_id = any(%s) and upper(coalesce(l.status, '')) in ('CLOSED', 'CANCELLED')
+                     and coalesce(d.qty, 0) > coalesce(d.delivered_qty, 0) + 1e-9""", (sos,))
+    open_closed = {r[0] for r in cur.fetchall()}
+    cur.execute("select code, count(*) from data_quality_v where code = any(%s) group by 1", (list(DQ_CODES),))
+    dq = dict(cur.fetchall())
+    return {"items": items, "sos": sos, "bad_rounds": bad_rounds, "open_closed": open_closed, "dq": dq}
+
+
+def _line_net(cur, si):
+    cur.execute("""select coalesce(sum(qty), 0) from inventory_transactions
+                   where ref_table = 'shipment_items' and txn_type = 'ISSUE' and ref_id = %s""", (si,))
+    return float(cur.fetchone()[0])
+
+
+def _line_alloc(cur, si):
+    cur.execute("select coalesce(sum(qty), 0) from shipment_allocations where si_id = %s", (si,))
+    return float(cur.fetchone()[0])
+
+
+def _check_after(cur, sid, b, changed, so_ids):
+    """성공한 정정·취소 뒤 외부 불변식 → 위반 목록. changed = {si: 정정 뒤 수량}(취소면 전 라인 0),
+    so_ids = 함수가 머리글을 다시 계산한 수주(결과 so_ids) — 그 밖의 수주 머리글은 무접촉이라 비교하지 않는다
+    (복원 DB 에 원래 어긋난 머리글이 있음: so 59·60 PARTIAL·활성 라인 전부 DELIVERED — 범위 밖 관찰)."""
+    from utils.so_close import header_status
+    errs = []
+    a = _inv(cur, sid)
+    for si, soi, pid, _q in b["items"]:
+        if si not in changed:
+            continue
+        net, al = _line_net(cur, si), _line_alloc(cur, si)
+        if pid is not None and abs(net + changed[si]) > 1e-6:
+            errs.append(f"si {si} ISSUE 순합 {net} ≠ −{changed[si]}")
+        if al > changed[si] + 1e-6:
+            errs.append(f"si {si} 충당 {al} > {changed[si]}")
+    if a["bad_rounds"] - b["bad_rounds"]:
+        errs.append("회차 납품완료 < Σ충당 새로 생김 " + str(sorted(a["bad_rounds"] - b["bad_rounds"])))
+    if a["open_closed"] - b["open_closed"]:
+        errs.append("닫힌 라인에 열린 회차 새로 생김 " + str(sorted(a["open_closed"] - b["open_closed"])))
+    for so in so_ids:
+        cur.execute("select status from sales_orders where so_id = %s", (so,))
+        hs = cur.fetchone()[0]
+        if str(hs or "").upper() in ("CLOSED", "CANCELLED", "CANCELED"):
+            continue
+        cur.execute("select qty, received_qty, status from sales_order_items where so_id = %s", (so,))
+        lines = [{"qty": q, "received_qty": r, "status": st_} for q, r, st_ in cur.fetchall()]
+        if header_status(lines, hs) != hs:
+            errs.append(f"so {so} 머리글 {hs} ≠ {header_status(lines, hs)}")
+    for k in DQ_CODES:
+        if a["dq"].get(k, 0) > b["dq"].get(k, 0):
+            errs.append(f"dq {k} {b['dq'].get(k, 0)} → {a['dq'].get(k, 0)}")
+    return errs
+
+
+def _confirmed(cur):
+    cur.execute("select shipment_id, ship_no, rev_no from shipments where status='CONFIRMED' and shipment_id < %s "
+                "order by shipment_id", (OFF,))
+    return cur.fetchall()
+
+
 def test_l13_full_dry_run_cancel_every_confirmed(pg):
     c = pg()
     rejected, ok, slow, errs = {}, 0, (0.0, None), []
     try:
         cur = c.cursor()
-        cur.execute("select shipment_id, ship_no, rev_no from shipments where status='CONFIRMED' and shipment_id < %s "
-                    "order by shipment_id", (OFF,))
-        ships = cur.fetchall()
+        ships = _confirmed(cur)
         for sid, no, rev in ships:
             cur.execute("savepoint dry")
+            b = _inv(cur, sid)
             t0 = time.perf_counter()
             k, r = call(cur, sid, {"v": "1", "action": "CANCEL", "request_id": str(uuid.uuid4()),
                                    "expected_rev_no": rev or 0, "reason": "전수 드라이런", "who": "시험"},
-                        savepoint=False) if True else None
+                        savepoint=False)
             el = time.perf_counter() - t0
             if el > slow[0]:
                 slow = (el, no)
@@ -1137,6 +1230,8 @@ def test_l13_full_dry_run_cancel_every_confirmed(pg):
                                where si.shipment_id=%s""", (sid,))
                 if cur.fetchone()[0]:
                     errs.append((no, "alloc_left"))
+                errs += [(no, e) for e in _check_after(cur, sid, b, {x[0]: 0.0 for x in b["items"]},
+                                                       r.get("so_ids") or [])]
             else:
                 rejected[no] = r
             cur.execute("rollback to savepoint dry")
@@ -1144,9 +1239,63 @@ def test_l13_full_dry_run_cancel_every_confirmed(pg):
         c.rollback()
         c.close()
     RESULTS["L13"] = {"confirmed": len(ships), "ok": ok, "rejected": rejected, "slowest_sec": round(slow[0], 3),
-                      "slowest_ship": slow[1], "post_errors": errs}
+                      "slowest_ship": slow[1], "post_errors": errs,
+                      "external_invariants": "라인 ISSUE 순합 0·충당 0·회차 납품완료≥Σ충당≥0·닫힌 라인 열린 회차·"
+                                             "머리글=header_status·dq ROUND/SHIP_ALLOC 증가 없음"}
     assert not errs, errs
     assert set(rejected) == EXPECTED_REJECTED_SHIPS, sorted(set(rejected) ^ EXPECTED_REJECTED_SHIPS)
+
+
+def test_l13b_edit_dry_run_every_confirmed(pg):
+    """r2 data M4: 운영 형태 EDIT 드라이런 — 확정 전표마다 ① 각 라인 −1 ② 단일 라인(가장 작은 si) 전량 감소
+    → 외부 불변식 → ROLLBACK. 거부는 데이터 사유(고정 목록 12장 안)나 use_cancel 만."""
+    c = pg()
+    out = {"minus1": {"ok": 0, "rejected": {}}, "one_line_zero": {"ok": 0, "rejected": {}, "skipped": 0}}
+    errs, slow = [], (0.0, None)
+    try:
+        cur = c.cursor()
+        ships = _confirmed(cur)
+        for sid, no, rev in ships:
+            cur.execute("select si_id, qty from shipment_items where shipment_id = %s and qty > 1e-9 order by si_id",
+                        (sid,))
+            live = [(si, float(q)) for si, q in cur.fetchall()]
+            cases = [("minus1", {si: q - 1 for si, q in live if q >= 1})]
+            if len(live) >= 2:
+                cases.append(("one_line_zero", {live[0][0]: 0.0}))
+            else:
+                out["one_line_zero"]["skipped"] += 1
+            for name, new in cases:
+                if not new:
+                    continue
+                cur.execute("savepoint dry")
+                b = _inv(cur, sid)
+                qmap = dict(live)
+                payload = {"v": "1", "action": "EDIT", "request_id": str(uuid.uuid4()), "expected_rev_no": rev or 0,
+                           "reason": "EDIT 드라이런", "who": "시험",
+                           "lines": [{"si_id": si, "qty_before": qmap[si], "qty_after": q}
+                                     for si, q in sorted(new.items())]}
+                t0 = time.perf_counter()
+                k, r = call(cur, sid, payload, savepoint=False)
+                el = time.perf_counter() - t0
+                if el > slow[0]:
+                    slow = (el, f"{no} {name}")
+                if k == "ok":
+                    out[name]["ok"] += 1
+                    errs += [(no, name, e) for e in _check_after(cur, sid, b, new, r.get("so_ids") or [])]
+                else:
+                    out[name]["rejected"][no] = r
+                cur.execute("rollback to savepoint dry")
+    finally:
+        c.rollback()
+        c.close()
+    out.update({"confirmed": len(ships), "post_errors": errs, "slowest_sec": round(slow[0], 3), "slowest": slow[1]})
+    RESULTS["L13b"] = out
+    assert not errs, errs
+    for name in ("minus1", "one_line_zero"):
+        rej = out[name]["rejected"]
+        bad = {no: code for no, code in rej.items() if code not in DATA_REASON_CODES and code != "use_cancel"}
+        assert not bad, (name, bad)
+        assert {no for no, code in rej.items() if code in DATA_REASON_CODES} <= EXPECTED_REJECTED_SHIPS, (name, rej)
 
 
 @pytest.fixture(scope="module", autouse=True)
