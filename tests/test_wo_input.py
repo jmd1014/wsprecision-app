@@ -48,3 +48,25 @@ def test_a_t3b_open_label_on_hint_and_open_pids_override():
     assert r["labels"][0] == "A-100 ← 미납 10 (발주 라인 기준)" and r["default"] == 0
     r2 = pn_candidates(BOM3, {"P1": 10}, None, open_pids=set())
     assert r2["labels"] == ["A-100", "B-200", "C-300"]
+
+
+# ── 휴면 힌트(후보 49, 2026-11-05 운영 발견: 휴면 처리한 HA80-80092 가 투입 후보 맨 앞·기본값) ──
+NOTICE_92 = ("발주 라인의 품번 HA80-80092 은 휴면 처리된 품번이라 후보에서 뺐습니다 — "
+             "작업지시서 품번을 확인하세요.")
+HINT_92 = {"pn": "HA80-80092", "src": "발주 라인", "product_id": "P0738", "archived": True}
+
+
+def test_a_t4_archived_hint_dropped_bom_default():
+    """휴면 힌트 + BOM 후보 1개 → 후보에 휴면 품번 없음, 기본 = BOM 후보, 안내 문구."""
+    r = pn_candidates([{"product_id": "P0883", "pn": "HA80-80093"}], {"P0883": 500}, dict(HINT_92))
+    assert [c["pn"] for c in r["cands"]] == ["HA80-80093"]
+    assert r["default"] == 0
+    assert r["labels"] == ["HA80-80093 ← 미납 500"]          # 「발주 라인 기준」 라벨 없음
+    assert r["notice"] == NOTICE_92
+
+
+def test_a_t5_archived_hint_no_bom_is_empty():
+    """휴면 힌트 + BOM 후보 0개 → 후보 빈 목록(화면은 직접 입력), 안내 문구."""
+    r = pn_candidates([], {}, dict(HINT_92))
+    assert r["cands"] == [] and r["labels"] == []
+    assert r["notice"] == NOTICE_92

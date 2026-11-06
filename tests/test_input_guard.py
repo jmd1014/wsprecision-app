@@ -114,3 +114,69 @@ def test_a_t9_active_hint_registers_as_before(monkeypatch):
     assert len(wo) == 1 and wo[0]["product_id"] == "P0883" and wo[0]["pn"] == "HA80-80093", wo
     wb = _ins(m, "wo_batches")
     assert len(wb) == 1 and wb[0]["product_id"] == "P0883" and wb[0]["pn"] == "HA80-80093", wb
+
+
+# ── 휴면 품번(후보 49) — 수정 전 코드에서 실패해야 한다(02a) ──
+NOTICE_92 = ("발주 라인의 품번 HA80-80092 은 휴면 처리된 품번이라 후보에서 뺐습니다 — "
+             "작업지시서 품번을 확인하세요.")
+BLOCK_92 = ("HA80-80092 은 휴면 처리된 품번입니다 — 투입 등록할 수 없습니다. "
+            "품번을 다시 고르거나 마스터 관리에서 휴면을 해제하세요.")
+
+
+def _w1257(m, poi_pid="P0738"):
+    """운영 사례: W1257(M191, 잔여 800) → poi 325(HA80-80092). BOM 은 휴면·활성 둘 다 M191."""
+    _lot(m, "W1257", "M191", 800, poi=325, poi_item="HA80-80092", poi_pid=poi_pid)
+    _bom(m, "P0738", "M191")
+    _bom(m, "P0883", "M191")
+
+
+def _assert_w1257(at, m):
+    sb = _sel(at, "W1257")
+    assert not any("HA80-80092" in o for o in sb.options), sb.options
+    assert sb.options == ["HA80-80093 ← 미납 500"] and sb.index == 0, sb.options
+    assert NOTICE_92 in _texts(at), _texts(at)
+    _submit(at)
+    for t in ("wo_tracking", "wo_batches"):
+        rows = _ins(m, t)
+        assert len(rows) == 1 and rows[0]["product_id"] == "P0883" and rows[0]["pn"] == "HA80-80093", (t, rows)
+
+
+def test_a_t6_archived_hint_by_product_id(monkeypatch):
+    """발주 라인 product_id = 휴면 제품 → 후보에서 빠지고 활성 BOM 품번으로 등록."""
+    m = _mock()
+    _w1257(m)
+    _assert_w1257(_open(monkeypatch, m), m)
+
+
+def test_a_t7_archived_hint_by_item_name(monkeypatch):
+    """발주 라인 product_id 없음 + 품명 = 휴면 품번(품명 경로) → A-T6 과 같은 결과."""
+    m = _mock()
+    _w1257(m, poi_pid=None)
+    _assert_w1257(_open(monkeypatch, m), m)
+
+
+def test_a_t8_direct_input_archived_pn_blocked(monkeypatch):
+    """BOM 후보 없음 → 직접 입력 칸에 휴면 품번 → 오류 문구·버튼 비활성·쓰기 0."""
+    m = _mock()
+    _lot(m, "W3000", "M500", 50)
+    at = _open(monkeypatch, m)
+    assert not [s for s in at.selectbox if s.key == "pe_in_pnsel_W3000"]
+    at.text_input(key="pe_in_pn").set_value("HA80-80092")
+    at.text_input(key="pe_wo_no").set_value("20261106-002")
+    at.run()
+    assert not at.exception, [str(e.value) for e in at.exception]
+    assert BLOCK_92 in [str(e.value) for e in at.error], [str(e.value) for e in at.error]
+    assert at.button(key="pe_in_submit").disabled
+    assert not [w for w in m.writes if w[0] != "fetch_400"], m.writes
+
+
+def test_a_t8b_direct_input_active_pn_still_allowed(monkeypatch):
+    """대조: 직접 입력 칸에 활성 품번이면 지금처럼 등록된다."""
+    m = _mock()
+    _lot(m, "W3000", "M500", 50)
+    at = _open(monkeypatch, m)
+    at.text_input(key="pe_in_pn").set_value("HA80-80093")
+    at.run()
+    _submit(at, "20261106-003")
+    rows = _ins(m, "wo_tracking")
+    assert len(rows) == 1 and rows[0]["product_id"] == "P0883", rows
