@@ -122,6 +122,24 @@ def test_recheck_ten_second_rule():
     assert recheck(lambda: {"rev_no": 2, "action": "EDIT", "info": []}, started_at=100.0, now=101.0)["state"] == "ok"
 
 
+def test_lookup_failure_is_never_not_applied():
+    """r1 Codex H1·QA H1: 이력 조회 실패(LOOKUP_FAILED)는 「기록 없음」이 아니다 — 시간이 지나도 미반영 확정 금지."""
+    from utils.shipment_revise import LOOKUP_FAILED, recheck
+    assert not LOOKUP_FAILED
+    for now in (101.0, 110.5, 10_000.0):
+        r = recheck(lambda: LOOKUP_FAILED, started_at=100.0, now=now)
+        assert r == {"state": "pending", "lookup_failed": True}, (now, r)
+    assert recheck(lambda: None, started_at=100.0, now=105.0) == {"state": "pending", "lookup_failed": False}
+
+
+def test_run_call_unknown_then_lookup_failure_is_pending():
+    """불명 뒤 재조회 실패 → pending(lookup_failed) — ok·not_applied 로 바뀌지 않는다."""
+    from utils.shipment_revise import LOOKUP_FAILED, run_call
+    r = run_call(_seq(RuntimeError("reset"), RuntimeError("reset")), lambda: LOOKUP_FAILED, lambda s: None,
+                 clock=lambda: 0.0)
+    assert r["state"] == "pending" and r["lookup_failed"] is True and r["unknown"], r
+
+
 # ── 문구 ──
 def test_reject_texts_cover_codes():
     from utils.shipment_revise import reject_text

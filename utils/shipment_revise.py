@@ -662,11 +662,27 @@ UNKNOWN_RETRIES = 1
 PENDING_SEC = 10.0                       # 서버 문장 제한 8초 + 여유
 
 
+class _LookupFailed:
+    """requery() 가 이력을 조회하지 못했다(통신·서버 오류) — 「기록 없음」과 다르다(r1 Codex H1·QA H1).
+    조회 실패는 반영 여부를 모르는 것이므로 시간이 지나도 미반영으로 확정하지 않는다."""
+    __slots__ = ()
+
+    def __bool__(self):
+        return False
+
+    def __repr__(self):
+        return "LOOKUP_FAILED"
+
+
+LOOKUP_FAILED = _LookupFailed()
+
+
 def run_call(call, requery, sleep, clock=None, wait=2.0):
     """revise_shipment 한 번의 요청(같은 request_id)을 끝까지.
 
     call(): RPC 1회 — dict 반환 또는 db.RpcUnavailable / db.RpcRejected / 그 밖의 예외.
-    requery(): 이력에서 같은 request_id 를 캐시 없이 찾기 → {rev_no, action, info} 또는 None.
+    requery(): 이력에서 같은 request_id 를 캐시 없이 찾기 → {rev_no, action, info} · None(조회 성공·없음)
+      · LOOKUP_FAILED(조회 실패 — 결과는 pending, lookup_failed=True).
     반환 {"state": ok|rejected|not_applied|pending|unavailable, "res", "code", "unknown", "via", "started_at"}
       - 성공(ok) / 거부(P0001 — 쓰기 없음 확정) / 미반영 확정(자동 재시도 뒤에도) / 함수 없음
       - 불명(전송 오류·비정상 본문)이 한 번이라도 있었으면 최종 판정은 재조회로만 — 없으면 pending(확인 대기)
@@ -715,21 +731,24 @@ def run_call(call, requery, sleep, clock=None, wait=2.0):
                 continue
             break
     found = requery()
-    if found:
+    if found is not LOOKUP_FAILED and found:
         return {"state": "ok", "res": dict(found, ok=True, replayed=True), "unknown": True, "via": "requery",
                 "started_at": started}
-    return {"state": "pending", "unknown": True, "started_at": started}
+    return {"state": "pending", "unknown": True, "started_at": started, "lookup_failed": found is LOOKUP_FAILED}
 
 
 def recheck(requery, started_at, now=None):
-    """확인 대기 중 [결과 다시 확인]: 이력에 있으면 성공, 없고 마지막 호출 시작 뒤 10초가 지났으면 미반영 확정."""
+    """확인 대기 중 [결과 다시 확인]: 이력에 있으면 성공, 조회 성공·기록 없음이고 마지막 호출 시작 뒤 10초가 지났으면
+    미반영 확정. 조회 실패(LOOKUP_FAILED)는 시간과 무관하게 계속 대기(기록·잠금 유지)."""
     now = _clock() if now is None else now
     found = requery()
+    if found is LOOKUP_FAILED:
+        return {"state": "pending", "lookup_failed": True}
     if found:
         return {"state": "ok", "res": dict(found, ok=True, replayed=True)}
     if now - float(started_at) >= PENDING_SEC:
         return {"state": "not_applied"}
-    return {"state": "pending"}
+    return {"state": "pending", "lookup_failed": False}
 
 
 # ── 화면 문구 ──
@@ -780,7 +799,8 @@ def reject_text(code):
 
 NOT_APPLIED_TEXT = "다른 처리와 겹쳐 반영되지 않았습니다 — 잠시 후 다시 시도하세요."
 PENDING_TEXT = ("반영 여부를 확인하지 못했습니다 — 잠시 뒤 [결과 다시 확인] 을 누르세요. "
-                "확인될 때까지 이 전표의 정정·취소는 잠급니다.")
+                "확인될 때까지 모든 전표의 정정·취소를 잠급니다.")
+LOOKUP_FAILED_TEXT = "정정·취소 기록을 조회하지 못했습니다(통신·서버 오류) — 잠시 뒤 다시 누르세요. 확인 대기는 그대로 둡니다."
 UNAVAILABLE_TEXT = "정정·취소 기능(서버 함수)을 쓸 수 없습니다 — 관리자에게 알려 주세요. " + NOTHING
 
 

@@ -10458,12 +10458,14 @@ elif page == "출고 관리":
         # 옛 엔진(_cf_apply_deltas — REST 요청 N개)을 대체한다. 감소는 서버가 계산, 증가는 화면이 계획(069 형식)하고
         # 서버가 검증, 실패하면 전부 롤백. 호출 상태 기계·문구는 utils/shipment_revise(run_call·recheck·reject_text).
         def _cf_rv_requery(sid, rid):
-            """같은 request_id 의 이력을 캐시 없이 — 있으면 {rev_no, action, info}. 조회 실패는 '모름'(None)."""
+            """같은 request_id 의 이력을 캐시 없이 — 있으면 {rev_no, action, info}, 조회 성공·없음은 None,
+            조회 실패는 LOOKUP_FAILED(모름 — 미반영으로 확정하지 않는다, r1 Codex H1·QA H1)."""
+            from utils import shipment_revise as _srv_q
             try:
                 _rows = fetch("shipment_revisions", "rev_no,action,info",
                               f"shipment_id=eq.{_fq(sid)}&request_id=eq.{_fq(rid)}", limit=5, cache=False)
             except Exception:
-                return None
+                return _srv_q.LOOKUP_FAILED
             if not _rows:
                 return None
             _inf = _rows[0].get("info") or {}
@@ -10533,6 +10535,10 @@ elif page == "출고 관리":
             from utils import shipment_revise as _srv0
             import time as _rv_time
             _sid0, _rid0 = pick["shipment_id"], payload["request_id"]
+            if st.session_state.get("cf_rv_inflight"):               # 확인 대기 중엔 새 호출 없음(덮어쓰기 방지)
+                st.error("이전 요청의 결과를 확인하기 전에는 정정·취소할 수 없습니다 — 화면 위 [결과 다시 확인] 을 누르세요. "
+                         + _srv0.NOTHING)
+                return
             _r = _srv0.run_call(
                 lambda: _db.rpc("revise_shipment", {"p_shipment_id": _sid0, "p_payload": payload}),
                 lambda: _cf_rv_requery(_sid0, _rid0), _rv_time.sleep, wait=float(__import__("os").environ.get("WS_CF_RECHECK_SEC", "2")))
@@ -10582,6 +10588,8 @@ elif page == "출고 관리":
                                                       "화면을 확인한 뒤 다시 시도하세요.".format(
                                                           _rv_inf_top.get("ship_no") or "-"))
                     st.rerun()
+                elif _rv_r.get("lookup_failed"):
+                    st.error(_srv_t.LOOKUP_FAILED_TEXT)
                 else:
                     st.info("아직 확인되지 않았습니다 — 잠시 뒤 다시 누르세요.")
 
@@ -11097,8 +11105,9 @@ elif page == "출고 관리":
                     _rv_sid = _cf_pick["shipment_id"]
                     _rv_rev = int(_cf_pick.get("rev_no") or 0)
                     _rv_today = (_rv_dt.now(_rv_tz.utc) + _rv_td(hours=9)).date().isoformat()
+                    # 확인 대기 기록은 세션에 하나 — 어느 전표든 대기가 있으면 모든 전표의 정정·취소를 잠근다
+                    # (다른 전표의 응답 불명이 앞 기록을 덮지 않게, r1 Codex H2·QA M1)
                     _rv_inf = st.session_state.get("cf_rv_inflight") or {}
-                    _rv_inf = _rv_inf if _rv_inf.get("shipment_id") == _rv_sid else {}
                     _rv_chk, _rv_chk_err = {}, None
                     try:
                         _rv_chk = _db.rpc("revise_shipment_check", {"p_shipment_id": _rv_sid}) or {}
@@ -11126,7 +11135,10 @@ elif page == "출고 관리":
                                                        label=lambda x: line_pn(x, _pnv, internal_first=True)))
                     if _rv_inf:
                         # 확인 대기(응답 불명) — 결과를 확인하기 전에는 새 요청을 만들지 않는다(§18 A6)
-                        st.info("이 전표의 이전 요청 결과를 확인하는 중입니다 — 화면 위 [결과 다시 확인] 을 누르세요.")
+                        st.info(("이 전표" if _rv_inf.get("shipment_id") == _rv_sid
+                                 else "전표 {}".format(_rv_inf.get("ship_no") or "-"))
+                                + "의 이전 요청 결과를 확인하는 중입니다 — 확인될 때까지 모든 전표의 정정·취소를 잠급니다. "
+                                  "화면 위 [결과 다시 확인] 을 누르세요.")
                     # ── 전표 정정: 같은 전표번호 유지, 차이만 역반영 ──
                     with st.expander("전표 정정 (수량 변경 · 라인 제외)"):
                         _rv_df = _cf_pd.DataFrame([{

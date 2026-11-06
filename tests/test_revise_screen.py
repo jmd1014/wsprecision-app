@@ -490,3 +490,59 @@ def test_mock_returns_only_selected_columns():
     assert m.apply_select is True
     row = m.fetch("shipment_items", "si_id,qty", f"shipment_id=eq.{SID}")[0]
     assert set(row) == {"si_id", "qty"}, row
+
+
+def test_recheck_lookup_failure_keeps_pending(monkeypatch):
+    """r1 Codex H1·QA H1: 반영됐는데 응답 유실 → 재조회도 실패 → 확인 대기. 10초가 지나도 이력 조회가 실패하면
+    「반영되지 않았습니다」가 아니라 조회 실패 안내 + 기록·잠금 유지. 조회가 살아나면 성공 안내 1회."""
+    from tests.ship_mock import ReviseMock
+    clock = {"t": 1000.0}
+    m = ReviseMock(_w())
+    m.faults = ["transport_after", "transport_before"]
+    at = _open(monkeypatch, m, clock=lambda: clock["t"])
+    m.fetch_raise_for = "shipment_revisions"                            # 이력 조회 실패(망·스키마 캐시)
+    _cancel(at)
+    assert m.applied == 1 and _ship(m)["status"] == "CANCELLED"        # 서버에는 반영됨(확정 목록에서 빠짐)
+    assert (_inflight(at) or {}).get("shipment_id") == SID
+    assert [b for b in at.button if b.key == "cf_rv_recheck"]
+    clock["t"] += 11
+    at.button(key="cf_rv_recheck").click()
+    at.run()
+    assert not at.exception, [str(e.value) for e in at.exception]
+    t = " ".join(_texts(at))
+    assert "조회하지 못했습니다" in t and "반영되지 않았습니다" not in t, t
+    assert (_inflight(at) or {}).get("shipment_id") == SID, "조회 실패로 확인 대기 기록을 지우면 안 된다"
+    m.fetch_raise_for = None
+    clock["t"] += 5
+    at.button(key="cf_rv_recheck").click()
+    at.run()
+    assert not at.exception, [str(e.value) for e in at.exception]
+    t = " ".join(_texts(at))
+    assert "취소" in t and "반영" in t and "반영되지 않았습니다" not in t, t
+    assert not _inflight(at) and m.applied == 1
+
+
+def test_pending_on_other_shipment_locks_this_one(monkeypatch):
+    """r1 Codex H2·QA M1: 다른 전표의 확인 대기가 있으면 이 전표의 정정·취소도 잠근다(대기 기록이 덮이지 않게).
+    확인 플래그를 억지로 넣어도 RPC 를 부르지 않고, 남의 대기 기록도 그대로."""
+    from tests.ship_mock import ReviseMock
+    m = ReviseMock(_w())
+    at = _open(monkeypatch, m)
+    other = {"shipment_id": 777, "ship_no": "SH-20261105-09", "request_id": "11111111-2222-4333-8444-555555555555",
+             "action": "CANCEL", "started_at": 0.0, "summary": {}, "items": []}
+    at.text_input(key=f"cf_cx_reason_{SID}").set_value(REASON)       # 사유가 있어야 잠금이 「대기」 때문임을 본다
+    at.run()
+    assert not at.button(key="cf_cancel").disabled, "대기 없음 + 사유 있음이면 취소 버튼이 열려 있어야(대조)"
+    at.session_state["cf_rv_inflight"] = dict(other)
+    at.run()
+    assert not at.exception, [str(e.value) for e in at.exception]
+    assert at.button(key="cf_cancel").disabled, "다른 전표의 확인 대기 중엔 이 전표 취소도 잠겨야 한다"
+    assert any("SH-20261105-09" in x and "모든 전표" in x for x in _texts(at)), _texts(at)
+    at.session_state[f"cfm_cf_cancel_{SID}"] = {"request_id": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", "rev_no": 0}
+    at.run()
+    assert not at.exception, [str(e.value) for e in at.exception]
+    if [b for b in at.button if b.key == "cf_cancel_cfm_ok"]:
+        at.button(key="cf_cancel_cfm_ok").click()
+        at.run()
+    assert not _revise_calls(m) and m.applied == 0
+    assert _inflight(at) == other
