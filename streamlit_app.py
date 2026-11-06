@@ -19115,6 +19115,7 @@ elif page == "공정 관리":
                 #  ② 아니면 소재 → BOM 역조회로 이 소재를 쓰는 제품 후보
                 #     (자재 발주·사급·직접 입고 경로). 미납 수주 있는
                 #     제품을 우선 제시.
+                import utils.wo_input as _wo_in
                 _pn_hint, _pn_src = "", ""
                 _ref_poi = _lot_ref.get(_sel_lot)
                 # pandas 가 ref_id 를 float(96.0)로 바꾸면 poi_id=eq.96.0 조회가
@@ -19182,11 +19183,8 @@ elif page == "공정 관리":
                                 _open_pids = set(_open_pend)
                             except Exception:
                                 pass
-                            _bom_pns = sorted(
-                                _bp_rows,
-                                key=lambda p: (
-                                    p["product_id"] not in _open_pids,
-                                    p["pn"]))
+                            _bom_pns = _wo_in.order_bom_candidates(
+                                _bp_rows, _open_pids)
                     except Exception:
                         _bom_pns = []
 
@@ -19194,28 +19192,21 @@ elif page == "공정 관리":
                 # 강제하지 않는다 (2026-09-16: 같은 소재를 쓰는 T16ABV 를
                 # 발주 라인 힌트 20ABV 로 자동 확정해 오등록된 사고 —
                 # 작업지시서 품번과 대조해 고르도록 선택창을 항상 보인다)
-                _cands = list(_bom_pns)
-                if _pn_hint and all(p["pn"] != _pn_hint for p in _cands):
-                    _hp = _db.fetch_one("products", f"pn=eq.{_fq(_pn_hint)}",
-                                        "product_id") or {}
-                    _cands.insert(0, {"pn": _pn_hint,
-                                      "product_id": _hp.get("product_id")})
+                # 후보·라벨·기본값 계산은 utils/wo_input.pn_candidates (2026-11-06)
+                _hint = None
+                if _pn_hint:
+                    _hint = {"pn": _pn_hint, "src": _pn_src}
+                    if all(p["pn"] != _pn_hint for p in _bom_pns):
+                        _hint["product_id"] = (_db.fetch_one(
+                            "products", f"pn=eq.{_fq(_pn_hint)}",
+                            "product_id") or {}).get("product_id")
+                _pc = _wo_in.pn_candidates(_bom_pns, _open_pend, _hint,
+                                           open_pids=_open_pids)
+                _cands, _pn_labels = _pc["cands"], _pc["labels"]
                 if _cands:
-                    _pn_labels = []
-                    for p in _cands:
-                        _lb = p["pn"]
-                        if p.get("product_id") in _open_pids:
-                            _lb += (f" ← 미납 "
-                                    f"{_open_pend.get(p['product_id'], 0):,.0f}")
-                        if _pn_hint and p["pn"] == _pn_hint:
-                            _lb += f" ({_pn_src} 기준)"
-                        _pn_labels.append(_lb)
-                    _def = (next((i for i, p in enumerate(_cands)
-                                  if p["pn"] == _pn_hint), 0)
-                            if _pn_hint else 0)
                     _pn_sel = st.selectbox(
                         f"품번 (후보 {len(_cands)}건 — 작업지시서 품번과 같은지 확인)",
-                        _pn_labels, index=_def, key=f"pe_in_pnsel_{_sel_lot}",
+                        _pn_labels, index=_pc["default"], key=f"pe_in_pnsel_{_sel_lot}",
                         help="발주 라인·BOM 에서 찾은 후보입니다. 기본값이 "
                              "작업지시서의 품번과 다르면 바꾸세요. 미납 수주가 "
                              "있는 품번이 위에 표시됩니다.")
