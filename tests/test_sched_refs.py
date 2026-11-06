@@ -359,3 +359,99 @@ def test_hf2_screen_bulk_delete_enabled_with_cancelled_ref_only(monkeypatch):
     at = _open(monkeypatch, m)
     b = at.button(key=f"sch_reset_{SOI}_ask")
     assert not b.disabled, b.proto.help
+
+
+# ── 재발 방지 소묶음 B(2026-11-06, 후보 53 = 핫픽스 2 qa REQUIRED TESTS T4~T8 · L-2) ──
+def _draft_ref(m, sched_id, si_id=960):
+    from tests.test_sched_save import SOI
+    m.tables["shipment_items"].append({"si_id": si_id, "shipment_id": 71, "soi_id": SOI, "so_id": 101,
+                                       "sched_id": sched_id, "qty": 5})
+    if not any(r["shipment_id"] == 71 for r in m.tables["shipments"]):
+        m.tables["shipments"].append({"shipment_id": 71, "ship_no": "SH-20261105-01", "ship_date": "2026-11-05",
+                                      "status": "DRAFT"})
+
+
+def _sched_writes(m):
+    return [w for w in m.writes if w[1] == "so_delivery_schedule"]
+
+
+@pytest.mark.skipif(not _HAS_ST, reason="streamlit 미설치 — AppTest 불가")
+def test_b_t4_date_change_of_middle_round_with_cancelled_ref(monkeypatch):
+    """취소 라인이 가리키는 중간 회차(2)의 날짜 변경 → 새 회차 id(4) ≠ 2, 취소 라인 sched_id 무변경."""
+    from tests.test_sched_save import _three, _open, _save, _errors, _sched
+    m = _three()
+    _cancel_ref(m, 2)
+    at = _open(monkeypatch, m)
+    _save(at, m, edited_rows={1: {"납기": "2026-11-21"}})
+    assert not _errors(at), _errors(at)
+    assert _sched(m) == [(1, "2026-11-10", 1, 100.0, 0.0), (4, "2026-11-21", 2, 100.0, 0.0),
+                         (3, "2026-11-30", 3, 100.0, 0.0)], _sched(m)
+    assert [r["sched_id"] for r in m.tables["shipment_items"] if r["si_id"] == 950] == [2]
+
+
+@pytest.mark.skipif(not _HAS_ST, reason="streamlit 미설치 — AppTest 불가")
+def test_b_t5_delete_cancelled_and_draft_rounds_blocks_on_draft_only(monkeypatch):
+    """취소 라인 → 2, 작성중 SH-20261105-01 → 3. 2·3행 같이 삭제 → 작성중 번호만 문구, 쓰기 0."""
+    from tests.test_sched_save import _three, _open, _save, _errors, _sched
+    m = _three()
+    _cancel_ref(m, 2)
+    _draft_ref(m, 3)
+    at = _open(monkeypatch, m)
+    before = _sched(m)
+    _save(at, m, deleted_rows=[1, 2])
+    errs = _errors(at)
+    assert any("작성중 전표 SH-20261105-01" in e for e in errs), errs
+    assert not any("SH-20261105-09" in e for e in errs), errs
+    assert _sched(m) == before and not _sched_writes(m), m.writes
+
+
+@pytest.mark.skipif(not _HAS_ST, reason="streamlit 미설치 — AppTest 불가")
+def test_b_t6_delivered_round_with_cancelled_ref_still_blocked(monkeypatch):
+    """납품된 회차(2, 기납품 10)는 취소 라인만 참조해도 기납품 규칙으로 차단."""
+    from tests.test_sched_save import _sched_mock, _open, _save, _errors, _sched
+    m = _sched_mock([(1, "2026-11-10", 1, 100, 0), (2, "2026-11-20", 2, 100, 10), (3, "2026-11-30", 3, 100, 0)])
+    _cancel_ref(m, 2)
+    at = _open(monkeypatch, m)
+    before = _sched(m)
+    _save(at, m, deleted_rows=[1])
+    assert any("납품된 회차(2026-11-20 기납품 10개)는 삭제할 수 없습니다" in e for e in _errors(at)), _errors(at)
+    assert _sched(m) == before and not _sched_writes(m), m.writes
+
+
+@pytest.mark.skipif(not _HAS_ST, reason="streamlit 미설치 — AppTest 불가")
+def test_b_t7_bulk_delete_disabled_names_draft_only(monkeypatch):
+    """회차 1 을 취소 라인·작성중 라인이 함께 가리킴 → 전체 삭제 비활성, help 에 작성중 번호만."""
+    from tests.test_sched_save import _sched_mock, _open, SOI
+    m = _sched_mock([(1, "2026-11-10", 1, 100, 0)])
+    _cancel_ref(m, 1)
+    _draft_ref(m, 1)
+    at = _open(monkeypatch, m)
+    b = at.button(key=f"sch_reset_{SOI}_ask")
+    assert b.disabled
+    assert "SH-20261105-01" in b.proto.help and "SH-20261105-09" not in b.proto.help, b.proto.help
+
+
+@pytest.mark.skipif(not _HAS_ST, reason="streamlit 미설치 — AppTest 불가")
+def test_b_t8_delete_cancelled_ref_round_keeps_delivered_sum(monkeypatch):
+    """delivered [50, 0, 0], received 50, presched 0. 회차 2(취소 라인만 참조) 삭제 뒤 Σ납품 = received − presched."""
+    from tests.test_sched_save import _sched_mock, _open, _save, _errors, _sched, SOI
+    m = _sched_mock([(1, "2026-11-10", 1, 100, 50), (2, "2026-11-20", 2, 100, 0), (3, "2026-11-30", 3, 100, 0)])
+    _cancel_ref(m, 2)
+    at = _open(monkeypatch, m)
+    _save(at, m, deleted_rows=[1])
+    assert not _errors(at), _errors(at)
+    line = m.line(SOI)
+    left = _sched(m)
+    assert [x[0] for x in left] == [1, 3], left
+    assert sum(x[4] for x in left) == float(line["received_qty"]) - float(line.get("presched_qty") or 0) == 50.0
+
+
+@pytest.mark.skipif(not _HAS_ST, reason="streamlit 미설치 — AppTest 불가")
+def test_b_l2_mock_round_ids_never_reused(monkeypatch):
+    """목 회차 id 단조 증가(운영 SERIAL): 최댓값 회차(3)를 지우고 새 날짜를 넣으면 새 id 는 4(3 재사용 아님)."""
+    from tests.test_sched_save import _three, _open, _save, _errors, _sched
+    m = _three()
+    at = _open(monkeypatch, m)
+    _save(at, m, deleted_rows=[2], added_rows=[{"납기": "2026-12-05", "수량": 100}])
+    assert not _errors(at), _errors(at)
+    assert [x[0] for x in _sched(m)] == [1, 2, 4], _sched(m)

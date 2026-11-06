@@ -128,6 +128,11 @@ def _sched_mock(rounds):
                 return [{c: r.get(c) for c in want} for r in super().fetch(table, "*", filter_query, limit, cache)]
             return super().fetch(table, select, filter_query, limit, cache)
 
+        def _seen(self, table, rows):
+            """지운 회차 id 도 발급 기록에 남긴다 — 운영 SERIAL 처럼 재사용 없음(후보 53 L-2)."""
+            if table == "so_delivery_schedule" and rows:
+                self._seq[table] = max([self._seq.get(table, 0)] + [int(r["sched_id"]) for r in rows])
+
         def delete(self, table, filter_query):
             self._assert_dash("delete", table)
             if self.delete_mode == "raise":
@@ -135,6 +140,7 @@ def _sched_mock(rounds):
                 raise RuntimeError("ReadTimeout: 시뮬레이션")
             if self.delete_mode == "apply_raise":           # 지운 뒤 응답 유실
                 rows = self._rows(table, filter_query)
+                self._seen(table, rows)
                 ids = {id(r) for r in rows}
                 self.tables[table] = [r for r in self.tables[table] if id(r) not in ids]
                 self.writes.append(("delete_applied_raise", table, {"filter": filter_query}))
@@ -145,6 +151,7 @@ def _sched_mock(rounds):
             rows = self._rows(table, filter_query)
             if self.delete_mode == "short":
                 rows = rows[1:]
+            self._seen(table, rows)
             ids = {id(r) for r in rows}
             self.tables[table] = [r for r in self.tables[table] if id(r) not in ids]
             self.writes.append(("delete", table, {"filter": filter_query, "n": len(rows)}))
@@ -159,6 +166,8 @@ def _sched_mock(rounds):
     m.tables["so_delivery_schedule"] = [
         {"sched_id": sid, "so_id": 101, "soi_id": SOI, "due_date": due, "seq": seq, "qty": q,
          "delivered_qty": d, "note": None} for sid, due, seq, q, d in rounds]
+    # 회차 id 는 단조 증가(운영 SERIAL — 지운 최댓값도 다시 쓰지 않는다, 후보 53 L-2)
+    m._seq["so_delivery_schedule"] = max([0] + [int(r[0]) for r in rounds])
     return m
 
 
