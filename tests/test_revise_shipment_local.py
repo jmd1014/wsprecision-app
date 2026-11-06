@@ -885,6 +885,35 @@ def test_l7_failures_leave_tables_unchanged(pg):
     RESULTS["L7"] = "pass"
 
 
+@pytest.mark.parametrize("kind", ["alloc_left", "line_state"])
+def test_l7b_postconditions_catch_defect(pg, kind):
+    """사후 조건(§18 A1)이 실제로 걸리는지 — 임시 트리거로 구현 결함 상태를 만든다(같은 트랜잭션, 롤백으로 사라짐).
+    alloc_left: 충당 삭제를 막아 취소 뒤 충당이 남음 / line_state: 수주 라인 갱신 때 pending 을 어긋나게."""
+    g = _gold("cancel_basic")
+    c = pg()
+    try:
+        cur = c.cursor()
+        ids = load_world(cur, g["state"])
+        before = json.dumps(read_world(cur, ids), default=str, sort_keys=True)
+        if kind == "alloc_left":
+            cur.execute("""create function pg_temp.p31_keep() returns trigger language plpgsql as
+                           $$ begin return null; end $$""")
+            cur.execute("create trigger p31_keep before delete on shipment_allocations for each row "
+                        "execute function pg_temp.p31_keep()")
+        else:
+            cur.execute("""create function pg_temp.p31_skew() returns trigger language plpgsql as
+                           $$ begin new.pending_qty := coalesce(new.pending_qty, 0) + 1; return new; end $$""")
+            cur.execute("create trigger p31_skew before update on sales_order_items for each row "
+                        "execute function pg_temp.p31_skew()")
+        k, r = call(cur, OFF + 50, _req(g))
+        assert (k, r) == ("err", f"postcondition:{kind}"), (k, r)
+        assert json.dumps(read_world(cur, ids), default=str, sort_keys=True) == before
+    finally:
+        c.rollback()
+        c.close()
+    RESULTS.setdefault("L7b", {})[kind] = "pass"
+
+
 # ── L8 ──
 def test_l8_request_id_replay_conflict_and_reuse(pg):
     g = _gold("edit_increase")
