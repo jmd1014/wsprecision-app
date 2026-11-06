@@ -1,5 +1,5 @@
 {
- "python": "f67a58d642d7e245ee28f4b64d8009fc",
+ "python": "4c63642e6ac91b34be019ad1fc30b681",
  "sql": "9144f5594ea72a605e9f169d9e663e12",
- "local_sql_check": "로컬 SQL 등가성 통과 — commit 457de21, tests/test_revise_shipment_local.py 77 passed·0 skipped(L1 골든 60/60·무작위 200 불일치 0), 2026-11-06 15:58, wsapp_restore=2026-11-06 백업"
+ "local_sql_check": "로컬 SQL 등가성 통과 — commit e3d7315, tests/test_revise_shipment_local.py 77 passed·0 skipped(L1 골든 60/60·무작위 200 불일치 0), 2026-11-06 16:31, wsapp_restore=2026-11-06 백업"
 }
