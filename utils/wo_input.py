@@ -6,6 +6,7 @@
 - 힌트: 소재 LOT 의 입고 → 발주 라인이 가리키는 품번. 기본 선택일 뿐 강제하지 않는다
   (2026-09-16 T16ABV/20ABV 오등록 사고 — 작업지시서 품번과 대조해 고르도록 선택창을 항상 보인다).
   BOM 후보에 없으면 맨 앞에 끼워 넣는다.
+- 힌트가 휴면 품번이면 힌트로 쓰지 않고 후보에서도 빼며 안내 문구를 돌려준다(2026-11-06 후보 49).
 """
 
 
@@ -30,8 +31,14 @@ def pn_candidates(bom_rows, open_pend, hint=None, open_pids=None):
     hint = dict(hint or {})
     hint_pn = hint.get("pn") or ""
     hint_src = hint.get("src") or ""
+    notice, dropped = None, ""
+    if hint_pn and hint.get("archived"):
+        # 휴면 품번은 힌트·후보·기본값에서 뺀다 — 기본값은 힌트 없는 LOT 과 같은 규칙(2026-11-06 후보 49)
+        dropped, hint_pn = hint_pn, ""
+        notice = (f"발주 라인의 품번 {dropped} 은 휴면 처리된 품번이라 후보에서 뺐습니다 — "
+                  "작업지시서 품번을 확인하세요.")
 
-    cands = list(order_bom_candidates(bom_rows, open_pids))
+    cands = [p for p in order_bom_candidates(bom_rows, open_pids) if not dropped or p["pn"] != dropped]
     if hint_pn and all(p["pn"] != hint_pn for p in cands):
         cands.insert(0, {"pn": hint_pn, "product_id": hint.get("product_id")})
 
@@ -45,4 +52,4 @@ def pn_candidates(bom_rows, open_pend, hint=None, open_pids=None):
         labels.append(lb)
     default = (next((i for i, p in enumerate(cands) if p["pn"] == hint_pn), 0)
                if hint_pn else 0)
-    return {"cands": cands, "labels": labels, "default": default, "notice": None}
+    return {"cands": cands, "labels": labels, "default": default, "notice": notice}

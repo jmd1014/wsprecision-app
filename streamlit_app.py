@@ -19117,6 +19117,7 @@ elif page == "공정 관리":
                 #     제품을 우선 제시.
                 import utils.wo_input as _wo_in
                 _pn_hint, _pn_src = "", ""
+                _pn_hint_pid, _pn_hint_arch = None, False
                 _ref_poi = _lot_ref.get(_sel_lot)
                 # pandas 가 ref_id 를 float(96.0)로 바꾸면 poi_id=eq.96.0 조회가
                 # 실패해 힌트가 조용히 사라지고 BOM 후보 첫 항목이 기본값이
@@ -19135,21 +19136,34 @@ elif page == "공정 관리":
                         # 발주 라인에 제품이 연결돼 있으면 그 품번 (품명이
                         # "품번 (사이즈)" 형식이어도 정확, 2026-09-02),
                         # 없으면 품명 = 품번인 경우만
-                        _cand_pn = ""
+                        # 휴면 여부(archived_at)도 같이 읽는다 — 휴면 품번은
+                        # 후보·기본값에서 빼고 안내 (2026-11-06 후보 49:
+                        # W1257 → 휴면 HA80-80092 가 맨 앞·기본값으로 나옴).
+                        # 제품 id 경로에서 휴면 제품을 찾으면 품명 경로로
+                        # 넘어가지 않는다(발주 라인이 가리키는 품번은 그것)
+                        _cand_pn, _cand_pid, _cand_arch = "", None, False
                         if (_poi_row or {}).get("product_id"):
                             _pp9 = _db.fetch_one(
                                 "products",
                                 f"product_id=eq.{_fq(_poi_row['product_id'])}",
-                                "pn")
+                                "pn,archived_at")
                             _cand_pn = (_pp9 or {}).get("pn") or ""
+                            if _cand_pn:
+                                _cand_pid = _poi_row["product_id"]
+                                _cand_arch = bool(_pp9.get("archived_at"))
                         if not _cand_pn:
                             _cand_pn = (_poi_row or {}).get("item_name") or ""
-                            if not (_cand_pn and _db.fetch_one(
-                                    "products", f"pn=eq.{_fq(_cand_pn)}",
-                                    "product_id")):
+                            _pp8 = (_db.fetch_one(
+                                "products", f"pn=eq.{_fq(_cand_pn)}",
+                                "product_id,archived_at") if _cand_pn else None)
+                            if _pp8:
+                                _cand_pid = _pp8.get("product_id")
+                                _cand_arch = bool(_pp8.get("archived_at"))
+                            else:
                                 _cand_pn = ""
                         if _cand_pn:
                             _pn_hint, _pn_src = _cand_pn, "발주 라인"
+                            _pn_hint_pid, _pn_hint_arch = _cand_pid, _cand_arch
                     except Exception:
                         pass
 
@@ -19193,13 +19207,9 @@ elif page == "공정 관리":
                 # 발주 라인 힌트 20ABV 로 자동 확정해 오등록된 사고 —
                 # 작업지시서 품번과 대조해 고르도록 선택창을 항상 보인다)
                 # 후보·라벨·기본값 계산은 utils/wo_input.pn_candidates (2026-11-06)
-                _hint = None
-                if _pn_hint:
-                    _hint = {"pn": _pn_hint, "src": _pn_src}
-                    if all(p["pn"] != _pn_hint for p in _bom_pns):
-                        _hint["product_id"] = (_db.fetch_one(
-                            "products", f"pn=eq.{_fq(_pn_hint)}",
-                            "product_id") or {}).get("product_id")
+                _hint = ({"pn": _pn_hint, "src": _pn_src,
+                          "product_id": _pn_hint_pid, "archived": _pn_hint_arch}
+                         if _pn_hint else None)
                 _pc = _wo_in.pn_candidates(_bom_pns, _open_pend, _hint,
                                            open_pids=_open_pids)
                 _cands, _pn_labels = _pc["cands"], _pc["labels"]
@@ -19218,13 +19228,16 @@ elif page == "공정 관리":
                         help="이 소재를 쓰는 제품이 BOM 에 없습니다. "
                              "마스터 관리 → BOM 편집에서 등록하면 "
                              "다음부터 자동 제안됩니다.")
+                if _pc["notice"]:
+                    st.warning(_pc["notice"])
 
                 # BOM 분할 환산 — 소재 수량 → 예상 생산 수량 (제품 EA)
                 _prod0, _cvt = None, None
                 if (_in_pn or "").strip():
                     try:
                         _prod0 = _db.fetch_one("products",
-                            f"pn=eq.{_fq(_in_pn.strip())}", "product_id")
+                            f"pn=eq.{_fq(_in_pn.strip())}",
+                            "product_id,archived_at")
                         if _prod0:
                             _b0 = fetch("bom", "qty_per_pc,shared_factor",
                                 f"product_id=eq.{_fq(_prod0['product_id'])}"
@@ -19238,6 +19251,13 @@ elif page == "공정 관리":
                                     _cvt = _sf / _qpp
                     except Exception:
                         pass
+                # 휴면 품번은 투입 등록 불가 — 직접 입력·세션에 남은 옛
+                # 선택까지 여기서 막는다 (2026-11-06 후보 49)
+                _pn_archived = bool((_prod0 or {}).get("archived_at"))
+                if _pn_archived:
+                    st.error(f"{_in_pn.strip()} 은 휴면 처리된 품번입니다 — "
+                             "투입 등록할 수 없습니다. 품번을 다시 고르거나 "
+                             "마스터 관리에서 휴면을 해제하세요.")
 
                 # 투입 전 소재 외주 게이트 폐지 (2026-08-20 사용자 확정)
                 # — 투입 후 모든 공정은 라우팅 순서대로 배치 단위 처리
@@ -19301,7 +19321,7 @@ elif page == "공정 관리":
                 # 수주량 대조 (2026-09-16): 고른 품번의 미납과 예상 생산
                 # 수량이 크게 다르거나 미납이 없으면 품번 오등록 가능성 —
                 # 등록 전에 작업지시서와 대조하도록 경고만 (차단 아님)
-                if (_in_pn or "").strip() and _prod0:
+                if (_in_pn or "").strip() and _prod0 and not _pn_archived:
                     _pend9 = float(_open_pend.get(_prod0.get("product_id"), 0) or 0)
                     if _pend9 <= 0:
                         st.warning(f"{_in_pn} 은 미납 수주가 없습니다 — 작업지시서 "
@@ -19353,7 +19373,8 @@ elif page == "공정 관리":
                              "반영해 제품 수량으로 기록됩니다",
                         type="primary",
                         disabled=not (_wo_ok and _in_qty > 0
-                                      and _in_prod_qty > 0),
+                                      and _in_prod_qty > 0
+                                      and not _pn_archived),
                         key="pe_in_submit"):
                     try:
                         _wo = _wo_no.strip()
