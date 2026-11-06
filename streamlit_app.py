@@ -10559,7 +10559,9 @@ elif page == "출고 관리":
                               for x in items]}
                 try:
                     _db.log_error("manual", f"[rpc_unknown] revise_shipment (shipment {_sid0}, "
-                                            f"request {_rid0}): 응답 불명 — 확인 대기", table_name="shipments")
+                                            f"request {_rid0}): 응답 불명 — 확인 대기"
+                                            + (" · 이력 재조회 실패" if _r.get("lookup_failed") else ""),
+                                  table_name="shipments")
                 except Exception:
                     pass
                 st.rerun()
@@ -10588,7 +10590,22 @@ elif page == "출고 관리":
                                                                           _srv_t.RECHECK_NONE_TEXT)
                     st.rerun()
                 elif _rv_r.get("lookup_failed"):
-                    st.error(_srv_t.LOOKUP_FAILED_TEXT)
+                    # 조회 실패 — 기록·잠금 유지. 횟수를 세어 3회부터 직접 확인 안내(r3 qa M1), 매번 오류 기록
+                    _rv_inf_top["lookup_fails"] = int(_rv_inf_top.get("lookup_fails") or 0) + 1
+                    st.session_state["cf_rv_inflight"] = _rv_inf_top
+                    try:
+                        _db.log_error("manual", "[rpc_unknown] lookup_failed revise_shipment (shipment {}, request {}): "
+                                                "이력 재조회 실패 {}회".format(_rv_inf_top.get("shipment_id"),
+                                                                       _rv_inf_top.get("request_id"),
+                                                                       _rv_inf_top["lookup_fails"]),
+                                      table_name="shipment_revisions")
+                    except Exception:
+                        pass
+                    if _rv_inf_top["lookup_fails"] >= _srv_t.LOOKUP_FAILED_MANY:
+                        st.error("전표 {} — {}".format(_rv_inf_top.get("ship_no") or "-",
+                                                      _srv_t.LOOKUP_FAILED_MANY_TEXT))
+                    else:
+                        st.error(_srv_t.LOOKUP_FAILED_TEXT)
                 else:
                     st.info("아직 확인되지 않았습니다 — 잠시 뒤 다시 누르세요.")
 

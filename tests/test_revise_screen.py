@@ -393,7 +393,7 @@ def test_delayed_commit_pending_then_recheck_success_once(monkeypatch):
     assert m.applied == 1
 
 
-def test_pending_ten_seconds_then_not_applied(monkeypatch):
+def test_pending_twenty_seconds_then_not_applied(monkeypatch):
     from tests.ship_mock import ReviseMock
     clock = {"t": 1000.0}
     m = ReviseMock(_w())
@@ -621,6 +621,9 @@ def test_render_reads_blockers_view_without_rpc(monkeypatch):
     assert not m.rpc_calls, m.rpc_calls
     assert ("shipment_revise_blockers_v", f"shipment_id=eq.{SID}") in m.fetch_calls, m.fetch_calls
     assert n["clear"] == 0
+    # 대조: 목 install 은 db.rpc 성공 뒤 db.clear_cache 를 부른다(실제 db.rpc 처럼) — RPC 로 점검하면 세어진다
+    _dbmod.rpc("revise_shipment_check", {"p_shipment_id": SID})
+    assert n["clear"] == 1
 
 
 def test_blockers_view_missing_is_unavailable(monkeypatch):
@@ -632,3 +635,135 @@ def test_blockers_view_missing_is_unavailable(monkeypatch):
     at = _open(monkeypatch, m)
     assert at.button(key="cf_cancel").disabled and at.button(key="cf_rv_go").disabled
     assert UNAVAILABLE_TEXT in _texts(at), _texts(at)
+
+
+def _two_ships():
+    """전표 A(SID 50, si 501 500) + 전표 B(51, si 511 100, 다른 수주 라인 soi 12)."""
+    w = _w()
+    w["sales_order_items"].append(_soi(12, 100, "P1", "4PDVN-03", 500, 100))
+    w["so_delivery_schedule"].append(_rd(9, 12, 1, "2026-11-02", 100, 100))
+    w["shipments"].append(dict(w["shipments"][0], shipment_id=51, ship_no="SH-20261102-01", ship_date="2026-11-02"))
+    w["shipment_items"].append(dict(_si(511, 12, 100, 9, "P1", "4PDVN-03", 100), shipment_id=51))
+    w["shipment_allocations"].append({"alloc_id": 9, "si_id": 511, "sched_id": 9, "qty": 100})
+    w["inventory_transactions"].append(_tx(9, 511, "W05", -100))
+    return w
+
+
+def test_h2_real_flow_pending_a_locks_b_until_resolved(monkeypatch):
+    """r3 qa REQUIRED 2: A 취소 응답 불명 → B 를 열어 사유·편집해도 정정·취소 잠김(A 기록 유지, RPC 늘지 않음)
+    → 20초 뒤 A 미반영 → B 풀림 → B 취소 반영. A 는 그대로."""
+    from tests.ship_mock import ReviseMock
+    clock = {"t": 1000.0}
+    m = ReviseMock(_two_ships())
+    m.faults = ["transport_before", "transport_before"]
+    at = _open(monkeypatch, m, clock=lambda: clock["t"])
+    A, B = SHIP_NO, "SH-20261102-01"
+
+    def _run(no):                     # 전표가 둘이면 매 rerun 마다 연 전표를 다시 지정(목록 기본 선택에 끌려가지 않게)
+        at.session_state["ship_open_no"] = no
+        at.run()
+        assert not at.exception, [str(e.value) for e in at.exception]
+
+    at.text_input(key=f"cf_cx_reason_{SID}").set_value(REASON)
+    _run(A)
+    at.button(key="cf_cancel").click()
+    _run(A)
+    at.button(key="cf_cancel_cfm_ok").click()
+    _run(A)
+    assert (_inflight(at) or {}).get("shipment_id") == SID and m.applied == 0
+    n_calls = len(_revise_calls(m))
+    assert n_calls == 2, m.rpc_calls
+    _run(B)
+    at.text_input(key="cf_cx_reason_51").set_value(REASON)
+    at.session_state["cf_rv_ed_51_0"] = {"edited_rows": {0: {"정정 수량": 90}}, "added_rows": [], "deleted_rows": []}
+    at.text_input(key="cf_rv_reason_51").set_value(REASON)
+    _run(B)
+    assert at.button(key="cf_cancel").disabled and at.button(key="cf_rv_go").disabled
+    assert _inflight(at)["shipment_id"] == SID and len(_revise_calls(m)) == n_calls
+    clock["t"] += 21
+    at.button(key="cf_rv_recheck").click()
+    _run(B)
+    assert not _inflight(at)
+    _run(B)
+    assert not at.button(key="cf_cancel").disabled, "A 대기가 풀리면 B 취소가 열린다"
+    at.button(key="cf_cancel").click()
+    _run(B)
+    at.button(key="cf_cancel_cfm_ok").click()
+    _run(B)
+    assert m.applied == 1 and _ship(m, 51)["status"] == "CANCELLED"
+    assert _ship(m)["status"] == "CONFIRMED" and _ship(m)["rev_no"] == 0
+
+
+@pytest.mark.parametrize("action", ["CANCEL", "EDIT"])
+def test_cf_rv_run_refuses_when_pending_appears_after_gate(monkeypatch, action):
+    """r3 qa REQUIRED 2(이중 거부 분기): 확인 창을 통과한 뒤 호출 직전에 확인 대기 기록이 생기면(같은 세션의 다른
+    rerun 모사 — build_payload 를 감싸 그 사이에 기록을 넣음) _cf_rv_run 이 RPC 를 부르지 않고 안내만 한다."""
+    import utils.shipment_revise as SRm
+    from tests.ship_mock import ReviseMock
+    m = ReviseMock(_w())
+    at = _open(monkeypatch, m)
+    other = {"shipment_id": 777, "ship_no": "SH-20261105-09", "request_id": "11111111-2222-4333-8444-555555555555",
+             "action": "CANCEL", "since": 0.0, "summary": {}, "items": []}
+    orig = SRm.build_payload
+
+    def _hooked(*a, **k):
+        import streamlit as _st
+        _st.session_state["cf_rv_inflight"] = dict(other)
+        return orig(*a, **k)
+
+    monkeypatch.setattr(SRm, "build_payload", _hooked)
+    if action == "CANCEL":
+        _cancel(at)
+    else:
+        _edit(at, m, {501: 400})
+    assert not _revise_calls(m) and m.applied == 0
+    assert any("이전 요청의 결과를 확인하기 전에는" in t for t in _texts(at)), _texts(at)
+    assert _inflight(at) == other
+
+
+@pytest.mark.parametrize("action", ["CANCEL", "EDIT"])
+def test_payload_guard_failure_shows_error_logs_and_calls_nothing(monkeypatch, action):
+    """r3 qa REQUIRED 4: build_payload 가 실패하면 안내 + 오류 기록 1건, RPC 0, 확인 플래그 남지 않음."""
+    import utils.shipment_revise as SRm
+    from tests.ship_mock import ReviseMock
+    m = ReviseMock(_w())
+    at = _open(monkeypatch, m)
+
+    def _boom(*a, **k):
+        raise ValueError("build_payload: 전표 라인에 shipment_id 가 없음")
+
+    monkeypatch.setattr(SRm, "build_payload", _boom)
+    if action == "CANCEL":
+        _cancel(at)
+        word, flag = "취소", f"cfm_cf_cancel_{SID}"
+    else:
+        _edit(at, m, {501: 400})
+        word, flag = "정정", f"cfm_cf_rv_{SID}"
+    assert not _revise_calls(m) and m.applied == 0
+    assert any(f"{word} 내용을 준비하지 못했습니다" in t for t in _texts(at)), _texts(at)
+    assert len([e for e in m.log_errors if f"{word} 준비 실패" in e[1]]) == 1, m.log_errors
+    assert flag not in at.session_state or not at.session_state[flag]
+
+
+def test_lookup_failure_five_times_keeps_pending_and_escalates_text(monkeypatch):
+    """r3 qa REQUIRED 3·M1: 이력 조회 실패 5회 연속 → 기록·잠금 유지, 예외 없음, 3회째부터 직접 확인 안내, 매번 오류 기록."""
+    from tests.ship_mock import ReviseMock
+    from utils.shipment_revise import LOOKUP_FAILED_MANY_TEXT, LOOKUP_FAILED_TEXT
+    clock = {"t": 1000.0}
+    m = ReviseMock(_w())
+    m.faults = ["transport_before", "transport_before"]
+    at = _open(monkeypatch, m, clock=lambda: clock["t"])
+    m.fetch_raise_for = "shipment_revisions"
+    _cancel(at)
+    assert _inflight(at)
+    clock["t"] += 30
+    for i in range(1, 6):
+        at.button(key="cf_rv_recheck").click()
+        at.run()
+        assert not at.exception, [str(e.value) for e in at.exception]
+        t = " ".join(_texts(at))
+        assert (LOOKUP_FAILED_MANY_TEXT in t) if i >= 3 else (LOOKUP_FAILED_TEXT in t), (i, t)
+        assert "반영되지 않은 것으로" not in t
+        assert (_inflight(at) or {}).get("lookup_fails") == i
+    assert at.button(key="cf_cancel").disabled
+    assert len([e for e in m.log_errors if "lookup_failed" in e[1]]) == 5, m.log_errors

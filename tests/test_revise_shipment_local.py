@@ -21,6 +21,7 @@ L13 전수 드라이런: 복원 DB 의 확정 전표 전부 BEGIN → CANCEL →
 """
 import copy
 import datetime as dt
+import decimal
 import glob
 import importlib.util
 import json
@@ -991,7 +992,7 @@ def test_l8_request_id_replay_conflict_and_reuse(pg):
         c.rollback()
         c.close()
     # 두 세션 동시 같은 요청 → 하나 반영, 다른 하나는 기다렸다가 replayed(stale_rev 아님)
-    with World(pg, g["state"]):
+    with World(pg, g["state"]) as wd:
         a = pg()
         try:
             k, r = call(a.cursor(), OFF + 50, _req(g), savepoint=False)
@@ -1003,6 +1004,14 @@ def test_l8_request_id_replay_conflict_and_reuse(pg):
             a.close()
         th.join(30)
         assert out["out"][0] == "ok" and out["out"][1]["replayed"], out
+        # r3(data REQ 3): 유니크 인덱스 대신 전표 잠금 + 재실행 판정 — 이력 행 = 라인 수, 원장은 A 의 반영분만
+        rid = _req(g)["request_id"]
+        n_rev = _q1(pg, "select count(*) from shipment_revisions where request_id = %s", (rid,))[0][0]
+        assert n_rev == len(_req(g)["lines"]), n_rev
+        n_tx = _q1(pg, "select count(*) from inventory_transactions where ref_table = 'shipment_items' "
+                       "and ref_id = any(%s)", (wd.ids["sis"],))[0][0]
+        assert n_tx == len(g["state"]["inventory_transactions"]) + r["inc_txns"] + r["restored_txns"], n_tx
+        RESULTS["L8_concurrent"] = {"revisions": n_rev, "ledger_rows": n_tx, "b_replayed": True}
     RESULTS["L8"] = "pass"
 
 
@@ -1168,7 +1177,7 @@ def _line_alloc(cur, si):
     return float(cur.fetchone()[0])
 
 
-def _check_after(cur, sid, b, changed, so_ids):
+def _check_after(cur, sid, b, changed, so_ids, dq_may_rise=False):
     """성공한 정정·취소 뒤 외부 불변식 → 위반 목록. changed = {si: 정정 뒤 수량}(취소면 전 라인 0),
     so_ids = 함수가 머리글을 다시 계산한 수주(결과 so_ids) — 그 밖의 수주 머리글은 무접촉이라 비교하지 않는다
     (복원 DB 에 원래 어긋난 머리글이 있음: so 59·60 PARTIAL·활성 라인 전부 DELIVERED — 범위 밖 관찰)."""
@@ -1197,7 +1206,8 @@ def _check_after(cur, sid, b, changed, so_ids):
         if header_status(lines, hs) != hs:
             errs.append(f"so {so} 머리글 {hs} ≠ {header_status(lines, hs)}")
     for k in DQ_CODES:
-        if a["dq"].get(k, 0) > b["dq"].get(k, 0):
+        # 증가분을 실을 회차 여유가 없어 미충당(unallocated 안내, §4-7 #11 · 069 와 같음)이면 두 dq 가 늘 수 있다(설계)
+        if not dq_may_rise and a["dq"].get(k, 0) > b["dq"].get(k, 0):
             errs.append(f"dq {k} {b['dq'].get(k, 0)} → {a['dq'].get(k, 0)}")
     return errs
 
@@ -1296,6 +1306,189 @@ def test_l13b_edit_dry_run_every_confirmed(pg):
         bad = {no: code for no, code in rej.items() if code not in DATA_REASON_CODES and code != "use_cancel"}
         assert not bad, (name, bad)
         assert {no for no, code in rej.items() if code in DATA_REASON_CODES} <= EXPECTED_REJECTED_SHIPS, (name, rej)
+
+
+# ── L13c ── 증가 운영 형태 드라이런(r3, data M2·qa REQUIRED 6)
+INC_OK_REJECTS = {"line_closed", "over_pending", "line_unlinked"} | DATA_REASON_CODES
+
+
+def _rows(cur, sql, args=()):
+    cur.execute(sql, args)
+    cols = [d[0] for d in cur.description]
+    out = []
+    for r in cur.fetchall():
+        d = {}
+        for k, v in zip(cols, r):
+            if isinstance(v, decimal.Decimal):
+                v = float(v)
+            elif isinstance(v, (dt.date, dt.datetime)):
+                v = v.isoformat()
+            d[k] = v
+        out.append(d)
+    return out
+
+
+def _screen_state(cur, sid, rev, ship_date):
+    """화면 _cf_rv_state 와 같은 열·같은 범위의 상태(build_payload 입력)."""
+    items = _rows(cur, "select si_id, shipment_id, soi_id, so_id, sched_id, product_id, pn, customer_pn, qty, unit, "
+                       "so_number from shipment_items where shipment_id = %s order by si_id", (sid,))
+    sis = [x["si_id"] for x in items]
+    sois = sorted({x["soi_id"] for x in items if x["soi_id"] is not None})
+    pids = sorted({x["product_id"] for x in items if x["product_id"]})
+    return {"shipments": [{"shipment_id": sid, "rev_no": rev or 0, "ship_date": ship_date}],
+            "shipment_items": items,
+            "shipment_allocations": _rows(cur, "select alloc_id, si_id, sched_id, qty from shipment_allocations "
+                                               "where si_id = any(%s) order by alloc_id", (sis,)),
+            "inventory_transactions": _rows(cur, "select txn_id, ref_table, ref_id, txn_type, lot_number, qty, product_id, "
+                                                 "material_id from inventory_transactions where ref_table='shipment_items' "
+                                                 "and txn_type='ISSUE' and ref_id = any(%s) order by txn_id", (sis,)),
+            "sales_order_items": _rows(cur, "select soi_id, so_id, qty, received_qty, pending_qty, unit, status "
+                                            "from sales_order_items where soi_id = any(%s)", (sois,)),
+            "so_delivery_schedule": _rows(cur, "select sched_id, so_id, soi_id, seq, due_date, qty, delivered_qty "
+                                               "from so_delivery_schedule where soi_id = any(%s) order by sched_id",
+                                          (sois,)),
+            "product_lot_stock_v": _rows(cur, "select product_id, lot_number, remain_qty, first_output_date "
+                                              "from product_lot_stock_v where product_id = any(%s) and remain_qty > 0 "
+                                              "order by first_output_date, lot_number", (pids,))}
+
+
+def test_l13c_increase_dry_run_every_confirmed(pg):
+    """확정 전표마다 미납이 남은 제품 연결 라인 하나에 +1(화면과 같은 build_payload, allow_over) → 거부는 정해진 코드만,
+    postcondition:* 0건, 성공 건은 외부 불변식 위반 0 → ROLLBACK."""
+    from utils.shipment_revise import build_payload
+    c = pg()
+    out = {"ok": 0, "rejected": {}, "no_candidate": 0, "unallocated": 0}
+    errs, bad, slow = [], {}, (0.0, None)
+    try:
+        cur = c.cursor()
+        cur.execute("select shipment_id, ship_no, rev_no, ship_date from shipments where status='CONFIRMED' "
+                    "and shipment_id < %s order by shipment_id", (OFF,))
+        ships = cur.fetchall()
+        for sid, no, rev, sdate in ships:
+            cur.execute("""select si.si_id, si.qty from shipment_items si
+                             join sales_order_items l on l.soi_id = si.soi_id
+                             join sales_orders o on o.so_id = l.so_id
+                            where si.shipment_id = %s and nullif(si.product_id, '') is not null
+                              and coalesce(l.qty, 0) - coalesce(l.received_qty, 0) >= 1
+                              and upper(coalesce(l.status, '')) not in ('CLOSED', 'CANCELLED', 'REPLACED')
+                              and upper(coalesce(o.status, '')) not in ('CLOSED', 'CANCELLED', 'CANCELED')
+                            order by si.si_id limit 1""", (sid,))
+            pick = cur.fetchone()
+            if not pick:
+                out["no_candidate"] += 1
+                continue
+            si, q = pick[0], float(pick[1])
+            cur.execute("savepoint dry")
+            b = _inv(cur, sid)
+            payload = build_payload(_screen_state(cur, sid, rev, str(sdate)), sid, {si: q + 1}, "증가 드라이런", "시험",
+                                    True, str(uuid.uuid4()))
+            payload.pop("shipment_id", None)
+            t0 = time.perf_counter()
+            k, r = call(cur, sid, payload, savepoint=False)
+            el = time.perf_counter() - t0
+            if el > slow[0]:
+                slow = (el, no)
+            if k == "ok":
+                out["ok"] += 1
+                unal = any(e.get("kind") == "unallocated" for e in r.get("info") or [])
+                out["unallocated"] += unal
+                errs += [(no, e) for e in _check_after(cur, sid, b, {si: q + 1}, r.get("so_ids") or [],
+                                                       dq_may_rise=unal)]
+            else:
+                out["rejected"][no] = r
+                if r.split(":")[0] not in INC_OK_REJECTS:
+                    bad[no] = r
+            cur.execute("rollback to savepoint dry")
+    finally:
+        c.rollback()
+        c.close()
+    out.update({"confirmed": len(ships), "post_errors": errs, "unexpected_rejects": bad,
+                "slowest_sec": round(slow[0], 3), "slowest": slow[1]})
+    RESULTS["L13c"] = out
+    assert not [v for v in out["rejected"].values() if v.startswith("postcondition")], out["rejected"]
+    assert not bad, bad
+    assert not errs, errs
+
+
+# ── L14 ── 뷰 shipment_revise_blockers_v 실DB(r3, qa M4·REQUIRED 5)
+def _model_world(cur):
+    """모델 check 용 전체 상태(복원 DB 의 실제 행)."""
+    return {"shipments": _rows(cur, "select shipment_id, ship_no, ship_date, status, rev_no from shipments"),
+            "shipment_items": _rows(cur, "select si_id, shipment_id, soi_id, product_id, qty from shipment_items"),
+            "shipment_allocations": _rows(cur, "select alloc_id, si_id, sched_id, qty from shipment_allocations"),
+            "inventory_transactions": _rows(cur, "select txn_id, ref_table, ref_id, txn_type, lot_number, qty, product_id, "
+                                                 "material_id from inventory_transactions where ref_table='shipment_items' "
+                                                 "and txn_type='ISSUE'"),
+            "so_delivery_schedule": _rows(cur, "select sched_id, soi_id, qty, delivered_qty, due_date from so_delivery_schedule"),
+            "sales_order_items": _rows(cur, "select soi_id, so_id, qty, received_qty, status from sales_order_items"),
+            "shipment_revisions": _rows(cur, "select rev_id, shipment_id, action, si_id from shipment_revisions"),
+            "sales_month_close": _rows(cur, "select ym from sales_month_close")}
+
+
+def test_l14_blockers_view_equals_function_and_model(pg):
+    from utils.shipment_revise import check
+    c = pg()
+    res = {"confirmed": 0, "blocked": {}, "mismatch": []}
+    try:
+        cur = c.cursor()
+        world = _model_world(cur)
+        for sh in sorted((s for s in world["shipments"] if s["status"] == "CONFIRMED" and s["shipment_id"] < OFF),
+                         key=lambda s: s["shipment_id"]):
+            sid = sh["shipment_id"]
+            res["confirmed"] += 1
+            cur.execute("select chk from shipment_revise_blockers_v where shipment_id = %s", (sid,))
+            rows = cur.fetchall()
+            cur.execute("select public.revise_shipment_check(%s)", (sid,))
+            fn = cur.fetchone()[0]
+            if len(rows) != 1 or rows[0][0] != fn:
+                res["mismatch"].append((sh["ship_no"], "view≠function"))
+                continue
+            mo = check(world, sid)
+            mo_lines = {str(k): sorted(v) for k, v in mo["lines"].items()}
+            fn_lines = {k: sorted(v) for k, v in (fn.get("lines") or {}).items()}
+            if (mo_lines != fn_lines or bool(mo["month_closed"]) != bool(fn.get("month_closed"))
+                    or bool(mo["partial_cancel_legacy"]) != bool(fn.get("partial_cancel_legacy"))):
+                res["mismatch"].append((sh["ship_no"], {"sql": fn_lines, "model": mo_lines}))
+            if fn_lines:
+                res["blocked"][sh["ship_no"]] = fn_lines
+        cur.execute("select count(*) from shipment_revise_blockers_v v join shipments s using (shipment_id) "
+                    "where s.status <> 'CONFIRMED'")
+        assert cur.fetchone()[0] == 0
+        # 권한·옵션·인덱스
+        for role in ("anon", "authenticated"):
+            cur.execute("savepoint r")
+            cur.execute(f"set local role {role}")
+            try:
+                cur.execute("select 1 from shipment_revise_blockers_v limit 1")
+                assert False, f"{role} 가 뷰를 읽음"
+            except Exception as e:
+                assert "permission" in str(e).lower() or "권한" in str(e), e
+            cur.execute("rollback to savepoint r")
+        cur.execute("select reloptions from pg_class where relname = 'shipment_revise_blockers_v'")
+        assert "security_invoker=true" in (cur.fetchone()[0] or []), "security_invoker"
+        cur.execute("select privilege_type from information_schema.role_table_grants "
+                    "where table_name = 'shipment_revise_blockers_v' and grantee = 'service_role'")
+        res["service_role_privileges"] = sorted(r[0] for r in cur.fetchall())
+        assert res["service_role_privileges"] == ["SELECT"], res["service_role_privileges"]
+        cur.execute("select indexname, indexdef from pg_indexes where tablename = 'shipment_revisions' "
+                    "and indexname like 'shipment_revisions_request%%'")
+        idx = dict(cur.fetchall())
+        res["indexes"] = idx
+        assert set(idx) == {"shipment_revisions_request_idx"} and "UNIQUE" not in idx["shipment_revisions_request_idx"], idx
+        cur.execute("explain (analyze, format json) select shipment_id, chk from shipment_revise_blockers_v "
+                    "where shipment_id = %s limit 1", (ships_first(cur),))
+        res["explain_filtered_ms"] = cur.fetchone()[0][0]["Execution Time"]
+    finally:
+        c.rollback()
+        c.close()
+    RESULTS["L14"] = res
+    assert not res["mismatch"], res["mismatch"]
+    assert set(res["blocked"]) == EXPECTED_REJECTED_SHIPS, sorted(set(res["blocked"]) ^ EXPECTED_REJECTED_SHIPS)
+
+
+def ships_first(cur):
+    cur.execute("select min(shipment_id) from shipments where status = 'CONFIRMED' and shipment_id < %s", (OFF,))
+    return cur.fetchone()[0]
 
 
 @pytest.fixture(scope="module", autouse=True)

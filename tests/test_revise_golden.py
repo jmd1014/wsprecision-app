@@ -573,6 +573,35 @@ def g_replay_uppercase_request_id(n):
     return dict({t: st2[t] for t in STATE_TABLES}, _requests={req["request_id"]: req}),         dict(req, request_id=req["request_id"].upper())
 
 
+# ── r2 리뷰 분류(2026-11-06 17:41) 추가분 ──
+def g_reject_round_short_increase_round(n):
+    """r3(data M1·qa M2): 증가 payload 가 가리키는 회차 2 에 다른 확정 전표(51)의 충당 400 > 납품완료 300(전부터 어긋남)
+    → 실행 때 round_short(회차 2)로 먼저 거부(사후 조건 postcondition:round 가 아니라). 쓰기 없음."""
+    w = _w(so_delivery_schedule=[_rd(1, 11, 1, "2026-11-01", 500, 500), _rd(2, 11, 2, "2026-11-10", 1000, 300),
+                                 _rd(3, 11, 3, "2026-11-20", 1000, 0)])
+    w["shipments"].append(dict(w["shipments"][0], shipment_id=51, ship_no="SH-20261102-01", ship_date="2026-11-02"))
+    w["shipment_items"].append(dict(_si(601, 11, 100, 2, "P1", "4PDVN-03", 400), shipment_id=51))
+    w["shipment_allocations"].append({"alloc_id": 2, "si_id": 601, "sched_id": 2, "qty": 400})
+    w["inventory_transactions"].append(_tx(3, 601, "W01", -400))
+    st, req = _edit(n, w, {501: 600})
+    assert [x["sched_id"] for x in req["inc"]["scheds"]] == [2], req["inc"]
+    return st, req
+
+
+def g_edit_increase_decimal_split(n):
+    """r3(Codex REQ 3): 소수 6자리 분할 — +0.25 가 회차 2(여유 0.123457)·회차 3 으로, LOT W03(잔량 0.1)·W04 로 나뉨.
+    payload 수량은 6자리로 반올림(_r6), SQL 의 회차·충당·ISSUE 합 검증(1e-9)을 그대로 통과해야 한다."""
+    w = _w(sales_order_items=[_soi(11, 100, "P1", "4PDVN-03", 2000.5, 500)],
+           so_delivery_schedule=[_rd(1, 11, 1, "2026-11-01", 500, 500), _rd(2, 11, 2, "2026-11-10", 0.123457, 0),
+                                 _rd(3, 11, 3, "2026-11-20", 1000, 0)],
+           product_lot_stock_v=[_lot("P1", "W03", 0.1, "2026-10-01"), _lot("P1", "W04", 700, "2026-10-05")])
+    st, req = _edit(n, w, {501: 500.25})
+    inc = req["inc"]
+    assert sorted((x["sched_id"], x["delta"]) for x in inc["scheds"]) == [(2, 0.123457), (3, 0.126543)], inc
+    assert [(t["lot_number"], t["qty"]) for t in inc["txns"]] == [("W03", -0.1), ("W04", -0.15)], inc
+    return st, req
+
+
 SCEN = {k[2:]: v for k, v in sorted(globals().items()) if k.startswith("g_") and callable(v)}
 
 

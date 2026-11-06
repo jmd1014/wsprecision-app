@@ -82,12 +82,13 @@ def request_md5(req):
       |t=<si:product:qty:unit:lot:work_order;…>
     """
     inc = req.get("inc") or {}
-    lines = sorted((int(l["si_id"]), _f(l.get("qty_before")), _f(l.get("qty_after")))
+    # 수량은 Decimal 그대로(r3 Codex L1 — float 변환은 아주 큰 정수를 합쳐 SQL numeric 과 달라진다)
+    lines = sorted((int(l["si_id"]), _dec(l.get("qty_before")), _dec(l.get("qty_after")))
                    for l in (req.get("lines") or []))
-    exp = sorted((int(e["soi_id"]), _f(e.get("received"))) for e in (inc.get("expected_received_before") or []))
-    sch = sorted((int(s["sched_id"]), int(s["soi_id"]), _f(s.get("delta"))) for s in (inc.get("scheds") or []))
-    alc = sorted((int(a["si_id"]), int(a["sched_id"]), _f(a.get("qty"))) for a in (inc.get("allocs") or []))
-    txs = sorted((int(t["si_id"]), str(t.get("product_id") or ""), _f(t.get("qty")), str(t.get("unit") or ""),
+    exp = sorted((int(e["soi_id"]), _dec(e.get("received"))) for e in (inc.get("expected_received_before") or []))
+    sch = sorted((int(s["sched_id"]), int(s["soi_id"]), _dec(s.get("delta"))) for s in (inc.get("scheds") or []))
+    alc = sorted((int(a["si_id"]), int(a["sched_id"]), _dec(a.get("qty"))) for a in (inc.get("allocs") or []))
+    txs = sorted((int(t["si_id"]), str(t.get("product_id") or ""), _dec(t.get("qty")), str(t.get("unit") or ""),
                   str(t.get("lot_number") or ""), str(t.get("work_order") or "")) for t in (inc.get("txns") or []))
     s = "|".join([
         "a=" + str(req.get("action") or ""),
@@ -344,6 +345,15 @@ def _apply(st, req, today, now):
     inc_q = {si: a - b for si, (b, a) in chg.items() if a > b + EPS}
     for code, ids in data_reasons(st, sid, target, dec):
         raise Reject(code, ",".join(str(i) for i in ids))
+    # r3(data M1·qa M2): 증가 payload 회차에 전부터 Σ충당(모든 전표) > 납품완료 → round_short(사후 조건보다 먼저)
+    inc0 = req.get("inc") or {}
+    pay_sched = {int(x["sched_id"]) for x in (inc0.get("scheds") or [])}
+    rb0 = _by(st["so_delivery_schedule"], "sched_id")
+    bad = sorted(sc for sc in pay_sched if sc in rb0
+                 and sum(_f(a["qty"]) for a in st["shipment_allocations"] if a["sched_id"] == sc)
+                 > _f(rb0[sc].get("delivered_qty")) + EPS)
+    if bad:
+        raise Reject("round_short", ",".join(str(i) for i in bad))
     # 건드리는 회차(사후 조건 용 — 환원 전 충당 회차 + 증가 payload 회차), SQL v_rounds 와 같은 집합
     touched = {a["sched_id"] for a in st["shipment_allocations"] if a["si_id"] in chg}
     # 증가분 형식 검사(값 검사는 감소 적용 뒤)
@@ -900,6 +910,9 @@ PENDING_TEXT = ("반영 여부를 확인하지 못했습니다 — 잠시 뒤 [�
 RECHECK_NONE_TEXT = ("20초 동안 기록이 없습니다 — 반영되지 않은 것으로 보입니다. "
                      "화면을 새로 열어 전표의 정정본 번호를 확인한 뒤 다시 시도하세요.")
 LOOKUP_FAILED_TEXT = "정정·취소 기록을 조회하지 못했습니다(통신·서버 오류) — 잠시 뒤 다시 누르세요. 확인 대기는 그대로 둡니다."
+LOOKUP_FAILED_MANY = 3                   # 이 횟수부터 안내를 바꾼다(r3 qa M1)
+LOOKUP_FAILED_MANY_TEXT = ("출고 전표 이력에서 정정본 번호를 직접 확인하세요. "
+                           "화면을 새로 고치면 잠금은 풀리지만 이 요청의 결과 안내는 사라집니다.")
 UNAVAILABLE_TEXT = "정정·취소 기능(서버 함수)을 쓸 수 없습니다 — 관리자에게 알려 주세요. " + NOTHING
 
 

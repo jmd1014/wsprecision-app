@@ -114,7 +114,7 @@ def test_unavailable_first_is_blocked():
     assert r["state"] == "unavailable"
 
 
-def test_recheck_ten_second_rule():
+def test_recheck_twenty_second_rule():
     """Codex REQUIRED 5(r2: 20초): 확인 대기 → 20초 전 재조회 없음 = 계속 대기, 20초 뒤 없음 = 미반영, 있으면 성공."""
     from utils.shipment_revise import recheck
     assert recheck(lambda: None, since=100.0, now=110.5)["state"] == "pending"
@@ -206,3 +206,32 @@ def test_since_after_unknown_then_not_applied_retries():
     r, _ = _run(_seq(db.RpcTransportError("timeout"), db.RpcRejected("55P03", "lock"), db.RpcRejected("55P03", "lock"),
                      db.RpcRejected("55P03", "lock")), clock=clock)
     assert r["state"] == "pending" and r["since"] == t0, r
+
+
+def test_since_fixed_to_slow_last_unknown_response():
+    """r3 qa REQUIRED 1: 마지막 불명 호출이 느린 경우 — since = 그 응답을 받은 시각(호출 시작이 아니다).
+    1차 즉시 전송 오류(1000) → 재시도 대기 2초 → 2차 시작 1002, 9초 뒤 전송 오류 → since 1011."""
+    from utils.shipment_revise import recheck
+    clock = Clock()
+    n = []
+
+    def call():
+        n.append(1)
+        if len(n) == 2:
+            clock.t += 9
+        raise db.RpcTransportError("reset")
+
+    r, _ = _run(call, clock=clock)
+    assert r["state"] == "pending" and len(n) == 2, (r, n)
+    assert r["started_at"] == 1002.0 and r["since"] == 1011.0, r
+    assert recheck(lambda: None, r["since"], now=1030.9)["state"] == "pending"
+    assert recheck(lambda: None, r["since"], now=1031.0)["state"] == "not_applied"
+
+
+def test_build_payload_rejects_items_without_shipment_id():
+    """r3 qa REQUIRED 4: 전표 라인에 shipment_id 가 없으면(품목 조회 select 누락) ValueError — 조용히 거르지 않는다."""
+    import uuid
+    from utils.shipment_revise import build_payload
+    st = {"shipments": [{"shipment_id": 50, "rev_no": 0}], "shipment_items": [{"si_id": 501, "qty": 500}]}
+    with pytest.raises(ValueError):
+        build_payload(st, 50, {}, "x", "y", False, str(uuid.uuid4()), action="CANCEL")

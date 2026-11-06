@@ -116,7 +116,7 @@ def test_request_index_not_unique_and_view_locked_down():
                      r"\(shipment_id, request_id\)\s+WHERE request_id IS NOT NULL;", CODE)
     v = re.search(r"CREATE OR REPLACE VIEW public\.shipment_revise_blockers_v(.*?);", CODE, re.S).group(1)
     assert "security_invoker = true" in v and "public.revise_shipment_check(s.shipment_id)" in v
-    assert "REVOKE ALL ON public.shipment_revise_blockers_v FROM PUBLIC, anon, authenticated;" in CODE
+    assert "REVOKE ALL ON public.shipment_revise_blockers_v FROM PUBLIC, anon, authenticated, service_role;" in CODE  # r3
     assert "GRANT SELECT ON public.shipment_revise_blockers_v TO service_role;" in CODE
     assert CODE.index("shipment_revise_blockers_v") < CODE.index("NOTIFY pgrst")
 
@@ -126,3 +126,14 @@ def test_precision_check_before_md5_and_casts():
     b = _body("revise_shipment")
     i_prec = b.index("HINT = 'precision'")
     assert b.index("HINT = 'shape'") < i_prec < b.index("v_md5 := md5(") < b.index("request_id = v_req")
+
+
+def test_increase_round_short_before_decrease_and_revert_notify():
+    """r3: 증가 payload 회차의 round_short 선거부가 데이터 사유 판정 뒤·감소 적용 앞, 되돌리기 SQL 끝에 NOTIFY pgrst."""
+    b = _body("revise_shipment")
+    i_reason = b.index("public.revise_shipment_reasons(p_shipment_id, v_target, v_dec)")
+    i_inc_rs = b.index("RAISE EXCEPTION 'round_short'")
+    i_dec = b.index("FOR v_si IN SELECT k::integer FROM jsonb_object_keys(v_dec)")
+    assert i_reason < i_inc_rs < i_dec
+    head = SQL[:re.search(r"^ALTER TABLE public\.shipment_revisions$", SQL, re.M).start()]
+    assert "--   NOTIFY pgrst, 'reload schema';" in head

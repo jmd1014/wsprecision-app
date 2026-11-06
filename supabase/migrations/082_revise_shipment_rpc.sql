@@ -25,6 +25,7 @@
 --   DROP FUNCTION IF EXISTS public.revise_shipment_reasons(integer, integer[], jsonb);
 --   DROP INDEX IF EXISTS public.shipment_revisions_request_idx;
 --   ALTER TABLE public.shipment_revisions DROP COLUMN IF EXISTS info, DROP COLUMN IF EXISTS request_id;
+--   NOTIFY pgrst, 'reload schema';
 -- ════════════════════════════════════════════════════════════
 
 ALTER TABLE public.shipment_revisions
@@ -403,6 +404,18 @@ BEGIN
     IF jsonb_array_length(v_reasons) > 0 THEN
         RAISE EXCEPTION '%', v_reasons->0->>'code' USING ERRCODE = 'P0001',
             HINT = (SELECT string_agg(x, ',') FROM jsonb_array_elements_text(v_reasons->0->'ids') x);
+    END IF;
+    -- r3(data M1·qa M2): 증가 payload 가 가리키는 회차에 전부터 Σ충당(모든 전표) > 납품완료면 round_short 로 먼저 거부
+    -- (사후 조건 postcondition:round 가 「서버 검증」으로 거부하기 전에 설명 가능한 데이터 사유로). 모델도 같은 자리
+    IF EXISTS (SELECT 1 FROM so_delivery_schedule d
+                WHERE d.sched_id IN (SELECT (s->>'sched_id')::integer FROM jsonb_array_elements(v_scheds) s)
+                  AND COALESCE((SELECT SUM(a.qty) FROM shipment_allocations a WHERE a.sched_id = d.sched_id), 0)
+                      > COALESCE(d.delivered_qty, 0) + 1e-9) THEN
+        RAISE EXCEPTION 'round_short' USING ERRCODE = 'P0001',
+            HINT = (SELECT string_agg(d.sched_id::text, ',' ORDER BY d.sched_id) FROM so_delivery_schedule d
+                     WHERE d.sched_id IN (SELECT (s->>'sched_id')::integer FROM jsonb_array_elements(v_scheds) s)
+                       AND COALESCE((SELECT SUM(a.qty) FROM shipment_allocations a WHERE a.sched_id = d.sched_id), 0)
+                           > COALESCE(d.delivered_qty, 0) + 1e-9);
     END IF;
 
     -- 증가분 형식(값 검사는 감소 적용 뒤)
@@ -846,6 +859,7 @@ GRANT  EXECUTE ON FUNCTION public.revise_shipment_check(integer) TO service_role
 
 
 -- ── ⑤ 화면용 뷰(r2, qa M3) — 확정 전표마다 revise_shipment_check. 화면은 캐시되는 조회(fetch)로 읽는다
+--   ※ 반드시 shipment_id 로 걸러 읽는다(shipment_id=eq.N). 필터 없이 읽으면 확정 전표 수만큼 함수를 실행한다
 --   (RPC 호출은 성공할 때마다 앱의 읽기 캐시를 전부 비운다). 판정은 함수 한 곳 그대로.
 --   security_invoker = true(호출자 권한 — 함수 실행 권한이 있는 service_role 만 의미 있음), anon·authenticated 회수
 CREATE OR REPLACE VIEW public.shipment_revise_blockers_v
@@ -855,7 +869,7 @@ SELECT s.shipment_id, public.revise_shipment_check(s.shipment_id) AS chk
  WHERE s.status = 'CONFIRMED';
 COMMENT ON VIEW public.shipment_revise_blockers_v IS
     '확정 전표별 정정·취소 사전 점검(revise_shipment_check 결과 chk) — 화면 선차단용 읽기(082 r2)';
-REVOKE ALL ON public.shipment_revise_blockers_v FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON public.shipment_revise_blockers_v FROM PUBLIC, anon, authenticated, service_role;   -- r3: 읽기만
 GRANT SELECT ON public.shipment_revise_blockers_v TO service_role;
 
 NOTIFY pgrst, 'reload schema';
