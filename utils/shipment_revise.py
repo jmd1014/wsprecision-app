@@ -496,7 +496,8 @@ def _postconditions(st, sid, action, changed_soi):
 def build_payload(state, shipment_id, new_qtys, reason, who, allow_over, request_id, today, action="EDIT"):
     """화면이 보낼 payload. 증가분은 확정과 같은 규칙으로 화면이 계획한다 — 감소 반영 뒤 회차 여유 기준
     (지정 회차 여유 → 납품일 회차 → 오래된 회차, allocate_rounds), LOT 선입선출(product_lot_stock_v 순서,
-    부족분은 LOT 미지정). 감소 전부를 먼저 반영한 회차 상태로 계획하므로 같은 수주 라인의 증감 혼합도 실린다."""
+    부족분은 LOT 미지정). 감소 전부를 먼저 반영한 회차 상태로 계획하므로 같은 수주 라인의 증감 혼합도 실린다.
+    LOT 후보에는 같은 요청의 복원량을 더한다 — 뷰 LOT 은 위치 유지, 뷰에 없던 복원 LOT 은 뒤에(LOT NULL 제외)."""
     sh = next(s for s in state["shipments"] if s["shipment_id"] == shipment_id)
     items = sorted([x for x in state["shipment_items"] if x["shipment_id"] == shipment_id],
                    key=lambda x: x["si_id"])
@@ -511,9 +512,23 @@ def build_payload(state, shipment_id, new_qtys, reason, who, allow_over, request
     inc = [(x, a - b) for x, b, a in chg if a > b + EPS]
     if not inc:
         return req
-    # 감소 반영 뒤 회차 상태(서버와 같은 환원 순서)
+    # 감소 반영 뒤 회차 상태(서버와 같은 환원 순서) + 같은 요청의 LOT 복원량
     sim = copy.deepcopy(state)
     rby = _by(sim["so_delivery_schedule"], "sched_id")
+    restored = {}                                   # (pid, lot) → 복원 수량 (LOT NULL 제외)
+    for x, b, a in chg:
+        if a < b - EPS and x.get("product_id"):
+            tx = [t for t in state["inventory_transactions"] if t.get("ref_table") == "shipment_items"
+                  and t.get("txn_type") == "ISSUE" and t.get("ref_id") == x["si_id"]]
+            left = b - a
+            for lot, n in reversed(net_issued_by_lot(tx)):
+                if left <= EPS:
+                    break
+                take = min(n, left)
+                if lot is not None:
+                    k = (x["product_id"], lot)
+                    restored[k] = restored.get(k, 0.0) + take
+                left -= take
     for x, b, a in chg:
         if a < b - EPS:
             left = b - a
@@ -530,11 +545,18 @@ def build_payload(state, shipment_id, new_qtys, reason, who, allow_over, request
     lines_by = _by(state["sales_order_items"], "soi_id")
     ship_date = str(sh.get("ship_date") or "")[:10]
     used = {}
+    # 증가 LOT 후보(검토 세션 결정 2026-11-06 15:3x): 뷰 순서(first_output_date, lot_number) 그대로, 뷰 LOT 은
+    # 잔량에 같은 요청의 복원량을 더하고(위치 유지), 뷰에 없던 복원 LOT 은 뒤에 lot_number 오름차순. LOT NULL 제외
     lots = {}
     for l in sorted(state.get("product_lot_stock_v", []),
                     key=lambda l: (str(l.get("first_output_date") or ""), str(l.get("lot_number") or ""))):
-        if _f(l.get("remain_qty")) > EPS:
-            lots.setdefault(l["product_id"], []).append(l)
+        rem = _f(l.get("remain_qty")) + restored.get((l["product_id"], l.get("lot_number")), 0.0)
+        if rem > EPS:
+            lots.setdefault(l["product_id"], []).append({"lot_number": l["lot_number"], "remain_qty": rem})
+    in_view = {(l["product_id"], l.get("lot_number")) for l in state.get("product_lot_stock_v", [])}
+    for (pid, lot), q in sorted(restored.items(), key=lambda kv: (kv[0][0], str(kv[0][1]))):
+        if (pid, lot) not in in_view and q > EPS:
+            lots.setdefault(pid, []).append({"lot_number": lot, "remain_qty": q})
     for x, d in inc:
         soi = x.get("soi_id")
         if soi is not None:

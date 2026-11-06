@@ -399,6 +399,119 @@ def g_reject_bad_version_no_request_id(n):
     return st, req
 
 
+# ── 보고 1 회신(2026-11-06 15:3x) 추가분 ──
+def _two_lines(lot_view, stock):
+    return _w(shipment_items=[_si(501, 11, 100, 1, "P1", "4PDVN-03", 300),
+                              _si(502, 11, 100, 1, "P1", "4PDVN-03", 200)],
+              shipment_allocations=[{"alloc_id": 1, "si_id": 501, "sched_id": 1, "qty": 300},
+                                    {"alloc_id": 2, "si_id": 502, "sched_id": 1, "qty": 200}],
+              inventory_transactions=[_tx(1, 501, "W01", -300), _tx(2, 502, "W02", -200)],
+              product_lot_stock_v=lot_view,
+              product_stock_v=[{"product_id": "P1", "pn": "4PDVN-03", "customer": "㈜엠제이티", "current_stock": stock}])
+
+
+def g_move_qty_restored_lot_only(n):
+    """같은 제품 두 줄 −100/+100, 뷰 잔량 0·재고 0 → 증가가 같은 요청의 복원 LOT(W01)에서 차감, LOT 미지정 행 없음."""
+    return _edit(n, _two_lines([], 0), {501: 200, 502: 300})
+
+
+def g_move_qty_view_then_restored(n):
+    """같은 조건에 뷰 LOT W09 잔량 60 → W09 60 + 복원 LOT W01 40(뷰 LOT 먼저, 복원 LOT 은 뒤)."""
+    return _edit(n, _two_lines([_lot("P1", "W09", 60, "2026-10-20")], 60), {501: 200, 502: 300})
+
+
+def g_edit_increase_own_sched_first(n):
+    """지정 회차(1)에 여유 300 이 있는 증가 200 → 지정 회차 먼저(회차 2 는 그대로)."""
+    return _edit(n, _w(so_delivery_schedule=[_rd(1, 11, 1, "2026-11-01", 800, 500),
+                                             _rd(2, 11, 2, "2026-11-10", 500, 0)]), {501: 700})
+
+
+def g_edit_increase_completes_line(n):
+    """증가로 수주 라인 완납(700/700) → 라인 DELIVERED·pending 0, 머리글 DELIVERED."""
+    return _edit(n, _w(sales_order_items=[_soi(11, 100, "P1", "4PDVN-03", 700, 500)],
+                       so_delivery_schedule=[_rd(1, 11, 1, "2026-11-01", 500, 500),
+                                             _rd(2, 11, 2, "2026-11-10", 200, 0)]), {501: 700})
+
+
+def g_unlinked_product_decrease(n):
+    """제품 미연결 라인(product_id NULL, 수주 연결) 감소 → 수주·회차·충당은 되돌리고 ISSUE 0, 안내 없음."""
+    return _edit(n, _w(shipment_items=[dict(_si(501, 11, 100, 1, None, "X-1", 500), product_id=None)],
+                       inventory_transactions=[]), {501: 400})
+
+
+def g_reject_not_found(n):
+    """없는 전표 → not_found."""
+    st, req = _cancel(n, _w())
+    return st, dict(req, shipment_id=999)
+
+
+def g_reject_not_confirmed_draft(n):
+    """작성중 전표 → not_confirmed:DRAFT."""
+    st, req = _cancel(n, _w())
+    st["shipments"][0]["status"] = "DRAFT"
+    return st, req
+
+
+def g_reject_not_confirmed_cancelled(n):
+    """취소 전표(다른 request_id) → not_confirmed:CANCELLED."""
+    st, req = _cancel(n, _w())
+    st["shipments"][0]["status"] = "CANCELLED"
+    return st, req
+
+
+def g_reject_reason_required(n):
+    """사유 공백 → reason_required."""
+    st, req = _cancel(n, _w())
+    return st, dict(req, reason="   ")
+
+
+def g_reject_line_other_shipment(n):
+    """다른 전표의 라인(601)을 정정 대상으로 보냄 → line_mismatch."""
+    w = _w()
+    w["shipments"].append(dict(w["shipments"][0], shipment_id=51, ship_no="SH-20261031-01"))
+    w["shipment_items"].append(dict(_si(601, 11, 100, 1, "P1", "4PDVN-03", 50), shipment_id=51))
+    st, req = _edit(n, w, {501: 400})
+    req["lines"] = [{"si_id": 601, "qty_before": 50, "qty_after": 40}]
+    return st, req
+
+
+def g_reject_line_duplicate(n):
+    """같은 라인을 두 번 → line_mismatch."""
+    st, req = _edit(n, _w(), {501: 400})
+    req["lines"] = req["lines"] * 2
+    return st, req
+
+
+def g_reject_bad_version_no_rev(n):
+    """expected_rev_no 누락 → bad_version."""
+    st, req = _cancel(n, _w())
+    return st, {k: v for k, v in req.items() if k != "expected_rev_no"}
+
+
+def g_reject_sched_mismatch(n):
+    """증가 payload 의 회차가 다른 수주 라인의 회차(soi 불일치) → sched_mismatch."""
+    w = _w()
+    w["sales_order_items"].append(_soi(12, 100, "P1", "4PDVN-03", 100, 0))
+    w["so_delivery_schedule"].append(_rd(9, 12, 1, "2026-11-15", 100, 0))
+    st, req = _edit(n, w, {501: 700})
+    req["inc"]["scheds"] = [{"sched_id": 9, "soi_id": 11, "delta": 200}]
+    return st, req
+
+
+def g_reject_alloc_mismatch(n):
+    """회차 증가 200 인데 충당 합 150 → alloc_mismatch."""
+    st, req = _edit(n, _w(), {501: 700})
+    req["inc"]["allocs"] = [dict(req["inc"]["allocs"][0], qty=150)]
+    return st, req
+
+
+def g_reject_txn_mismatch(n):
+    """ISSUE 합(−150) ≠ 증가 200 → txn_mismatch."""
+    st, req = _edit(n, _w(), {501: 700})
+    req["inc"]["txns"] = [dict(req["inc"]["txns"][0], qty=-150)]
+    return st, req
+
+
 SCEN = {k[2:]: v for k, v in sorted(globals().items()) if k.startswith("g_") and callable(v)}
 
 
@@ -460,7 +573,8 @@ def test_hash_stamp_matches_code():
     """모델·공용 함수·082 가 바뀌었는데 도장이 그대로면 실패 — 로컬 SQL 등가성(L1)을 다시 돌려 도장을 갱신할 것."""
     path = os.path.join(GOLD, "HASH.json")
     py, sql = _code_hash()
-    if os.environ.get("REGEN_REVISE_GOLDEN") == "1" and not os.path.exists(path):
+    # 082 가 생기기 전에만 골든 재생성이 도장을 쓴다 — 그 뒤로는 로컬 SQL 등가성 시험(L1)만 갱신한다
+    if os.environ.get("REGEN_REVISE_GOLDEN") == "1" and sql is None:
         with open(path, "w", encoding="utf-8", newline="\n") as f:
             json.dump({"python": py, "sql": sql, "local_sql_check": None}, f, indent=1)
             f.write("\n")
