@@ -289,6 +289,8 @@ def _pick_y_and_change(monkeypatch, change, lot="W6000"):
 
 def _assert_y(m, at):
     assert not [str(e.value) for e in at.error], [str(e.value) for e in at.error]
+    # D-2 는 index 인자로 선택을 유지한다 — 세션 상태를 직접 쓰지 않으므로 Streamlit 경고가 없어야 한다
+    assert not [str(w.value) for w in at.warning if "Session State" in str(w.value)], [str(w.value) for w in at.warning]
     for t in ("wo_tracking", "wo_batches"):
         rows = _ins(m, t)
         assert len(rows) == 1 and rows[0]["pn"] == "HA80-80099" and rows[0]["product_id"] == "P0999", (t, rows)
@@ -297,6 +299,24 @@ def _assert_y(m, at):
 def test_r1c_selected_label_changes_keeps_selection(monkeypatch):
     """Y 선택 → Y 미납 300 → 200 → 클릭 → Y 등록(차단·오류 없음)."""
     _assert_y(*_pick_y_and_change(monkeypatch, lambda m: _set_pend(m, "P0999", 200)))
+
+
+def test_r1c2_relabel_run_without_click_keeps_selection_no_warning(monkeypatch):
+    """클릭 없이 다시 그려도(라벨 변동 run) 선택이 Y 의 새 라벨로 유지되고 Streamlit 경고·오류가 없다(D-2 index 방식)."""
+    m = _mock()
+    _add_prod(m, "P0999", "HA80-80099", 300)
+    _lot(m, "W6200", "M191", 100)
+    _bom(m, "P0883", "M191")
+    _bom(m, "P0999", "M191")
+    at = _open(monkeypatch, m)
+    _sel(at, "W6200").set_value("HA80-80099 ← 미납 300")
+    at.run()
+    _set_pend(m, "P0999", 200)
+    at.run()
+    assert not at.exception, [str(e.value) for e in at.exception]
+    assert _sel(at, "W6200").value == "HA80-80099 ← 미납 200", _sel(at, "W6200").value
+    assert not [str(e.value) for e in at.error] and not [str(w.value) for w in at.warning
+                                                          if "Session State" in str(w.value)]
 
 
 def test_r1d_other_label_changes_keeps_selection(monkeypatch):

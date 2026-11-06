@@ -7,7 +7,9 @@
   (2026-09-16 T16ABV/20ABV 오등록 사고 — 작업지시서 품번과 대조해 고르도록 선택창을 항상 보인다).
   BOM 후보에 없으면 맨 앞에 끼워 넣는다.
 - 힌트가 휴면 품번이면 힌트로 쓰지 않고 후보에서도 빼며 안내 문구를 돌려준다(2026-11-06 후보 49).
+- 앞서 고른 선택이 라벨 변동으로 풀리거나 후보에서 빠졌는지 판정한다(prev_selection, 2026-11-06 r2).
 """
+import re
 
 
 def order_bom_candidates(bom_rows, open_pids):
@@ -53,3 +55,49 @@ def pn_candidates(bom_rows, open_pend, hint=None, open_pids=None):
     default = (next((i for i, p in enumerate(cands) if p["pn"] == hint_pn), 0)
                if hint_pn else 0)
     return {"cands": cands, "labels": labels, "default": default, "notice": notice}
+
+
+# ── 앞서 고른 선택 판정 (2026-11-06 r2 D-1·D-2) ──
+# 선택 상자 라벨에 미납 수량·「(발주 라인 기준)」이 들어 있어, 라벨이 바뀌면 Streamlit 은 그 선택을 못 찾고
+# index(기본값)로 되돌린다 → 같은 run 의 [투입 등록] 클릭이 사용자가 본 것과 다른 품번으로 등록됐다.
+# 화면은 선택 상자를 만들기 전에 세션의 옛 라벨을 읽어 이 함수로 판정한다.
+_SRC_SUFFIX = re.compile(r"^(.*) \([^()]* 기준\)$")
+_OPEN_SUFFIX = re.compile(r"^(.*) ← 미납 [-\d,.]+$")
+
+
+def label_pn(label):
+    """pn_candidates 가 만든 라벨에서 품번을 되찾는다 — 「 (… 기준)」·「 ← 미납 N」 꼬리를 뗀 나머지(정확 일치용)."""
+    s = str(label or "")
+    m = _SRC_SUFFIX.match(s)
+    if m:
+        s = m.group(1)
+    m = _OPEN_SUFFIX.match(s)
+    if m:
+        s = m.group(1)
+    return s
+
+
+def prev_selection(prev_label, cands, labels):
+    """옛 선택 라벨 → {"state", "pn", "index"}.
+
+    none    : 옛 값 없음(처음 그림·LOT 바꿈)
+    same    : 옛 라벨이 새 라벨에 그대로 있음
+    relabel : 같은 품번이 새 후보에 있고 라벨·위치만 바뀜 → 화면은 index 로 그 위치를 넘겨 선택 유지(D-2)
+    gone    : 옛 품번이 새 후보에 없음(휴면 처리 등, 후보 0개 포함) → 그 run 은 등록 차단(D-1)
+    """
+    if prev_label is None:
+        return {"state": "none", "pn": None, "index": None}
+    labels = list(labels or [])
+    if prev_label in labels:
+        i = labels.index(prev_label)
+        return {"state": "same", "pn": cands[i]["pn"], "index": i}
+    pn = label_pn(prev_label)
+    i = next((k for k, c in enumerate(cands or []) if c["pn"] == pn), None)
+    if i is None:
+        return {"state": "gone", "pn": None, "index": None}
+    return {"state": "relabel", "pn": pn, "index": i}
+
+
+def gone_message(prev_label):
+    return (f"앞서 고른 품번 {prev_label} 이 후보에서 빠졌습니다(휴면 처리 등) — "
+            "품번을 다시 확인하세요. 이번 클릭은 등록하지 않았습니다.")

@@ -19213,10 +19213,21 @@ elif page == "공정 관리":
                 _pc = _wo_in.pn_candidates(_bom_pns, _open_pend, _hint,
                                            open_pids=_open_pids)
                 _cands, _pn_labels = _pc["cands"], _pc["labels"]
+                # 앞서 고른 선택 판정 (2026-11-06 r2 D-1·D-2): 라벨(미납 수량·발주 라인
+                # 기준)이 바뀌면 Streamlit 이 선택을 index(기본값)로 되돌려, 같은 run 의
+                # 클릭이 사용자가 본 것과 다른 품번으로 등록됐다. 선택 상자를 만들기
+                # 전에 세션의 옛 라벨을 읽는다 — 같은 품번이 남아 있으면 index 로 그
+                # 위치를 넘겨 유지(D-2), 후보에서 빠졌으면 이 run 은 등록 차단(D-1)
+                _pn_prev_lbl = st.session_state.get(f"pe_in_pnsel_{_sel_lot}")
+                _ps = _wo_in.prev_selection(_pn_prev_lbl, _cands, _pn_labels)
+                _sel_gone = _ps["state"] == "gone"
                 if _cands:
                     _pn_sel = st.selectbox(
                         f"품번 (후보 {len(_cands)}건 — 작업지시서 품번과 같은지 확인)",
-                        _pn_labels, index=_pc["default"], key=f"pe_in_pnsel_{_sel_lot}",
+                        _pn_labels,
+                        index=(_ps["index"] if _ps["state"] == "relabel"
+                               else _pc["default"]),
+                        key=f"pe_in_pnsel_{_sel_lot}",
                         help="발주 라인·BOM 에서 찾은 후보입니다. 기본값이 "
                              "작업지시서의 품번과 다르면 바꾸세요. 미납 수주가 "
                              "있는 품번이 위에 표시됩니다.")
@@ -19228,6 +19239,8 @@ elif page == "공정 관리":
                         help="이 소재를 쓰는 제품이 BOM 에 없습니다. "
                              "마스터 관리 → BOM 편집에서 등록하면 "
                              "다음부터 자동 제안됩니다.")
+                if _sel_gone:
+                    st.error(_wo_in.gone_message(_pn_prev_lbl))
                 if _pc["notice"]:
                     st.warning(_pc["notice"])
 
@@ -19374,7 +19387,8 @@ elif page == "공정 관리":
                         type="primary",
                         disabled=not (_wo_ok and _in_qty > 0
                                       and _in_prod_qty > 0
-                                      and not _pn_archived),
+                                      and not _pn_archived
+                                      and not _sel_gone),
                         key="pe_in_submit"):
                     try:
                         _wo = _wo_no.strip()
