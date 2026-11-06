@@ -994,21 +994,30 @@ def test_l10_increase_vs_confirm_stock(pg):
     for p in st["product_stock_v"]:
         if p["product_id"] == "P1":
             p["current_stock"] = 100
-    ln = [(OFF + 731, OFF + 11, OFF + 100, OFF + 3, "P1" + SFX, 80)]
+    # 확정은 같은 제품의 다른 수주 라인(soi 12)으로 — 같은 수주 라인이면 라인 잠금에서 먼저 stale 로 갈린다
+    ln = [(OFF + 731, OFF + 12, OFF + 100, OFF + 12, "P1" + SFX, 80)]
     req = map_req(g["request"])
     req["lines"][0]["qty_after"] = 580
     req["inc"]["scheds"][0]["delta"] = 80
     req["inc"]["allocs"][0]["qty"] = 80
     req["inc"]["txns"] = [dict(req["inc"]["txns"][0], qty=-80)]
-    with World(pg, st, _draft(OFF + 56, "SH-20261102-06", ln, None, None)):
-        pay = _confirm_payload(ln, {OFF + 11: 500}, [(OFF + 3, OFF + 11, 80)], [(OFF + 731, OFF + 3, 80)], "W04")
+
+    def extra(cur):
+        cur.execute("""insert into sales_order_items (soi_id, so_id, line_no, product_id, qty, received_qty, pending_qty,
+                       status, unit, closed_qty) values (%s, %s, 2, %s, 100, 0, 100, 'PENDING', 'EA', 0)""",
+                    (OFF + 12, OFF + 100, "P1" + SFX))
+        cur.execute("""insert into so_delivery_schedule (sched_id, so_id, soi_id, seq, due_date, qty, delivered_qty)
+                       values (%s, %s, %s, 1, '2026-11-02', 100, 0)""", (OFF + 12, OFF + 100, OFF + 12))
+        _draft(OFF + 56, "SH-20261102-06", ln, None, None)(cur)
+    with World(pg, st, extra):
+        pay = _confirm_payload(ln, {OFF + 12: 0}, [(OFF + 12, OFF + 12, 80)], [(OFF + 731, OFF + 12, 80)], "W04")
         th1, o1 = _bg(pg, _rev(req, OFF + 50))
         th2, o2 = _bg(pg, _rpc("confirm_shipment", OFF + 56, pay))
         th1.join(30)
         th2.join(30)
         codes = sorted([_err_code(o1), _err_code(o2)], key=str)
         oks = [c for c in codes if c == "ok"]
-        rej = [c for c in codes if str(c).startswith("stock:") or c == "stale"]
+        rej = [c for c in codes if str(c).startswith("stock:")]
         assert len(oks) == 1 and len(rej) == 1, codes
     RESULTS["L10"] = codes
 
