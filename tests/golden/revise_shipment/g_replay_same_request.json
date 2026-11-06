@@ -205,6 +205,18 @@
   "who": "테스트"
  },
  "state": {
+  "_requests": {
+   "2e383803-e7d9-5485-aee4-02c4cae81b17": {
+    "action": "CANCEL",
+    "allow_over": false,
+    "expected_rev_no": 0,
+    "reason": "거래처 착오",
+    "request_id": "2e383803-e7d9-5485-aee4-02c4cae81b17",
+    "shipment_id": 50,
+    "v": "1",
+    "who": "테스트"
+   }
+  },
   "inventory_transactions": [
    {
     "created_by": "테스트",

@@ -364,7 +364,8 @@ def g_replay_same_request(n):
     st, req = _cancel(n, _w())
     res, st2 = SR.plan_revision(st, req, TODAY)
     assert res["ok"], res
-    return {t: st2[t] for t in STATE_TABLES}, req
+    # _requests: 이력 행을 만든 원래 요청 — 로컬 SQL 시험이 id 를 옮긴 뒤 payload_md5 를 다시 계산하는 데 쓴다
+    return dict({t: st2[t] for t in STATE_TABLES}, _requests={req["request_id"]: req}), req
 
 
 def g_reject_request_conflict(n):
@@ -373,7 +374,7 @@ def g_reject_request_conflict(n):
     res, st2 = SR.plan_revision(st, req, TODAY)
     assert res["ok"], res
     req2 = dict(req, reason="다른 사유")
-    return {t: st2[t] for t in STATE_TABLES}, req2
+    return dict({t: st2[t] for t in STATE_TABLES}, _requests={req["request_id"]: req}), req2
 
 
 def g_reject_stale(n):
