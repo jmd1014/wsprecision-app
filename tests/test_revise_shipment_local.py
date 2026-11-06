@@ -801,14 +801,13 @@ def test_l5_cancel_vs_sibling_line_confirm(pg, first):
         # 되어 「수주 전 라인 잠금」이 빠진 변이(02b ②)를 잡는다
         cur.execute("update sales_order_items set qty = 500, pending_qty = 0, status = 'DELIVERED' where soi_id = %s",
                     (OFF + 11,))
+        # 형제 라인(soi 12)은 회차 없이(확정 미충당) — 회차 잠금이 아니라 「수주 전 라인 잠금」만으로 직렬화되는지 본다
         cur.execute("""insert into sales_order_items (soi_id, so_id, line_no, product_id, qty, received_qty, pending_qty,
                        status, unit, closed_qty) values (%s, %s, 2, %s, 100, 0, 100, 'PENDING', 'EA', 0)""",
                     (OFF + 12, OFF + 100, "P1" + SFX))
-        cur.execute("""insert into so_delivery_schedule (sched_id, so_id, soi_id, seq, due_date, qty, delivered_qty)
-                       values (%s, %s, %s, 1, '2026-11-02', 100, 0)""", (OFF + 12, OFF + 100, OFF + 12))
-        _draft(OFF + 53, "SH-20261102-02", [(OFF + 712, OFF + 12, OFF + 100, OFF + 12, "P1" + SFX, 100)], None, None)(cur)
-    ln = [(OFF + 712, OFF + 12, OFF + 100, OFF + 12, "P1" + SFX, 100)]
-    pay = _confirm_payload(ln, {OFF + 12: 0}, [(OFF + 12, OFF + 12, 100)], [(OFF + 712, OFF + 12, 100)], "W03")
+        _draft(OFF + 53, "SH-20261102-02", [(OFF + 712, OFF + 12, OFF + 100, None, "P1" + SFX, 100)], None, None)(cur)
+    ln = [(OFF + 712, OFF + 12, OFF + 100, None, "P1" + SFX, 100)]
+    pay = _confirm_payload(ln, {OFF + 12: 0}, [], [], "W03")
     with World(pg, g["state"], extra) as w:
         a = pg()
         try:
