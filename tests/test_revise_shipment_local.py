@@ -797,6 +797,10 @@ def test_l5_cancel_vs_sibling_line_confirm(pg, first):
     g = _gold("cancel_basic")
 
     def extra(cur):
+        # soi 11 을 완납(500/500)으로 — 형제 확정이 옛 스냅샷으로 머리글을 집계하면 DELIVERED(틀림, 실제는 PARTIAL)가
+        # 되어 「수주 전 라인 잠금」이 빠진 변이(02b ②)를 잡는다
+        cur.execute("update sales_order_items set qty = 500, pending_qty = 0, status = 'DELIVERED' where soi_id = %s",
+                    (OFF + 11,))
         cur.execute("""insert into sales_order_items (soi_id, so_id, line_no, product_id, qty, received_qty, pending_qty,
                        status, unit, closed_qty) values (%s, %s, 2, %s, 100, 0, 100, 'PENDING', 'EA', 0)""",
                     (OFF + 12, OFF + 100, "P1" + SFX))
