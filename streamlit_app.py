@@ -10548,7 +10548,8 @@ elif page == "출고 관리":
                 st.session_state["cf_rv_inflight"] = {
                     "shipment_id": _sid0, "ship_no": pick.get("ship_no"), "request_id": _rid0, "action": action,
                     "started_at": _r["started_at"], "summary": summary,
-                    "items": [{k: x.get(k) for k in ("si_id", "soi_id", "pn", "qty", "customer", "so_number")}
+                    "items": [{k: x.get(k) for k in ("si_id", "shipment_id", "soi_id", "product_id", "pn", "customer_pn",
+                                                     "qty", "customer", "so_number")}
                               for x in items]}
                 try:
                     _db.log_error("manual", f"[rpc_unknown] revise_shipment (shipment {_sid0}, "
@@ -10687,7 +10688,7 @@ elif page == "출고 관리":
             _cf_locked = _cf_ym in _cf_closed
             try:
                 _cf_items = fetch("shipment_items",
-                    "si_id,soi_id,so_id,sched_id,product_id,pn,"
+                    "si_id,shipment_id,soi_id,so_id,sched_id,product_id,pn,"
                     "customer_pn,item_name,customer,so_number,qty,unit,"
                     "unit_price",
                     f"shipment_id=eq.{_fq(_cf_pick['shipment_id'])}"

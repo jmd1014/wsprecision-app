@@ -107,6 +107,8 @@ class ReviseMock(ShipMock):
 
     def __init__(self, world=None):
         super().__init__(world)
+        # PostgREST 처럼 select 한 열만 돌려준다(r1 QA B1 — 화면이 select 하지 않은 열을 쓰면 테스트에서도 실패하게)
+        self.apply_select = True
         self.faults = []
         self.check_fail = False
         self.check_unavailable = False

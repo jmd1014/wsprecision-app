@@ -120,6 +120,8 @@ def test_cancel_reverses_and_keeps_number(monkeypatch):
     assert (li["received_qty"], li["pending_qty"], li["status"]) == (0, 2000, "PENDING")
     revs = m.tables["shipment_revisions"]
     assert len(revs) == 1 and revs[0]["action"] == "CANCEL" and revs[0]["request_id"], revs
+    assert (revs[0]["si_id"], revs[0]["qty_before"], revs[0]["qty_after"], revs[0]["reason"]) == \
+        (501, 500, 0, REASON), revs                                            # 옛 단언(이력 500→0·사유) 이식(r1 QA M4)
     assert next(x for x in m.tables["shipment_items"] if x["si_id"] == 501)["qty"] == 500   # 라인 수량은 기록으로 보존
     assert any("취소" in t for t in _texts(at)), _texts(at)
 
@@ -478,3 +480,13 @@ def test_blocked_notice_uses_variant_label(monkeypatch, variants):
     t = "\n".join(_texts(at))
     head = "- 4PDVN-03 (4S4PDVN-03) · 수주 SO-100" if variants else "- 4PDVN-03 · 수주 SO-100"
     assert any(l.startswith(head) for l in t.splitlines()), t
+
+
+def test_mock_returns_only_selected_columns():
+    """r1 QA B1 — 화면이 select 하지 않은 열(shipment_id)을 build_payload 가 써서 운영에서만 KeyError 가 나던 것.
+    ReviseMock 은 PostgREST 처럼 select 한 열만 돌려줘야 화면 테스트가 같은 결함을 잡는다."""
+    from tests.ship_mock import ReviseMock
+    m = ReviseMock(_w())
+    assert m.apply_select is True
+    row = m.fetch("shipment_items", "si_id,qty", f"shipment_id=eq.{SID}")[0]
+    assert set(row) == {"si_id", "qty"}, row
